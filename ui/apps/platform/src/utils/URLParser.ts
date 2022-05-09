@@ -135,6 +135,8 @@ function paramsToStateStack(params): WorkflowEntity[] {
 
 function formatSort(sort?: ParsedQs | ParsedQs[]): GraphQLSortOption[] | null {
     if (!sort) {
+        // TODO Do we want `null` here? The tests expect `null` but it seems an empty array would
+        // be a more appropriate value.
         return null;
     }
 
