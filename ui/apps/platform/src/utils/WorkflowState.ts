@@ -10,6 +10,7 @@ import entityRelationships from 'utils/entityRelationships';
 import generateURL from 'utils/URLGenerator';
 import { searchParams, sortParams, pagingParams } from 'constants/searchParams';
 
+import { GraphQLSortOption } from 'types/search';
 import WorkflowEntity from './WorkflowEntity';
 
 // Returns true if stack provided makes sense
@@ -133,12 +134,6 @@ type WorkflowStateSearch = Record<
 >;
 
 /**
- *  TODO The intended type for `sort` is probably closer to:
- *  Record<string, {id: string, desc: boolean}[]>
- */
-type WorkflowStateSort = Record<string, Record<string, unknown>[] | null | undefined>;
-
-/**
  * Summary: Class that ensures the shape of a WorkflowState object
  * {
  *   useCase: 'text',
@@ -152,7 +147,7 @@ export class WorkflowState {
 
     search: WorkflowStateSearch;
 
-    sort: WorkflowStateSort;
+    sort: Record<string, GraphQLSortOption[] | null>;
 
     paging: Record<string, number>;
 
@@ -162,7 +157,7 @@ export class WorkflowState {
         useCase: string,
         stateStack: WorkflowEntity[],
         search?: WorkflowStateSearch | null,
-        sort?: WorkflowStateSort | null,
+        sort?: Record<string, GraphQLSortOption[] | null> | null,
         paging?: Record<string, number> | null
     ) {
         this.useCase = useCase;
@@ -437,8 +432,9 @@ export class WorkflowState {
 
         const newSort = {
             ...sort,
-            [param]: undefined,
         };
+
+        delete newSort[param];
 
         return new WorkflowState(useCase, stateStack, search, newSort, paging);
     }
