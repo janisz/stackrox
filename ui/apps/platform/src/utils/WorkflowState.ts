@@ -124,6 +124,21 @@ function trimStack(stack: WorkflowEntity[]) {
 }
 
 /**
+ *  TODO The intended type for `search` is probably just:
+ *  Record<string, SearchFilter>
+ */
+type WorkflowStateSearch = Record<
+    string,
+    string | string[] | qs.ParsedQs | qs.ParsedQs[] | null | undefined
+>;
+
+/**
+ *  TODO The intended type for `sort` is probably closer to:
+ *  Record<string, {id: string, desc: boolean}[]>
+ */
+type WorkflowStateSort = Record<string, Record<string, unknown>[] | null | undefined>;
+
+/**
  * Summary: Class that ensures the shape of a WorkflowState object
  * {
  *   useCase: 'text',
@@ -135,29 +150,19 @@ export class WorkflowState {
 
     stateStack: WorkflowEntity[];
 
-    search?: Record<
-        string,
-        string | string[] | qs.ParsedQs | qs.ParsedQs[] | null | undefined
-    > | null;
+    search: WorkflowStateSearch;
 
-    /**
-     *  TODO This can probably be safer
-     *  @see {formatSort} in URLParser.ts
-     */
-    sort?: Record<string, Record<string, unknown>[] | null | undefined> | null;
+    sort: WorkflowStateSort;
 
-    paging?: Record<string, number> | null;
+    paging: Record<string, number>;
 
     sidePanelActive: boolean;
 
     constructor(
         useCase: string,
         stateStack: WorkflowEntity[],
-        search?: Record<
-            string,
-            string | string[] | qs.ParsedQs | qs.ParsedQs[] | null | undefined
-        > | null,
-        sort?: Record<string, Record<string, unknown>[] | null | undefined> | null,
+        search?: WorkflowStateSearch | null,
+        sort?: WorkflowStateSort | null,
         paging?: Record<string, number> | null
     ) {
         this.useCase = useCase;
