@@ -6,10 +6,9 @@ import useCases from 'constants/useCaseTypes';
 import { searchParams, sortParams, pagingParams } from 'constants/searchParams';
 import { urlEntityListTypes, urlEntityTypes } from '../routePaths';
 import parseURL from './URLParser';
-import generateURL from './URLGenerator';
 
 import WorkflowEntity from './WorkflowEntity';
-import { WorkflowState } from './WorkflowState';
+import { generateURL, WorkflowState } from './WorkflowState';
 
 function getLocation(search, pathname) {
     return {
