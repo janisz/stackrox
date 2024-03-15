@@ -18,6 +18,8 @@ on:
 jobs:
   comment:
     runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
     if: ${{ github.actor != 'dependabot[bot]' }}
     steps:
       - name: Create comment
