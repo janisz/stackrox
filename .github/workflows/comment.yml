@@ -1,16 +1,11 @@
 name: Comment on finished suite
 on:
-    pull_request:
-        types:
-            - labeled
-            - unlabeled
-            - synchronize
-            - opened
+    issue_comment:
+        types: 
+            - created
+            - deleted
             - edited
-            - ready_for_review
-            - reopened
-            - unlocked
-    check_suite:
+    check_run:
         types:
             - completed
     status: {}
