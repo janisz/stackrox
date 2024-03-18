@@ -15,6 +15,9 @@ on:
             - completed
     status: {}
 
+permissions:
+  pull-requests: write
+
 jobs:
   comment:
     runs-on: ubuntu-latest
