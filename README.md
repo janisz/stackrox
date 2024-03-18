@@ -1,6 +1,6 @@
 [![CircleCI][circleci-badge]][circleci-link]
 
-# StackRox Kubernetes Security Platform Test  2
+# StackRox Kubernetes Security Platform Test  22
 
 The StackRox Kubernetes Security Platform performs a risk analysis of the
 container environment, delivers visibility and runtime alerts, and provides
