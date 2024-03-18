@@ -27,8 +27,5 @@ jobs:
         uses: peter-evans/create-or-update-comment@v4
         with:
           issue-number: ${{ github.event.pull_request.number }}
-          body: |
-            ```
-            '${{ toJSON(github) }}'
-            ```
+          body: "/retest"
           reactions: '+1'
