@@ -1,4 +1,5 @@
 [![CircleCI][circleci-badge]][circleci-link]
+[![FOSSA Status](https://app.fossa.com/api/projects/git%2Bgithub.com%2Fjanisz%2Fstackrox.svg?type=shield)](https://app.fossa.com/projects/git%2Bgithub.com%2Fjanisz%2Fstackrox?ref=badge_shield)
 
 # StackRox Kubernetes Security Platform
 
@@ -376,3 +377,7 @@ bash openshift/central.sh
 
 [circleci-badge]: https://circleci.com/gh/stackrox/stackrox.svg?&style=shield&circle-token=eb5a0b87a6253b4c060d011bbfed4a2f1f516746
 [circleci-link]:  https://circleci.com/gh/stackrox/workflows/stackrox/tree/master
+
+
+## License
+[![FOSSA Status](https://app.fossa.com/api/projects/git%2Bgithub.com%2Fjanisz%2Fstackrox.svg?type=large)](https://app.fossa.com/projects/git%2Bgithub.com%2Fjanisz%2Fstackrox?ref=badge_large)
