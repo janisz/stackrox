@@ -1,8 +1,7 @@
 # We have to emulate directory layout as in the repo so that imports in go files work fine.
 ARG roxpath=/workspace/src/github.com/stackrox/rox
-ARG GO_VERSION
 
-FROM golang:${GO_VERSION} as builder
+FROM quay.io/stackrox-io/apollo-ci:${BUILD_IMAGE_VERSION} AS builder
 
 # Build the manager binary
 ARG roxpath
@@ -26,7 +25,9 @@ COPY go.sum go.sum
 # However it does _not_ seem to resolve packages _incorrectly_ and so should be safe especially given that downloaded
 # packages are only used during build and later this docker layer is discarded (only resulting binary goes in the final
 # image).
-RUN go mod download
+# Retry as the proxy can be unavailable at times.
+ENV GOPROXY=https://proxy.golang.org|https://goproxy.io|direct
+RUN go mod download || go mod download || go mod download
 
 # Copy operator source
 COPY operator/ operator/
@@ -46,12 +47,14 @@ COPY operator/build/status.sh status.sh
 # This creates a git repo in workdir so that `git grep` command in build.sh can succeed and actually find //XDef-s.
 RUN git init && git add .
 
-# Build the operator binary.
-RUN GOOS=$(go env GOOS) scripts/go-build.sh operator
-# Copy the operator binary to a location from where it will be taken into the final image.
-RUN cp -a bin/$(go env GOOS)/operator stackrox-operator
+# We've been historically building operator without CGO both upstream and downstream. The apollo-ci image has that
+# enabled by default, therefore we disable CGO here to keep doing the thing we used to.
+ENV CGO_ENABLED=0
 
-FROM registry.access.redhat.com/ubi8-micro:8.6
+# Build the operator binary.
+RUN GOOS=$(go env GOOS) GOARCH=$(go env GOARCH) scripts/go-build-file.sh operator/cmd/main.go stackrox-operator
+
+FROM registry.access.redhat.com/ubi8-micro:latest
 
 ARG roxpath
 

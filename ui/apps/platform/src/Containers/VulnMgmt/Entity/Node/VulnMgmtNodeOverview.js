@@ -11,8 +11,8 @@ import ScanDataMessage from 'Containers/VulnMgmt/Components/ScanDataMessage';
 import getNodeScanMessage from 'Containers/VulnMgmt/VulnMgmt.utils/getNodeScanMessage';
 import CvesByCvssScore from 'Containers/VulnMgmt/widgets/CvesByCvssScore';
 import workflowStateContext from 'Containers/workflowStateContext';
-import { entityGridContainerClassName } from 'Containers/Workflow/WorkflowEntityPage';
 import dateTimeFormat from 'constants/dateTimeFormat';
+import { entityGridContainerClassName } from '../WorkflowEntityPage';
 import RelatedEntitiesSideList from '../RelatedEntitiesSideList';
 import TableWidgetFixableCves from '../TableWidgetFixableCves';
 
@@ -63,6 +63,8 @@ const VulnMgmtNodeOverview = ({ data, entityContext }) => {
         notes,
     } = safeData;
     safeData.componentCount = scan?.components?.length || 0;
+
+    safeData.nodeComponentCount = scan?.components?.length || 0;
 
     const metadataKeyValuePairs = [
         {
@@ -121,7 +123,7 @@ const VulnMgmtNodeOverview = ({ data, entityContext }) => {
                                 className="h-full min-w-48 bg-base-100 pdf-page"
                                 keyValuePairs={metadataKeyValuePairs}
                                 statTiles={nodeStats}
-                                title="Details & Metadata"
+                                title="Details and metadata"
                                 labels={labels}
                                 annotations={annotations}
                             />
@@ -132,13 +134,14 @@ const VulnMgmtNodeOverview = ({ data, entityContext }) => {
                     </div>
                 </CollapsibleSection>
                 <CollapsibleSection title="Node Findings">
-                    <div className="flex pdf-page pdf-stretch pdf-new shadow rounded relative rounded bg-base-100 mb-4 ml-4 mr-4">
+                    <div className="flex pdf-page pdf-stretch pdf-new shadow relative rounded bg-base-100 mb-4 ml-4 mr-4">
                         <TableWidgetFixableCves
                             workflowState={workflowState}
                             entityContext={entityContext}
                             entityType={entityTypes.NODE}
                             name={safeData?.name}
                             id={safeData?.id}
+                            vulnType={entityTypes.NODE_CVE}
                         />
                     </div>
                 </CollapsibleSection>

@@ -1,27 +1,28 @@
 import React, { useContext } from 'react';
 import URLService from 'utils/URLService';
-import ReactRouterPropTypes from 'react-router-prop-types';
 import Widget from 'Components/Widget';
 import Sunburst from 'Components/visuals/Sunburst';
 import Query from 'Components/ThrowingQuery';
 import Loader from 'Components/Loader';
 import networkStatuses from 'constants/networkStatuses';
-import { Link, withRouter } from 'react-router-dom';
+import { Link, useRouteMatch, useLocation } from 'react-router-dom';
 import { gql } from '@apollo/client';
 import max from 'lodash/max';
 import { severityValues, severities } from 'constants/severities';
-import {
-    severityColorMap,
-    severityTextColorMap,
-    severityColorLegend,
-} from 'constants/severityColors';
+import { policySeverityColorMap } from 'constants/severityColors';
+import { severityLabels as policySeverityLabels } from 'messages/common';
+import { policySeverities } from 'types/policy.proto';
 import policyStatus from 'constants/policyStatus';
 import entityTypes from 'constants/entityTypes';
 import searchContext from 'Containers/searchContext';
 import { CLIENT_SIDE_SEARCH_OPTIONS as SEARCH_OPTIONS } from 'constants/searchOptions';
 import { getPercentage } from 'utils/mathUtils';
 
-const passingLinkColor = 'var(--base-500)';
+const legendData = policySeverities.map((severity) => ({
+    title: policySeverityLabels[severity],
+    color: policySeverityColorMap[severity],
+}));
+
 const passingChartColor = 'var(--base-400)';
 
 const QUERY = gql`
@@ -54,10 +55,12 @@ function getCategorySeverity(category, violationsByCategory) {
         return passingChartColor;
     }
 
-    return severityColorMap[severityEntry[0]];
+    return policySeverityColorMap[severityEntry[0]];
 }
 
-const PolicyViolationsBySeverity = ({ match, location }) => {
+const PolicyViolationsBySeverity = () => {
+    const match = useRouteMatch();
+    const location = useLocation();
     const searchParam = useContext(searchContext);
     const processData = (data) => {
         if (!data || !data.policies || !data.policies.length) {
@@ -75,7 +78,7 @@ const PolicyViolationsBySeverity = ({ match, location }) => {
                 if (!newItems[category]) {
                     newItems[category] = [];
                 }
-                const color = !isPassing ? severityColorMap[severity] : passingChartColor;
+                const color = !isPassing ? policySeverityColorMap[severity] : passingChartColor;
                 const queryObj = !isPassing
                     ? {
                           [searchParam]: {
@@ -94,7 +97,6 @@ const PolicyViolationsBySeverity = ({ match, location }) => {
                     severity,
                     passing: isPassing,
                     color,
-                    textColor: passingLinkColor,
                     value: 0,
                     labelColor: color,
                     name: `${isPassing ? '' : 'View deployments violating'} "${fullPolicyName}"`,
@@ -119,7 +121,6 @@ const PolicyViolationsBySeverity = ({ match, location }) => {
                 value,
                 labelValue,
                 color,
-                textColor: passingLinkColor,
             };
         });
     }
@@ -151,7 +152,6 @@ const PolicyViolationsBySeverity = ({ match, location }) => {
         if (criticalCount) {
             links.push({
                 text: `${criticalCount} rated as critical`,
-                color: severityTextColorMap.CRITICAL_SEVERITY,
                 link: url
                     .query({
                         [searchParam]: {
@@ -168,7 +168,6 @@ const PolicyViolationsBySeverity = ({ match, location }) => {
         if (highCount) {
             links.push({
                 text: `${highCount} rated as high`,
-                color: severityTextColorMap.HIGH_SEVERITY,
                 link: url
                     .query({
                         [searchParam]: {
@@ -186,7 +185,6 @@ const PolicyViolationsBySeverity = ({ match, location }) => {
         if (mediumCount) {
             links.push({
                 text: `${mediumCount} rated as medium`,
-                color: severityTextColorMap.MEDIUM_SEVERITY,
                 link: url
                     .query({
                         [searchParam]: {
@@ -204,7 +202,6 @@ const PolicyViolationsBySeverity = ({ match, location }) => {
         if (lowCount) {
             links.push({
                 text: `${lowCount} rated as low`,
-                color: severityTextColorMap.LOW_SEVERITY,
                 link: url
                     .query({
                         [searchParam]: {
@@ -222,7 +219,6 @@ const PolicyViolationsBySeverity = ({ match, location }) => {
         if (passingCount) {
             links.push({
                 text: `${passingCount} policies without violations`,
-                color: passingLinkColor,
                 link: url
                     .query({
                         [searchParam]: {
@@ -257,10 +253,8 @@ const PolicyViolationsBySeverity = ({ match, location }) => {
                         .url();
 
                     viewAllLink = (
-                        <Link to={linkTo} className="no-underline">
-                            <button className="btn-sm btn-base" type="button">
-                                View All
-                            </button>
+                        <Link to={linkTo} className="no-underline btn-sm btn-base">
+                            View all
                         </Link>
                     );
 
@@ -275,7 +269,7 @@ const PolicyViolationsBySeverity = ({ match, location }) => {
                             <Sunburst
                                 data={sunburstData}
                                 rootData={sidePanelData}
-                                legendData={severityColorLegend}
+                                legendData={legendData}
                                 totalValue={centerValue}
                                 units="value"
                             />
@@ -285,7 +279,7 @@ const PolicyViolationsBySeverity = ({ match, location }) => {
                 return (
                     <Widget
                         className="s-2 pdf-page"
-                        header="Policy Violations by Severity"
+                        header="Policy violations by severity"
                         headerComponents={viewAllLink}
                     >
                         {contents}
@@ -296,9 +290,4 @@ const PolicyViolationsBySeverity = ({ match, location }) => {
     );
 };
 
-PolicyViolationsBySeverity.propTypes = {
-    match: ReactRouterPropTypes.match.isRequired,
-    location: ReactRouterPropTypes.location.isRequired,
-};
-
-export default withRouter(PolicyViolationsBySeverity);
+export default PolicyViolationsBySeverity;

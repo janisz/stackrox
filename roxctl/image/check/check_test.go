@@ -17,10 +17,12 @@ import (
 	"github.com/stackrox/rox/pkg/utils"
 	"github.com/stackrox/rox/roxctl/common/environment"
 	"github.com/stackrox/rox/roxctl/common/environment/mocks"
+	"github.com/stackrox/rox/roxctl/common/io"
 	"github.com/stackrox/rox/roxctl/common/printer"
 	"github.com/stackrox/rox/roxctl/summaries/policy"
 	"github.com/stretchr/testify/suite"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/test/bufconn"
 )
 
@@ -178,10 +180,9 @@ var (
 
 // mock implementation for v1.DetectionServiceServer
 type mockDetectionServiceServer struct {
+	v1.UnimplementedDetectionServiceServer
+
 	alerts []*storage.Alert
-	// This will allow us to use the struct when registering it via v1.RegisterDetectionServiceServer without the need
-	// to implement all functions of the interface, only the one we require for testing.
-	v1.DetectionServiceServer
 }
 
 func (m *mockDetectionServiceServer) DetectBuildTime(context.Context, *v1.BuildDetectionRequest) (*v1.BuildDetectionResponse, error) {
@@ -212,7 +213,7 @@ func (suite *imageCheckTestSuite) createGRPCServerWithDetectionService(alerts []
 
 	conn, _ := grpc.DialContext(context.Background(), "", grpc.WithContextDialer(func(ctx context.Context, s string) (net.Conn, error) {
 		return listener.Dial()
-	}), grpc.WithInsecure())
+	}), grpc.WithTransportCredentials(insecure.NewCredentials()))
 
 	closeF := func() {
 		utils.IgnoreError(listener.Close)
@@ -343,6 +344,7 @@ func (suite *imageCheckTestSuite) TestConstruct() {
 
 	cmd := &cobra.Command{Use: "test"}
 	cmd.Flags().Duration("timeout", 1*time.Minute, "")
+	cmd.Flags().Duration("retry-timeout", 1*time.Minute, "")
 
 	cases := map[string]struct {
 		shouldFail         bool
@@ -413,8 +415,8 @@ func (suite *imageCheckTestSuite) TestValidate() {
 			imgCheckCmd.json = c.json
 			imgCheckCmd.failViolationsWithJSON = c.failViolations
 			imgCheckCmd.objectPrinter = c.printer
-			testIO, _, _, errOut := environment.TestIO()
-			imgCheckCmd.env = environment.NewCLIEnvironment(testIO, printer.DefaultColorPrinter())
+			testIO, _, _, errOut := io.TestIO()
+			imgCheckCmd.env = environment.NewTestCLIEnvironment(suite.T(), testIO, printer.DefaultColorPrinter())
 			suite.Assert().NoError(imgCheckCmd.Validate())
 			suite.Assert().Equal(c.expectedWarning, errOut.String())
 		})
@@ -423,7 +425,7 @@ func (suite *imageCheckTestSuite) TestValidate() {
 
 func (suite *imageCheckTestSuite) TestLegacyPrint_Error() {
 	imgCheckCmd := suite.imageCheckCommand
-	env := environment.NewCLIEnvironment(environment.DiscardIO(), printer.DefaultColorPrinter())
+	env := environment.NewTestCLIEnvironment(suite.T(), io.DiscardIO(), printer.DefaultColorPrinter())
 	imgCheckCmd.env = env
 	jsonPrinter, _ := printer.NewJSONPrinterFactory(false, false).CreatePrinter("json")
 
@@ -501,22 +503,27 @@ func (suite *imageCheckTestSuite) TestLegacyPrint_Format() {
 
 	for name, c := range cases {
 		suite.Run(name, func() {
-			testIO, _, out, _ := environment.TestIO()
-			imgCheckCmd.env = environment.NewCLIEnvironment(testIO, printer.DefaultColorPrinter())
+			testIO, _, out, _ := io.TestIO()
+			imgCheckCmd.env = environment.NewTestCLIEnvironment(suite.T(), testIO, printer.DefaultColorPrinter())
 			imgCheckCmd.json = c.json
 			imgCheckCmd.printAllViolations = c.printAllViolations
 			// Errors will be tested within TestLegacyPrint_Error
 			_ = imgCheckCmd.printResults(c.alerts)
 			expectedOutput, err := os.ReadFile(path.Join("testdata", c.expectedOutput))
 			suite.Require().NoError(err)
-			suite.Assert().Equal(string(expectedOutput), out.String())
+			if c.json {
+				suite.Assert().JSONEq(string(expectedOutput), out.String())
+			} else {
+				suite.Assert().Equal(string(expectedOutput), out.String())
+			}
 		})
 	}
 }
 
 // helper to run output format tests
 func (suite *imageCheckTestSuite) runOutputTests(cases map[string]outputFormatTest, printer printer.ObjectPrinter,
-	standardizedFormat bool) {
+	standardizedFormat bool,
+) {
 	const colorTestPrefix = "color_"
 	for name, c := range cases {
 		suite.Run(name, func() {

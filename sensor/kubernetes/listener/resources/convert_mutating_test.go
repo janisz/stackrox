@@ -4,12 +4,13 @@ import (
 	"testing"
 	"time"
 
-	timestamp "github.com/gogo/protobuf/types"
 	"github.com/stackrox/rox/generated/internalapi/central"
 	"github.com/stackrox/rox/generated/storage"
 	"github.com/stackrox/rox/pkg/kubernetes"
+	"github.com/stackrox/rox/pkg/protoassert"
+	"github.com/stackrox/rox/pkg/protocompat"
+	"github.com/stackrox/rox/sensor/common/registry"
 	"github.com/stackrox/rox/sensor/kubernetes/orchestratornamespaces"
-	"github.com/stretchr/testify/assert"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/api/extensions/v1beta1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -19,6 +20,7 @@ import (
 func TestConvertDifferentContainerNumbers(t *testing.T) {
 	t.Parallel()
 
+	storeProvider := InitializeStore()
 	cases := []struct {
 		name               string
 		inputObj           interface{}
@@ -26,6 +28,7 @@ func TestConvertDifferentContainerNumbers(t *testing.T) {
 		action             central.ResourceAction
 		podLister          *mockPodLister
 		systemNamespaces   *orchestratornamespaces.OrchestratorNamespaces
+		registryStore      *registry.Store
 		expectedDeployment *storage.Deployment
 	}{
 		{
@@ -103,7 +106,8 @@ func TestConvertDifferentContainerNumbers(t *testing.T) {
 					},
 				},
 			},
-			systemNamespaces: orchestratornamespaces.Singleton(),
+			systemNamespaces: storeProvider.orchestratorNamespaces,
+			registryStore:    storeProvider.Registries(),
 			expectedDeployment: &storage.Deployment{
 				Id:                    "FooID",
 				ClusterId:             testClusterID,
@@ -115,7 +119,7 @@ func TestConvertDifferentContainerNumbers(t *testing.T) {
 				LabelSelector: &storage.LabelSelector{
 					MatchLabels: map[string]string{},
 				},
-				Created:                      &timestamp.Timestamp{Seconds: 1000},
+				Created:                      protocompat.GetProtoTimestampFromSeconds(1000),
 				ImagePullSecrets:             []string{},
 				Tolerations:                  []*storage.Toleration{},
 				ServiceAccount:               "default",
@@ -240,7 +244,8 @@ func TestConvertDifferentContainerNumbers(t *testing.T) {
 					},
 				},
 			},
-			systemNamespaces: orchestratornamespaces.Singleton(),
+			systemNamespaces: storeProvider.orchestratorNamespaces,
+			registryStore:    storeProvider.Registries(),
 			expectedDeployment: &storage.Deployment{
 				Id:                    "FooID",
 				ClusterId:             testClusterID,
@@ -252,7 +257,7 @@ func TestConvertDifferentContainerNumbers(t *testing.T) {
 				LabelSelector: &storage.LabelSelector{
 					MatchLabels: map[string]string{},
 				},
-				Created:                      &timestamp.Timestamp{Seconds: 1000},
+				Created:                      protocompat.GetProtoTimestampFromSeconds(1000),
 				ImagePullSecrets:             []string{},
 				Tolerations:                  []*storage.Toleration{},
 				ServiceAccount:               "default",
@@ -305,12 +310,13 @@ func TestConvertDifferentContainerNumbers(t *testing.T) {
 	}
 
 	for _, c := range cases {
+		c := c
 		t.Run(c.name, func(t *testing.T) {
 			actual := newDeploymentEventFromResource(c.inputObj, &c.action, c.deploymentType, testClusterID, c.podLister, mockNamespaceStore, hierarchyFromPodLister(c.podLister), "", c.systemNamespaces).GetDeployment()
 			if actual != nil {
 				actual.StateTimestamp = 0
 			}
-			assert.Equal(t, c.expectedDeployment, actual)
+			protoassert.Equal(t, c.expectedDeployment, actual)
 		})
 	}
 }

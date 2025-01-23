@@ -1,11 +1,12 @@
 import React from 'react';
 import PropTypes from 'prop-types';
-import { AlertTriangle } from 'react-feather';
+import { ExclamationTriangleIcon } from '@patternfly/react-icons';
+import { Tooltip } from '@patternfly/react-core';
 
-import { Tooltip, DetailedTooltipOverlay } from '@stackrox/ui-components';
-
+import DetailedTooltipContent from 'Components/DetailedTooltipContent';
 import FixableCVECount from 'Components/FixableCVECount';
-import SeverityStackedPill from 'Components/visuals/SeverityStackedPill';
+
+import SeverityStackedPill from './SeverityStackedPill';
 
 function PillTooltipBody({ vulnCounter }) {
     if (vulnCounter?.all?.total > 0) {
@@ -38,27 +39,20 @@ const CVEStackedPill = ({
     fixableUrl,
     showTooltip,
     entityName,
-    scan,
+    scanTime,
     scanMessage,
 }) => {
     const hasCounts = vulnCounter?.all?.total > 0;
-    const useScan = !!scan;
-    const hasScan = !!scan?.scanTime;
+    const useScan = scanTime !== '-';
+    const hasScan = !!scanTime;
     const hasScanMessage = !!scanMessage?.header;
-
-    const pillTooltip = showTooltip
-        ? {
-              title: 'Criticality Distribution',
-              body: <PillTooltipBody vulnCounter={vulnCounter} />,
-          }
-        : null;
 
     const width = horizontal ? '' : 'min-w-16';
 
     return (
         <div className="flex items-center w-full">
             {useScan && !hasScan && <span>{entityName} not scanned</span>}
-            {!hasCounts && <span>No CVEs</span>}
+            {(!useScan || hasScan) && !hasCounts && <span>No CVEs</span>}
             {hasCounts && (
                 <>
                     <div className={`mr-2 ${width}`}>
@@ -71,33 +65,43 @@ const CVEStackedPill = ({
                             hideLink={hideLink}
                         />
                     </div>
-                    <SeverityStackedPill
-                        critical={vulnCounter.critical.total}
-                        important={vulnCounter.important.total}
-                        moderate={vulnCounter.moderate.total}
-                        low={vulnCounter.low.total}
-                        tooltip={pillTooltip}
-                    />
+                    {showTooltip ? (
+                        <Tooltip
+                            isContentLeftAligned
+                            content={
+                                <DetailedTooltipContent
+                                    title="Severity distribution"
+                                    body={<PillTooltipBody vulnCounter={vulnCounter} />}
+                                />
+                            }
+                        >
+                            <SeverityStackedPill vulnCounter={vulnCounter} />
+                        </Tooltip>
+                    ) : (
+                        <SeverityStackedPill vulnCounter={vulnCounter} />
+                    )}
                 </>
             )}
             {hasScanMessage && (
                 <Tooltip
-                    type="alert"
+                    isContentLeftAligned
                     content={
-                        <DetailedTooltipOverlay
-                            extraClassName="text-alert-800"
+                        <DetailedTooltipContent
                             title="CVE Data May Be Inaccurate"
                             subtitle={scanMessage?.header}
                             body={
                                 <div className="">
-                                    <h3 className="text-font-700">Reason:</h3>
-                                    <p className="font-600">{scanMessage?.body}</p>
+                                    <h3 className="font-700">Reason:</h3>
+                                    <p>{scanMessage?.body}</p>
                                 </div>
                             }
                         />
                     }
                 >
-                    <AlertTriangle className="w-4 h-4 text-alert-700 ml-2" />
+                    <ExclamationTriangleIcon
+                        className="w-4 h-4 ml-2"
+                        color="var(--pf-v5-global--warning-color--100)"
+                    />
                 </Tooltip>
             )}
         </div>
@@ -133,10 +137,7 @@ CVEStackedPill.propTypes = {
     fixableUrl: PropTypes.string,
     showTooltip: PropTypes.bool,
     entityName: PropTypes.string,
-    scan: PropTypes.shape({
-        scanTime: PropTypes.string,
-        notes: PropTypes.arrayOf(PropTypes.string),
-    }),
+    scanTime: PropTypes.string,
     scanMessage: PropTypes.shape({
         header: PropTypes.string,
         body: PropTypes.string,
@@ -150,7 +151,7 @@ CVEStackedPill.defaultProps = {
     fixableUrl: '',
     showTooltip: true,
     entityName: '',
-    scan: null,
+    scanTime: '-',
     scanMessage: null,
 };
 

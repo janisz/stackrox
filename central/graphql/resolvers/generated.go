@@ -10,6 +10,7 @@ import (
 	"github.com/stackrox/rox/central/graphql/generator"
 	"github.com/stackrox/rox/generated/api/v1"
 	"github.com/stackrox/rox/generated/storage" // end range imports
+	"github.com/stackrox/rox/pkg/protocompat"
 	"github.com/stackrox/rox/pkg/utils"
 )
 
@@ -26,6 +27,7 @@ func registerGeneratedTypes(builder generator.SchemaBuilder) {
 	utils.Must(builder.AddType("AWSSecurityHub_Credentials", []string{
 		"accessKeyId: String!",
 		"secretAccessKey: String!",
+		"stsEnabled: Boolean!",
 	}))
 	generator.RegisterProtoEnum(builder, reflect.TypeOf(storage.Access(0)))
 	utils.Must(builder.AddType("ActiveComponent_ActiveContext", []string{
@@ -42,24 +44,28 @@ func registerGeneratedTypes(builder generator.SchemaBuilder) {
 		"scanInline: Boolean!",
 		"timeoutSeconds: Int!",
 	}))
+	utils.Must(builder.AddInput("AggregateBy", []string{
+		"aggregateFunc: String",
+		"distinct: Boolean",
+	}))
 	utils.Must(builder.AddType("Alert", []string{
 		"clusterId: String!",
 		"clusterName: String!",
 		"deployment: Alert_Deployment",
 		"enforcement: Alert_Enforcement",
+		"entityType: Alert_EntityType!",
 		"firstOccurred: Time",
 		"id: ID!",
 		"image: ContainerImage",
 		"lifecycleStage: LifecycleStage!",
 		"namespace: String!",
 		"namespaceId: String!",
+		"platformComponent: Boolean!",
 		"policy: Policy",
 		"processViolation: Alert_ProcessViolation",
 		"resolvedAt: Time",
 		"resource: Alert_Resource",
-		"snoozeTill: Time",
 		"state: ViolationState!",
-		"tags: [String!]!",
 		"time: Time",
 		"violations: [Alert_Violation]!",
 		"entity: AlertEntity",
@@ -90,6 +96,7 @@ func registerGeneratedTypes(builder generator.SchemaBuilder) {
 		"action: EnforcementAction!",
 		"message: String!",
 	}))
+	generator.RegisterProtoEnum(builder, reflect.TypeOf(storage.Alert_EntityType(0)))
 	utils.Must(builder.AddType("Alert_ProcessViolation", []string{
 		"message: String!",
 		"processes: [ProcessIndicator]!",
@@ -142,15 +149,14 @@ func registerGeneratedTypes(builder generator.SchemaBuilder) {
 	utils.Must(builder.AddType("CSCC", []string{
 		"serviceAccount: String!",
 		"sourceId: String!",
+		"wifEnabled: Boolean!",
 	}))
 	utils.Must(builder.AddType("CVE", []string{
 		"createdAt: Time",
-		"cve: String!",
 		"id: ID!",
 		"impactScore: Float!",
 		"lastModified: Time",
 		"link: String!",
-		"operatingSystem: String!",
 		"publishedOn: Time",
 		"references: [CVE_Reference]!",
 		"scoreVersion: CVE_ScoreVersion!",
@@ -162,12 +168,42 @@ func registerGeneratedTypes(builder generator.SchemaBuilder) {
 		"type: CVE_CVEType!",
 		"types: [CVE_CVEType!]!",
 	}))
+	utils.Must(builder.AddType("CVEInfo", []string{
+		"createdAt: Time",
+		"cve: String!",
+		"cvssMetrics: [CVSSScore]!",
+		"cvssV2: CVSSV2",
+		"cvssV3: CVSSV3",
+		"epss: EPSS",
+		"lastModified: Time",
+		"link: String!",
+		"publishedOn: Time",
+		"references: [CVEInfo_Reference]!",
+		"scoreVersion: CVEInfo_ScoreVersion!",
+		"summary: String!",
+	}))
+	utils.Must(builder.AddType("CVEInfo_Reference", []string{
+		"tags: [String!]!",
+		"uRI: String!",
+	}))
+	generator.RegisterProtoEnum(builder, reflect.TypeOf(storage.CVEInfo_ScoreVersion(0)))
 	generator.RegisterProtoEnum(builder, reflect.TypeOf(storage.CVE_CVEType(0)))
 	utils.Must(builder.AddType("CVE_Reference", []string{
 		"tags: [String!]!",
 		"uRI: String!",
 	}))
 	generator.RegisterProtoEnum(builder, reflect.TypeOf(storage.CVE_ScoreVersion(0)))
+	utils.Must(builder.AddType("CVSSScore", []string{
+		"cvssv2: CVSSV2",
+		"cvssv3: CVSSV3",
+		"source: Source!",
+		"url: String!",
+		"cvssScore: CVSSScoreCvssScore",
+	}))
+	utils.Must(builder.AddUnionType("CVSSScoreCvssScore", []string{
+		"CVSSV2",
+		"CVSSV3",
+	}))
 	utils.Must(builder.AddType("CVSSV2", []string{
 		"accessComplexity: CVSSV2_AccessComplexity!",
 		"attackVector: CVSSV2_AttackVector!",
@@ -251,6 +287,17 @@ func registerGeneratedTypes(builder generator.SchemaBuilder) {
 		"tolerationsConfig: TolerationsConfig",
 		"type: ClusterType!",
 	}))
+	utils.Must(builder.AddType("ClusterCVE", []string{
+		"cveBaseInfo: CVEInfo",
+		"cvss: Float!",
+		"id: ID!",
+		"impactScore: Float!",
+		"severity: VulnerabilitySeverity!",
+		"snoozeExpiry: Time",
+		"snoozeStart: Time",
+		"snoozed: Boolean!",
+		"type: CVE_CVEType!",
+	}))
 	utils.Must(builder.AddType("ClusterCertExpiryStatus", []string{
 		"sensorCertExpiry: Time",
 		"sensorCertNotBefore: Time",
@@ -269,6 +316,12 @@ func registerGeneratedTypes(builder generator.SchemaBuilder) {
 		"sensorHealthStatus: ClusterHealthStatus_HealthStatusLabel!",
 	}))
 	generator.RegisterProtoEnum(builder, reflect.TypeOf(storage.ClusterHealthStatus_HealthStatusLabel(0)))
+	utils.Must(builder.AddType("ClusterMetadata", []string{
+		"id: ID!",
+		"name: String!",
+		"type: ClusterMetadata_Type!",
+	}))
+	generator.RegisterProtoEnum(builder, reflect.TypeOf(storage.ClusterMetadata_Type(0)))
 	utils.Must(builder.AddType("ClusterStatus", []string{
 		"certExpiryStatus: ClusterCertExpiryStatus",
 		"orchestratorMetadata: OrchestratorMetadata",
@@ -348,6 +401,25 @@ func registerGeneratedTypes(builder generator.SchemaBuilder) {
 		"resource: ComplianceResource",
 		"value: ComplianceResultValue",
 	}))
+	utils.Must(builder.AddType("ComplianceDomain_Cluster", []string{
+		"id: ID!",
+		"name: String!",
+	}))
+	utils.Must(builder.AddType("ComplianceDomain_Deployment", []string{
+		"clusterId: String!",
+		"clusterName: String!",
+		"id: ID!",
+		"name: String!",
+		"namespace: String!",
+		"namespaceId: String!",
+		"type: String!",
+	}))
+	utils.Must(builder.AddType("ComplianceDomain_Node", []string{
+		"clusterId: String!",
+		"clusterName: String!",
+		"id: ID!",
+		"name: String!",
+	}))
 	utils.Must(builder.AddType("ComplianceResource", []string{
 		"cluster: ComplianceResource_ClusterName",
 		"deployment: ComplianceResource_DeploymentName",
@@ -390,7 +462,6 @@ func registerGeneratedTypes(builder generator.SchemaBuilder) {
 		"errorMessage: String!",
 		"finishTime: Time",
 		"id: ID!",
-		"scheduleId: String!",
 		"standardId: String!",
 		"startTime: Time",
 		"state: ComplianceRun_State!",
@@ -405,19 +476,6 @@ func registerGeneratedTypes(builder generator.SchemaBuilder) {
 		"startTimestamp: Time",
 		"success: Boolean!",
 	}))
-	utils.Must(builder.AddType("ComplianceRunSchedule", []string{
-		"clusterId: String!",
-		"crontabSpec: String!",
-		"id: ID!",
-		"standardId: String!",
-		"suspended: Boolean!",
-	}))
-	utils.Must(builder.AddType("ComplianceRunScheduleInfo", []string{
-		"lastCompletedRun: ComplianceRun",
-		"lastRun: ComplianceRun",
-		"nextRunTime: Time",
-		"schedule: ComplianceRunSchedule",
-	}))
 	generator.RegisterProtoEnum(builder, reflect.TypeOf(v1.ComplianceRun_State(0)))
 	utils.Must(builder.AddType("ComplianceStandard", []string{
 		"controls: [ComplianceControl]!",
@@ -427,6 +485,7 @@ func registerGeneratedTypes(builder generator.SchemaBuilder) {
 	utils.Must(builder.AddType("ComplianceStandardMetadata", []string{
 		"description: String!",
 		"dynamic: Boolean!",
+		"hideScanResults: Boolean!",
 		"id: ID!",
 		"name: String!",
 		"numImplementedChecks: Int!",
@@ -491,8 +550,10 @@ func registerGeneratedTypes(builder generator.SchemaBuilder) {
 	}))
 	utils.Must(builder.AddType("CosignSignature", []string{
 	}))
+	generator.RegisterProtoEnum(builder, reflect.TypeOf(storage.CvssScoreVersion(0)))
 	utils.Must(builder.AddType("DataSource", []string{
 		"id: ID!",
+		"mirror: String!",
 		"name: String!",
 	}))
 	utils.Must(builder.AddType("Deployment", []string{
@@ -514,10 +575,10 @@ func registerGeneratedTypes(builder generator.SchemaBuilder) {
 		"namespace: String!",
 		"namespaceId: String!",
 		"orchestratorComponent: Boolean!",
+		"platformComponent: Boolean!",
 		"podLabels: [Label!]!",
 		"ports: [PortConfig]!",
 		"priority: Int!",
-		"processTags: [String!]!",
 		"replicas: Int!",
 		"riskScore: Float!",
 		"runtimeClass: String!",
@@ -532,7 +593,12 @@ func registerGeneratedTypes(builder generator.SchemaBuilder) {
 		"disableAuditLogs: Boolean!",
 		"registryOverride: String!",
 	}))
+	utils.Must(builder.AddType("EPSS", []string{
+		"epssPercentile: Float!",
+		"epssProbability: Float!",
+	}))
 	utils.Must(builder.AddType("Email", []string{
+		"allowUnauthenticatedSmtp: Boolean!",
 		"disableTLS: Boolean!",
 		"from: String!",
 		"password: String!",
@@ -604,7 +670,9 @@ func registerGeneratedTypes(builder generator.SchemaBuilder) {
 	}))
 	utils.Must(builder.AddType("GroupProperties", []string{
 		"authProviderId: String!",
+		"id: ID!",
 		"key: String!",
+		"traits: Traits",
 		"value: String!",
 	}))
 	utils.Must(builder.AddType("Image", []string{
@@ -613,13 +681,27 @@ func registerGeneratedTypes(builder generator.SchemaBuilder) {
 		"lastUpdated: Time",
 		"metadata: ImageMetadata",
 		"name: ImageName",
+		"names: [ImageName]!",
 		"notPullable: Boolean!",
 		"notes: [Image_Note!]!",
 		"priority: Int!",
 		"riskScore: Float!",
-		"scan: ImageScan",
 		"signature: ImageSignature",
 		"signatureVerificationData: ImageSignatureVerificationData",
+	}))
+	utils.Must(builder.AddType("ImageCVE", []string{
+		"cveBaseInfo: CVEInfo",
+		"cvss: Float!",
+		"cvssMetrics: [CVSSScore]!",
+		"id: ID!",
+		"impactScore: Float!",
+		"nvdScoreVersion: CvssScoreVersion!",
+		"nvdcvss: Float!",
+		"operatingSystem: String!",
+		"severity: VulnerabilitySeverity!",
+		"snoozeExpiry: Time",
+		"snoozeStart: Time",
+		"snoozed: Boolean!",
 	}))
 	utils.Must(builder.AddType("ImageComponent", []string{
 		"fixedBy: String!",
@@ -677,12 +759,14 @@ func registerGeneratedTypes(builder generator.SchemaBuilder) {
 		"description: String!",
 		"status: ImageSignatureVerificationResult_Status!",
 		"verificationTime: Time",
+		"verifiedImageReferences: [String!]!",
 		"verifierId: String!",
 	}))
 	generator.RegisterProtoEnum(builder, reflect.TypeOf(storage.ImageSignatureVerificationResult_Status(0)))
 	generator.RegisterProtoEnum(builder, reflect.TypeOf(storage.Image_Note(0)))
 	utils.Must(builder.AddType("Jira", []string{
 		"defaultFieldsJson: String!",
+		"disablePriority: Boolean!",
 		"issueType: String!",
 		"password: String!",
 		"priorityMappings: [Jira_PriorityMapping]!",
@@ -751,6 +835,24 @@ func registerGeneratedTypes(builder generator.SchemaBuilder) {
 		"version: String!",
 	}))
 	generator.RegisterProtoEnum(builder, reflect.TypeOf(v1.Metadata_LicenseStatus(0)))
+	utils.Must(builder.AddType("MicrosoftSentinel", []string{
+		"alertDcrConfig: MicrosoftSentinel_DataCollectionRuleConfig",
+		"applicationClientId: String!",
+		"auditLogDcrConfig: MicrosoftSentinel_DataCollectionRuleConfig",
+		"clientCertAuthConfig: MicrosoftSentinel_ClientCertAuthConfig",
+		"directoryTenantId: String!",
+		"logIngestionEndpoint: String!",
+		"secret: String!",
+	}))
+	utils.Must(builder.AddType("MicrosoftSentinel_ClientCertAuthConfig", []string{
+		"clientCert: String!",
+		"privateKey: String!",
+	}))
+	utils.Must(builder.AddType("MicrosoftSentinel_DataCollectionRuleConfig", []string{
+		"dataCollectionRuleId: String!",
+		"enabled: Boolean!",
+		"streamName: String!",
+	}))
 	utils.Must(builder.AddType("MitreAttackVector", []string{
 		"tactic: MitreTactic",
 		"techniques: [MitreTechnique]!",
@@ -804,6 +906,7 @@ func registerGeneratedTypes(builder generator.SchemaBuilder) {
 	}))
 	utils.Must(builder.AddType("NetworkEntityInfo_ExternalSource", []string{
 		"default: Boolean!",
+		"discovered: Boolean!",
 		"name: String!",
 	}))
 	generator.RegisterProtoEnum(builder, reflect.TypeOf(storage.NetworkEntityInfo_Type(0)))
@@ -840,15 +943,37 @@ func registerGeneratedTypes(builder generator.SchemaBuilder) {
 		"osImage: String!",
 		"priority: Int!",
 		"riskScore: Float!",
-		"scan: NodeScan",
 		"taints: [Taint]!",
+	}))
+	utils.Must(builder.AddType("NodeCVE", []string{
+		"cveBaseInfo: CVEInfo",
+		"cvss: Float!",
+		"id: ID!",
+		"impactScore: Float!",
+		"operatingSystem: String!",
+		"orphaned: Boolean!",
+		"orphanedTime: Time",
+		"severity: VulnerabilitySeverity!",
+		"snoozeExpiry: Time",
+		"snoozeStart: Time",
+		"snoozed: Boolean!",
+	}))
+	utils.Must(builder.AddType("NodeComponent", []string{
+		"id: ID!",
+		"name: String!",
+		"operatingSystem: String!",
+		"priority: Int!",
+		"riskScore: Float!",
+		"version: String!",
 	}))
 	utils.Must(builder.AddType("NodeScan", []string{
 		"notes: [NodeScan_Note!]!",
 		"operatingSystem: String!",
 		"scanTime: Time",
+		"scannerVersion: NodeScan_Scanner!",
 	}))
 	generator.RegisterProtoEnum(builder, reflect.TypeOf(storage.NodeScan_Note(0)))
+	generator.RegisterProtoEnum(builder, reflect.TypeOf(storage.NodeScan_Scanner(0)))
 	generator.RegisterProtoEnum(builder, reflect.TypeOf(storage.Node_Note(0)))
 	utils.Must(builder.AddType("Notifier", []string{
 		"awsSecurityHub: AWSSecurityHub",
@@ -859,11 +984,14 @@ func registerGeneratedTypes(builder generator.SchemaBuilder) {
 		"jira: Jira",
 		"labelDefault: String!",
 		"labelKey: String!",
+		"microsoftSentinel: MicrosoftSentinel",
 		"name: String!",
+		"notifierSecret: String!",
 		"pagerduty: PagerDuty",
 		"splunk: Splunk",
 		"sumologic: SumoLogic",
 		"syslog: Syslog",
+		"traits: Traits",
 		"type: String!",
 		"uiEndpoint: String!",
 		"config: NotifierConfig",
@@ -878,6 +1006,7 @@ func registerGeneratedTypes(builder generator.SchemaBuilder) {
 		"SumoLogic",
 		"AWSSecurityHub",
 		"Syslog",
+		"MicrosoftSentinel",
 	}))
 	utils.Must(builder.AddType("OrchestratorMetadata", []string{
 		"apiVersions: [String!]!",
@@ -891,12 +1020,14 @@ func registerGeneratedTypes(builder generator.SchemaBuilder) {
 		"limit: Int",
 		"offset: Int",
 		"sortOption: SortOption",
+		"sortOptions: [SortOption]",
 	}))
 	generator.RegisterProtoEnum(builder, reflect.TypeOf(storage.PermissionLevel(0)))
 	utils.Must(builder.AddType("PermissionSet", []string{
 		"description: String!",
 		"id: ID!",
 		"name: String!",
+		"traits: Traits",
 	}))
 	utils.Must(builder.AddType("Pod", []string{
 		"clusterId: String!",
@@ -936,6 +1067,7 @@ func registerGeneratedTypes(builder generator.SchemaBuilder) {
 		"sORTName: String!",
 		"scope: [Scope]!",
 		"severity: Severity!",
+		"source: PolicySource!",
 	}))
 	utils.Must(builder.AddType("PolicyGroup", []string{
 		"booleanOperator: BooleanOperator!",
@@ -954,6 +1086,7 @@ func registerGeneratedTypes(builder generator.SchemaBuilder) {
 		"policyGroups: [PolicyGroup]!",
 		"sectionName: String!",
 	}))
+	generator.RegisterProtoEnum(builder, reflect.TypeOf(storage.PolicySource(0)))
 	utils.Must(builder.AddType("PolicyValue", []string{
 		"value: String!",
 	}))
@@ -1028,6 +1161,7 @@ func registerGeneratedTypes(builder generator.SchemaBuilder) {
 	utils.Must(builder.AddType("ProviderMetadata", []string{
 		"aws: AWSProviderMetadata",
 		"azure: AzureProviderMetadata",
+		"cluster: ClusterMetadata",
 		"google: GoogleProviderMetadata",
 		"region: String!",
 		"verified: Boolean!",
@@ -1082,6 +1216,7 @@ func registerGeneratedTypes(builder generator.SchemaBuilder) {
 		"globalAccess: Access!",
 		"name: String!",
 		"permissionSetId: String!",
+		"traits: Traits",
 	}))
 	utils.Must(builder.AddType("ScannerHealthInfo", []string{
 		"statusErrors: [String!]!",
@@ -1090,6 +1225,10 @@ func registerGeneratedTypes(builder generator.SchemaBuilder) {
 		"cluster: String!",
 		"label: Scope_Label",
 		"namespace: String!",
+	}))
+	utils.Must(builder.AddType("ScopeObject", []string{
+		"id: ID!",
+		"name: String!",
 	}))
 	utils.Must(builder.AddType("Scope_Label", []string{
 		"key: String!",
@@ -1204,6 +1343,7 @@ func registerGeneratedTypes(builder generator.SchemaBuilder) {
 		"id: ID!",
 		"name: String!",
 		"rules: SimpleAccessScope_Rules",
+		"traits: Traits",
 	}))
 	utils.Must(builder.AddType("SimpleAccessScope_Rules", []string{
 		"clusterLabelSelectors: [SetBasedLabelSelector]!",
@@ -1220,9 +1360,11 @@ func registerGeneratedTypes(builder generator.SchemaBuilder) {
 		"name: String!",
 	}))
 	utils.Must(builder.AddInput("SortOption", []string{
+		"aggregateBy: AggregateBy",
 		"field: String",
 		"reversed: Boolean",
 	}))
+	generator.RegisterProtoEnum(builder, reflect.TypeOf(storage.Source(0)))
 	generator.RegisterProtoEnum(builder, reflect.TypeOf(storage.SourceType(0)))
 	utils.Must(builder.AddType("Splunk", []string{
 		"auditLoggingEnabled: Boolean!",
@@ -1258,7 +1400,9 @@ func registerGeneratedTypes(builder generator.SchemaBuilder) {
 		"skipTLSVerify: Boolean!",
 	}))
 	utils.Must(builder.AddType("Syslog", []string{
+		"extraFields: [KeyValuePair]!",
 		"localFacility: Syslog_LocalFacility!",
+		"messageFormat: Syslog_MessageFormat!",
 		"tcpConfig: Syslog_TCPConfig",
 		"endpoint: SyslogEndpoint",
 	}))
@@ -1266,6 +1410,7 @@ func registerGeneratedTypes(builder generator.SchemaBuilder) {
 		"Syslog_TCPConfig",
 	}))
 	generator.RegisterProtoEnum(builder, reflect.TypeOf(storage.Syslog_LocalFacility(0)))
+	generator.RegisterProtoEnum(builder, reflect.TypeOf(storage.Syslog_MessageFormat(0)))
 	utils.Must(builder.AddType("Syslog_TCPConfig", []string{
 		"hostname: String!",
 		"port: Int!",
@@ -1297,6 +1442,14 @@ func registerGeneratedTypes(builder generator.SchemaBuilder) {
 	utils.Must(builder.AddType("TolerationsConfig", []string{
 		"disabled: Boolean!",
 	}))
+	utils.Must(builder.AddType("Traits", []string{
+		"mutabilityMode: Traits_MutabilityMode!",
+		"origin: Traits_Origin!",
+		"visibility: Traits_Visibility!",
+	}))
+	generator.RegisterProtoEnum(builder, reflect.TypeOf(storage.Traits_MutabilityMode(0)))
+	generator.RegisterProtoEnum(builder, reflect.TypeOf(storage.Traits_Origin(0)))
+	generator.RegisterProtoEnum(builder, reflect.TypeOf(storage.Traits_Visibility(0)))
 	utils.Must(builder.AddType("UpgradeProgress", []string{
 		"since: Time",
 		"upgradeState: UpgradeProgress_UpgradeState!",
@@ -1340,7 +1493,7 @@ func registerGeneratedTypes(builder generator.SchemaBuilder) {
 		"imageScope: VulnReqImageScope",
 	}))
 	utils.Must(builder.AddType("VulnerabilityRequest_CVEs", []string{
-		"ids: [String!]!",
+		"cves: [String!]!",
 	}))
 	utils.Must(builder.AddType("VulnerabilityRequest_Scope", []string{
 		"globalScope: VulnerabilityRequest_Scope_Global",
@@ -1386,6 +1539,24 @@ func (resolver *Resolver) wrapAWSProviderMetadatas(values []*storage.AWSProvider
 	return output, nil
 }
 
+func (resolver *Resolver) wrapAWSProviderMetadataWithContext(ctx context.Context, value *storage.AWSProviderMetadata, ok bool, err error) (*aWSProviderMetadataResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &aWSProviderMetadataResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapAWSProviderMetadatasWithContext(ctx context.Context, values []*storage.AWSProviderMetadata, err error) ([]*aWSProviderMetadataResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*aWSProviderMetadataResolver, len(values))
+	for i, v := range values {
+		output[i] = &aWSProviderMetadataResolver{ctx: ctx, root: resolver, data: v}
+	}
+	return output, nil
+}
+
 func (resolver *aWSProviderMetadataResolver) AccountId(ctx context.Context) string {
 	value := resolver.data.GetAccountId()
 	return value
@@ -1411,6 +1582,24 @@ func (resolver *Resolver) wrapAWSSecurityHubs(values []*storage.AWSSecurityHub, 
 	output := make([]*aWSSecurityHubResolver, len(values))
 	for i, v := range values {
 		output[i] = &aWSSecurityHubResolver{root: resolver, data: v}
+	}
+	return output, nil
+}
+
+func (resolver *Resolver) wrapAWSSecurityHubWithContext(ctx context.Context, value *storage.AWSSecurityHub, ok bool, err error) (*aWSSecurityHubResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &aWSSecurityHubResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapAWSSecurityHubsWithContext(ctx context.Context, values []*storage.AWSSecurityHub, err error) ([]*aWSSecurityHubResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*aWSSecurityHubResolver, len(values))
+	for i, v := range values {
+		output[i] = &aWSSecurityHubResolver{ctx: ctx, root: resolver, data: v}
 	}
 	return output, nil
 }
@@ -1454,6 +1643,24 @@ func (resolver *Resolver) wrapAWSSecurityHub_Credentialses(values []*storage.AWS
 	return output, nil
 }
 
+func (resolver *Resolver) wrapAWSSecurityHub_CredentialsWithContext(ctx context.Context, value *storage.AWSSecurityHub_Credentials, ok bool, err error) (*aWSSecurityHub_CredentialsResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &aWSSecurityHub_CredentialsResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapAWSSecurityHub_CredentialsesWithContext(ctx context.Context, values []*storage.AWSSecurityHub_Credentials, err error) ([]*aWSSecurityHub_CredentialsResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*aWSSecurityHub_CredentialsResolver, len(values))
+	for i, v := range values {
+		output[i] = &aWSSecurityHub_CredentialsResolver{ctx: ctx, root: resolver, data: v}
+	}
+	return output, nil
+}
+
 func (resolver *aWSSecurityHub_CredentialsResolver) AccessKeyId(ctx context.Context) string {
 	value := resolver.data.GetAccessKeyId()
 	return value
@@ -1461,6 +1668,11 @@ func (resolver *aWSSecurityHub_CredentialsResolver) AccessKeyId(ctx context.Cont
 
 func (resolver *aWSSecurityHub_CredentialsResolver) SecretAccessKey(ctx context.Context) string {
 	value := resolver.data.GetSecretAccessKey()
+	return value
+}
+
+func (resolver *aWSSecurityHub_CredentialsResolver) StsEnabled(ctx context.Context) bool {
+	value := resolver.data.GetStsEnabled()
 	return value
 }
 
@@ -1506,6 +1718,24 @@ func (resolver *Resolver) wrapActiveComponent_ActiveContexts(values []*storage.A
 	return output, nil
 }
 
+func (resolver *Resolver) wrapActiveComponent_ActiveContextWithContext(ctx context.Context, value *storage.ActiveComponent_ActiveContext, ok bool, err error) (*activeComponent_ActiveContextResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &activeComponent_ActiveContextResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapActiveComponent_ActiveContextsWithContext(ctx context.Context, values []*storage.ActiveComponent_ActiveContext, err error) ([]*activeComponent_ActiveContextResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*activeComponent_ActiveContextResolver, len(values))
+	for i, v := range values {
+		output[i] = &activeComponent_ActiveContextResolver{ctx: ctx, root: resolver, data: v}
+	}
+	return output, nil
+}
+
 func (resolver *activeComponent_ActiveContextResolver) ContainerName(ctx context.Context) string {
 	value := resolver.data.GetContainerName()
 	return value
@@ -1540,6 +1770,24 @@ func (resolver *Resolver) wrapAdmissionControlHealthInfos(values []*storage.Admi
 	return output, nil
 }
 
+func (resolver *Resolver) wrapAdmissionControlHealthInfoWithContext(ctx context.Context, value *storage.AdmissionControlHealthInfo, ok bool, err error) (*admissionControlHealthInfoResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &admissionControlHealthInfoResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapAdmissionControlHealthInfosWithContext(ctx context.Context, values []*storage.AdmissionControlHealthInfo, err error) ([]*admissionControlHealthInfoResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*admissionControlHealthInfoResolver, len(values))
+	for i, v := range values {
+		output[i] = &admissionControlHealthInfoResolver{ctx: ctx, root: resolver, data: v}
+	}
+	return output, nil
+}
+
 func (resolver *admissionControlHealthInfoResolver) StatusErrors(ctx context.Context) []string {
 	value := resolver.data.GetStatusErrors()
 	return value
@@ -1565,6 +1813,24 @@ func (resolver *Resolver) wrapAdmissionControllerConfigs(values []*storage.Admis
 	output := make([]*admissionControllerConfigResolver, len(values))
 	for i, v := range values {
 		output[i] = &admissionControllerConfigResolver{root: resolver, data: v}
+	}
+	return output, nil
+}
+
+func (resolver *Resolver) wrapAdmissionControllerConfigWithContext(ctx context.Context, value *storage.AdmissionControllerConfig, ok bool, err error) (*admissionControllerConfigResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &admissionControllerConfigResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapAdmissionControllerConfigsWithContext(ctx context.Context, values []*storage.AdmissionControllerConfig, err error) ([]*admissionControllerConfigResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*admissionControllerConfigResolver, len(values))
+	for i, v := range values {
+		output[i] = &admissionControllerConfigResolver{ctx: ctx, root: resolver, data: v}
 	}
 	return output, nil
 }
@@ -1619,6 +1885,24 @@ func (resolver *Resolver) wrapAlerts(values []*storage.Alert, err error) ([]*ale
 	return output, nil
 }
 
+func (resolver *Resolver) wrapAlertWithContext(ctx context.Context, value *storage.Alert, ok bool, err error) (*alertResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &alertResolver{ctx: ctx, root: resolver, data: value, list: nil}, nil
+}
+
+func (resolver *Resolver) wrapAlertsWithContext(ctx context.Context, values []*storage.Alert, err error) ([]*alertResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*alertResolver, len(values))
+	for i, v := range values {
+		output[i] = &alertResolver{ctx: ctx, root: resolver, data: v, list: nil}
+	}
+	return output, nil
+}
+
 func (resolver *Resolver) wrapListAlerts(values []*storage.ListAlert, err error) ([]*alertResolver, error) {
 	if err != nil || values == nil {
 		return nil, err
@@ -1660,10 +1944,16 @@ func (resolver *alertResolver) Enforcement(ctx context.Context) (*alert_Enforcem
 	return resolver.root.wrapAlert_Enforcement(value, true, nil)
 }
 
+func (resolver *alertResolver) EntityType(ctx context.Context) string {
+	resolver.ensureData(ctx)
+	value := resolver.data.GetEntityType()
+	return value.String()
+}
+
 func (resolver *alertResolver) FirstOccurred(ctx context.Context) (*graphql.Time, error) {
 	resolver.ensureData(ctx)
 	value := resolver.data.GetFirstOccurred()
-	return timestamp(value)
+	return protocompat.ConvertTimestampToGraphqlTimeOrError(value)
 }
 
 func (resolver *alertResolver) Id(ctx context.Context) graphql.ID {
@@ -1700,6 +1990,12 @@ func (resolver *alertResolver) NamespaceId(ctx context.Context) string {
 	return value
 }
 
+func (resolver *alertResolver) PlatformComponent(ctx context.Context) bool {
+	resolver.ensureData(ctx)
+	value := resolver.data.GetPlatformComponent()
+	return value
+}
+
 func (resolver *alertResolver) Policy(ctx context.Context) (*policyResolver, error) {
 	resolver.ensureData(ctx)
 	value := resolver.data.GetPolicy()
@@ -1715,19 +2011,13 @@ func (resolver *alertResolver) ProcessViolation(ctx context.Context) (*alert_Pro
 func (resolver *alertResolver) ResolvedAt(ctx context.Context) (*graphql.Time, error) {
 	resolver.ensureData(ctx)
 	value := resolver.data.GetResolvedAt()
-	return timestamp(value)
+	return protocompat.ConvertTimestampToGraphqlTimeOrError(value)
 }
 
 func (resolver *alertResolver) Resource(ctx context.Context) (*alert_ResourceResolver, error) {
 	resolver.ensureData(ctx)
 	value := resolver.data.GetResource()
 	return resolver.root.wrapAlert_Resource(value, true, nil)
-}
-
-func (resolver *alertResolver) SnoozeTill(ctx context.Context) (*graphql.Time, error) {
-	resolver.ensureData(ctx)
-	value := resolver.data.GetSnoozeTill()
-	return timestamp(value)
 }
 
 func (resolver *alertResolver) State(ctx context.Context) string {
@@ -1738,20 +2028,12 @@ func (resolver *alertResolver) State(ctx context.Context) string {
 	return value.String()
 }
 
-func (resolver *alertResolver) Tags(ctx context.Context) []string {
-	value := resolver.data.GetTags()
-	if resolver.data == nil {
-		value = resolver.list.GetTags()
-	}
-	return value
-}
-
 func (resolver *alertResolver) Time(ctx context.Context) (*graphql.Time, error) {
 	value := resolver.data.GetTime()
 	if resolver.data == nil {
 		value = resolver.list.GetTime()
 	}
-	return timestamp(value)
+	return protocompat.ConvertTimestampToGraphqlTimeOrError(value)
 }
 
 func (resolver *alertResolver) Violations(ctx context.Context) ([]*alert_ViolationResolver, error) {
@@ -1818,6 +2100,24 @@ func (resolver *Resolver) wrapAlert_Deployments(values []*storage.Alert_Deployme
 	output := make([]*alert_DeploymentResolver, len(values))
 	for i, v := range values {
 		output[i] = &alert_DeploymentResolver{root: resolver, data: v}
+	}
+	return output, nil
+}
+
+func (resolver *Resolver) wrapAlert_DeploymentWithContext(ctx context.Context, value *storage.Alert_Deployment, ok bool, err error) (*alert_DeploymentResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &alert_DeploymentResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapAlert_DeploymentsWithContext(ctx context.Context, values []*storage.Alert_Deployment, err error) ([]*alert_DeploymentResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*alert_DeploymentResolver, len(values))
+	for i, v := range values {
+		output[i] = &alert_DeploymentResolver{ctx: ctx, root: resolver, data: v}
 	}
 	return output, nil
 }
@@ -1901,6 +2201,24 @@ func (resolver *Resolver) wrapAlert_Deployment_Containers(values []*storage.Aler
 	return output, nil
 }
 
+func (resolver *Resolver) wrapAlert_Deployment_ContainerWithContext(ctx context.Context, value *storage.Alert_Deployment_Container, ok bool, err error) (*alert_Deployment_ContainerResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &alert_Deployment_ContainerResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapAlert_Deployment_ContainersWithContext(ctx context.Context, values []*storage.Alert_Deployment_Container, err error) ([]*alert_Deployment_ContainerResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*alert_Deployment_ContainerResolver, len(values))
+	for i, v := range values {
+		output[i] = &alert_Deployment_ContainerResolver{ctx: ctx, root: resolver, data: v}
+	}
+	return output, nil
+}
+
 func (resolver *alert_Deployment_ContainerResolver) Image(ctx context.Context) (*containerImageResolver, error) {
 	value := resolver.data.GetImage()
 	return resolver.root.wrapContainerImage(value, true, nil)
@@ -1935,6 +2253,24 @@ func (resolver *Resolver) wrapAlert_Enforcements(values []*storage.Alert_Enforce
 	return output, nil
 }
 
+func (resolver *Resolver) wrapAlert_EnforcementWithContext(ctx context.Context, value *storage.Alert_Enforcement, ok bool, err error) (*alert_EnforcementResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &alert_EnforcementResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapAlert_EnforcementsWithContext(ctx context.Context, values []*storage.Alert_Enforcement, err error) ([]*alert_EnforcementResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*alert_EnforcementResolver, len(values))
+	for i, v := range values {
+		output[i] = &alert_EnforcementResolver{ctx: ctx, root: resolver, data: v}
+	}
+	return output, nil
+}
+
 func (resolver *alert_EnforcementResolver) Action(ctx context.Context) string {
 	value := resolver.data.GetAction()
 	return value.String()
@@ -1943,6 +2279,24 @@ func (resolver *alert_EnforcementResolver) Action(ctx context.Context) string {
 func (resolver *alert_EnforcementResolver) Message(ctx context.Context) string {
 	value := resolver.data.GetMessage()
 	return value
+}
+
+func toAlert_EntityType(value *string) storage.Alert_EntityType {
+	if value != nil {
+		return storage.Alert_EntityType(storage.Alert_EntityType_value[*value])
+	}
+	return storage.Alert_EntityType(0)
+}
+
+func toAlert_EntityTypes(values *[]string) []storage.Alert_EntityType {
+	if values == nil {
+		return nil
+	}
+	output := make([]storage.Alert_EntityType, len(*values))
+	for i, v := range *values {
+		output[i] = toAlert_EntityType(&v)
+	}
+	return output
 }
 
 type alert_ProcessViolationResolver struct {
@@ -1965,6 +2319,24 @@ func (resolver *Resolver) wrapAlert_ProcessViolations(values []*storage.Alert_Pr
 	output := make([]*alert_ProcessViolationResolver, len(values))
 	for i, v := range values {
 		output[i] = &alert_ProcessViolationResolver{root: resolver, data: v}
+	}
+	return output, nil
+}
+
+func (resolver *Resolver) wrapAlert_ProcessViolationWithContext(ctx context.Context, value *storage.Alert_ProcessViolation, ok bool, err error) (*alert_ProcessViolationResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &alert_ProcessViolationResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapAlert_ProcessViolationsWithContext(ctx context.Context, values []*storage.Alert_ProcessViolation, err error) ([]*alert_ProcessViolationResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*alert_ProcessViolationResolver, len(values))
+	for i, v := range values {
+		output[i] = &alert_ProcessViolationResolver{ctx: ctx, root: resolver, data: v}
 	}
 	return output, nil
 }
@@ -1999,6 +2371,24 @@ func (resolver *Resolver) wrapAlert_Resources(values []*storage.Alert_Resource, 
 	output := make([]*alert_ResourceResolver, len(values))
 	for i, v := range values {
 		output[i] = &alert_ResourceResolver{root: resolver, data: v}
+	}
+	return output, nil
+}
+
+func (resolver *Resolver) wrapAlert_ResourceWithContext(ctx context.Context, value *storage.Alert_Resource, ok bool, err error) (*alert_ResourceResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &alert_ResourceResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapAlert_ResourcesWithContext(ctx context.Context, values []*storage.Alert_Resource, err error) ([]*alert_ResourceResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*alert_ResourceResolver, len(values))
+	for i, v := range values {
+		output[i] = &alert_ResourceResolver{ctx: ctx, root: resolver, data: v}
 	}
 	return output, nil
 }
@@ -2075,6 +2465,24 @@ func (resolver *Resolver) wrapAlert_Violations(values []*storage.Alert_Violation
 	return output, nil
 }
 
+func (resolver *Resolver) wrapAlert_ViolationWithContext(ctx context.Context, value *storage.Alert_Violation, ok bool, err error) (*alert_ViolationResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &alert_ViolationResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapAlert_ViolationsWithContext(ctx context.Context, values []*storage.Alert_Violation, err error) ([]*alert_ViolationResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*alert_ViolationResolver, len(values))
+	for i, v := range values {
+		output[i] = &alert_ViolationResolver{ctx: ctx, root: resolver, data: v}
+	}
+	return output, nil
+}
+
 func (resolver *alert_ViolationResolver) KeyValueAttrs(ctx context.Context) (*alert_Violation_KeyValueAttrsResolver, error) {
 	value := resolver.data.GetKeyValueAttrs()
 	return resolver.root.wrapAlert_Violation_KeyValueAttrs(value, true, nil)
@@ -2092,7 +2500,7 @@ func (resolver *alert_ViolationResolver) NetworkFlowInfo(ctx context.Context) (*
 
 func (resolver *alert_ViolationResolver) Time(ctx context.Context) (*graphql.Time, error) {
 	value := resolver.data.GetTime()
-	return timestamp(value)
+	return protocompat.ConvertTimestampToGraphqlTimeOrError(value)
 }
 
 func (resolver *alert_ViolationResolver) Type(ctx context.Context) string {
@@ -2152,6 +2560,24 @@ func (resolver *Resolver) wrapAlert_Violation_KeyValueAttrses(values []*storage.
 	return output, nil
 }
 
+func (resolver *Resolver) wrapAlert_Violation_KeyValueAttrsWithContext(ctx context.Context, value *storage.Alert_Violation_KeyValueAttrs, ok bool, err error) (*alert_Violation_KeyValueAttrsResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &alert_Violation_KeyValueAttrsResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapAlert_Violation_KeyValueAttrsesWithContext(ctx context.Context, values []*storage.Alert_Violation_KeyValueAttrs, err error) ([]*alert_Violation_KeyValueAttrsResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*alert_Violation_KeyValueAttrsResolver, len(values))
+	for i, v := range values {
+		output[i] = &alert_Violation_KeyValueAttrsResolver{ctx: ctx, root: resolver, data: v}
+	}
+	return output, nil
+}
+
 func (resolver *alert_Violation_KeyValueAttrsResolver) Attrs(ctx context.Context) ([]*alert_Violation_KeyValueAttrs_KeyValueAttrResolver, error) {
 	value := resolver.data.GetAttrs()
 	return resolver.root.wrapAlert_Violation_KeyValueAttrs_KeyValueAttrs(value, nil)
@@ -2177,6 +2603,24 @@ func (resolver *Resolver) wrapAlert_Violation_KeyValueAttrs_KeyValueAttrs(values
 	output := make([]*alert_Violation_KeyValueAttrs_KeyValueAttrResolver, len(values))
 	for i, v := range values {
 		output[i] = &alert_Violation_KeyValueAttrs_KeyValueAttrResolver{root: resolver, data: v}
+	}
+	return output, nil
+}
+
+func (resolver *Resolver) wrapAlert_Violation_KeyValueAttrs_KeyValueAttrWithContext(ctx context.Context, value *storage.Alert_Violation_KeyValueAttrs_KeyValueAttr, ok bool, err error) (*alert_Violation_KeyValueAttrs_KeyValueAttrResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &alert_Violation_KeyValueAttrs_KeyValueAttrResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapAlert_Violation_KeyValueAttrs_KeyValueAttrsWithContext(ctx context.Context, values []*storage.Alert_Violation_KeyValueAttrs_KeyValueAttr, err error) ([]*alert_Violation_KeyValueAttrs_KeyValueAttrResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*alert_Violation_KeyValueAttrs_KeyValueAttrResolver, len(values))
+	for i, v := range values {
+		output[i] = &alert_Violation_KeyValueAttrs_KeyValueAttrResolver{ctx: ctx, root: resolver, data: v}
 	}
 	return output, nil
 }
@@ -2211,6 +2655,24 @@ func (resolver *Resolver) wrapAlert_Violation_NetworkFlowInfos(values []*storage
 	output := make([]*alert_Violation_NetworkFlowInfoResolver, len(values))
 	for i, v := range values {
 		output[i] = &alert_Violation_NetworkFlowInfoResolver{root: resolver, data: v}
+	}
+	return output, nil
+}
+
+func (resolver *Resolver) wrapAlert_Violation_NetworkFlowInfoWithContext(ctx context.Context, value *storage.Alert_Violation_NetworkFlowInfo, ok bool, err error) (*alert_Violation_NetworkFlowInfoResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &alert_Violation_NetworkFlowInfoResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapAlert_Violation_NetworkFlowInfosWithContext(ctx context.Context, values []*storage.Alert_Violation_NetworkFlowInfo, err error) ([]*alert_Violation_NetworkFlowInfoResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*alert_Violation_NetworkFlowInfoResolver, len(values))
+	for i, v := range values {
+		output[i] = &alert_Violation_NetworkFlowInfoResolver{ctx: ctx, root: resolver, data: v}
 	}
 	return output, nil
 }
@@ -2250,6 +2712,24 @@ func (resolver *Resolver) wrapAlert_Violation_NetworkFlowInfo_Entities(values []
 	output := make([]*alert_Violation_NetworkFlowInfo_EntityResolver, len(values))
 	for i, v := range values {
 		output[i] = &alert_Violation_NetworkFlowInfo_EntityResolver{root: resolver, data: v}
+	}
+	return output, nil
+}
+
+func (resolver *Resolver) wrapAlert_Violation_NetworkFlowInfo_EntityWithContext(ctx context.Context, value *storage.Alert_Violation_NetworkFlowInfo_Entity, ok bool, err error) (*alert_Violation_NetworkFlowInfo_EntityResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &alert_Violation_NetworkFlowInfo_EntityResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapAlert_Violation_NetworkFlowInfo_EntitiesWithContext(ctx context.Context, values []*storage.Alert_Violation_NetworkFlowInfo_Entity, err error) ([]*alert_Violation_NetworkFlowInfo_EntityResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*alert_Violation_NetworkFlowInfo_EntityResolver, len(values))
+	for i, v := range values {
+		output[i] = &alert_Violation_NetworkFlowInfo_EntityResolver{ctx: ctx, root: resolver, data: v}
 	}
 	return output, nil
 }
@@ -2321,6 +2801,24 @@ func (resolver *Resolver) wrapAzureProviderMetadatas(values []*storage.AzureProv
 	return output, nil
 }
 
+func (resolver *Resolver) wrapAzureProviderMetadataWithContext(ctx context.Context, value *storage.AzureProviderMetadata, ok bool, err error) (*azureProviderMetadataResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &azureProviderMetadataResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapAzureProviderMetadatasWithContext(ctx context.Context, values []*storage.AzureProviderMetadata, err error) ([]*azureProviderMetadataResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*azureProviderMetadataResolver, len(values))
+	for i, v := range values {
+		output[i] = &azureProviderMetadataResolver{ctx: ctx, root: resolver, data: v}
+	}
+	return output, nil
+}
+
 func (resolver *azureProviderMetadataResolver) SubscriptionId(ctx context.Context) string {
 	value := resolver.data.GetSubscriptionId()
 	return value
@@ -2368,6 +2866,24 @@ func (resolver *Resolver) wrapCSCCs(values []*storage.CSCC, err error) ([]*cSCCR
 	return output, nil
 }
 
+func (resolver *Resolver) wrapCSCCWithContext(ctx context.Context, value *storage.CSCC, ok bool, err error) (*cSCCResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &cSCCResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapCSCCsWithContext(ctx context.Context, values []*storage.CSCC, err error) ([]*cSCCResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*cSCCResolver, len(values))
+	for i, v := range values {
+		output[i] = &cSCCResolver{ctx: ctx, root: resolver, data: v}
+	}
+	return output, nil
+}
+
 func (resolver *cSCCResolver) ServiceAccount(ctx context.Context) string {
 	value := resolver.data.GetServiceAccount()
 	return value
@@ -2375,6 +2891,11 @@ func (resolver *cSCCResolver) ServiceAccount(ctx context.Context) string {
 
 func (resolver *cSCCResolver) SourceId(ctx context.Context) string {
 	value := resolver.data.GetSourceId()
+	return value
+}
+
+func (resolver *cSCCResolver) WifEnabled(ctx context.Context) bool {
+	value := resolver.data.GetWifEnabled()
 	return value
 }
 
@@ -2402,14 +2923,27 @@ func (resolver *Resolver) wrapCVEs(values []*storage.CVE, err error) ([]*cVEReso
 	return output, nil
 }
 
-func (resolver *cVEResolver) CreatedAt(ctx context.Context) (*graphql.Time, error) {
-	value := resolver.data.GetCreatedAt()
-	return timestamp(value)
+func (resolver *Resolver) wrapCVEWithContext(ctx context.Context, value *storage.CVE, ok bool, err error) (*cVEResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &cVEResolver{ctx: ctx, root: resolver, data: value}, nil
 }
 
-func (resolver *cVEResolver) Cve(ctx context.Context) string {
-	value := resolver.data.GetCve()
-	return value
+func (resolver *Resolver) wrapCVEsWithContext(ctx context.Context, values []*storage.CVE, err error) ([]*cVEResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*cVEResolver, len(values))
+	for i, v := range values {
+		output[i] = &cVEResolver{ctx: ctx, root: resolver, data: v}
+	}
+	return output, nil
+}
+
+func (resolver *cVEResolver) CreatedAt(ctx context.Context) (*graphql.Time, error) {
+	value := resolver.data.GetCreatedAt()
+	return protocompat.ConvertTimestampToGraphqlTimeOrError(value)
 }
 
 func (resolver *cVEResolver) Id(ctx context.Context) graphql.ID {
@@ -2424,7 +2958,7 @@ func (resolver *cVEResolver) ImpactScore(ctx context.Context) float64 {
 
 func (resolver *cVEResolver) LastModified(ctx context.Context) (*graphql.Time, error) {
 	value := resolver.data.GetLastModified()
-	return timestamp(value)
+	return protocompat.ConvertTimestampToGraphqlTimeOrError(value)
 }
 
 func (resolver *cVEResolver) Link(ctx context.Context) string {
@@ -2432,14 +2966,9 @@ func (resolver *cVEResolver) Link(ctx context.Context) string {
 	return value
 }
 
-func (resolver *cVEResolver) OperatingSystem(ctx context.Context) string {
-	value := resolver.data.GetOperatingSystem()
-	return value
-}
-
 func (resolver *cVEResolver) PublishedOn(ctx context.Context) (*graphql.Time, error) {
 	value := resolver.data.GetPublishedOn()
-	return timestamp(value)
+	return protocompat.ConvertTimestampToGraphqlTimeOrError(value)
 }
 
 func (resolver *cVEResolver) References(ctx context.Context) ([]*cVE_ReferenceResolver, error) {
@@ -2464,12 +2993,12 @@ func (resolver *cVEResolver) Summary(ctx context.Context) string {
 
 func (resolver *cVEResolver) SuppressActivation(ctx context.Context) (*graphql.Time, error) {
 	value := resolver.data.GetSuppressActivation()
-	return timestamp(value)
+	return protocompat.ConvertTimestampToGraphqlTimeOrError(value)
 }
 
 func (resolver *cVEResolver) SuppressExpiry(ctx context.Context) (*graphql.Time, error) {
 	value := resolver.data.GetSuppressExpiry()
-	return timestamp(value)
+	return protocompat.ConvertTimestampToGraphqlTimeOrError(value)
 }
 
 func (resolver *cVEResolver) Suppressed(ctx context.Context) bool {
@@ -2485,6 +3014,178 @@ func (resolver *cVEResolver) Type(ctx context.Context) string {
 func (resolver *cVEResolver) Types(ctx context.Context) []string {
 	value := resolver.data.GetTypes()
 	return stringSlice(value)
+}
+
+type cVEInfoResolver struct {
+	ctx  context.Context
+	root *Resolver
+	data *storage.CVEInfo
+}
+
+func (resolver *Resolver) wrapCVEInfo(value *storage.CVEInfo, ok bool, err error) (*cVEInfoResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &cVEInfoResolver{root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapCVEInfos(values []*storage.CVEInfo, err error) ([]*cVEInfoResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*cVEInfoResolver, len(values))
+	for i, v := range values {
+		output[i] = &cVEInfoResolver{root: resolver, data: v}
+	}
+	return output, nil
+}
+
+func (resolver *Resolver) wrapCVEInfoWithContext(ctx context.Context, value *storage.CVEInfo, ok bool, err error) (*cVEInfoResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &cVEInfoResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapCVEInfosWithContext(ctx context.Context, values []*storage.CVEInfo, err error) ([]*cVEInfoResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*cVEInfoResolver, len(values))
+	for i, v := range values {
+		output[i] = &cVEInfoResolver{ctx: ctx, root: resolver, data: v}
+	}
+	return output, nil
+}
+
+func (resolver *cVEInfoResolver) CreatedAt(ctx context.Context) (*graphql.Time, error) {
+	value := resolver.data.GetCreatedAt()
+	return protocompat.ConvertTimestampToGraphqlTimeOrError(value)
+}
+
+func (resolver *cVEInfoResolver) Cve(ctx context.Context) string {
+	value := resolver.data.GetCve()
+	return value
+}
+
+func (resolver *cVEInfoResolver) CvssMetrics(ctx context.Context) ([]*cVSSScoreResolver, error) {
+	value := resolver.data.GetCvssMetrics()
+	return resolver.root.wrapCVSSScores(value, nil)
+}
+
+func (resolver *cVEInfoResolver) CvssV2(ctx context.Context) (*cVSSV2Resolver, error) {
+	value := resolver.data.GetCvssV2()
+	return resolver.root.wrapCVSSV2(value, true, nil)
+}
+
+func (resolver *cVEInfoResolver) CvssV3(ctx context.Context) (*cVSSV3Resolver, error) {
+	value := resolver.data.GetCvssV3()
+	return resolver.root.wrapCVSSV3(value, true, nil)
+}
+
+func (resolver *cVEInfoResolver) Epss(ctx context.Context) (*ePSSResolver, error) {
+	value := resolver.data.GetEpss()
+	return resolver.root.wrapEPSS(value, true, nil)
+}
+
+func (resolver *cVEInfoResolver) LastModified(ctx context.Context) (*graphql.Time, error) {
+	value := resolver.data.GetLastModified()
+	return protocompat.ConvertTimestampToGraphqlTimeOrError(value)
+}
+
+func (resolver *cVEInfoResolver) Link(ctx context.Context) string {
+	value := resolver.data.GetLink()
+	return value
+}
+
+func (resolver *cVEInfoResolver) PublishedOn(ctx context.Context) (*graphql.Time, error) {
+	value := resolver.data.GetPublishedOn()
+	return protocompat.ConvertTimestampToGraphqlTimeOrError(value)
+}
+
+func (resolver *cVEInfoResolver) References(ctx context.Context) ([]*cVEInfo_ReferenceResolver, error) {
+	value := resolver.data.GetReferences()
+	return resolver.root.wrapCVEInfo_References(value, nil)
+}
+
+func (resolver *cVEInfoResolver) ScoreVersion(ctx context.Context) string {
+	value := resolver.data.GetScoreVersion()
+	return value.String()
+}
+
+func (resolver *cVEInfoResolver) Summary(ctx context.Context) string {
+	value := resolver.data.GetSummary()
+	return value
+}
+
+type cVEInfo_ReferenceResolver struct {
+	ctx  context.Context
+	root *Resolver
+	data *storage.CVEInfo_Reference
+}
+
+func (resolver *Resolver) wrapCVEInfo_Reference(value *storage.CVEInfo_Reference, ok bool, err error) (*cVEInfo_ReferenceResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &cVEInfo_ReferenceResolver{root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapCVEInfo_References(values []*storage.CVEInfo_Reference, err error) ([]*cVEInfo_ReferenceResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*cVEInfo_ReferenceResolver, len(values))
+	for i, v := range values {
+		output[i] = &cVEInfo_ReferenceResolver{root: resolver, data: v}
+	}
+	return output, nil
+}
+
+func (resolver *Resolver) wrapCVEInfo_ReferenceWithContext(ctx context.Context, value *storage.CVEInfo_Reference, ok bool, err error) (*cVEInfo_ReferenceResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &cVEInfo_ReferenceResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapCVEInfo_ReferencesWithContext(ctx context.Context, values []*storage.CVEInfo_Reference, err error) ([]*cVEInfo_ReferenceResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*cVEInfo_ReferenceResolver, len(values))
+	for i, v := range values {
+		output[i] = &cVEInfo_ReferenceResolver{ctx: ctx, root: resolver, data: v}
+	}
+	return output, nil
+}
+
+func (resolver *cVEInfo_ReferenceResolver) Tags(ctx context.Context) []string {
+	value := resolver.data.GetTags()
+	return value
+}
+
+func (resolver *cVEInfo_ReferenceResolver) URI(ctx context.Context) string {
+	value := resolver.data.GetURI()
+	return value
+}
+
+func toCVEInfo_ScoreVersion(value *string) storage.CVEInfo_ScoreVersion {
+	if value != nil {
+		return storage.CVEInfo_ScoreVersion(storage.CVEInfo_ScoreVersion_value[*value])
+	}
+	return storage.CVEInfo_ScoreVersion(0)
+}
+
+func toCVEInfo_ScoreVersions(values *[]string) []storage.CVEInfo_ScoreVersion {
+	if values == nil {
+		return nil
+	}
+	output := make([]storage.CVEInfo_ScoreVersion, len(*values))
+	for i, v := range *values {
+		output[i] = toCVEInfo_ScoreVersion(&v)
+	}
+	return output
 }
 
 func toCVE_CVEType(value *string) storage.CVE_CVEType {
@@ -2529,6 +3230,24 @@ func (resolver *Resolver) wrapCVE_References(values []*storage.CVE_Reference, er
 	return output, nil
 }
 
+func (resolver *Resolver) wrapCVE_ReferenceWithContext(ctx context.Context, value *storage.CVE_Reference, ok bool, err error) (*cVE_ReferenceResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &cVE_ReferenceResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapCVE_ReferencesWithContext(ctx context.Context, values []*storage.CVE_Reference, err error) ([]*cVE_ReferenceResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*cVE_ReferenceResolver, len(values))
+	for i, v := range values {
+		output[i] = &cVE_ReferenceResolver{ctx: ctx, root: resolver, data: v}
+	}
+	return output, nil
+}
+
 func (resolver *cVE_ReferenceResolver) Tags(ctx context.Context) []string {
 	value := resolver.data.GetTags()
 	return value
@@ -2557,6 +3276,96 @@ func toCVE_ScoreVersions(values *[]string) []storage.CVE_ScoreVersion {
 	return output
 }
 
+type cVSSScoreResolver struct {
+	ctx  context.Context
+	root *Resolver
+	data *storage.CVSSScore
+}
+
+func (resolver *Resolver) wrapCVSSScore(value *storage.CVSSScore, ok bool, err error) (*cVSSScoreResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &cVSSScoreResolver{root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapCVSSScores(values []*storage.CVSSScore, err error) ([]*cVSSScoreResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*cVSSScoreResolver, len(values))
+	for i, v := range values {
+		output[i] = &cVSSScoreResolver{root: resolver, data: v}
+	}
+	return output, nil
+}
+
+func (resolver *Resolver) wrapCVSSScoreWithContext(ctx context.Context, value *storage.CVSSScore, ok bool, err error) (*cVSSScoreResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &cVSSScoreResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapCVSSScoresWithContext(ctx context.Context, values []*storage.CVSSScore, err error) ([]*cVSSScoreResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*cVSSScoreResolver, len(values))
+	for i, v := range values {
+		output[i] = &cVSSScoreResolver{ctx: ctx, root: resolver, data: v}
+	}
+	return output, nil
+}
+
+func (resolver *cVSSScoreResolver) Cvssv2(ctx context.Context) (*cVSSV2Resolver, error) {
+	value := resolver.data.GetCvssv2()
+	return resolver.root.wrapCVSSV2(value, true, nil)
+}
+
+func (resolver *cVSSScoreResolver) Cvssv3(ctx context.Context) (*cVSSV3Resolver, error) {
+	value := resolver.data.GetCvssv3()
+	return resolver.root.wrapCVSSV3(value, true, nil)
+}
+
+func (resolver *cVSSScoreResolver) Source(ctx context.Context) string {
+	value := resolver.data.GetSource()
+	return value.String()
+}
+
+func (resolver *cVSSScoreResolver) Url(ctx context.Context) string {
+	value := resolver.data.GetUrl()
+	return value
+}
+
+type cVSSScoreCvssScoreResolver struct {
+	resolver interface{}
+}
+
+func (resolver *cVSSScoreResolver) CvssScore() *cVSSScoreCvssScoreResolver {
+	if val := resolver.data.GetCvssv2(); val != nil {
+		return &cVSSScoreCvssScoreResolver{
+			resolver: &cVSSV2Resolver{root: resolver.root, data: val},
+		}
+	}
+	if val := resolver.data.GetCvssv3(); val != nil {
+		return &cVSSScoreCvssScoreResolver{
+			resolver: &cVSSV3Resolver{root: resolver.root, data: val},
+		}
+	}
+	return nil
+}
+
+func (resolver *cVSSScoreCvssScoreResolver) ToCVSSV2() (*cVSSV2Resolver, bool) {
+	res, ok := resolver.resolver.(*cVSSV2Resolver)
+	return res, ok
+}
+
+func (resolver *cVSSScoreCvssScoreResolver) ToCVSSV3() (*cVSSV3Resolver, bool) {
+	res, ok := resolver.resolver.(*cVSSV3Resolver)
+	return res, ok
+}
+
 type cVSSV2Resolver struct {
 	ctx  context.Context
 	root *Resolver
@@ -2577,6 +3386,24 @@ func (resolver *Resolver) wrapCVSSV2s(values []*storage.CVSSV2, err error) ([]*c
 	output := make([]*cVSSV2Resolver, len(values))
 	for i, v := range values {
 		output[i] = &cVSSV2Resolver{root: resolver, data: v}
+	}
+	return output, nil
+}
+
+func (resolver *Resolver) wrapCVSSV2WithContext(ctx context.Context, value *storage.CVSSV2, ok bool, err error) (*cVSSV2Resolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &cVSSV2Resolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapCVSSV2sWithContext(ctx context.Context, values []*storage.CVSSV2, err error) ([]*cVSSV2Resolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*cVSSV2Resolver, len(values))
+	for i, v := range values {
+		output[i] = &cVSSV2Resolver{ctx: ctx, root: resolver, data: v}
 	}
 	return output, nil
 }
@@ -2746,6 +3573,24 @@ func (resolver *Resolver) wrapCVSSV3s(values []*storage.CVSSV3, err error) ([]*c
 	output := make([]*cVSSV3Resolver, len(values))
 	for i, v := range values {
 		output[i] = &cVSSV3Resolver{root: resolver, data: v}
+	}
+	return output, nil
+}
+
+func (resolver *Resolver) wrapCVSSV3WithContext(ctx context.Context, value *storage.CVSSV3, ok bool, err error) (*cVSSV3Resolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &cVSSV3Resolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapCVSSV3sWithContext(ctx context.Context, values []*storage.CVSSV3, err error) ([]*cVSSV3Resolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*cVSSV3Resolver, len(values))
+	for i, v := range values {
+		output[i] = &cVSSV3Resolver{ctx: ctx, root: resolver, data: v}
 	}
 	return output, nil
 }
@@ -2965,6 +3810,24 @@ func (resolver *Resolver) wrapCerts(values []*storage.Cert, err error) ([]*certR
 	return output, nil
 }
 
+func (resolver *Resolver) wrapCertWithContext(ctx context.Context, value *storage.Cert, ok bool, err error) (*certResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &certResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapCertsWithContext(ctx context.Context, values []*storage.Cert, err error) ([]*certResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*certResolver, len(values))
+	for i, v := range values {
+		output[i] = &certResolver{ctx: ctx, root: resolver, data: v}
+	}
+	return output, nil
+}
+
 func (resolver *certResolver) Algorithm(ctx context.Context) string {
 	value := resolver.data.GetAlgorithm()
 	return value
@@ -2972,7 +3835,7 @@ func (resolver *certResolver) Algorithm(ctx context.Context) string {
 
 func (resolver *certResolver) EndDate(ctx context.Context) (*graphql.Time, error) {
 	value := resolver.data.GetEndDate()
-	return timestamp(value)
+	return protocompat.ConvertTimestampToGraphqlTimeOrError(value)
 }
 
 func (resolver *certResolver) Issuer(ctx context.Context) (*certNameResolver, error) {
@@ -2987,7 +3850,7 @@ func (resolver *certResolver) Sans(ctx context.Context) []string {
 
 func (resolver *certResolver) StartDate(ctx context.Context) (*graphql.Time, error) {
 	value := resolver.data.GetStartDate()
-	return timestamp(value)
+	return protocompat.ConvertTimestampToGraphqlTimeOrError(value)
 }
 
 func (resolver *certResolver) Subject(ctx context.Context) (*certNameResolver, error) {
@@ -3015,6 +3878,24 @@ func (resolver *Resolver) wrapCertNames(values []*storage.CertName, err error) (
 	output := make([]*certNameResolver, len(values))
 	for i, v := range values {
 		output[i] = &certNameResolver{root: resolver, data: v}
+	}
+	return output, nil
+}
+
+func (resolver *Resolver) wrapCertNameWithContext(ctx context.Context, value *storage.CertName, ok bool, err error) (*certNameResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &certNameResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapCertNamesWithContext(ctx context.Context, values []*storage.CertName, err error) ([]*certNameResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*certNameResolver, len(values))
+	for i, v := range values {
+		output[i] = &certNameResolver{ctx: ctx, root: resolver, data: v}
 	}
 	return output, nil
 }
@@ -3084,6 +3965,24 @@ func (resolver *Resolver) wrapClusters(values []*storage.Cluster, err error) ([]
 	output := make([]*clusterResolver, len(values))
 	for i, v := range values {
 		output[i] = &clusterResolver{root: resolver, data: v}
+	}
+	return output, nil
+}
+
+func (resolver *Resolver) wrapClusterWithContext(ctx context.Context, value *storage.Cluster, ok bool, err error) (*clusterResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &clusterResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapClustersWithContext(ctx context.Context, values []*storage.Cluster, err error) ([]*clusterResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*clusterResolver, len(values))
+	for i, v := range values {
+		output[i] = &clusterResolver{ctx: ctx, root: resolver, data: v}
 	}
 	return output, nil
 }
@@ -3198,6 +4097,93 @@ func (resolver *clusterResolver) Type(ctx context.Context) string {
 	return value.String()
 }
 
+type clusterCVEResolver struct {
+	ctx  context.Context
+	root *Resolver
+	data *storage.ClusterCVE
+}
+
+func (resolver *Resolver) wrapClusterCVE(value *storage.ClusterCVE, ok bool, err error) (*clusterCVEResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &clusterCVEResolver{root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapClusterCVEs(values []*storage.ClusterCVE, err error) ([]*clusterCVEResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*clusterCVEResolver, len(values))
+	for i, v := range values {
+		output[i] = &clusterCVEResolver{root: resolver, data: v}
+	}
+	return output, nil
+}
+
+func (resolver *Resolver) wrapClusterCVEWithContext(ctx context.Context, value *storage.ClusterCVE, ok bool, err error) (*clusterCVEResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &clusterCVEResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapClusterCVEsWithContext(ctx context.Context, values []*storage.ClusterCVE, err error) ([]*clusterCVEResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*clusterCVEResolver, len(values))
+	for i, v := range values {
+		output[i] = &clusterCVEResolver{ctx: ctx, root: resolver, data: v}
+	}
+	return output, nil
+}
+
+func (resolver *clusterCVEResolver) CveBaseInfo(ctx context.Context) (*cVEInfoResolver, error) {
+	value := resolver.data.GetCveBaseInfo()
+	return resolver.root.wrapCVEInfo(value, true, nil)
+}
+
+func (resolver *clusterCVEResolver) Cvss(ctx context.Context) float64 {
+	value := resolver.data.GetCvss()
+	return float64(value)
+}
+
+func (resolver *clusterCVEResolver) Id(ctx context.Context) graphql.ID {
+	value := resolver.data.GetId()
+	return graphql.ID(value)
+}
+
+func (resolver *clusterCVEResolver) ImpactScore(ctx context.Context) float64 {
+	value := resolver.data.GetImpactScore()
+	return float64(value)
+}
+
+func (resolver *clusterCVEResolver) Severity(ctx context.Context) string {
+	value := resolver.data.GetSeverity()
+	return value.String()
+}
+
+func (resolver *clusterCVEResolver) SnoozeExpiry(ctx context.Context) (*graphql.Time, error) {
+	value := resolver.data.GetSnoozeExpiry()
+	return protocompat.ConvertTimestampToGraphqlTimeOrError(value)
+}
+
+func (resolver *clusterCVEResolver) SnoozeStart(ctx context.Context) (*graphql.Time, error) {
+	value := resolver.data.GetSnoozeStart()
+	return protocompat.ConvertTimestampToGraphqlTimeOrError(value)
+}
+
+func (resolver *clusterCVEResolver) Snoozed(ctx context.Context) bool {
+	value := resolver.data.GetSnoozed()
+	return value
+}
+
+func (resolver *clusterCVEResolver) Type(ctx context.Context) string {
+	value := resolver.data.GetType()
+	return value.String()
+}
+
 type clusterCertExpiryStatusResolver struct {
 	ctx  context.Context
 	root *Resolver
@@ -3222,14 +4208,32 @@ func (resolver *Resolver) wrapClusterCertExpiryStatuses(values []*storage.Cluste
 	return output, nil
 }
 
+func (resolver *Resolver) wrapClusterCertExpiryStatusWithContext(ctx context.Context, value *storage.ClusterCertExpiryStatus, ok bool, err error) (*clusterCertExpiryStatusResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &clusterCertExpiryStatusResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapClusterCertExpiryStatusesWithContext(ctx context.Context, values []*storage.ClusterCertExpiryStatus, err error) ([]*clusterCertExpiryStatusResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*clusterCertExpiryStatusResolver, len(values))
+	for i, v := range values {
+		output[i] = &clusterCertExpiryStatusResolver{ctx: ctx, root: resolver, data: v}
+	}
+	return output, nil
+}
+
 func (resolver *clusterCertExpiryStatusResolver) SensorCertExpiry(ctx context.Context) (*graphql.Time, error) {
 	value := resolver.data.GetSensorCertExpiry()
-	return timestamp(value)
+	return protocompat.ConvertTimestampToGraphqlTimeOrError(value)
 }
 
 func (resolver *clusterCertExpiryStatusResolver) SensorCertNotBefore(ctx context.Context) (*graphql.Time, error) {
 	value := resolver.data.GetSensorCertNotBefore()
-	return timestamp(value)
+	return protocompat.ConvertTimestampToGraphqlTimeOrError(value)
 }
 
 type clusterHealthStatusResolver struct {
@@ -3252,6 +4256,24 @@ func (resolver *Resolver) wrapClusterHealthStatuses(values []*storage.ClusterHea
 	output := make([]*clusterHealthStatusResolver, len(values))
 	for i, v := range values {
 		output[i] = &clusterHealthStatusResolver{root: resolver, data: v}
+	}
+	return output, nil
+}
+
+func (resolver *Resolver) wrapClusterHealthStatusWithContext(ctx context.Context, value *storage.ClusterHealthStatus, ok bool, err error) (*clusterHealthStatusResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &clusterHealthStatusResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapClusterHealthStatusesWithContext(ctx context.Context, values []*storage.ClusterHealthStatus, err error) ([]*clusterHealthStatusResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*clusterHealthStatusResolver, len(values))
+	for i, v := range values {
+		output[i] = &clusterHealthStatusResolver{ctx: ctx, root: resolver, data: v}
 	}
 	return output, nil
 }
@@ -3288,7 +4310,7 @@ func (resolver *clusterHealthStatusResolver) Id(ctx context.Context) graphql.ID 
 
 func (resolver *clusterHealthStatusResolver) LastContact(ctx context.Context) (*graphql.Time, error) {
 	value := resolver.data.GetLastContact()
-	return timestamp(value)
+	return protocompat.ConvertTimestampToGraphqlTimeOrError(value)
 }
 
 func (resolver *clusterHealthStatusResolver) OverallHealthStatus(ctx context.Context) string {
@@ -3329,6 +4351,81 @@ func toClusterHealthStatus_HealthStatusLabels(values *[]string) []storage.Cluste
 	return output
 }
 
+type clusterMetadataResolver struct {
+	ctx  context.Context
+	root *Resolver
+	data *storage.ClusterMetadata
+}
+
+func (resolver *Resolver) wrapClusterMetadata(value *storage.ClusterMetadata, ok bool, err error) (*clusterMetadataResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &clusterMetadataResolver{root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapClusterMetadatas(values []*storage.ClusterMetadata, err error) ([]*clusterMetadataResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*clusterMetadataResolver, len(values))
+	for i, v := range values {
+		output[i] = &clusterMetadataResolver{root: resolver, data: v}
+	}
+	return output, nil
+}
+
+func (resolver *Resolver) wrapClusterMetadataWithContext(ctx context.Context, value *storage.ClusterMetadata, ok bool, err error) (*clusterMetadataResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &clusterMetadataResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapClusterMetadatasWithContext(ctx context.Context, values []*storage.ClusterMetadata, err error) ([]*clusterMetadataResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*clusterMetadataResolver, len(values))
+	for i, v := range values {
+		output[i] = &clusterMetadataResolver{ctx: ctx, root: resolver, data: v}
+	}
+	return output, nil
+}
+
+func (resolver *clusterMetadataResolver) Id(ctx context.Context) graphql.ID {
+	value := resolver.data.GetId()
+	return graphql.ID(value)
+}
+
+func (resolver *clusterMetadataResolver) Name(ctx context.Context) string {
+	value := resolver.data.GetName()
+	return value
+}
+
+func (resolver *clusterMetadataResolver) Type(ctx context.Context) string {
+	value := resolver.data.GetType()
+	return value.String()
+}
+
+func toClusterMetadata_Type(value *string) storage.ClusterMetadata_Type {
+	if value != nil {
+		return storage.ClusterMetadata_Type(storage.ClusterMetadata_Type_value[*value])
+	}
+	return storage.ClusterMetadata_Type(0)
+}
+
+func toClusterMetadata_Types(values *[]string) []storage.ClusterMetadata_Type {
+	if values == nil {
+		return nil
+	}
+	output := make([]storage.ClusterMetadata_Type, len(*values))
+	for i, v := range *values {
+		output[i] = toClusterMetadata_Type(&v)
+	}
+	return output
+}
+
 type clusterStatusResolver struct {
 	ctx  context.Context
 	root *Resolver
@@ -3349,6 +4446,24 @@ func (resolver *Resolver) wrapClusterStatuses(values []*storage.ClusterStatus, e
 	output := make([]*clusterStatusResolver, len(values))
 	for i, v := range values {
 		output[i] = &clusterStatusResolver{root: resolver, data: v}
+	}
+	return output, nil
+}
+
+func (resolver *Resolver) wrapClusterStatusWithContext(ctx context.Context, value *storage.ClusterStatus, ok bool, err error) (*clusterStatusResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &clusterStatusResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapClusterStatusesWithContext(ctx context.Context, values []*storage.ClusterStatus, err error) ([]*clusterStatusResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*clusterStatusResolver, len(values))
+	for i, v := range values {
+		output[i] = &clusterStatusResolver{ctx: ctx, root: resolver, data: v}
 	}
 	return output, nil
 }
@@ -3420,6 +4535,24 @@ func (resolver *Resolver) wrapClusterUpgradeStatuses(values []*storage.ClusterUp
 	return output, nil
 }
 
+func (resolver *Resolver) wrapClusterUpgradeStatusWithContext(ctx context.Context, value *storage.ClusterUpgradeStatus, ok bool, err error) (*clusterUpgradeStatusResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &clusterUpgradeStatusResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapClusterUpgradeStatusesWithContext(ctx context.Context, values []*storage.ClusterUpgradeStatus, err error) ([]*clusterUpgradeStatusResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*clusterUpgradeStatusResolver, len(values))
+	for i, v := range values {
+		output[i] = &clusterUpgradeStatusResolver{ctx: ctx, root: resolver, data: v}
+	}
+	return output, nil
+}
+
 func (resolver *clusterUpgradeStatusResolver) MostRecentProcess(ctx context.Context) (*clusterUpgradeStatus_UpgradeProcessStatusResolver, error) {
 	value := resolver.data.GetMostRecentProcess()
 	return resolver.root.wrapClusterUpgradeStatus_UpgradeProcessStatus(value, true, nil)
@@ -3477,6 +4610,24 @@ func (resolver *Resolver) wrapClusterUpgradeStatus_UpgradeProcessStatuses(values
 	return output, nil
 }
 
+func (resolver *Resolver) wrapClusterUpgradeStatus_UpgradeProcessStatusWithContext(ctx context.Context, value *storage.ClusterUpgradeStatus_UpgradeProcessStatus, ok bool, err error) (*clusterUpgradeStatus_UpgradeProcessStatusResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &clusterUpgradeStatus_UpgradeProcessStatusResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapClusterUpgradeStatus_UpgradeProcessStatusesWithContext(ctx context.Context, values []*storage.ClusterUpgradeStatus_UpgradeProcessStatus, err error) ([]*clusterUpgradeStatus_UpgradeProcessStatusResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*clusterUpgradeStatus_UpgradeProcessStatusResolver, len(values))
+	for i, v := range values {
+		output[i] = &clusterUpgradeStatus_UpgradeProcessStatusResolver{ctx: ctx, root: resolver, data: v}
+	}
+	return output, nil
+}
+
 func (resolver *clusterUpgradeStatus_UpgradeProcessStatusResolver) Active(ctx context.Context) bool {
 	value := resolver.data.GetActive()
 	return value
@@ -3489,7 +4640,7 @@ func (resolver *clusterUpgradeStatus_UpgradeProcessStatusResolver) Id(ctx contex
 
 func (resolver *clusterUpgradeStatus_UpgradeProcessStatusResolver) InitiatedAt(ctx context.Context) (*graphql.Time, error) {
 	value := resolver.data.GetInitiatedAt()
-	return timestamp(value)
+	return protocompat.ConvertTimestampToGraphqlTimeOrError(value)
 }
 
 func (resolver *clusterUpgradeStatus_UpgradeProcessStatusResolver) Progress(ctx context.Context) (*upgradeProgressResolver, error) {
@@ -3572,6 +4723,24 @@ func (resolver *Resolver) wrapCollectorHealthInfos(values []*storage.CollectorHe
 	return output, nil
 }
 
+func (resolver *Resolver) wrapCollectorHealthInfoWithContext(ctx context.Context, value *storage.CollectorHealthInfo, ok bool, err error) (*collectorHealthInfoResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &collectorHealthInfoResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapCollectorHealthInfosWithContext(ctx context.Context, values []*storage.CollectorHealthInfo, err error) ([]*collectorHealthInfoResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*collectorHealthInfoResolver, len(values))
+	for i, v := range values {
+		output[i] = &collectorHealthInfoResolver{ctx: ctx, root: resolver, data: v}
+	}
+	return output, nil
+}
+
 func (resolver *collectorHealthInfoResolver) StatusErrors(ctx context.Context) []string {
 	value := resolver.data.GetStatusErrors()
 	return value
@@ -3602,6 +4771,24 @@ func (resolver *Resolver) wrapCompleteClusterConfigs(values []*storage.CompleteC
 	output := make([]*completeClusterConfigResolver, len(values))
 	for i, v := range values {
 		output[i] = &completeClusterConfigResolver{root: resolver, data: v}
+	}
+	return output, nil
+}
+
+func (resolver *Resolver) wrapCompleteClusterConfigWithContext(ctx context.Context, value *storage.CompleteClusterConfig, ok bool, err error) (*completeClusterConfigResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &completeClusterConfigResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapCompleteClusterConfigsWithContext(ctx context.Context, values []*storage.CompleteClusterConfig, err error) ([]*completeClusterConfigResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*completeClusterConfigResolver, len(values))
+	for i, v := range values {
+		output[i] = &completeClusterConfigResolver{ctx: ctx, root: resolver, data: v}
 	}
 	return output, nil
 }
@@ -3650,6 +4837,24 @@ func (resolver *Resolver) wrapComplianceAggregation_AggregationKeies(values []*s
 	return output, nil
 }
 
+func (resolver *Resolver) wrapComplianceAggregation_AggregationKeyWithContext(ctx context.Context, value *storage.ComplianceAggregation_AggregationKey, ok bool, err error) (*complianceAggregation_AggregationKeyResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &complianceAggregation_AggregationKeyResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapComplianceAggregation_AggregationKeiesWithContext(ctx context.Context, values []*storage.ComplianceAggregation_AggregationKey, err error) ([]*complianceAggregation_AggregationKeyResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*complianceAggregation_AggregationKeyResolver, len(values))
+	for i, v := range values {
+		output[i] = &complianceAggregation_AggregationKeyResolver{ctx: ctx, root: resolver, data: v}
+	}
+	return output, nil
+}
+
 func (resolver *complianceAggregation_AggregationKeyResolver) Id(ctx context.Context) graphql.ID {
 	value := resolver.data.GetId()
 	return graphql.ID(value)
@@ -3680,6 +4885,24 @@ func (resolver *Resolver) wrapComplianceAggregation_Responses(values []*storage.
 	output := make([]*complianceAggregation_ResponseResolver, len(values))
 	for i, v := range values {
 		output[i] = &complianceAggregation_ResponseResolver{root: resolver, data: v}
+	}
+	return output, nil
+}
+
+func (resolver *Resolver) wrapComplianceAggregation_ResponseWithContext(ctx context.Context, value *storage.ComplianceAggregation_Response, ok bool, err error) (*complianceAggregation_ResponseResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &complianceAggregation_ResponseResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapComplianceAggregation_ResponsesWithContext(ctx context.Context, values []*storage.ComplianceAggregation_Response, err error) ([]*complianceAggregation_ResponseResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*complianceAggregation_ResponseResolver, len(values))
+	for i, v := range values {
+		output[i] = &complianceAggregation_ResponseResolver{ctx: ctx, root: resolver, data: v}
 	}
 	return output, nil
 }
@@ -3719,6 +4942,24 @@ func (resolver *Resolver) wrapComplianceAggregation_Results(values []*storage.Co
 	output := make([]*complianceAggregation_ResultResolver, len(values))
 	for i, v := range values {
 		output[i] = &complianceAggregation_ResultResolver{root: resolver, data: v}
+	}
+	return output, nil
+}
+
+func (resolver *Resolver) wrapComplianceAggregation_ResultWithContext(ctx context.Context, value *storage.ComplianceAggregation_Result, ok bool, err error) (*complianceAggregation_ResultResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &complianceAggregation_ResultResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapComplianceAggregation_ResultsWithContext(ctx context.Context, values []*storage.ComplianceAggregation_Result, err error) ([]*complianceAggregation_ResultResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*complianceAggregation_ResultResolver, len(values))
+	for i, v := range values {
+		output[i] = &complianceAggregation_ResultResolver{ctx: ctx, root: resolver, data: v}
 	}
 	return output, nil
 }
@@ -3790,6 +5031,24 @@ func (resolver *Resolver) wrapComplianceAggregation_Sources(values []*storage.Co
 	return output, nil
 }
 
+func (resolver *Resolver) wrapComplianceAggregation_SourceWithContext(ctx context.Context, value *storage.ComplianceAggregation_Source, ok bool, err error) (*complianceAggregation_SourceResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &complianceAggregation_SourceResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapComplianceAggregation_SourcesWithContext(ctx context.Context, values []*storage.ComplianceAggregation_Source, err error) ([]*complianceAggregation_SourceResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*complianceAggregation_SourceResolver, len(values))
+	for i, v := range values {
+		output[i] = &complianceAggregation_SourceResolver{ctx: ctx, root: resolver, data: v}
+	}
+	return output, nil
+}
+
 func (resolver *complianceAggregation_SourceResolver) ClusterId(ctx context.Context) string {
 	value := resolver.data.GetClusterId()
 	return value
@@ -3830,6 +5089,24 @@ func (resolver *Resolver) wrapComplianceControls(values []*v1.ComplianceControl,
 	output := make([]*complianceControlResolver, len(values))
 	for i, v := range values {
 		output[i] = &complianceControlResolver{root: resolver, data: v}
+	}
+	return output, nil
+}
+
+func (resolver *Resolver) wrapComplianceControlWithContext(ctx context.Context, value *v1.ComplianceControl, ok bool, err error) (*complianceControlResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &complianceControlResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapComplianceControlsWithContext(ctx context.Context, values []*v1.ComplianceControl, err error) ([]*complianceControlResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*complianceControlResolver, len(values))
+	for i, v := range values {
+		output[i] = &complianceControlResolver{ctx: ctx, root: resolver, data: v}
 	}
 	return output, nil
 }
@@ -3893,6 +5170,24 @@ func (resolver *Resolver) wrapComplianceControlGroups(values []*v1.ComplianceCon
 	return output, nil
 }
 
+func (resolver *Resolver) wrapComplianceControlGroupWithContext(ctx context.Context, value *v1.ComplianceControlGroup, ok bool, err error) (*complianceControlGroupResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &complianceControlGroupResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapComplianceControlGroupsWithContext(ctx context.Context, values []*v1.ComplianceControlGroup, err error) ([]*complianceControlGroupResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*complianceControlGroupResolver, len(values))
+	for i, v := range values {
+		output[i] = &complianceControlGroupResolver{ctx: ctx, root: resolver, data: v}
+	}
+	return output, nil
+}
+
 func (resolver *complianceControlGroupResolver) Description(ctx context.Context) string {
 	value := resolver.data.GetDescription()
 	return value
@@ -3942,6 +5237,24 @@ func (resolver *Resolver) wrapComplianceControlResults(values []*storage.Complia
 	return output, nil
 }
 
+func (resolver *Resolver) wrapComplianceControlResultWithContext(ctx context.Context, value *storage.ComplianceControlResult, ok bool, err error) (*complianceControlResultResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &complianceControlResultResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapComplianceControlResultsWithContext(ctx context.Context, values []*storage.ComplianceControlResult, err error) ([]*complianceControlResultResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*complianceControlResultResolver, len(values))
+	for i, v := range values {
+		output[i] = &complianceControlResultResolver{ctx: ctx, root: resolver, data: v}
+	}
+	return output, nil
+}
+
 func (resolver *complianceControlResultResolver) ControlId(ctx context.Context) string {
 	value := resolver.data.GetControlId()
 	return value
@@ -3955,6 +5268,197 @@ func (resolver *complianceControlResultResolver) Resource(ctx context.Context) (
 func (resolver *complianceControlResultResolver) Value(ctx context.Context) (*complianceResultValueResolver, error) {
 	value := resolver.data.GetValue()
 	return resolver.root.wrapComplianceResultValue(value, true, nil)
+}
+
+type complianceDomain_ClusterResolver struct {
+	ctx  context.Context
+	root *Resolver
+	data *storage.ComplianceDomain_Cluster
+}
+
+func (resolver *Resolver) wrapComplianceDomain_Cluster(value *storage.ComplianceDomain_Cluster, ok bool, err error) (*complianceDomain_ClusterResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &complianceDomain_ClusterResolver{root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapComplianceDomain_Clusters(values []*storage.ComplianceDomain_Cluster, err error) ([]*complianceDomain_ClusterResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*complianceDomain_ClusterResolver, len(values))
+	for i, v := range values {
+		output[i] = &complianceDomain_ClusterResolver{root: resolver, data: v}
+	}
+	return output, nil
+}
+
+func (resolver *Resolver) wrapComplianceDomain_ClusterWithContext(ctx context.Context, value *storage.ComplianceDomain_Cluster, ok bool, err error) (*complianceDomain_ClusterResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &complianceDomain_ClusterResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapComplianceDomain_ClustersWithContext(ctx context.Context, values []*storage.ComplianceDomain_Cluster, err error) ([]*complianceDomain_ClusterResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*complianceDomain_ClusterResolver, len(values))
+	for i, v := range values {
+		output[i] = &complianceDomain_ClusterResolver{ctx: ctx, root: resolver, data: v}
+	}
+	return output, nil
+}
+
+func (resolver *complianceDomain_ClusterResolver) Id(ctx context.Context) graphql.ID {
+	value := resolver.data.GetId()
+	return graphql.ID(value)
+}
+
+func (resolver *complianceDomain_ClusterResolver) Name(ctx context.Context) string {
+	value := resolver.data.GetName()
+	return value
+}
+
+type complianceDomain_DeploymentResolver struct {
+	ctx  context.Context
+	root *Resolver
+	data *storage.ComplianceDomain_Deployment
+}
+
+func (resolver *Resolver) wrapComplianceDomain_Deployment(value *storage.ComplianceDomain_Deployment, ok bool, err error) (*complianceDomain_DeploymentResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &complianceDomain_DeploymentResolver{root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapComplianceDomain_Deployments(values []*storage.ComplianceDomain_Deployment, err error) ([]*complianceDomain_DeploymentResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*complianceDomain_DeploymentResolver, len(values))
+	for i, v := range values {
+		output[i] = &complianceDomain_DeploymentResolver{root: resolver, data: v}
+	}
+	return output, nil
+}
+
+func (resolver *Resolver) wrapComplianceDomain_DeploymentWithContext(ctx context.Context, value *storage.ComplianceDomain_Deployment, ok bool, err error) (*complianceDomain_DeploymentResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &complianceDomain_DeploymentResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapComplianceDomain_DeploymentsWithContext(ctx context.Context, values []*storage.ComplianceDomain_Deployment, err error) ([]*complianceDomain_DeploymentResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*complianceDomain_DeploymentResolver, len(values))
+	for i, v := range values {
+		output[i] = &complianceDomain_DeploymentResolver{ctx: ctx, root: resolver, data: v}
+	}
+	return output, nil
+}
+
+func (resolver *complianceDomain_DeploymentResolver) ClusterId(ctx context.Context) string {
+	value := resolver.data.GetClusterId()
+	return value
+}
+
+func (resolver *complianceDomain_DeploymentResolver) ClusterName(ctx context.Context) string {
+	value := resolver.data.GetClusterName()
+	return value
+}
+
+func (resolver *complianceDomain_DeploymentResolver) Id(ctx context.Context) graphql.ID {
+	value := resolver.data.GetId()
+	return graphql.ID(value)
+}
+
+func (resolver *complianceDomain_DeploymentResolver) Name(ctx context.Context) string {
+	value := resolver.data.GetName()
+	return value
+}
+
+func (resolver *complianceDomain_DeploymentResolver) Namespace(ctx context.Context) string {
+	value := resolver.data.GetNamespace()
+	return value
+}
+
+func (resolver *complianceDomain_DeploymentResolver) NamespaceId(ctx context.Context) string {
+	value := resolver.data.GetNamespaceId()
+	return value
+}
+
+func (resolver *complianceDomain_DeploymentResolver) Type(ctx context.Context) string {
+	value := resolver.data.GetType()
+	return value
+}
+
+type complianceDomain_NodeResolver struct {
+	ctx  context.Context
+	root *Resolver
+	data *storage.ComplianceDomain_Node
+}
+
+func (resolver *Resolver) wrapComplianceDomain_Node(value *storage.ComplianceDomain_Node, ok bool, err error) (*complianceDomain_NodeResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &complianceDomain_NodeResolver{root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapComplianceDomain_Nodes(values []*storage.ComplianceDomain_Node, err error) ([]*complianceDomain_NodeResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*complianceDomain_NodeResolver, len(values))
+	for i, v := range values {
+		output[i] = &complianceDomain_NodeResolver{root: resolver, data: v}
+	}
+	return output, nil
+}
+
+func (resolver *Resolver) wrapComplianceDomain_NodeWithContext(ctx context.Context, value *storage.ComplianceDomain_Node, ok bool, err error) (*complianceDomain_NodeResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &complianceDomain_NodeResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapComplianceDomain_NodesWithContext(ctx context.Context, values []*storage.ComplianceDomain_Node, err error) ([]*complianceDomain_NodeResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*complianceDomain_NodeResolver, len(values))
+	for i, v := range values {
+		output[i] = &complianceDomain_NodeResolver{ctx: ctx, root: resolver, data: v}
+	}
+	return output, nil
+}
+
+func (resolver *complianceDomain_NodeResolver) ClusterId(ctx context.Context) string {
+	value := resolver.data.GetClusterId()
+	return value
+}
+
+func (resolver *complianceDomain_NodeResolver) ClusterName(ctx context.Context) string {
+	value := resolver.data.GetClusterName()
+	return value
+}
+
+func (resolver *complianceDomain_NodeResolver) Id(ctx context.Context) graphql.ID {
+	value := resolver.data.GetId()
+	return graphql.ID(value)
+}
+
+func (resolver *complianceDomain_NodeResolver) Name(ctx context.Context) string {
+	value := resolver.data.GetName()
+	return value
 }
 
 type complianceResourceResolver struct {
@@ -3977,6 +5481,24 @@ func (resolver *Resolver) wrapComplianceResources(values []*storage.ComplianceRe
 	output := make([]*complianceResourceResolver, len(values))
 	for i, v := range values {
 		output[i] = &complianceResourceResolver{root: resolver, data: v}
+	}
+	return output, nil
+}
+
+func (resolver *Resolver) wrapComplianceResourceWithContext(ctx context.Context, value *storage.ComplianceResource, ok bool, err error) (*complianceResourceResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &complianceResourceResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapComplianceResourcesWithContext(ctx context.Context, values []*storage.ComplianceResource, err error) ([]*complianceResourceResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*complianceResourceResolver, len(values))
+	for i, v := range values {
+		output[i] = &complianceResourceResolver{ctx: ctx, root: resolver, data: v}
 	}
 	return output, nil
 }
@@ -4073,6 +5595,24 @@ func (resolver *Resolver) wrapComplianceResource_ClusterNames(values []*storage.
 	return output, nil
 }
 
+func (resolver *Resolver) wrapComplianceResource_ClusterNameWithContext(ctx context.Context, value *storage.ComplianceResource_ClusterName, ok bool, err error) (*complianceResource_ClusterNameResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &complianceResource_ClusterNameResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapComplianceResource_ClusterNamesWithContext(ctx context.Context, values []*storage.ComplianceResource_ClusterName, err error) ([]*complianceResource_ClusterNameResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*complianceResource_ClusterNameResolver, len(values))
+	for i, v := range values {
+		output[i] = &complianceResource_ClusterNameResolver{ctx: ctx, root: resolver, data: v}
+	}
+	return output, nil
+}
+
 func (resolver *complianceResource_ClusterNameResolver) Id(ctx context.Context) graphql.ID {
 	value := resolver.data.GetId()
 	return graphql.ID(value)
@@ -4103,6 +5643,24 @@ func (resolver *Resolver) wrapComplianceResource_DeploymentNames(values []*stora
 	output := make([]*complianceResource_DeploymentNameResolver, len(values))
 	for i, v := range values {
 		output[i] = &complianceResource_DeploymentNameResolver{root: resolver, data: v}
+	}
+	return output, nil
+}
+
+func (resolver *Resolver) wrapComplianceResource_DeploymentNameWithContext(ctx context.Context, value *storage.ComplianceResource_DeploymentName, ok bool, err error) (*complianceResource_DeploymentNameResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &complianceResource_DeploymentNameResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapComplianceResource_DeploymentNamesWithContext(ctx context.Context, values []*storage.ComplianceResource_DeploymentName, err error) ([]*complianceResource_DeploymentNameResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*complianceResource_DeploymentNameResolver, len(values))
+	for i, v := range values {
+		output[i] = &complianceResource_DeploymentNameResolver{ctx: ctx, root: resolver, data: v}
 	}
 	return output, nil
 }
@@ -4151,6 +5709,24 @@ func (resolver *Resolver) wrapComplianceResource_NodeNames(values []*storage.Com
 	return output, nil
 }
 
+func (resolver *Resolver) wrapComplianceResource_NodeNameWithContext(ctx context.Context, value *storage.ComplianceResource_NodeName, ok bool, err error) (*complianceResource_NodeNameResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &complianceResource_NodeNameResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapComplianceResource_NodeNamesWithContext(ctx context.Context, values []*storage.ComplianceResource_NodeName, err error) ([]*complianceResource_NodeNameResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*complianceResource_NodeNameResolver, len(values))
+	for i, v := range values {
+		output[i] = &complianceResource_NodeNameResolver{ctx: ctx, root: resolver, data: v}
+	}
+	return output, nil
+}
+
 func (resolver *complianceResource_NodeNameResolver) Cluster(ctx context.Context) (*complianceResource_ClusterNameResolver, error) {
 	value := resolver.data.GetCluster()
 	return resolver.root.wrapComplianceResource_ClusterName(value, true, nil)
@@ -4190,6 +5766,24 @@ func (resolver *Resolver) wrapComplianceResultValues(values []*storage.Complianc
 	return output, nil
 }
 
+func (resolver *Resolver) wrapComplianceResultValueWithContext(ctx context.Context, value *storage.ComplianceResultValue, ok bool, err error) (*complianceResultValueResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &complianceResultValueResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapComplianceResultValuesWithContext(ctx context.Context, values []*storage.ComplianceResultValue, err error) ([]*complianceResultValueResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*complianceResultValueResolver, len(values))
+	for i, v := range values {
+		output[i] = &complianceResultValueResolver{ctx: ctx, root: resolver, data: v}
+	}
+	return output, nil
+}
+
 func (resolver *complianceResultValueResolver) Evidence(ctx context.Context) ([]*complianceResultValue_EvidenceResolver, error) {
 	value := resolver.data.GetEvidence()
 	return resolver.root.wrapComplianceResultValue_Evidences(value, nil)
@@ -4220,6 +5814,24 @@ func (resolver *Resolver) wrapComplianceResultValue_Evidences(values []*storage.
 	output := make([]*complianceResultValue_EvidenceResolver, len(values))
 	for i, v := range values {
 		output[i] = &complianceResultValue_EvidenceResolver{root: resolver, data: v}
+	}
+	return output, nil
+}
+
+func (resolver *Resolver) wrapComplianceResultValue_EvidenceWithContext(ctx context.Context, value *storage.ComplianceResultValue_Evidence, ok bool, err error) (*complianceResultValue_EvidenceResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &complianceResultValue_EvidenceResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapComplianceResultValue_EvidencesWithContext(ctx context.Context, values []*storage.ComplianceResultValue_Evidence, err error) ([]*complianceResultValue_EvidenceResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*complianceResultValue_EvidenceResolver, len(values))
+	for i, v := range values {
+		output[i] = &complianceResultValue_EvidenceResolver{ctx: ctx, root: resolver, data: v}
 	}
 	return output, nil
 }
@@ -4263,6 +5875,24 @@ func (resolver *Resolver) wrapComplianceRuns(values []*v1.ComplianceRun, err err
 	return output, nil
 }
 
+func (resolver *Resolver) wrapComplianceRunWithContext(ctx context.Context, value *v1.ComplianceRun, ok bool, err error) (*complianceRunResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &complianceRunResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapComplianceRunsWithContext(ctx context.Context, values []*v1.ComplianceRun, err error) ([]*complianceRunResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*complianceRunResolver, len(values))
+	for i, v := range values {
+		output[i] = &complianceRunResolver{ctx: ctx, root: resolver, data: v}
+	}
+	return output, nil
+}
+
 func (resolver *complianceRunResolver) ClusterId(ctx context.Context) string {
 	value := resolver.data.GetClusterId()
 	return value
@@ -4275,17 +5905,12 @@ func (resolver *complianceRunResolver) ErrorMessage(ctx context.Context) string 
 
 func (resolver *complianceRunResolver) FinishTime(ctx context.Context) (*graphql.Time, error) {
 	value := resolver.data.GetFinishTime()
-	return timestamp(value)
+	return protocompat.ConvertTimestampToGraphqlTimeOrError(value)
 }
 
 func (resolver *complianceRunResolver) Id(ctx context.Context) graphql.ID {
 	value := resolver.data.GetId()
 	return graphql.ID(value)
-}
-
-func (resolver *complianceRunResolver) ScheduleId(ctx context.Context) string {
-	value := resolver.data.GetScheduleId()
-	return value
 }
 
 func (resolver *complianceRunResolver) StandardId(ctx context.Context) string {
@@ -4295,7 +5920,7 @@ func (resolver *complianceRunResolver) StandardId(ctx context.Context) string {
 
 func (resolver *complianceRunResolver) StartTime(ctx context.Context) (*graphql.Time, error) {
 	value := resolver.data.GetStartTime()
-	return timestamp(value)
+	return protocompat.ConvertTimestampToGraphqlTimeOrError(value)
 }
 
 func (resolver *complianceRunResolver) State(ctx context.Context) string {
@@ -4327,6 +5952,24 @@ func (resolver *Resolver) wrapComplianceRunMetadatas(values []*storage.Complianc
 	return output, nil
 }
 
+func (resolver *Resolver) wrapComplianceRunMetadataWithContext(ctx context.Context, value *storage.ComplianceRunMetadata, ok bool, err error) (*complianceRunMetadataResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &complianceRunMetadataResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapComplianceRunMetadatasWithContext(ctx context.Context, values []*storage.ComplianceRunMetadata, err error) ([]*complianceRunMetadataResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*complianceRunMetadataResolver, len(values))
+	for i, v := range values {
+		output[i] = &complianceRunMetadataResolver{ctx: ctx, root: resolver, data: v}
+	}
+	return output, nil
+}
+
 func (resolver *complianceRunMetadataResolver) ClusterId(ctx context.Context) string {
 	value := resolver.data.GetClusterId()
 	return value
@@ -4344,7 +5987,7 @@ func (resolver *complianceRunMetadataResolver) ErrorMessage(ctx context.Context)
 
 func (resolver *complianceRunMetadataResolver) FinishTimestamp(ctx context.Context) (*graphql.Time, error) {
 	value := resolver.data.GetFinishTimestamp()
-	return timestamp(value)
+	return protocompat.ConvertTimestampToGraphqlTimeOrError(value)
 }
 
 func (resolver *complianceRunMetadataResolver) RunId(ctx context.Context) string {
@@ -4359,105 +6002,12 @@ func (resolver *complianceRunMetadataResolver) StandardId(ctx context.Context) s
 
 func (resolver *complianceRunMetadataResolver) StartTimestamp(ctx context.Context) (*graphql.Time, error) {
 	value := resolver.data.GetStartTimestamp()
-	return timestamp(value)
+	return protocompat.ConvertTimestampToGraphqlTimeOrError(value)
 }
 
 func (resolver *complianceRunMetadataResolver) Success(ctx context.Context) bool {
 	value := resolver.data.GetSuccess()
 	return value
-}
-
-type complianceRunScheduleResolver struct {
-	ctx  context.Context
-	root *Resolver
-	data *storage.ComplianceRunSchedule
-}
-
-func (resolver *Resolver) wrapComplianceRunSchedule(value *storage.ComplianceRunSchedule, ok bool, err error) (*complianceRunScheduleResolver, error) {
-	if !ok || err != nil || value == nil {
-		return nil, err
-	}
-	return &complianceRunScheduleResolver{root: resolver, data: value}, nil
-}
-
-func (resolver *Resolver) wrapComplianceRunSchedules(values []*storage.ComplianceRunSchedule, err error) ([]*complianceRunScheduleResolver, error) {
-	if err != nil || len(values) == 0 {
-		return nil, err
-	}
-	output := make([]*complianceRunScheduleResolver, len(values))
-	for i, v := range values {
-		output[i] = &complianceRunScheduleResolver{root: resolver, data: v}
-	}
-	return output, nil
-}
-
-func (resolver *complianceRunScheduleResolver) ClusterId(ctx context.Context) string {
-	value := resolver.data.GetClusterId()
-	return value
-}
-
-func (resolver *complianceRunScheduleResolver) CrontabSpec(ctx context.Context) string {
-	value := resolver.data.GetCrontabSpec()
-	return value
-}
-
-func (resolver *complianceRunScheduleResolver) Id(ctx context.Context) graphql.ID {
-	value := resolver.data.GetId()
-	return graphql.ID(value)
-}
-
-func (resolver *complianceRunScheduleResolver) StandardId(ctx context.Context) string {
-	value := resolver.data.GetStandardId()
-	return value
-}
-
-func (resolver *complianceRunScheduleResolver) Suspended(ctx context.Context) bool {
-	value := resolver.data.GetSuspended()
-	return value
-}
-
-type complianceRunScheduleInfoResolver struct {
-	ctx  context.Context
-	root *Resolver
-	data *v1.ComplianceRunScheduleInfo
-}
-
-func (resolver *Resolver) wrapComplianceRunScheduleInfo(value *v1.ComplianceRunScheduleInfo, ok bool, err error) (*complianceRunScheduleInfoResolver, error) {
-	if !ok || err != nil || value == nil {
-		return nil, err
-	}
-	return &complianceRunScheduleInfoResolver{root: resolver, data: value}, nil
-}
-
-func (resolver *Resolver) wrapComplianceRunScheduleInfos(values []*v1.ComplianceRunScheduleInfo, err error) ([]*complianceRunScheduleInfoResolver, error) {
-	if err != nil || len(values) == 0 {
-		return nil, err
-	}
-	output := make([]*complianceRunScheduleInfoResolver, len(values))
-	for i, v := range values {
-		output[i] = &complianceRunScheduleInfoResolver{root: resolver, data: v}
-	}
-	return output, nil
-}
-
-func (resolver *complianceRunScheduleInfoResolver) LastCompletedRun(ctx context.Context) (*complianceRunResolver, error) {
-	value := resolver.data.GetLastCompletedRun()
-	return resolver.root.wrapComplianceRun(value, true, nil)
-}
-
-func (resolver *complianceRunScheduleInfoResolver) LastRun(ctx context.Context) (*complianceRunResolver, error) {
-	value := resolver.data.GetLastRun()
-	return resolver.root.wrapComplianceRun(value, true, nil)
-}
-
-func (resolver *complianceRunScheduleInfoResolver) NextRunTime(ctx context.Context) (*graphql.Time, error) {
-	value := resolver.data.GetNextRunTime()
-	return timestamp(value)
-}
-
-func (resolver *complianceRunScheduleInfoResolver) Schedule(ctx context.Context) (*complianceRunScheduleResolver, error) {
-	value := resolver.data.GetSchedule()
-	return resolver.root.wrapComplianceRunSchedule(value, true, nil)
 }
 
 func toComplianceRun_State(value *string) v1.ComplianceRun_State {
@@ -4502,6 +6052,24 @@ func (resolver *Resolver) wrapComplianceStandards(values []*v1.ComplianceStandar
 	return output, nil
 }
 
+func (resolver *Resolver) wrapComplianceStandardWithContext(ctx context.Context, value *v1.ComplianceStandard, ok bool, err error) (*complianceStandardResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &complianceStandardResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapComplianceStandardsWithContext(ctx context.Context, values []*v1.ComplianceStandard, err error) ([]*complianceStandardResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*complianceStandardResolver, len(values))
+	for i, v := range values {
+		output[i] = &complianceStandardResolver{ctx: ctx, root: resolver, data: v}
+	}
+	return output, nil
+}
+
 func (resolver *complianceStandardResolver) Controls(ctx context.Context) ([]*complianceControlResolver, error) {
 	value := resolver.data.GetControls()
 	return resolver.root.wrapComplianceControls(value, nil)
@@ -4541,6 +6109,24 @@ func (resolver *Resolver) wrapComplianceStandardMetadatas(values []*v1.Complianc
 	return output, nil
 }
 
+func (resolver *Resolver) wrapComplianceStandardMetadataWithContext(ctx context.Context, value *v1.ComplianceStandardMetadata, ok bool, err error) (*complianceStandardMetadataResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &complianceStandardMetadataResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapComplianceStandardMetadatasWithContext(ctx context.Context, values []*v1.ComplianceStandardMetadata, err error) ([]*complianceStandardMetadataResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*complianceStandardMetadataResolver, len(values))
+	for i, v := range values {
+		output[i] = &complianceStandardMetadataResolver{ctx: ctx, root: resolver, data: v}
+	}
+	return output, nil
+}
+
 func (resolver *complianceStandardMetadataResolver) Description(ctx context.Context) string {
 	value := resolver.data.GetDescription()
 	return value
@@ -4548,6 +6134,11 @@ func (resolver *complianceStandardMetadataResolver) Description(ctx context.Cont
 
 func (resolver *complianceStandardMetadataResolver) Dynamic(ctx context.Context) bool {
 	value := resolver.data.GetDynamic()
+	return value
+}
+
+func (resolver *complianceStandardMetadataResolver) HideScanResults(ctx context.Context) bool {
+	value := resolver.data.GetHideScanResults()
 	return value
 }
 
@@ -4631,6 +6222,24 @@ func (resolver *Resolver) wrapContainers(values []*storage.Container, err error)
 	return output, nil
 }
 
+func (resolver *Resolver) wrapContainerWithContext(ctx context.Context, value *storage.Container, ok bool, err error) (*containerResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &containerResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapContainersWithContext(ctx context.Context, values []*storage.Container, err error) ([]*containerResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*containerResolver, len(values))
+	for i, v := range values {
+		output[i] = &containerResolver{ctx: ctx, root: resolver, data: v}
+	}
+	return output, nil
+}
+
 func (resolver *containerResolver) Config(ctx context.Context) (*containerConfigResolver, error) {
 	value := resolver.data.GetConfig()
 	return resolver.root.wrapContainerConfig(value, true, nil)
@@ -4710,6 +6319,24 @@ func (resolver *Resolver) wrapContainerConfigs(values []*storage.ContainerConfig
 	return output, nil
 }
 
+func (resolver *Resolver) wrapContainerConfigWithContext(ctx context.Context, value *storage.ContainerConfig, ok bool, err error) (*containerConfigResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &containerConfigResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapContainerConfigsWithContext(ctx context.Context, values []*storage.ContainerConfig, err error) ([]*containerConfigResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*containerConfigResolver, len(values))
+	for i, v := range values {
+		output[i] = &containerConfigResolver{ctx: ctx, root: resolver, data: v}
+	}
+	return output, nil
+}
+
 func (resolver *containerConfigResolver) AppArmorProfile(ctx context.Context) string {
 	value := resolver.data.GetAppArmorProfile()
 	return value
@@ -4765,6 +6392,24 @@ func (resolver *Resolver) wrapContainerConfig_EnvironmentConfigs(values []*stora
 	output := make([]*containerConfig_EnvironmentConfigResolver, len(values))
 	for i, v := range values {
 		output[i] = &containerConfig_EnvironmentConfigResolver{root: resolver, data: v}
+	}
+	return output, nil
+}
+
+func (resolver *Resolver) wrapContainerConfig_EnvironmentConfigWithContext(ctx context.Context, value *storage.ContainerConfig_EnvironmentConfig, ok bool, err error) (*containerConfig_EnvironmentConfigResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &containerConfig_EnvironmentConfigResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapContainerConfig_EnvironmentConfigsWithContext(ctx context.Context, values []*storage.ContainerConfig_EnvironmentConfig, err error) ([]*containerConfig_EnvironmentConfigResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*containerConfig_EnvironmentConfigResolver, len(values))
+	for i, v := range values {
+		output[i] = &containerConfig_EnvironmentConfigResolver{ctx: ctx, root: resolver, data: v}
 	}
 	return output, nil
 }
@@ -4826,6 +6471,24 @@ func (resolver *Resolver) wrapContainerImages(values []*storage.ContainerImage, 
 	return output, nil
 }
 
+func (resolver *Resolver) wrapContainerImageWithContext(ctx context.Context, value *storage.ContainerImage, ok bool, err error) (*containerImageResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &containerImageResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapContainerImagesWithContext(ctx context.Context, values []*storage.ContainerImage, err error) ([]*containerImageResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*containerImageResolver, len(values))
+	for i, v := range values {
+		output[i] = &containerImageResolver{ctx: ctx, root: resolver, data: v}
+	}
+	return output, nil
+}
+
 func (resolver *containerImageResolver) Id(ctx context.Context) graphql.ID {
 	value := resolver.data.GetId()
 	return graphql.ID(value)
@@ -4870,6 +6533,24 @@ func (resolver *Resolver) wrapContainerInstances(values []*storage.ContainerInst
 	return output, nil
 }
 
+func (resolver *Resolver) wrapContainerInstanceWithContext(ctx context.Context, value *storage.ContainerInstance, ok bool, err error) (*containerInstanceResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &containerInstanceResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapContainerInstancesWithContext(ctx context.Context, values []*storage.ContainerInstance, err error) ([]*containerInstanceResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*containerInstanceResolver, len(values))
+	for i, v := range values {
+		output[i] = &containerInstanceResolver{ctx: ctx, root: resolver, data: v}
+	}
+	return output, nil
+}
+
 func (resolver *containerInstanceResolver) ContainerIps(ctx context.Context) []string {
 	value := resolver.data.GetContainerIps()
 	return value
@@ -4892,7 +6573,7 @@ func (resolver *containerInstanceResolver) ExitCode(ctx context.Context) int32 {
 
 func (resolver *containerInstanceResolver) Finished(ctx context.Context) (*graphql.Time, error) {
 	value := resolver.data.GetFinished()
-	return timestamp(value)
+	return protocompat.ConvertTimestampToGraphqlTimeOrError(value)
 }
 
 func (resolver *containerInstanceResolver) ImageDigest(ctx context.Context) string {
@@ -4907,7 +6588,7 @@ func (resolver *containerInstanceResolver) InstanceId(ctx context.Context) (*con
 
 func (resolver *containerInstanceResolver) Started(ctx context.Context) (*graphql.Time, error) {
 	value := resolver.data.GetStarted()
-	return timestamp(value)
+	return protocompat.ConvertTimestampToGraphqlTimeOrError(value)
 }
 
 func (resolver *containerInstanceResolver) TerminationReason(ctx context.Context) string {
@@ -4935,6 +6616,24 @@ func (resolver *Resolver) wrapContainerInstanceIDs(values []*storage.ContainerIn
 	output := make([]*containerInstanceIDResolver, len(values))
 	for i, v := range values {
 		output[i] = &containerInstanceIDResolver{root: resolver, data: v}
+	}
+	return output, nil
+}
+
+func (resolver *Resolver) wrapContainerInstanceIDWithContext(ctx context.Context, value *storage.ContainerInstanceID, ok bool, err error) (*containerInstanceIDResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &containerInstanceIDResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapContainerInstanceIDsWithContext(ctx context.Context, values []*storage.ContainerInstanceID, err error) ([]*containerInstanceIDResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*containerInstanceIDResolver, len(values))
+	for i, v := range values {
+		output[i] = &containerInstanceIDResolver{ctx: ctx, root: resolver, data: v}
 	}
 	return output, nil
 }
@@ -4996,6 +6695,24 @@ func (resolver *Resolver) wrapContainerRuntimeInfos(values []*storage.ContainerR
 	return output, nil
 }
 
+func (resolver *Resolver) wrapContainerRuntimeInfoWithContext(ctx context.Context, value *storage.ContainerRuntimeInfo, ok bool, err error) (*containerRuntimeInfoResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &containerRuntimeInfoResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapContainerRuntimeInfosWithContext(ctx context.Context, values []*storage.ContainerRuntimeInfo, err error) ([]*containerRuntimeInfoResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*containerRuntimeInfoResolver, len(values))
+	for i, v := range values {
+		output[i] = &containerRuntimeInfoResolver{ctx: ctx, root: resolver, data: v}
+	}
+	return output, nil
+}
+
 func (resolver *containerRuntimeInfoResolver) Type(ctx context.Context) string {
 	value := resolver.data.GetType()
 	return value.String()
@@ -5030,6 +6747,34 @@ func (resolver *Resolver) wrapCosignSignatures(values []*storage.CosignSignature
 	return output, nil
 }
 
+func (resolver *Resolver) wrapCosignSignatureWithContext(ctx context.Context, value *storage.CosignSignature, ok bool, err error) (*cosignSignatureResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &cosignSignatureResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapCosignSignaturesWithContext(ctx context.Context, values []*storage.CosignSignature, err error) ([]*cosignSignatureResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*cosignSignatureResolver, len(values))
+	for i, v := range values {
+		output[i] = &cosignSignatureResolver{ctx: ctx, root: resolver, data: v}
+	}
+	return output, nil
+}
+
+func (resolver *cosignSignatureResolver) CertChainPem(ctx context.Context) []byte {
+	value := resolver.data.GetCertChainPem()
+	return value
+}
+
+func (resolver *cosignSignatureResolver) CertPem(ctx context.Context) []byte {
+	value := resolver.data.GetCertPem()
+	return value
+}
+
 func (resolver *cosignSignatureResolver) RawSignature(ctx context.Context) []byte {
 	value := resolver.data.GetRawSignature()
 	return value
@@ -5038,6 +6783,24 @@ func (resolver *cosignSignatureResolver) RawSignature(ctx context.Context) []byt
 func (resolver *cosignSignatureResolver) SignaturePayload(ctx context.Context) []byte {
 	value := resolver.data.GetSignaturePayload()
 	return value
+}
+
+func toCvssScoreVersion(value *string) storage.CvssScoreVersion {
+	if value != nil {
+		return storage.CvssScoreVersion(storage.CvssScoreVersion_value[*value])
+	}
+	return storage.CvssScoreVersion(0)
+}
+
+func toCvssScoreVersions(values *[]string) []storage.CvssScoreVersion {
+	if values == nil {
+		return nil
+	}
+	output := make([]storage.CvssScoreVersion, len(*values))
+	for i, v := range *values {
+		output[i] = toCvssScoreVersion(&v)
+	}
+	return output
 }
 
 type dataSourceResolver struct {
@@ -5064,9 +6827,32 @@ func (resolver *Resolver) wrapDataSources(values []*storage.DataSource, err erro
 	return output, nil
 }
 
+func (resolver *Resolver) wrapDataSourceWithContext(ctx context.Context, value *storage.DataSource, ok bool, err error) (*dataSourceResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &dataSourceResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapDataSourcesWithContext(ctx context.Context, values []*storage.DataSource, err error) ([]*dataSourceResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*dataSourceResolver, len(values))
+	for i, v := range values {
+		output[i] = &dataSourceResolver{ctx: ctx, root: resolver, data: v}
+	}
+	return output, nil
+}
+
 func (resolver *dataSourceResolver) Id(ctx context.Context) graphql.ID {
 	value := resolver.data.GetId()
 	return graphql.ID(value)
+}
+
+func (resolver *dataSourceResolver) Mirror(ctx context.Context) string {
+	value := resolver.data.GetMirror()
+	return value
 }
 
 func (resolver *dataSourceResolver) Name(ctx context.Context) string {
@@ -5095,6 +6881,24 @@ func (resolver *Resolver) wrapDeployments(values []*storage.Deployment, err erro
 	output := make([]*deploymentResolver, len(values))
 	for i, v := range values {
 		output[i] = &deploymentResolver{root: resolver, data: v, list: nil}
+	}
+	return output, nil
+}
+
+func (resolver *Resolver) wrapDeploymentWithContext(ctx context.Context, value *storage.Deployment, ok bool, err error) (*deploymentResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &deploymentResolver{ctx: ctx, root: resolver, data: value, list: nil}, nil
+}
+
+func (resolver *Resolver) wrapDeploymentsWithContext(ctx context.Context, values []*storage.Deployment, err error) ([]*deploymentResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*deploymentResolver, len(values))
+	for i, v := range values {
+		output[i] = &deploymentResolver{ctx: ctx, root: resolver, data: v, list: nil}
 	}
 	return output, nil
 }
@@ -5153,7 +6957,7 @@ func (resolver *deploymentResolver) Created(ctx context.Context) (*graphql.Time,
 	if resolver.data == nil {
 		value = resolver.list.GetCreated()
 	}
-	return timestamp(value)
+	return protocompat.ConvertTimestampToGraphqlTimeOrError(value)
 }
 
 func (resolver *deploymentResolver) HostIpc(ctx context.Context) bool {
@@ -5234,6 +7038,12 @@ func (resolver *deploymentResolver) OrchestratorComponent(ctx context.Context) b
 	return value
 }
 
+func (resolver *deploymentResolver) PlatformComponent(ctx context.Context) bool {
+	resolver.ensureData(ctx)
+	value := resolver.data.GetPlatformComponent()
+	return value
+}
+
 func (resolver *deploymentResolver) PodLabels(ctx context.Context) labels {
 	resolver.ensureData(ctx)
 	value := resolver.data.GetPodLabels()
@@ -5252,12 +7062,6 @@ func (resolver *deploymentResolver) Priority(ctx context.Context) int32 {
 		value = resolver.list.GetPriority()
 	}
 	return int32(value)
-}
-
-func (resolver *deploymentResolver) ProcessTags(ctx context.Context) []string {
-	resolver.ensureData(ctx)
-	value := resolver.data.GetProcessTags()
-	return value
 }
 
 func (resolver *deploymentResolver) Replicas(ctx context.Context) int32 {
@@ -5332,6 +7136,24 @@ func (resolver *Resolver) wrapDynamicClusterConfigs(values []*storage.DynamicClu
 	return output, nil
 }
 
+func (resolver *Resolver) wrapDynamicClusterConfigWithContext(ctx context.Context, value *storage.DynamicClusterConfig, ok bool, err error) (*dynamicClusterConfigResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &dynamicClusterConfigResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapDynamicClusterConfigsWithContext(ctx context.Context, values []*storage.DynamicClusterConfig, err error) ([]*dynamicClusterConfigResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*dynamicClusterConfigResolver, len(values))
+	for i, v := range values {
+		output[i] = &dynamicClusterConfigResolver{ctx: ctx, root: resolver, data: v}
+	}
+	return output, nil
+}
+
 func (resolver *dynamicClusterConfigResolver) AdmissionControllerConfig(ctx context.Context) (*admissionControllerConfigResolver, error) {
 	value := resolver.data.GetAdmissionControllerConfig()
 	return resolver.root.wrapAdmissionControllerConfig(value, true, nil)
@@ -5345,6 +7167,58 @@ func (resolver *dynamicClusterConfigResolver) DisableAuditLogs(ctx context.Conte
 func (resolver *dynamicClusterConfigResolver) RegistryOverride(ctx context.Context) string {
 	value := resolver.data.GetRegistryOverride()
 	return value
+}
+
+type ePSSResolver struct {
+	ctx  context.Context
+	root *Resolver
+	data *storage.EPSS
+}
+
+func (resolver *Resolver) wrapEPSS(value *storage.EPSS, ok bool, err error) (*ePSSResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &ePSSResolver{root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapEPSSs(values []*storage.EPSS, err error) ([]*ePSSResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*ePSSResolver, len(values))
+	for i, v := range values {
+		output[i] = &ePSSResolver{root: resolver, data: v}
+	}
+	return output, nil
+}
+
+func (resolver *Resolver) wrapEPSSWithContext(ctx context.Context, value *storage.EPSS, ok bool, err error) (*ePSSResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &ePSSResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapEPSSsWithContext(ctx context.Context, values []*storage.EPSS, err error) ([]*ePSSResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*ePSSResolver, len(values))
+	for i, v := range values {
+		output[i] = &ePSSResolver{ctx: ctx, root: resolver, data: v}
+	}
+	return output, nil
+}
+
+func (resolver *ePSSResolver) EpssPercentile(ctx context.Context) float64 {
+	value := resolver.data.GetEpssPercentile()
+	return float64(value)
+}
+
+func (resolver *ePSSResolver) EpssProbability(ctx context.Context) float64 {
+	value := resolver.data.GetEpssProbability()
+	return float64(value)
 }
 
 type emailResolver struct {
@@ -5369,6 +7243,29 @@ func (resolver *Resolver) wrapEmails(values []*storage.Email, err error) ([]*ema
 		output[i] = &emailResolver{root: resolver, data: v}
 	}
 	return output, nil
+}
+
+func (resolver *Resolver) wrapEmailWithContext(ctx context.Context, value *storage.Email, ok bool, err error) (*emailResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &emailResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapEmailsWithContext(ctx context.Context, values []*storage.Email, err error) ([]*emailResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*emailResolver, len(values))
+	for i, v := range values {
+		output[i] = &emailResolver{ctx: ctx, root: resolver, data: v}
+	}
+	return output, nil
+}
+
+func (resolver *emailResolver) AllowUnauthenticatedSmtp(ctx context.Context) bool {
+	value := resolver.data.GetAllowUnauthenticatedSmtp()
+	return value
 }
 
 func (resolver *emailResolver) DisableTLS(ctx context.Context) bool {
@@ -5448,6 +7345,24 @@ func (resolver *Resolver) wrapEmbeddedImageScanComponent_Executables(values []*s
 	return output, nil
 }
 
+func (resolver *Resolver) wrapEmbeddedImageScanComponent_ExecutableWithContext(ctx context.Context, value *storage.EmbeddedImageScanComponent_Executable, ok bool, err error) (*embeddedImageScanComponent_ExecutableResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &embeddedImageScanComponent_ExecutableResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapEmbeddedImageScanComponent_ExecutablesWithContext(ctx context.Context, values []*storage.EmbeddedImageScanComponent_Executable, err error) ([]*embeddedImageScanComponent_ExecutableResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*embeddedImageScanComponent_ExecutableResolver, len(values))
+	for i, v := range values {
+		output[i] = &embeddedImageScanComponent_ExecutableResolver{ctx: ctx, root: resolver, data: v}
+	}
+	return output, nil
+}
+
 func (resolver *embeddedImageScanComponent_ExecutableResolver) Dependencies(ctx context.Context) []string {
 	value := resolver.data.GetDependencies()
 	return value
@@ -5478,6 +7393,24 @@ func (resolver *Resolver) wrapEmbeddedSecrets(values []*storage.EmbeddedSecret, 
 	output := make([]*embeddedSecretResolver, len(values))
 	for i, v := range values {
 		output[i] = &embeddedSecretResolver{root: resolver, data: v}
+	}
+	return output, nil
+}
+
+func (resolver *Resolver) wrapEmbeddedSecretWithContext(ctx context.Context, value *storage.EmbeddedSecret, ok bool, err error) (*embeddedSecretResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &embeddedSecretResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapEmbeddedSecretsWithContext(ctx context.Context, values []*storage.EmbeddedSecret, err error) ([]*embeddedSecretResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*embeddedSecretResolver, len(values))
+	for i, v := range values {
+		output[i] = &embeddedSecretResolver{ctx: ctx, root: resolver, data: v}
 	}
 	return output, nil
 }
@@ -5588,6 +7521,24 @@ func (resolver *Resolver) wrapExclusions(values []*storage.Exclusion, err error)
 	return output, nil
 }
 
+func (resolver *Resolver) wrapExclusionWithContext(ctx context.Context, value *storage.Exclusion, ok bool, err error) (*exclusionResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &exclusionResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapExclusionsWithContext(ctx context.Context, values []*storage.Exclusion, err error) ([]*exclusionResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*exclusionResolver, len(values))
+	for i, v := range values {
+		output[i] = &exclusionResolver{ctx: ctx, root: resolver, data: v}
+	}
+	return output, nil
+}
+
 func (resolver *exclusionResolver) Deployment(ctx context.Context) (*exclusion_DeploymentResolver, error) {
 	value := resolver.data.GetDeployment()
 	return resolver.root.wrapExclusion_Deployment(value, true, nil)
@@ -5595,7 +7546,7 @@ func (resolver *exclusionResolver) Deployment(ctx context.Context) (*exclusion_D
 
 func (resolver *exclusionResolver) Expiration(ctx context.Context) (*graphql.Time, error) {
 	value := resolver.data.GetExpiration()
-	return timestamp(value)
+	return protocompat.ConvertTimestampToGraphqlTimeOrError(value)
 }
 
 func (resolver *exclusionResolver) Image(ctx context.Context) (*exclusion_ImageResolver, error) {
@@ -5628,6 +7579,24 @@ func (resolver *Resolver) wrapExclusion_Deployments(values []*storage.Exclusion_
 	output := make([]*exclusion_DeploymentResolver, len(values))
 	for i, v := range values {
 		output[i] = &exclusion_DeploymentResolver{root: resolver, data: v}
+	}
+	return output, nil
+}
+
+func (resolver *Resolver) wrapExclusion_DeploymentWithContext(ctx context.Context, value *storage.Exclusion_Deployment, ok bool, err error) (*exclusion_DeploymentResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &exclusion_DeploymentResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapExclusion_DeploymentsWithContext(ctx context.Context, values []*storage.Exclusion_Deployment, err error) ([]*exclusion_DeploymentResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*exclusion_DeploymentResolver, len(values))
+	for i, v := range values {
+		output[i] = &exclusion_DeploymentResolver{ctx: ctx, root: resolver, data: v}
 	}
 	return output, nil
 }
@@ -5666,6 +7635,24 @@ func (resolver *Resolver) wrapExclusion_Images(values []*storage.Exclusion_Image
 	return output, nil
 }
 
+func (resolver *Resolver) wrapExclusion_ImageWithContext(ctx context.Context, value *storage.Exclusion_Image, ok bool, err error) (*exclusion_ImageResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &exclusion_ImageResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapExclusion_ImagesWithContext(ctx context.Context, values []*storage.Exclusion_Image, err error) ([]*exclusion_ImageResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*exclusion_ImageResolver, len(values))
+	for i, v := range values {
+		output[i] = &exclusion_ImageResolver{ctx: ctx, root: resolver, data: v}
+	}
+	return output, nil
+}
+
 func (resolver *exclusion_ImageResolver) Name(ctx context.Context) string {
 	value := resolver.data.GetName()
 	return value
@@ -5695,6 +7682,24 @@ func (resolver *Resolver) wrapFalsePositiveRequests(values []*storage.FalsePosit
 	return output, nil
 }
 
+func (resolver *Resolver) wrapFalsePositiveRequestWithContext(ctx context.Context, value *storage.FalsePositiveRequest, ok bool, err error) (*falsePositiveRequestResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &falsePositiveRequestResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapFalsePositiveRequestsWithContext(ctx context.Context, values []*storage.FalsePositiveRequest, err error) ([]*falsePositiveRequestResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*falsePositiveRequestResolver, len(values))
+	for i, v := range values {
+		output[i] = &falsePositiveRequestResolver{ctx: ctx, root: resolver, data: v}
+	}
+	return output, nil
+}
+
 type generateTokenResponseResolver struct {
 	ctx  context.Context
 	root *Resolver
@@ -5715,6 +7720,24 @@ func (resolver *Resolver) wrapGenerateTokenResponses(values []*v1.GenerateTokenR
 	output := make([]*generateTokenResponseResolver, len(values))
 	for i, v := range values {
 		output[i] = &generateTokenResponseResolver{root: resolver, data: v}
+	}
+	return output, nil
+}
+
+func (resolver *Resolver) wrapGenerateTokenResponseWithContext(ctx context.Context, value *v1.GenerateTokenResponse, ok bool, err error) (*generateTokenResponseResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &generateTokenResponseResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapGenerateTokenResponsesWithContext(ctx context.Context, values []*v1.GenerateTokenResponse, err error) ([]*generateTokenResponseResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*generateTokenResponseResolver, len(values))
+	for i, v := range values {
+		output[i] = &generateTokenResponseResolver{ctx: ctx, root: resolver, data: v}
 	}
 	return output, nil
 }
@@ -5749,6 +7772,24 @@ func (resolver *Resolver) wrapGenerics(values []*storage.Generic, err error) ([]
 	output := make([]*genericResolver, len(values))
 	for i, v := range values {
 		output[i] = &genericResolver{root: resolver, data: v}
+	}
+	return output, nil
+}
+
+func (resolver *Resolver) wrapGenericWithContext(ctx context.Context, value *storage.Generic, ok bool, err error) (*genericResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &genericResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapGenericsWithContext(ctx context.Context, values []*storage.Generic, err error) ([]*genericResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*genericResolver, len(values))
+	for i, v := range values {
+		output[i] = &genericResolver{ctx: ctx, root: resolver, data: v}
 	}
 	return output, nil
 }
@@ -5817,6 +7858,24 @@ func (resolver *Resolver) wrapGetComplianceRunStatusesResponses(values []*v1.Get
 	return output, nil
 }
 
+func (resolver *Resolver) wrapGetComplianceRunStatusesResponseWithContext(ctx context.Context, value *v1.GetComplianceRunStatusesResponse, ok bool, err error) (*getComplianceRunStatusesResponseResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &getComplianceRunStatusesResponseResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapGetComplianceRunStatusesResponsesWithContext(ctx context.Context, values []*v1.GetComplianceRunStatusesResponse, err error) ([]*getComplianceRunStatusesResponseResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*getComplianceRunStatusesResponseResolver, len(values))
+	for i, v := range values {
+		output[i] = &getComplianceRunStatusesResponseResolver{ctx: ctx, root: resolver, data: v}
+	}
+	return output, nil
+}
+
 func (resolver *getComplianceRunStatusesResponseResolver) InvalidRunIds(ctx context.Context) []string {
 	value := resolver.data.GetInvalidRunIds()
 	return value
@@ -5851,6 +7910,24 @@ func (resolver *Resolver) wrapGetPermissionsResponses(values []*v1.GetPermission
 	return output, nil
 }
 
+func (resolver *Resolver) wrapGetPermissionsResponseWithContext(ctx context.Context, value *v1.GetPermissionsResponse, ok bool, err error) (*getPermissionsResponseResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &getPermissionsResponseResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapGetPermissionsResponsesWithContext(ctx context.Context, values []*v1.GetPermissionsResponse, err error) ([]*getPermissionsResponseResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*getPermissionsResponseResolver, len(values))
+	for i, v := range values {
+		output[i] = &getPermissionsResponseResolver{ctx: ctx, root: resolver, data: v}
+	}
+	return output, nil
+}
+
 type googleProviderMetadataResolver struct {
 	ctx  context.Context
 	root *Resolver
@@ -5871,6 +7948,24 @@ func (resolver *Resolver) wrapGoogleProviderMetadatas(values []*storage.GooglePr
 	output := make([]*googleProviderMetadataResolver, len(values))
 	for i, v := range values {
 		output[i] = &googleProviderMetadataResolver{root: resolver, data: v}
+	}
+	return output, nil
+}
+
+func (resolver *Resolver) wrapGoogleProviderMetadataWithContext(ctx context.Context, value *storage.GoogleProviderMetadata, ok bool, err error) (*googleProviderMetadataResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &googleProviderMetadataResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapGoogleProviderMetadatasWithContext(ctx context.Context, values []*storage.GoogleProviderMetadata, err error) ([]*googleProviderMetadataResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*googleProviderMetadataResolver, len(values))
+	for i, v := range values {
+		output[i] = &googleProviderMetadataResolver{ctx: ctx, root: resolver, data: v}
 	}
 	return output, nil
 }
@@ -5909,6 +8004,24 @@ func (resolver *Resolver) wrapGroups(values []*storage.Group, err error) ([]*gro
 	return output, nil
 }
 
+func (resolver *Resolver) wrapGroupWithContext(ctx context.Context, value *storage.Group, ok bool, err error) (*groupResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &groupResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapGroupsWithContext(ctx context.Context, values []*storage.Group, err error) ([]*groupResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*groupResolver, len(values))
+	for i, v := range values {
+		output[i] = &groupResolver{ctx: ctx, root: resolver, data: v}
+	}
+	return output, nil
+}
+
 func (resolver *groupResolver) Props(ctx context.Context) (*groupPropertiesResolver, error) {
 	value := resolver.data.GetProps()
 	return resolver.root.wrapGroupProperties(value, true, nil)
@@ -5943,14 +8056,42 @@ func (resolver *Resolver) wrapGroupPropertieses(values []*storage.GroupPropertie
 	return output, nil
 }
 
+func (resolver *Resolver) wrapGroupPropertiesWithContext(ctx context.Context, value *storage.GroupProperties, ok bool, err error) (*groupPropertiesResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &groupPropertiesResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapGroupPropertiesesWithContext(ctx context.Context, values []*storage.GroupProperties, err error) ([]*groupPropertiesResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*groupPropertiesResolver, len(values))
+	for i, v := range values {
+		output[i] = &groupPropertiesResolver{ctx: ctx, root: resolver, data: v}
+	}
+	return output, nil
+}
+
 func (resolver *groupPropertiesResolver) AuthProviderId(ctx context.Context) string {
 	value := resolver.data.GetAuthProviderId()
 	return value
 }
 
+func (resolver *groupPropertiesResolver) Id(ctx context.Context) graphql.ID {
+	value := resolver.data.GetId()
+	return graphql.ID(value)
+}
+
 func (resolver *groupPropertiesResolver) Key(ctx context.Context) string {
 	value := resolver.data.GetKey()
 	return value
+}
+
+func (resolver *groupPropertiesResolver) Traits(ctx context.Context) (*traitsResolver, error) {
+	value := resolver.data.GetTraits()
+	return resolver.root.wrapTraits(value, true, nil)
 }
 
 func (resolver *groupPropertiesResolver) Value(ctx context.Context) string {
@@ -5979,6 +8120,24 @@ func (resolver *Resolver) wrapImages(values []*storage.Image, err error) ([]*ima
 	output := make([]*imageResolver, len(values))
 	for i, v := range values {
 		output[i] = &imageResolver{root: resolver, data: v, list: nil}
+	}
+	return output, nil
+}
+
+func (resolver *Resolver) wrapImageWithContext(ctx context.Context, value *storage.Image, ok bool, err error) (*imageResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &imageResolver{ctx: ctx, root: resolver, data: value, list: nil}, nil
+}
+
+func (resolver *Resolver) wrapImagesWithContext(ctx context.Context, values []*storage.Image, err error) ([]*imageResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*imageResolver, len(values))
+	for i, v := range values {
+		output[i] = &imageResolver{ctx: ctx, root: resolver, data: v, list: nil}
 	}
 	return output, nil
 }
@@ -6019,7 +8178,7 @@ func (resolver *imageResolver) LastUpdated(ctx context.Context) (*graphql.Time, 
 	if resolver.data == nil {
 		value = resolver.list.GetLastUpdated()
 	}
-	return timestamp(value)
+	return protocompat.ConvertTimestampToGraphqlTimeOrError(value)
 }
 
 func (resolver *imageResolver) Metadata(ctx context.Context) (*imageMetadataResolver, error) {
@@ -6032,6 +8191,12 @@ func (resolver *imageResolver) Name(ctx context.Context) (*imageNameResolver, er
 	resolver.ensureData(ctx)
 	value := resolver.data.GetName()
 	return resolver.root.wrapImageName(value, true, nil)
+}
+
+func (resolver *imageResolver) Names(ctx context.Context) ([]*imageNameResolver, error) {
+	resolver.ensureData(ctx)
+	value := resolver.data.GetNames()
+	return resolver.root.wrapImageNames(value, nil)
 }
 
 func (resolver *imageResolver) NotPullable(ctx context.Context) bool {
@@ -6060,12 +8225,6 @@ func (resolver *imageResolver) RiskScore(ctx context.Context) float64 {
 	return float64(value)
 }
 
-func (resolver *imageResolver) Scan(ctx context.Context) (*imageScanResolver, error) {
-	resolver.ensureData(ctx)
-	value := resolver.data.GetScan()
-	return resolver.root.wrapImageScan(value, true, nil)
-}
-
 func (resolver *imageResolver) Signature(ctx context.Context) (*imageSignatureResolver, error) {
 	resolver.ensureData(ctx)
 	value := resolver.data.GetSignature()
@@ -6076,6 +8235,108 @@ func (resolver *imageResolver) SignatureVerificationData(ctx context.Context) (*
 	resolver.ensureData(ctx)
 	value := resolver.data.GetSignatureVerificationData()
 	return resolver.root.wrapImageSignatureVerificationData(value, true, nil)
+}
+
+type imageCVEResolver struct {
+	ctx  context.Context
+	root *Resolver
+	data *storage.ImageCVE
+}
+
+func (resolver *Resolver) wrapImageCVE(value *storage.ImageCVE, ok bool, err error) (*imageCVEResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &imageCVEResolver{root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapImageCVEs(values []*storage.ImageCVE, err error) ([]*imageCVEResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*imageCVEResolver, len(values))
+	for i, v := range values {
+		output[i] = &imageCVEResolver{root: resolver, data: v}
+	}
+	return output, nil
+}
+
+func (resolver *Resolver) wrapImageCVEWithContext(ctx context.Context, value *storage.ImageCVE, ok bool, err error) (*imageCVEResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &imageCVEResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapImageCVEsWithContext(ctx context.Context, values []*storage.ImageCVE, err error) ([]*imageCVEResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*imageCVEResolver, len(values))
+	for i, v := range values {
+		output[i] = &imageCVEResolver{ctx: ctx, root: resolver, data: v}
+	}
+	return output, nil
+}
+
+func (resolver *imageCVEResolver) CveBaseInfo(ctx context.Context) (*cVEInfoResolver, error) {
+	value := resolver.data.GetCveBaseInfo()
+	return resolver.root.wrapCVEInfo(value, true, nil)
+}
+
+func (resolver *imageCVEResolver) Cvss(ctx context.Context) float64 {
+	value := resolver.data.GetCvss()
+	return float64(value)
+}
+
+func (resolver *imageCVEResolver) CvssMetrics(ctx context.Context) ([]*cVSSScoreResolver, error) {
+	value := resolver.data.GetCvssMetrics()
+	return resolver.root.wrapCVSSScores(value, nil)
+}
+
+func (resolver *imageCVEResolver) Id(ctx context.Context) graphql.ID {
+	value := resolver.data.GetId()
+	return graphql.ID(value)
+}
+
+func (resolver *imageCVEResolver) ImpactScore(ctx context.Context) float64 {
+	value := resolver.data.GetImpactScore()
+	return float64(value)
+}
+
+func (resolver *imageCVEResolver) NvdScoreVersion(ctx context.Context) string {
+	value := resolver.data.GetNvdScoreVersion()
+	return value.String()
+}
+
+func (resolver *imageCVEResolver) Nvdcvss(ctx context.Context) float64 {
+	value := resolver.data.GetNvdcvss()
+	return float64(value)
+}
+
+func (resolver *imageCVEResolver) OperatingSystem(ctx context.Context) string {
+	value := resolver.data.GetOperatingSystem()
+	return value
+}
+
+func (resolver *imageCVEResolver) Severity(ctx context.Context) string {
+	value := resolver.data.GetSeverity()
+	return value.String()
+}
+
+func (resolver *imageCVEResolver) SnoozeExpiry(ctx context.Context) (*graphql.Time, error) {
+	value := resolver.data.GetSnoozeExpiry()
+	return protocompat.ConvertTimestampToGraphqlTimeOrError(value)
+}
+
+func (resolver *imageCVEResolver) SnoozeStart(ctx context.Context) (*graphql.Time, error) {
+	value := resolver.data.GetSnoozeStart()
+	return protocompat.ConvertTimestampToGraphqlTimeOrError(value)
+}
+
+func (resolver *imageCVEResolver) Snoozed(ctx context.Context) bool {
+	value := resolver.data.GetSnoozed()
+	return value
 }
 
 type imageComponentResolver struct {
@@ -6098,6 +8359,24 @@ func (resolver *Resolver) wrapImageComponents(values []*storage.ImageComponent, 
 	output := make([]*imageComponentResolver, len(values))
 	for i, v := range values {
 		output[i] = &imageComponentResolver{root: resolver, data: v}
+	}
+	return output, nil
+}
+
+func (resolver *Resolver) wrapImageComponentWithContext(ctx context.Context, value *storage.ImageComponent, ok bool, err error) (*imageComponentResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &imageComponentResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapImageComponentsWithContext(ctx context.Context, values []*storage.ImageComponent, err error) ([]*imageComponentResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*imageComponentResolver, len(values))
+	for i, v := range values {
+		output[i] = &imageComponentResolver{ctx: ctx, root: resolver, data: v}
 	}
 	return output, nil
 }
@@ -6171,6 +8450,24 @@ func (resolver *Resolver) wrapImageLayers(values []*storage.ImageLayer, err erro
 	return output, nil
 }
 
+func (resolver *Resolver) wrapImageLayerWithContext(ctx context.Context, value *storage.ImageLayer, ok bool, err error) (*imageLayerResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &imageLayerResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapImageLayersWithContext(ctx context.Context, values []*storage.ImageLayer, err error) ([]*imageLayerResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*imageLayerResolver, len(values))
+	for i, v := range values {
+		output[i] = &imageLayerResolver{ctx: ctx, root: resolver, data: v}
+	}
+	return output, nil
+}
+
 func (resolver *imageLayerResolver) Author(ctx context.Context) string {
 	value := resolver.data.GetAuthor()
 	return value
@@ -6178,7 +8475,7 @@ func (resolver *imageLayerResolver) Author(ctx context.Context) string {
 
 func (resolver *imageLayerResolver) Created(ctx context.Context) (*graphql.Time, error) {
 	value := resolver.data.GetCreated()
-	return timestamp(value)
+	return protocompat.ConvertTimestampToGraphqlTimeOrError(value)
 }
 
 func (resolver *imageLayerResolver) Empty(ctx context.Context) bool {
@@ -6216,6 +8513,24 @@ func (resolver *Resolver) wrapImageMetadatas(values []*storage.ImageMetadata, er
 	output := make([]*imageMetadataResolver, len(values))
 	for i, v := range values {
 		output[i] = &imageMetadataResolver{root: resolver, data: v}
+	}
+	return output, nil
+}
+
+func (resolver *Resolver) wrapImageMetadataWithContext(ctx context.Context, value *storage.ImageMetadata, ok bool, err error) (*imageMetadataResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &imageMetadataResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapImageMetadatasWithContext(ctx context.Context, values []*storage.ImageMetadata, err error) ([]*imageMetadataResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*imageMetadataResolver, len(values))
+	for i, v := range values {
+		output[i] = &imageMetadataResolver{ctx: ctx, root: resolver, data: v}
 	}
 	return output, nil
 }
@@ -6264,6 +8579,24 @@ func (resolver *Resolver) wrapImageNames(values []*storage.ImageName, err error)
 	return output, nil
 }
 
+func (resolver *Resolver) wrapImageNameWithContext(ctx context.Context, value *storage.ImageName, ok bool, err error) (*imageNameResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &imageNameResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapImageNamesWithContext(ctx context.Context, values []*storage.ImageName, err error) ([]*imageNameResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*imageNameResolver, len(values))
+	for i, v := range values {
+		output[i] = &imageNameResolver{ctx: ctx, root: resolver, data: v}
+	}
+	return output, nil
+}
+
 func (resolver *imageNameResolver) FullName(ctx context.Context) string {
 	value := resolver.data.GetFullName()
 	return value
@@ -6308,6 +8641,24 @@ func (resolver *Resolver) wrapImagePullSecrets(values []*storage.ImagePullSecret
 	return output, nil
 }
 
+func (resolver *Resolver) wrapImagePullSecretWithContext(ctx context.Context, value *storage.ImagePullSecret, ok bool, err error) (*imagePullSecretResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &imagePullSecretResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapImagePullSecretsWithContext(ctx context.Context, values []*storage.ImagePullSecret, err error) ([]*imagePullSecretResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*imagePullSecretResolver, len(values))
+	for i, v := range values {
+		output[i] = &imagePullSecretResolver{ctx: ctx, root: resolver, data: v}
+	}
+	return output, nil
+}
+
 func (resolver *imagePullSecretResolver) Registries(ctx context.Context) ([]*imagePullSecret_RegistryResolver, error) {
 	value := resolver.data.GetRegistries()
 	return resolver.root.wrapImagePullSecret_Registries(value, nil)
@@ -6333,6 +8684,24 @@ func (resolver *Resolver) wrapImagePullSecret_Registries(values []*storage.Image
 	output := make([]*imagePullSecret_RegistryResolver, len(values))
 	for i, v := range values {
 		output[i] = &imagePullSecret_RegistryResolver{root: resolver, data: v}
+	}
+	return output, nil
+}
+
+func (resolver *Resolver) wrapImagePullSecret_RegistryWithContext(ctx context.Context, value *storage.ImagePullSecret_Registry, ok bool, err error) (*imagePullSecret_RegistryResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &imagePullSecret_RegistryResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapImagePullSecret_RegistriesWithContext(ctx context.Context, values []*storage.ImagePullSecret_Registry, err error) ([]*imagePullSecret_RegistryResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*imagePullSecret_RegistryResolver, len(values))
+	for i, v := range values {
+		output[i] = &imagePullSecret_RegistryResolver{ctx: ctx, root: resolver, data: v}
 	}
 	return output, nil
 }
@@ -6371,6 +8740,24 @@ func (resolver *Resolver) wrapImageScans(values []*storage.ImageScan, err error)
 	return output, nil
 }
 
+func (resolver *Resolver) wrapImageScanWithContext(ctx context.Context, value *storage.ImageScan, ok bool, err error) (*imageScanResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &imageScanResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapImageScansWithContext(ctx context.Context, values []*storage.ImageScan, err error) ([]*imageScanResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*imageScanResolver, len(values))
+	for i, v := range values {
+		output[i] = &imageScanResolver{ctx: ctx, root: resolver, data: v}
+	}
+	return output, nil
+}
+
 func (resolver *imageScanResolver) DataSource(ctx context.Context) (*dataSourceResolver, error) {
 	value := resolver.data.GetDataSource()
 	return resolver.root.wrapDataSource(value, true, nil)
@@ -6388,7 +8775,7 @@ func (resolver *imageScanResolver) OperatingSystem(ctx context.Context) string {
 
 func (resolver *imageScanResolver) ScanTime(ctx context.Context) (*graphql.Time, error) {
 	value := resolver.data.GetScanTime()
-	return timestamp(value)
+	return protocompat.ConvertTimestampToGraphqlTimeOrError(value)
 }
 
 func (resolver *imageScanResolver) ScannerVersion(ctx context.Context) string {
@@ -6438,9 +8825,27 @@ func (resolver *Resolver) wrapImageSignatures(values []*storage.ImageSignature, 
 	return output, nil
 }
 
+func (resolver *Resolver) wrapImageSignatureWithContext(ctx context.Context, value *storage.ImageSignature, ok bool, err error) (*imageSignatureResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &imageSignatureResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapImageSignaturesWithContext(ctx context.Context, values []*storage.ImageSignature, err error) ([]*imageSignatureResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*imageSignatureResolver, len(values))
+	for i, v := range values {
+		output[i] = &imageSignatureResolver{ctx: ctx, root: resolver, data: v}
+	}
+	return output, nil
+}
+
 func (resolver *imageSignatureResolver) Fetched(ctx context.Context) (*graphql.Time, error) {
 	value := resolver.data.GetFetched()
-	return timestamp(value)
+	return protocompat.ConvertTimestampToGraphqlTimeOrError(value)
 }
 
 func (resolver *imageSignatureResolver) Signatures(ctx context.Context) ([]*signatureResolver, error) {
@@ -6468,6 +8873,24 @@ func (resolver *Resolver) wrapImageSignatureVerificationDatas(values []*storage.
 	output := make([]*imageSignatureVerificationDataResolver, len(values))
 	for i, v := range values {
 		output[i] = &imageSignatureVerificationDataResolver{root: resolver, data: v}
+	}
+	return output, nil
+}
+
+func (resolver *Resolver) wrapImageSignatureVerificationDataWithContext(ctx context.Context, value *storage.ImageSignatureVerificationData, ok bool, err error) (*imageSignatureVerificationDataResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &imageSignatureVerificationDataResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapImageSignatureVerificationDatasWithContext(ctx context.Context, values []*storage.ImageSignatureVerificationData, err error) ([]*imageSignatureVerificationDataResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*imageSignatureVerificationDataResolver, len(values))
+	for i, v := range values {
+		output[i] = &imageSignatureVerificationDataResolver{ctx: ctx, root: resolver, data: v}
 	}
 	return output, nil
 }
@@ -6501,6 +8924,24 @@ func (resolver *Resolver) wrapImageSignatureVerificationResults(values []*storag
 	return output, nil
 }
 
+func (resolver *Resolver) wrapImageSignatureVerificationResultWithContext(ctx context.Context, value *storage.ImageSignatureVerificationResult, ok bool, err error) (*imageSignatureVerificationResultResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &imageSignatureVerificationResultResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapImageSignatureVerificationResultsWithContext(ctx context.Context, values []*storage.ImageSignatureVerificationResult, err error) ([]*imageSignatureVerificationResultResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*imageSignatureVerificationResultResolver, len(values))
+	for i, v := range values {
+		output[i] = &imageSignatureVerificationResultResolver{ctx: ctx, root: resolver, data: v}
+	}
+	return output, nil
+}
+
 func (resolver *imageSignatureVerificationResultResolver) Description(ctx context.Context) string {
 	value := resolver.data.GetDescription()
 	return value
@@ -6513,7 +8954,12 @@ func (resolver *imageSignatureVerificationResultResolver) Status(ctx context.Con
 
 func (resolver *imageSignatureVerificationResultResolver) VerificationTime(ctx context.Context) (*graphql.Time, error) {
 	value := resolver.data.GetVerificationTime()
-	return timestamp(value)
+	return protocompat.ConvertTimestampToGraphqlTimeOrError(value)
+}
+
+func (resolver *imageSignatureVerificationResultResolver) VerifiedImageReferences(ctx context.Context) []string {
+	value := resolver.data.GetVerifiedImageReferences()
+	return value
 }
 
 func (resolver *imageSignatureVerificationResultResolver) VerifierId(ctx context.Context) string {
@@ -6581,8 +9027,31 @@ func (resolver *Resolver) wrapJiras(values []*storage.Jira, err error) ([]*jiraR
 	return output, nil
 }
 
+func (resolver *Resolver) wrapJiraWithContext(ctx context.Context, value *storage.Jira, ok bool, err error) (*jiraResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &jiraResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapJirasWithContext(ctx context.Context, values []*storage.Jira, err error) ([]*jiraResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*jiraResolver, len(values))
+	for i, v := range values {
+		output[i] = &jiraResolver{ctx: ctx, root: resolver, data: v}
+	}
+	return output, nil
+}
+
 func (resolver *jiraResolver) DefaultFieldsJson(ctx context.Context) string {
 	value := resolver.data.GetDefaultFieldsJson()
+	return value
+}
+
+func (resolver *jiraResolver) DisablePriority(ctx context.Context) bool {
+	value := resolver.data.GetDisablePriority()
 	return value
 }
 
@@ -6635,6 +9104,24 @@ func (resolver *Resolver) wrapJira_PriorityMappings(values []*storage.Jira_Prior
 	return output, nil
 }
 
+func (resolver *Resolver) wrapJira_PriorityMappingWithContext(ctx context.Context, value *storage.Jira_PriorityMapping, ok bool, err error) (*jira_PriorityMappingResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &jira_PriorityMappingResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapJira_PriorityMappingsWithContext(ctx context.Context, values []*storage.Jira_PriorityMapping, err error) ([]*jira_PriorityMappingResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*jira_PriorityMappingResolver, len(values))
+	for i, v := range values {
+		output[i] = &jira_PriorityMappingResolver{ctx: ctx, root: resolver, data: v}
+	}
+	return output, nil
+}
+
 func (resolver *jira_PriorityMappingResolver) PriorityName(ctx context.Context) string {
 	value := resolver.data.GetPriorityName()
 	return value
@@ -6669,6 +9156,24 @@ func (resolver *Resolver) wrapK8SRoles(values []*storage.K8SRole, err error) ([]
 	return output, nil
 }
 
+func (resolver *Resolver) wrapK8SRoleWithContext(ctx context.Context, value *storage.K8SRole, ok bool, err error) (*k8SRoleResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &k8SRoleResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapK8SRolesWithContext(ctx context.Context, values []*storage.K8SRole, err error) ([]*k8SRoleResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*k8SRoleResolver, len(values))
+	for i, v := range values {
+		output[i] = &k8SRoleResolver{ctx: ctx, root: resolver, data: v}
+	}
+	return output, nil
+}
+
 func (resolver *k8SRoleResolver) Annotations(ctx context.Context) labels {
 	value := resolver.data.GetAnnotations()
 	return labelsResolver(value)
@@ -6691,7 +9196,7 @@ func (resolver *k8SRoleResolver) ClusterRole(ctx context.Context) bool {
 
 func (resolver *k8SRoleResolver) CreatedAt(ctx context.Context) (*graphql.Time, error) {
 	value := resolver.data.GetCreatedAt()
-	return timestamp(value)
+	return protocompat.ConvertTimestampToGraphqlTimeOrError(value)
 }
 
 func (resolver *k8SRoleResolver) Id(ctx context.Context) graphql.ID {
@@ -6743,6 +9248,24 @@ func (resolver *Resolver) wrapK8SRoleBindings(values []*storage.K8SRoleBinding, 
 	return output, nil
 }
 
+func (resolver *Resolver) wrapK8SRoleBindingWithContext(ctx context.Context, value *storage.K8SRoleBinding, ok bool, err error) (*k8SRoleBindingResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &k8SRoleBindingResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapK8SRoleBindingsWithContext(ctx context.Context, values []*storage.K8SRoleBinding, err error) ([]*k8SRoleBindingResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*k8SRoleBindingResolver, len(values))
+	for i, v := range values {
+		output[i] = &k8SRoleBindingResolver{ctx: ctx, root: resolver, data: v}
+	}
+	return output, nil
+}
+
 func (resolver *k8SRoleBindingResolver) Annotations(ctx context.Context) labels {
 	value := resolver.data.GetAnnotations()
 	return labelsResolver(value)
@@ -6765,7 +9288,7 @@ func (resolver *k8SRoleBindingResolver) ClusterRole(ctx context.Context) bool {
 
 func (resolver *k8SRoleBindingResolver) CreatedAt(ctx context.Context) (*graphql.Time, error) {
 	value := resolver.data.GetCreatedAt()
-	return timestamp(value)
+	return protocompat.ConvertTimestampToGraphqlTimeOrError(value)
 }
 
 func (resolver *k8SRoleBindingResolver) Id(ctx context.Context) graphql.ID {
@@ -6822,6 +9345,24 @@ func (resolver *Resolver) wrapKeyValuePairs(values []*storage.KeyValuePair, err 
 	return output, nil
 }
 
+func (resolver *Resolver) wrapKeyValuePairWithContext(ctx context.Context, value *storage.KeyValuePair, ok bool, err error) (*keyValuePairResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &keyValuePairResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapKeyValuePairsWithContext(ctx context.Context, values []*storage.KeyValuePair, err error) ([]*keyValuePairResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*keyValuePairResolver, len(values))
+	for i, v := range values {
+		output[i] = &keyValuePairResolver{ctx: ctx, root: resolver, data: v}
+	}
+	return output, nil
+}
+
 func (resolver *keyValuePairResolver) Key(ctx context.Context) string {
 	value := resolver.data.GetKey()
 	return value
@@ -6870,6 +9411,24 @@ func (resolver *Resolver) wrapLabelSelectors(values []*storage.LabelSelector, er
 	output := make([]*labelSelectorResolver, len(values))
 	for i, v := range values {
 		output[i] = &labelSelectorResolver{root: resolver, data: v}
+	}
+	return output, nil
+}
+
+func (resolver *Resolver) wrapLabelSelectorWithContext(ctx context.Context, value *storage.LabelSelector, ok bool, err error) (*labelSelectorResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &labelSelectorResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapLabelSelectorsWithContext(ctx context.Context, values []*storage.LabelSelector, err error) ([]*labelSelectorResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*labelSelectorResolver, len(values))
+	for i, v := range values {
+		output[i] = &labelSelectorResolver{ctx: ctx, root: resolver, data: v}
 	}
 	return output, nil
 }
@@ -6926,6 +9485,24 @@ func (resolver *Resolver) wrapLabelSelector_Requirements(values []*storage.Label
 	return output, nil
 }
 
+func (resolver *Resolver) wrapLabelSelector_RequirementWithContext(ctx context.Context, value *storage.LabelSelector_Requirement, ok bool, err error) (*labelSelector_RequirementResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &labelSelector_RequirementResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapLabelSelector_RequirementsWithContext(ctx context.Context, values []*storage.LabelSelector_Requirement, err error) ([]*labelSelector_RequirementResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*labelSelector_RequirementResolver, len(values))
+	for i, v := range values {
+		output[i] = &labelSelector_RequirementResolver{ctx: ctx, root: resolver, data: v}
+	}
+	return output, nil
+}
+
 func (resolver *labelSelector_RequirementResolver) Key(ctx context.Context) string {
 	value := resolver.data.GetKey()
 	return value
@@ -6961,6 +9538,24 @@ func (resolver *Resolver) wrapLicenses(values []*storage.License, err error) ([]
 	output := make([]*licenseResolver, len(values))
 	for i, v := range values {
 		output[i] = &licenseResolver{root: resolver, data: v}
+	}
+	return output, nil
+}
+
+func (resolver *Resolver) wrapLicenseWithContext(ctx context.Context, value *storage.License, ok bool, err error) (*licenseResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &licenseResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapLicensesWithContext(ctx context.Context, values []*storage.License, err error) ([]*licenseResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*licenseResolver, len(values))
+	for i, v := range values {
+		output[i] = &licenseResolver{ctx: ctx, root: resolver, data: v}
 	}
 	return output, nil
 }
@@ -7040,6 +9635,24 @@ func (resolver *Resolver) wrapLivenessProbes(values []*storage.LivenessProbe, er
 	return output, nil
 }
 
+func (resolver *Resolver) wrapLivenessProbeWithContext(ctx context.Context, value *storage.LivenessProbe, ok bool, err error) (*livenessProbeResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &livenessProbeResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapLivenessProbesWithContext(ctx context.Context, values []*storage.LivenessProbe, err error) ([]*livenessProbeResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*livenessProbeResolver, len(values))
+	for i, v := range values {
+		output[i] = &livenessProbeResolver{ctx: ctx, root: resolver, data: v}
+	}
+	return output, nil
+}
+
 func (resolver *livenessProbeResolver) Defined(ctx context.Context) bool {
 	value := resolver.data.GetDefined()
 	return value
@@ -7087,6 +9700,24 @@ func (resolver *Resolver) wrapMetadatas(values []*v1.Metadata, err error) ([]*me
 	return output, nil
 }
 
+func (resolver *Resolver) wrapMetadataWithContext(ctx context.Context, value *v1.Metadata, ok bool, err error) (*metadataResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &metadataResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapMetadatasWithContext(ctx context.Context, values []*v1.Metadata, err error) ([]*metadataResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*metadataResolver, len(values))
+	for i, v := range values {
+		output[i] = &metadataResolver{ctx: ctx, root: resolver, data: v}
+	}
+	return output, nil
+}
+
 func (resolver *metadataResolver) BuildFlavor(ctx context.Context) string {
 	value := resolver.data.GetBuildFlavor()
 	return value
@@ -7125,6 +9756,192 @@ func toMetadata_LicenseStatuses(values *[]string) []v1.Metadata_LicenseStatus {
 	return output
 }
 
+type microsoftSentinelResolver struct {
+	ctx  context.Context
+	root *Resolver
+	data *storage.MicrosoftSentinel
+}
+
+func (resolver *Resolver) wrapMicrosoftSentinel(value *storage.MicrosoftSentinel, ok bool, err error) (*microsoftSentinelResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &microsoftSentinelResolver{root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapMicrosoftSentinels(values []*storage.MicrosoftSentinel, err error) ([]*microsoftSentinelResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*microsoftSentinelResolver, len(values))
+	for i, v := range values {
+		output[i] = &microsoftSentinelResolver{root: resolver, data: v}
+	}
+	return output, nil
+}
+
+func (resolver *Resolver) wrapMicrosoftSentinelWithContext(ctx context.Context, value *storage.MicrosoftSentinel, ok bool, err error) (*microsoftSentinelResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &microsoftSentinelResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapMicrosoftSentinelsWithContext(ctx context.Context, values []*storage.MicrosoftSentinel, err error) ([]*microsoftSentinelResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*microsoftSentinelResolver, len(values))
+	for i, v := range values {
+		output[i] = &microsoftSentinelResolver{ctx: ctx, root: resolver, data: v}
+	}
+	return output, nil
+}
+
+func (resolver *microsoftSentinelResolver) AlertDcrConfig(ctx context.Context) (*microsoftSentinel_DataCollectionRuleConfigResolver, error) {
+	value := resolver.data.GetAlertDcrConfig()
+	return resolver.root.wrapMicrosoftSentinel_DataCollectionRuleConfig(value, true, nil)
+}
+
+func (resolver *microsoftSentinelResolver) ApplicationClientId(ctx context.Context) string {
+	value := resolver.data.GetApplicationClientId()
+	return value
+}
+
+func (resolver *microsoftSentinelResolver) AuditLogDcrConfig(ctx context.Context) (*microsoftSentinel_DataCollectionRuleConfigResolver, error) {
+	value := resolver.data.GetAuditLogDcrConfig()
+	return resolver.root.wrapMicrosoftSentinel_DataCollectionRuleConfig(value, true, nil)
+}
+
+func (resolver *microsoftSentinelResolver) ClientCertAuthConfig(ctx context.Context) (*microsoftSentinel_ClientCertAuthConfigResolver, error) {
+	value := resolver.data.GetClientCertAuthConfig()
+	return resolver.root.wrapMicrosoftSentinel_ClientCertAuthConfig(value, true, nil)
+}
+
+func (resolver *microsoftSentinelResolver) DirectoryTenantId(ctx context.Context) string {
+	value := resolver.data.GetDirectoryTenantId()
+	return value
+}
+
+func (resolver *microsoftSentinelResolver) LogIngestionEndpoint(ctx context.Context) string {
+	value := resolver.data.GetLogIngestionEndpoint()
+	return value
+}
+
+func (resolver *microsoftSentinelResolver) Secret(ctx context.Context) string {
+	value := resolver.data.GetSecret()
+	return value
+}
+
+type microsoftSentinel_ClientCertAuthConfigResolver struct {
+	ctx  context.Context
+	root *Resolver
+	data *storage.MicrosoftSentinel_ClientCertAuthConfig
+}
+
+func (resolver *Resolver) wrapMicrosoftSentinel_ClientCertAuthConfig(value *storage.MicrosoftSentinel_ClientCertAuthConfig, ok bool, err error) (*microsoftSentinel_ClientCertAuthConfigResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &microsoftSentinel_ClientCertAuthConfigResolver{root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapMicrosoftSentinel_ClientCertAuthConfigs(values []*storage.MicrosoftSentinel_ClientCertAuthConfig, err error) ([]*microsoftSentinel_ClientCertAuthConfigResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*microsoftSentinel_ClientCertAuthConfigResolver, len(values))
+	for i, v := range values {
+		output[i] = &microsoftSentinel_ClientCertAuthConfigResolver{root: resolver, data: v}
+	}
+	return output, nil
+}
+
+func (resolver *Resolver) wrapMicrosoftSentinel_ClientCertAuthConfigWithContext(ctx context.Context, value *storage.MicrosoftSentinel_ClientCertAuthConfig, ok bool, err error) (*microsoftSentinel_ClientCertAuthConfigResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &microsoftSentinel_ClientCertAuthConfigResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapMicrosoftSentinel_ClientCertAuthConfigsWithContext(ctx context.Context, values []*storage.MicrosoftSentinel_ClientCertAuthConfig, err error) ([]*microsoftSentinel_ClientCertAuthConfigResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*microsoftSentinel_ClientCertAuthConfigResolver, len(values))
+	for i, v := range values {
+		output[i] = &microsoftSentinel_ClientCertAuthConfigResolver{ctx: ctx, root: resolver, data: v}
+	}
+	return output, nil
+}
+
+func (resolver *microsoftSentinel_ClientCertAuthConfigResolver) ClientCert(ctx context.Context) string {
+	value := resolver.data.GetClientCert()
+	return value
+}
+
+func (resolver *microsoftSentinel_ClientCertAuthConfigResolver) PrivateKey(ctx context.Context) string {
+	value := resolver.data.GetPrivateKey()
+	return value
+}
+
+type microsoftSentinel_DataCollectionRuleConfigResolver struct {
+	ctx  context.Context
+	root *Resolver
+	data *storage.MicrosoftSentinel_DataCollectionRuleConfig
+}
+
+func (resolver *Resolver) wrapMicrosoftSentinel_DataCollectionRuleConfig(value *storage.MicrosoftSentinel_DataCollectionRuleConfig, ok bool, err error) (*microsoftSentinel_DataCollectionRuleConfigResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &microsoftSentinel_DataCollectionRuleConfigResolver{root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapMicrosoftSentinel_DataCollectionRuleConfigs(values []*storage.MicrosoftSentinel_DataCollectionRuleConfig, err error) ([]*microsoftSentinel_DataCollectionRuleConfigResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*microsoftSentinel_DataCollectionRuleConfigResolver, len(values))
+	for i, v := range values {
+		output[i] = &microsoftSentinel_DataCollectionRuleConfigResolver{root: resolver, data: v}
+	}
+	return output, nil
+}
+
+func (resolver *Resolver) wrapMicrosoftSentinel_DataCollectionRuleConfigWithContext(ctx context.Context, value *storage.MicrosoftSentinel_DataCollectionRuleConfig, ok bool, err error) (*microsoftSentinel_DataCollectionRuleConfigResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &microsoftSentinel_DataCollectionRuleConfigResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapMicrosoftSentinel_DataCollectionRuleConfigsWithContext(ctx context.Context, values []*storage.MicrosoftSentinel_DataCollectionRuleConfig, err error) ([]*microsoftSentinel_DataCollectionRuleConfigResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*microsoftSentinel_DataCollectionRuleConfigResolver, len(values))
+	for i, v := range values {
+		output[i] = &microsoftSentinel_DataCollectionRuleConfigResolver{ctx: ctx, root: resolver, data: v}
+	}
+	return output, nil
+}
+
+func (resolver *microsoftSentinel_DataCollectionRuleConfigResolver) DataCollectionRuleId(ctx context.Context) string {
+	value := resolver.data.GetDataCollectionRuleId()
+	return value
+}
+
+func (resolver *microsoftSentinel_DataCollectionRuleConfigResolver) Enabled(ctx context.Context) bool {
+	value := resolver.data.GetEnabled()
+	return value
+}
+
+func (resolver *microsoftSentinel_DataCollectionRuleConfigResolver) StreamName(ctx context.Context) string {
+	value := resolver.data.GetStreamName()
+	return value
+}
+
 type mitreAttackVectorResolver struct {
 	ctx  context.Context
 	root *Resolver
@@ -7145,6 +9962,24 @@ func (resolver *Resolver) wrapMitreAttackVectors(values []*storage.MitreAttackVe
 	output := make([]*mitreAttackVectorResolver, len(values))
 	for i, v := range values {
 		output[i] = &mitreAttackVectorResolver{root: resolver, data: v}
+	}
+	return output, nil
+}
+
+func (resolver *Resolver) wrapMitreAttackVectorWithContext(ctx context.Context, value *storage.MitreAttackVector, ok bool, err error) (*mitreAttackVectorResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &mitreAttackVectorResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapMitreAttackVectorsWithContext(ctx context.Context, values []*storage.MitreAttackVector, err error) ([]*mitreAttackVectorResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*mitreAttackVectorResolver, len(values))
+	for i, v := range values {
+		output[i] = &mitreAttackVectorResolver{ctx: ctx, root: resolver, data: v}
 	}
 	return output, nil
 }
@@ -7179,6 +10014,24 @@ func (resolver *Resolver) wrapMitreTactics(values []*storage.MitreTactic, err er
 	output := make([]*mitreTacticResolver, len(values))
 	for i, v := range values {
 		output[i] = &mitreTacticResolver{root: resolver, data: v}
+	}
+	return output, nil
+}
+
+func (resolver *Resolver) wrapMitreTacticWithContext(ctx context.Context, value *storage.MitreTactic, ok bool, err error) (*mitreTacticResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &mitreTacticResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapMitreTacticsWithContext(ctx context.Context, values []*storage.MitreTactic, err error) ([]*mitreTacticResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*mitreTacticResolver, len(values))
+	for i, v := range values {
+		output[i] = &mitreTacticResolver{ctx: ctx, root: resolver, data: v}
 	}
 	return output, nil
 }
@@ -7222,6 +10075,24 @@ func (resolver *Resolver) wrapMitreTechniques(values []*storage.MitreTechnique, 
 	return output, nil
 }
 
+func (resolver *Resolver) wrapMitreTechniqueWithContext(ctx context.Context, value *storage.MitreTechnique, ok bool, err error) (*mitreTechniqueResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &mitreTechniqueResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapMitreTechniquesWithContext(ctx context.Context, values []*storage.MitreTechnique, err error) ([]*mitreTechniqueResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*mitreTechniqueResolver, len(values))
+	for i, v := range values {
+		output[i] = &mitreTechniqueResolver{ctx: ctx, root: resolver, data: v}
+	}
+	return output, nil
+}
+
 func (resolver *mitreTechniqueResolver) Description(ctx context.Context) string {
 	value := resolver.data.GetDescription()
 	return value
@@ -7257,6 +10128,24 @@ func (resolver *Resolver) wrapNamespaces(values []*v1.Namespace, err error) ([]*
 	output := make([]*namespaceResolver, len(values))
 	for i, v := range values {
 		output[i] = &namespaceResolver{root: resolver, data: v}
+	}
+	return output, nil
+}
+
+func (resolver *Resolver) wrapNamespaceWithContext(ctx context.Context, value *v1.Namespace, ok bool, err error) (*namespaceResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &namespaceResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapNamespacesWithContext(ctx context.Context, values []*v1.Namespace, err error) ([]*namespaceResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*namespaceResolver, len(values))
+	for i, v := range values {
+		output[i] = &namespaceResolver{ctx: ctx, root: resolver, data: v}
 	}
 	return output, nil
 }
@@ -7305,6 +10194,24 @@ func (resolver *Resolver) wrapNamespaceMetadatas(values []*storage.NamespaceMeta
 	return output, nil
 }
 
+func (resolver *Resolver) wrapNamespaceMetadataWithContext(ctx context.Context, value *storage.NamespaceMetadata, ok bool, err error) (*namespaceMetadataResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &namespaceMetadataResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapNamespaceMetadatasWithContext(ctx context.Context, values []*storage.NamespaceMetadata, err error) ([]*namespaceMetadataResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*namespaceMetadataResolver, len(values))
+	for i, v := range values {
+		output[i] = &namespaceMetadataResolver{ctx: ctx, root: resolver, data: v}
+	}
+	return output, nil
+}
+
 func (resolver *namespaceMetadataResolver) Annotations(ctx context.Context) labels {
 	value := resolver.data.GetAnnotations()
 	return labelsResolver(value)
@@ -7322,7 +10229,7 @@ func (resolver *namespaceMetadataResolver) ClusterName(ctx context.Context) stri
 
 func (resolver *namespaceMetadataResolver) CreationTime(ctx context.Context) (*graphql.Time, error) {
 	value := resolver.data.GetCreationTime()
-	return timestamp(value)
+	return protocompat.ConvertTimestampToGraphqlTimeOrError(value)
 }
 
 func (resolver *namespaceMetadataResolver) Id(ctx context.Context) graphql.ID {
@@ -7365,6 +10272,24 @@ func (resolver *Resolver) wrapNetworkEntityInfos(values []*storage.NetworkEntity
 	output := make([]*networkEntityInfoResolver, len(values))
 	for i, v := range values {
 		output[i] = &networkEntityInfoResolver{root: resolver, data: v}
+	}
+	return output, nil
+}
+
+func (resolver *Resolver) wrapNetworkEntityInfoWithContext(ctx context.Context, value *storage.NetworkEntityInfo, ok bool, err error) (*networkEntityInfoResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &networkEntityInfoResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapNetworkEntityInfosWithContext(ctx context.Context, values []*storage.NetworkEntityInfo, err error) ([]*networkEntityInfoResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*networkEntityInfoResolver, len(values))
+	for i, v := range values {
+		output[i] = &networkEntityInfoResolver{ctx: ctx, root: resolver, data: v}
 	}
 	return output, nil
 }
@@ -7441,6 +10366,24 @@ func (resolver *Resolver) wrapNetworkEntityInfo_Deployments(values []*storage.Ne
 	return output, nil
 }
 
+func (resolver *Resolver) wrapNetworkEntityInfo_DeploymentWithContext(ctx context.Context, value *storage.NetworkEntityInfo_Deployment, ok bool, err error) (*networkEntityInfo_DeploymentResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &networkEntityInfo_DeploymentResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapNetworkEntityInfo_DeploymentsWithContext(ctx context.Context, values []*storage.NetworkEntityInfo_Deployment, err error) ([]*networkEntityInfo_DeploymentResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*networkEntityInfo_DeploymentResolver, len(values))
+	for i, v := range values {
+		output[i] = &networkEntityInfo_DeploymentResolver{ctx: ctx, root: resolver, data: v}
+	}
+	return output, nil
+}
+
 func (resolver *networkEntityInfo_DeploymentResolver) Cluster(ctx context.Context) string {
 	value := resolver.data.GetCluster()
 	return value
@@ -7485,6 +10428,24 @@ func (resolver *Resolver) wrapNetworkEntityInfo_Deployment_ListenPorts(values []
 	return output, nil
 }
 
+func (resolver *Resolver) wrapNetworkEntityInfo_Deployment_ListenPortWithContext(ctx context.Context, value *storage.NetworkEntityInfo_Deployment_ListenPort, ok bool, err error) (*networkEntityInfo_Deployment_ListenPortResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &networkEntityInfo_Deployment_ListenPortResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapNetworkEntityInfo_Deployment_ListenPortsWithContext(ctx context.Context, values []*storage.NetworkEntityInfo_Deployment_ListenPort, err error) ([]*networkEntityInfo_Deployment_ListenPortResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*networkEntityInfo_Deployment_ListenPortResolver, len(values))
+	for i, v := range values {
+		output[i] = &networkEntityInfo_Deployment_ListenPortResolver{ctx: ctx, root: resolver, data: v}
+	}
+	return output, nil
+}
+
 func (resolver *networkEntityInfo_Deployment_ListenPortResolver) L4Protocol(ctx context.Context) string {
 	value := resolver.data.GetL4Protocol()
 	return value.String()
@@ -7519,8 +10480,31 @@ func (resolver *Resolver) wrapNetworkEntityInfo_ExternalSources(values []*storag
 	return output, nil
 }
 
+func (resolver *Resolver) wrapNetworkEntityInfo_ExternalSourceWithContext(ctx context.Context, value *storage.NetworkEntityInfo_ExternalSource, ok bool, err error) (*networkEntityInfo_ExternalSourceResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &networkEntityInfo_ExternalSourceResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapNetworkEntityInfo_ExternalSourcesWithContext(ctx context.Context, values []*storage.NetworkEntityInfo_ExternalSource, err error) ([]*networkEntityInfo_ExternalSourceResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*networkEntityInfo_ExternalSourceResolver, len(values))
+	for i, v := range values {
+		output[i] = &networkEntityInfo_ExternalSourceResolver{ctx: ctx, root: resolver, data: v}
+	}
+	return output, nil
+}
+
 func (resolver *networkEntityInfo_ExternalSourceResolver) Default(ctx context.Context) bool {
 	value := resolver.data.GetDefault()
+	return value
+}
+
+func (resolver *networkEntityInfo_ExternalSourceResolver) Discovered(ctx context.Context) bool {
+	value := resolver.data.GetDiscovered()
 	return value
 }
 
@@ -7571,6 +10555,24 @@ func (resolver *Resolver) wrapNetworkFlows(values []*storage.NetworkFlow, err er
 	return output, nil
 }
 
+func (resolver *Resolver) wrapNetworkFlowWithContext(ctx context.Context, value *storage.NetworkFlow, ok bool, err error) (*networkFlowResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &networkFlowResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapNetworkFlowsWithContext(ctx context.Context, values []*storage.NetworkFlow, err error) ([]*networkFlowResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*networkFlowResolver, len(values))
+	for i, v := range values {
+		output[i] = &networkFlowResolver{ctx: ctx, root: resolver, data: v}
+	}
+	return output, nil
+}
+
 func (resolver *networkFlowResolver) ClusterId(ctx context.Context) string {
 	value := resolver.data.GetClusterId()
 	return value
@@ -7578,7 +10580,7 @@ func (resolver *networkFlowResolver) ClusterId(ctx context.Context) string {
 
 func (resolver *networkFlowResolver) LastSeenTimestamp(ctx context.Context) (*graphql.Time, error) {
 	value := resolver.data.GetLastSeenTimestamp()
-	return timestamp(value)
+	return protocompat.ConvertTimestampToGraphqlTimeOrError(value)
 }
 
 func (resolver *networkFlowResolver) Props(ctx context.Context) (*networkFlowPropertiesResolver, error) {
@@ -7606,6 +10608,24 @@ func (resolver *Resolver) wrapNetworkFlowPropertieses(values []*storage.NetworkF
 	output := make([]*networkFlowPropertiesResolver, len(values))
 	for i, v := range values {
 		output[i] = &networkFlowPropertiesResolver{root: resolver, data: v}
+	}
+	return output, nil
+}
+
+func (resolver *Resolver) wrapNetworkFlowPropertiesWithContext(ctx context.Context, value *storage.NetworkFlowProperties, ok bool, err error) (*networkFlowPropertiesResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &networkFlowPropertiesResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapNetworkFlowPropertiesesWithContext(ctx context.Context, values []*storage.NetworkFlowProperties, err error) ([]*networkFlowPropertiesResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*networkFlowPropertiesResolver, len(values))
+	for i, v := range values {
+		output[i] = &networkFlowPropertiesResolver{ctx: ctx, root: resolver, data: v}
 	}
 	return output, nil
 }
@@ -7654,6 +10674,24 @@ func (resolver *Resolver) wrapNodes(values []*storage.Node, err error) ([]*nodeR
 	return output, nil
 }
 
+func (resolver *Resolver) wrapNodeWithContext(ctx context.Context, value *storage.Node, ok bool, err error) (*nodeResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &nodeResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapNodesWithContext(ctx context.Context, values []*storage.Node, err error) ([]*nodeResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*nodeResolver, len(values))
+	for i, v := range values {
+		output[i] = &nodeResolver{ctx: ctx, root: resolver, data: v}
+	}
+	return output, nil
+}
+
 func (resolver *nodeResolver) Annotations(ctx context.Context) labels {
 	value := resolver.data.GetAnnotations()
 	return labelsResolver(value)
@@ -7696,12 +10734,12 @@ func (resolver *nodeResolver) InternalIpAddresses(ctx context.Context) []string 
 
 func (resolver *nodeResolver) JoinedAt(ctx context.Context) (*graphql.Time, error) {
 	value := resolver.data.GetJoinedAt()
-	return timestamp(value)
+	return protocompat.ConvertTimestampToGraphqlTimeOrError(value)
 }
 
 func (resolver *nodeResolver) K8SUpdated(ctx context.Context) (*graphql.Time, error) {
 	value := resolver.data.GetK8SUpdated()
-	return timestamp(value)
+	return protocompat.ConvertTimestampToGraphqlTimeOrError(value)
 }
 
 func (resolver *nodeResolver) KernelVersion(ctx context.Context) string {
@@ -7726,7 +10764,7 @@ func (resolver *nodeResolver) Labels(ctx context.Context) labels {
 
 func (resolver *nodeResolver) LastUpdated(ctx context.Context) (*graphql.Time, error) {
 	value := resolver.data.GetLastUpdated()
-	return timestamp(value)
+	return protocompat.ConvertTimestampToGraphqlTimeOrError(value)
 }
 
 func (resolver *nodeResolver) Name(ctx context.Context) string {
@@ -7759,14 +10797,178 @@ func (resolver *nodeResolver) RiskScore(ctx context.Context) float64 {
 	return float64(value)
 }
 
-func (resolver *nodeResolver) Scan(ctx context.Context) (*nodeScanResolver, error) {
-	value := resolver.data.GetScan()
-	return resolver.root.wrapNodeScan(value, true, nil)
-}
-
 func (resolver *nodeResolver) Taints(ctx context.Context) ([]*taintResolver, error) {
 	value := resolver.data.GetTaints()
 	return resolver.root.wrapTaints(value, nil)
+}
+
+type nodeCVEResolver struct {
+	ctx  context.Context
+	root *Resolver
+	data *storage.NodeCVE
+}
+
+func (resolver *Resolver) wrapNodeCVE(value *storage.NodeCVE, ok bool, err error) (*nodeCVEResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &nodeCVEResolver{root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapNodeCVEs(values []*storage.NodeCVE, err error) ([]*nodeCVEResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*nodeCVEResolver, len(values))
+	for i, v := range values {
+		output[i] = &nodeCVEResolver{root: resolver, data: v}
+	}
+	return output, nil
+}
+
+func (resolver *Resolver) wrapNodeCVEWithContext(ctx context.Context, value *storage.NodeCVE, ok bool, err error) (*nodeCVEResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &nodeCVEResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapNodeCVEsWithContext(ctx context.Context, values []*storage.NodeCVE, err error) ([]*nodeCVEResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*nodeCVEResolver, len(values))
+	for i, v := range values {
+		output[i] = &nodeCVEResolver{ctx: ctx, root: resolver, data: v}
+	}
+	return output, nil
+}
+
+func (resolver *nodeCVEResolver) CveBaseInfo(ctx context.Context) (*cVEInfoResolver, error) {
+	value := resolver.data.GetCveBaseInfo()
+	return resolver.root.wrapCVEInfo(value, true, nil)
+}
+
+func (resolver *nodeCVEResolver) Cvss(ctx context.Context) float64 {
+	value := resolver.data.GetCvss()
+	return float64(value)
+}
+
+func (resolver *nodeCVEResolver) Id(ctx context.Context) graphql.ID {
+	value := resolver.data.GetId()
+	return graphql.ID(value)
+}
+
+func (resolver *nodeCVEResolver) ImpactScore(ctx context.Context) float64 {
+	value := resolver.data.GetImpactScore()
+	return float64(value)
+}
+
+func (resolver *nodeCVEResolver) OperatingSystem(ctx context.Context) string {
+	value := resolver.data.GetOperatingSystem()
+	return value
+}
+
+func (resolver *nodeCVEResolver) Orphaned(ctx context.Context) bool {
+	value := resolver.data.GetOrphaned()
+	return value
+}
+
+func (resolver *nodeCVEResolver) OrphanedTime(ctx context.Context) (*graphql.Time, error) {
+	value := resolver.data.GetOrphanedTime()
+	return protocompat.ConvertTimestampToGraphqlTimeOrError(value)
+}
+
+func (resolver *nodeCVEResolver) Severity(ctx context.Context) string {
+	value := resolver.data.GetSeverity()
+	return value.String()
+}
+
+func (resolver *nodeCVEResolver) SnoozeExpiry(ctx context.Context) (*graphql.Time, error) {
+	value := resolver.data.GetSnoozeExpiry()
+	return protocompat.ConvertTimestampToGraphqlTimeOrError(value)
+}
+
+func (resolver *nodeCVEResolver) SnoozeStart(ctx context.Context) (*graphql.Time, error) {
+	value := resolver.data.GetSnoozeStart()
+	return protocompat.ConvertTimestampToGraphqlTimeOrError(value)
+}
+
+func (resolver *nodeCVEResolver) Snoozed(ctx context.Context) bool {
+	value := resolver.data.GetSnoozed()
+	return value
+}
+
+type nodeComponentResolver struct {
+	ctx  context.Context
+	root *Resolver
+	data *storage.NodeComponent
+}
+
+func (resolver *Resolver) wrapNodeComponent(value *storage.NodeComponent, ok bool, err error) (*nodeComponentResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &nodeComponentResolver{root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapNodeComponents(values []*storage.NodeComponent, err error) ([]*nodeComponentResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*nodeComponentResolver, len(values))
+	for i, v := range values {
+		output[i] = &nodeComponentResolver{root: resolver, data: v}
+	}
+	return output, nil
+}
+
+func (resolver *Resolver) wrapNodeComponentWithContext(ctx context.Context, value *storage.NodeComponent, ok bool, err error) (*nodeComponentResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &nodeComponentResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapNodeComponentsWithContext(ctx context.Context, values []*storage.NodeComponent, err error) ([]*nodeComponentResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*nodeComponentResolver, len(values))
+	for i, v := range values {
+		output[i] = &nodeComponentResolver{ctx: ctx, root: resolver, data: v}
+	}
+	return output, nil
+}
+
+func (resolver *nodeComponentResolver) Id(ctx context.Context) graphql.ID {
+	value := resolver.data.GetId()
+	return graphql.ID(value)
+}
+
+func (resolver *nodeComponentResolver) Name(ctx context.Context) string {
+	value := resolver.data.GetName()
+	return value
+}
+
+func (resolver *nodeComponentResolver) OperatingSystem(ctx context.Context) string {
+	value := resolver.data.GetOperatingSystem()
+	return value
+}
+
+func (resolver *nodeComponentResolver) Priority(ctx context.Context) int32 {
+	value := resolver.data.GetPriority()
+	return int32(value)
+}
+
+func (resolver *nodeComponentResolver) RiskScore(ctx context.Context) float64 {
+	value := resolver.data.GetRiskScore()
+	return float64(value)
+}
+
+func (resolver *nodeComponentResolver) Version(ctx context.Context) string {
+	value := resolver.data.GetVersion()
+	return value
 }
 
 type nodeScanResolver struct {
@@ -7793,6 +10995,24 @@ func (resolver *Resolver) wrapNodeScans(values []*storage.NodeScan, err error) (
 	return output, nil
 }
 
+func (resolver *Resolver) wrapNodeScanWithContext(ctx context.Context, value *storage.NodeScan, ok bool, err error) (*nodeScanResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &nodeScanResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapNodeScansWithContext(ctx context.Context, values []*storage.NodeScan, err error) ([]*nodeScanResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*nodeScanResolver, len(values))
+	for i, v := range values {
+		output[i] = &nodeScanResolver{ctx: ctx, root: resolver, data: v}
+	}
+	return output, nil
+}
+
 func (resolver *nodeScanResolver) Notes(ctx context.Context) []string {
 	value := resolver.data.GetNotes()
 	return stringSlice(value)
@@ -7805,7 +11025,12 @@ func (resolver *nodeScanResolver) OperatingSystem(ctx context.Context) string {
 
 func (resolver *nodeScanResolver) ScanTime(ctx context.Context) (*graphql.Time, error) {
 	value := resolver.data.GetScanTime()
-	return timestamp(value)
+	return protocompat.ConvertTimestampToGraphqlTimeOrError(value)
+}
+
+func (resolver *nodeScanResolver) ScannerVersion(ctx context.Context) string {
+	value := resolver.data.GetScannerVersion()
+	return value.String()
 }
 
 func toNodeScan_Note(value *string) storage.NodeScan_Note {
@@ -7822,6 +11047,24 @@ func toNodeScan_Notes(values *[]string) []storage.NodeScan_Note {
 	output := make([]storage.NodeScan_Note, len(*values))
 	for i, v := range *values {
 		output[i] = toNodeScan_Note(&v)
+	}
+	return output
+}
+
+func toNodeScan_Scanner(value *string) storage.NodeScan_Scanner {
+	if value != nil {
+		return storage.NodeScan_Scanner(storage.NodeScan_Scanner_value[*value])
+	}
+	return storage.NodeScan_Scanner(0)
+}
+
+func toNodeScan_Scanners(values *[]string) []storage.NodeScan_Scanner {
+	if values == nil {
+		return nil
+	}
+	output := make([]storage.NodeScan_Scanner, len(*values))
+	for i, v := range *values {
+		output[i] = toNodeScan_Scanner(&v)
 	}
 	return output
 }
@@ -7868,6 +11111,24 @@ func (resolver *Resolver) wrapNotifiers(values []*storage.Notifier, err error) (
 	return output, nil
 }
 
+func (resolver *Resolver) wrapNotifierWithContext(ctx context.Context, value *storage.Notifier, ok bool, err error) (*notifierResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &notifierResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapNotifiersWithContext(ctx context.Context, values []*storage.Notifier, err error) ([]*notifierResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*notifierResolver, len(values))
+	for i, v := range values {
+		output[i] = &notifierResolver{ctx: ctx, root: resolver, data: v}
+	}
+	return output, nil
+}
+
 func (resolver *notifierResolver) AwsSecurityHub(ctx context.Context) (*aWSSecurityHubResolver, error) {
 	value := resolver.data.GetAwsSecurityHub()
 	return resolver.root.wrapAWSSecurityHub(value, true, nil)
@@ -7908,8 +11169,18 @@ func (resolver *notifierResolver) LabelKey(ctx context.Context) string {
 	return value
 }
 
+func (resolver *notifierResolver) MicrosoftSentinel(ctx context.Context) (*microsoftSentinelResolver, error) {
+	value := resolver.data.GetMicrosoftSentinel()
+	return resolver.root.wrapMicrosoftSentinel(value, true, nil)
+}
+
 func (resolver *notifierResolver) Name(ctx context.Context) string {
 	value := resolver.data.GetName()
+	return value
+}
+
+func (resolver *notifierResolver) NotifierSecret(ctx context.Context) string {
+	value := resolver.data.GetNotifierSecret()
 	return value
 }
 
@@ -7931,6 +11202,11 @@ func (resolver *notifierResolver) Sumologic(ctx context.Context) (*sumoLogicReso
 func (resolver *notifierResolver) Syslog(ctx context.Context) (*syslogResolver, error) {
 	value := resolver.data.GetSyslog()
 	return resolver.root.wrapSyslog(value, true, nil)
+}
+
+func (resolver *notifierResolver) Traits(ctx context.Context) (*traitsResolver, error) {
+	value := resolver.data.GetTraits()
+	return resolver.root.wrapTraits(value, true, nil)
 }
 
 func (resolver *notifierResolver) Type(ctx context.Context) string {
@@ -7993,6 +11269,11 @@ func (resolver *notifierResolver) Config() *notifierConfigResolver {
 			resolver: &syslogResolver{root: resolver.root, data: val},
 		}
 	}
+	if val := resolver.data.GetMicrosoftSentinel(); val != nil {
+		return &notifierConfigResolver{
+			resolver: &microsoftSentinelResolver{root: resolver.root, data: val},
+		}
+	}
 	return nil
 }
 
@@ -8041,6 +11322,11 @@ func (resolver *notifierConfigResolver) ToSyslog() (*syslogResolver, bool) {
 	return res, ok
 }
 
+func (resolver *notifierConfigResolver) ToMicrosoftSentinel() (*microsoftSentinelResolver, bool) {
+	res, ok := resolver.resolver.(*microsoftSentinelResolver)
+	return res, ok
+}
+
 type orchestratorMetadataResolver struct {
 	ctx  context.Context
 	root *Resolver
@@ -8065,6 +11351,24 @@ func (resolver *Resolver) wrapOrchestratorMetadatas(values []*storage.Orchestrat
 	return output, nil
 }
 
+func (resolver *Resolver) wrapOrchestratorMetadataWithContext(ctx context.Context, value *storage.OrchestratorMetadata, ok bool, err error) (*orchestratorMetadataResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &orchestratorMetadataResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapOrchestratorMetadatasWithContext(ctx context.Context, values []*storage.OrchestratorMetadata, err error) ([]*orchestratorMetadataResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*orchestratorMetadataResolver, len(values))
+	for i, v := range values {
+		output[i] = &orchestratorMetadataResolver{ctx: ctx, root: resolver, data: v}
+	}
+	return output, nil
+}
+
 func (resolver *orchestratorMetadataResolver) ApiVersions(ctx context.Context) []string {
 	value := resolver.data.GetApiVersions()
 	return value
@@ -8072,7 +11376,7 @@ func (resolver *orchestratorMetadataResolver) ApiVersions(ctx context.Context) [
 
 func (resolver *orchestratorMetadataResolver) BuildDate(ctx context.Context) (*graphql.Time, error) {
 	value := resolver.data.GetBuildDate()
-	return timestamp(value)
+	return protocompat.ConvertTimestampToGraphqlTimeOrError(value)
 }
 
 func (resolver *orchestratorMetadataResolver) Version(ctx context.Context) string {
@@ -8100,6 +11404,24 @@ func (resolver *Resolver) wrapPagerDuties(values []*storage.PagerDuty, err error
 	output := make([]*pagerDutyResolver, len(values))
 	for i, v := range values {
 		output[i] = &pagerDutyResolver{root: resolver, data: v}
+	}
+	return output, nil
+}
+
+func (resolver *Resolver) wrapPagerDutyWithContext(ctx context.Context, value *storage.PagerDuty, ok bool, err error) (*pagerDutyResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &pagerDutyResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapPagerDutiesWithContext(ctx context.Context, values []*storage.PagerDuty, err error) ([]*pagerDutyResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*pagerDutyResolver, len(values))
+	for i, v := range values {
+		output[i] = &pagerDutyResolver{ctx: ctx, root: resolver, data: v}
 	}
 	return output, nil
 }
@@ -8151,6 +11473,24 @@ func (resolver *Resolver) wrapPermissionSets(values []*storage.PermissionSet, er
 	return output, nil
 }
 
+func (resolver *Resolver) wrapPermissionSetWithContext(ctx context.Context, value *storage.PermissionSet, ok bool, err error) (*permissionSetResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &permissionSetResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapPermissionSetsWithContext(ctx context.Context, values []*storage.PermissionSet, err error) ([]*permissionSetResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*permissionSetResolver, len(values))
+	for i, v := range values {
+		output[i] = &permissionSetResolver{ctx: ctx, root: resolver, data: v}
+	}
+	return output, nil
+}
+
 func (resolver *permissionSetResolver) Description(ctx context.Context) string {
 	value := resolver.data.GetDescription()
 	return value
@@ -8164,6 +11504,11 @@ func (resolver *permissionSetResolver) Id(ctx context.Context) graphql.ID {
 func (resolver *permissionSetResolver) Name(ctx context.Context) string {
 	value := resolver.data.GetName()
 	return value
+}
+
+func (resolver *permissionSetResolver) Traits(ctx context.Context) (*traitsResolver, error) {
+	value := resolver.data.GetTraits()
+	return resolver.root.wrapTraits(value, true, nil)
 }
 
 type podResolver struct {
@@ -8186,6 +11531,24 @@ func (resolver *Resolver) wrapPods(values []*storage.Pod, err error) ([]*podReso
 	output := make([]*podResolver, len(values))
 	for i, v := range values {
 		output[i] = &podResolver{root: resolver, data: v}
+	}
+	return output, nil
+}
+
+func (resolver *Resolver) wrapPodWithContext(ctx context.Context, value *storage.Pod, ok bool, err error) (*podResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &podResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapPodsWithContext(ctx context.Context, values []*storage.Pod, err error) ([]*podResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*podResolver, len(values))
+	for i, v := range values {
+		output[i] = &podResolver{ctx: ctx, root: resolver, data: v}
 	}
 	return output, nil
 }
@@ -8222,7 +11585,7 @@ func (resolver *podResolver) Namespace(ctx context.Context) string {
 
 func (resolver *podResolver) Started(ctx context.Context) (*graphql.Time, error) {
 	value := resolver.data.GetStarted()
-	return timestamp(value)
+	return protocompat.ConvertTimestampToGraphqlTimeOrError(value)
 }
 
 func (resolver *podResolver) TerminatedInstances(ctx context.Context) ([]*pod_ContainerInstanceListResolver, error) {
@@ -8254,6 +11617,24 @@ func (resolver *Resolver) wrapPod_ContainerInstanceLists(values []*storage.Pod_C
 	return output, nil
 }
 
+func (resolver *Resolver) wrapPod_ContainerInstanceListWithContext(ctx context.Context, value *storage.Pod_ContainerInstanceList, ok bool, err error) (*pod_ContainerInstanceListResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &pod_ContainerInstanceListResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapPod_ContainerInstanceListsWithContext(ctx context.Context, values []*storage.Pod_ContainerInstanceList, err error) ([]*pod_ContainerInstanceListResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*pod_ContainerInstanceListResolver, len(values))
+	for i, v := range values {
+		output[i] = &pod_ContainerInstanceListResolver{ctx: ctx, root: resolver, data: v}
+	}
+	return output, nil
+}
+
 func (resolver *pod_ContainerInstanceListResolver) Instances(ctx context.Context) ([]*containerInstanceResolver, error) {
 	value := resolver.data.GetInstances()
 	return resolver.root.wrapContainerInstances(value, nil)
@@ -8279,6 +11660,24 @@ func (resolver *Resolver) wrapPolicies(values []*storage.Policy, err error) ([]*
 	output := make([]*policyResolver, len(values))
 	for i, v := range values {
 		output[i] = &policyResolver{root: resolver, data: v}
+	}
+	return output, nil
+}
+
+func (resolver *Resolver) wrapPolicyWithContext(ctx context.Context, value *storage.Policy, ok bool, err error) (*policyResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &policyResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapPoliciesWithContext(ctx context.Context, values []*storage.Policy, err error) ([]*policyResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*policyResolver, len(values))
+	for i, v := range values {
+		output[i] = &policyResolver{ctx: ctx, root: resolver, data: v}
 	}
 	return output, nil
 }
@@ -8330,7 +11729,7 @@ func (resolver *policyResolver) IsDefault(ctx context.Context) bool {
 
 func (resolver *policyResolver) LastUpdated(ctx context.Context) (*graphql.Time, error) {
 	value := resolver.data.GetLastUpdated()
-	return timestamp(value)
+	return protocompat.ConvertTimestampToGraphqlTimeOrError(value)
 }
 
 func (resolver *policyResolver) LifecycleStages(ctx context.Context) []string {
@@ -8403,6 +11802,11 @@ func (resolver *policyResolver) Severity(ctx context.Context) string {
 	return value.String()
 }
 
+func (resolver *policyResolver) Source(ctx context.Context) string {
+	value := resolver.data.GetSource()
+	return value.String()
+}
+
 type policyGroupResolver struct {
 	ctx  context.Context
 	root *Resolver
@@ -8423,6 +11827,24 @@ func (resolver *Resolver) wrapPolicyGroups(values []*storage.PolicyGroup, err er
 	output := make([]*policyGroupResolver, len(values))
 	for i, v := range values {
 		output[i] = &policyGroupResolver{root: resolver, data: v}
+	}
+	return output, nil
+}
+
+func (resolver *Resolver) wrapPolicyGroupWithContext(ctx context.Context, value *storage.PolicyGroup, ok bool, err error) (*policyGroupResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &policyGroupResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapPolicyGroupsWithContext(ctx context.Context, values []*storage.PolicyGroup, err error) ([]*policyGroupResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*policyGroupResolver, len(values))
+	for i, v := range values {
+		output[i] = &policyGroupResolver{ctx: ctx, root: resolver, data: v}
 	}
 	return output, nil
 }
@@ -8467,6 +11889,24 @@ func (resolver *Resolver) wrapPolicyRules(values []*storage.PolicyRule, err erro
 	output := make([]*policyRuleResolver, len(values))
 	for i, v := range values {
 		output[i] = &policyRuleResolver{root: resolver, data: v}
+	}
+	return output, nil
+}
+
+func (resolver *Resolver) wrapPolicyRuleWithContext(ctx context.Context, value *storage.PolicyRule, ok bool, err error) (*policyRuleResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &policyRuleResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapPolicyRulesWithContext(ctx context.Context, values []*storage.PolicyRule, err error) ([]*policyRuleResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*policyRuleResolver, len(values))
+	for i, v := range values {
+		output[i] = &policyRuleResolver{ctx: ctx, root: resolver, data: v}
 	}
 	return output, nil
 }
@@ -8520,6 +11960,24 @@ func (resolver *Resolver) wrapPolicySections(values []*storage.PolicySection, er
 	return output, nil
 }
 
+func (resolver *Resolver) wrapPolicySectionWithContext(ctx context.Context, value *storage.PolicySection, ok bool, err error) (*policySectionResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &policySectionResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapPolicySectionsWithContext(ctx context.Context, values []*storage.PolicySection, err error) ([]*policySectionResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*policySectionResolver, len(values))
+	for i, v := range values {
+		output[i] = &policySectionResolver{ctx: ctx, root: resolver, data: v}
+	}
+	return output, nil
+}
+
 func (resolver *policySectionResolver) PolicyGroups(ctx context.Context) ([]*policyGroupResolver, error) {
 	value := resolver.data.GetPolicyGroups()
 	return resolver.root.wrapPolicyGroups(value, nil)
@@ -8528,6 +11986,24 @@ func (resolver *policySectionResolver) PolicyGroups(ctx context.Context) ([]*pol
 func (resolver *policySectionResolver) SectionName(ctx context.Context) string {
 	value := resolver.data.GetSectionName()
 	return value
+}
+
+func toPolicySource(value *string) storage.PolicySource {
+	if value != nil {
+		return storage.PolicySource(storage.PolicySource_value[*value])
+	}
+	return storage.PolicySource(0)
+}
+
+func toPolicySources(values *[]string) []storage.PolicySource {
+	if values == nil {
+		return nil
+	}
+	output := make([]storage.PolicySource, len(*values))
+	for i, v := range *values {
+		output[i] = toPolicySource(&v)
+	}
+	return output
 }
 
 type policyValueResolver struct {
@@ -8550,6 +12026,24 @@ func (resolver *Resolver) wrapPolicyValues(values []*storage.PolicyValue, err er
 	output := make([]*policyValueResolver, len(values))
 	for i, v := range values {
 		output[i] = &policyValueResolver{root: resolver, data: v}
+	}
+	return output, nil
+}
+
+func (resolver *Resolver) wrapPolicyValueWithContext(ctx context.Context, value *storage.PolicyValue, ok bool, err error) (*policyValueResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &policyValueResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapPolicyValuesWithContext(ctx context.Context, values []*storage.PolicyValue, err error) ([]*policyValueResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*policyValueResolver, len(values))
+	for i, v := range values {
+		output[i] = &policyValueResolver{ctx: ctx, root: resolver, data: v}
 	}
 	return output, nil
 }
@@ -8579,6 +12073,24 @@ func (resolver *Resolver) wrapPolicy_MitreAttackVectorses(values []*storage.Poli
 	output := make([]*policy_MitreAttackVectorsResolver, len(values))
 	for i, v := range values {
 		output[i] = &policy_MitreAttackVectorsResolver{root: resolver, data: v}
+	}
+	return output, nil
+}
+
+func (resolver *Resolver) wrapPolicy_MitreAttackVectorsWithContext(ctx context.Context, value *storage.Policy_MitreAttackVectors, ok bool, err error) (*policy_MitreAttackVectorsResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &policy_MitreAttackVectorsResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapPolicy_MitreAttackVectorsesWithContext(ctx context.Context, values []*storage.Policy_MitreAttackVectors, err error) ([]*policy_MitreAttackVectorsResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*policy_MitreAttackVectorsResolver, len(values))
+	for i, v := range values {
+		output[i] = &policy_MitreAttackVectorsResolver{ctx: ctx, root: resolver, data: v}
 	}
 	return output, nil
 }
@@ -8613,6 +12125,24 @@ func (resolver *Resolver) wrapPortConfigs(values []*storage.PortConfig, err erro
 	output := make([]*portConfigResolver, len(values))
 	for i, v := range values {
 		output[i] = &portConfigResolver{root: resolver, data: v}
+	}
+	return output, nil
+}
+
+func (resolver *Resolver) wrapPortConfigWithContext(ctx context.Context, value *storage.PortConfig, ok bool, err error) (*portConfigResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &portConfigResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapPortConfigsWithContext(ctx context.Context, values []*storage.PortConfig, err error) ([]*portConfigResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*portConfigResolver, len(values))
+	for i, v := range values {
+		output[i] = &portConfigResolver{ctx: ctx, root: resolver, data: v}
 	}
 	return output, nil
 }
@@ -8667,6 +12197,24 @@ func (resolver *Resolver) wrapPortConfig_ExposureInfos(values []*storage.PortCon
 	output := make([]*portConfig_ExposureInfoResolver, len(values))
 	for i, v := range values {
 		output[i] = &portConfig_ExposureInfoResolver{root: resolver, data: v}
+	}
+	return output, nil
+}
+
+func (resolver *Resolver) wrapPortConfig_ExposureInfoWithContext(ctx context.Context, value *storage.PortConfig_ExposureInfo, ok bool, err error) (*portConfig_ExposureInfoResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &portConfig_ExposureInfoResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapPortConfig_ExposureInfosWithContext(ctx context.Context, values []*storage.PortConfig_ExposureInfo, err error) ([]*portConfig_ExposureInfoResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*portConfig_ExposureInfoResolver, len(values))
+	for i, v := range values {
+		output[i] = &portConfig_ExposureInfoResolver{ctx: ctx, root: resolver, data: v}
 	}
 	return output, nil
 }
@@ -8753,6 +12301,24 @@ func (resolver *Resolver) wrapProcessGroups(values []*v1.ProcessGroup, err error
 	return output, nil
 }
 
+func (resolver *Resolver) wrapProcessGroupWithContext(ctx context.Context, value *v1.ProcessGroup, ok bool, err error) (*processGroupResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &processGroupResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapProcessGroupsWithContext(ctx context.Context, values []*v1.ProcessGroup, err error) ([]*processGroupResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*processGroupResolver, len(values))
+	for i, v := range values {
+		output[i] = &processGroupResolver{ctx: ctx, root: resolver, data: v}
+	}
+	return output, nil
+}
+
 func (resolver *processGroupResolver) Args(ctx context.Context) string {
 	value := resolver.data.GetArgs()
 	return value
@@ -8787,6 +12353,24 @@ func (resolver *Resolver) wrapProcessIndicators(values []*storage.ProcessIndicat
 	return output, nil
 }
 
+func (resolver *Resolver) wrapProcessIndicatorWithContext(ctx context.Context, value *storage.ProcessIndicator, ok bool, err error) (*processIndicatorResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &processIndicatorResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapProcessIndicatorsWithContext(ctx context.Context, values []*storage.ProcessIndicator, err error) ([]*processIndicatorResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*processIndicatorResolver, len(values))
+	for i, v := range values {
+		output[i] = &processIndicatorResolver{ctx: ctx, root: resolver, data: v}
+	}
+	return output, nil
+}
+
 func (resolver *processIndicatorResolver) ClusterId(ctx context.Context) string {
 	value := resolver.data.GetClusterId()
 	return value
@@ -8799,7 +12383,7 @@ func (resolver *processIndicatorResolver) ContainerName(ctx context.Context) str
 
 func (resolver *processIndicatorResolver) ContainerStartTime(ctx context.Context) (*graphql.Time, error) {
 	value := resolver.data.GetContainerStartTime()
-	return timestamp(value)
+	return protocompat.ConvertTimestampToGraphqlTimeOrError(value)
 }
 
 func (resolver *processIndicatorResolver) DeploymentId(ctx context.Context) string {
@@ -8861,6 +12445,24 @@ func (resolver *Resolver) wrapProcessNameGroups(values []*v1.ProcessNameGroup, e
 	return output, nil
 }
 
+func (resolver *Resolver) wrapProcessNameGroupWithContext(ctx context.Context, value *v1.ProcessNameGroup, ok bool, err error) (*processNameGroupResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &processNameGroupResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapProcessNameGroupsWithContext(ctx context.Context, values []*v1.ProcessNameGroup, err error) ([]*processNameGroupResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*processNameGroupResolver, len(values))
+	for i, v := range values {
+		output[i] = &processNameGroupResolver{ctx: ctx, root: resolver, data: v}
+	}
+	return output, nil
+}
+
 func (resolver *processNameGroupResolver) Groups(ctx context.Context) ([]*processGroupResolver, error) {
 	value := resolver.data.GetGroups()
 	return resolver.root.wrapProcessGroups(value, nil)
@@ -8896,6 +12498,24 @@ func (resolver *Resolver) wrapProcessSignals(values []*storage.ProcessSignal, er
 	output := make([]*processSignalResolver, len(values))
 	for i, v := range values {
 		output[i] = &processSignalResolver{root: resolver, data: v}
+	}
+	return output, nil
+}
+
+func (resolver *Resolver) wrapProcessSignalWithContext(ctx context.Context, value *storage.ProcessSignal, ok bool, err error) (*processSignalResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &processSignalResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapProcessSignalsWithContext(ctx context.Context, values []*storage.ProcessSignal, err error) ([]*processSignalResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*processSignalResolver, len(values))
+	for i, v := range values {
+		output[i] = &processSignalResolver{ctx: ctx, root: resolver, data: v}
 	}
 	return output, nil
 }
@@ -8952,7 +12572,7 @@ func (resolver *processSignalResolver) Scraped(ctx context.Context) bool {
 
 func (resolver *processSignalResolver) Time(ctx context.Context) (*graphql.Time, error) {
 	value := resolver.data.GetTime()
-	return timestamp(value)
+	return protocompat.ConvertTimestampToGraphqlTimeOrError(value)
 }
 
 func (resolver *processSignalResolver) Uid(ctx context.Context) int32 {
@@ -8980,6 +12600,24 @@ func (resolver *Resolver) wrapProcessSignal_LineageInfos(values []*storage.Proce
 	output := make([]*processSignal_LineageInfoResolver, len(values))
 	for i, v := range values {
 		output[i] = &processSignal_LineageInfoResolver{root: resolver, data: v}
+	}
+	return output, nil
+}
+
+func (resolver *Resolver) wrapProcessSignal_LineageInfoWithContext(ctx context.Context, value *storage.ProcessSignal_LineageInfo, ok bool, err error) (*processSignal_LineageInfoResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &processSignal_LineageInfoResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapProcessSignal_LineageInfosWithContext(ctx context.Context, values []*storage.ProcessSignal_LineageInfo, err error) ([]*processSignal_LineageInfoResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*processSignal_LineageInfoResolver, len(values))
+	for i, v := range values {
+		output[i] = &processSignal_LineageInfoResolver{ctx: ctx, root: resolver, data: v}
 	}
 	return output, nil
 }
@@ -9018,6 +12656,24 @@ func (resolver *Resolver) wrapProviderMetadatas(values []*storage.ProviderMetada
 	return output, nil
 }
 
+func (resolver *Resolver) wrapProviderMetadataWithContext(ctx context.Context, value *storage.ProviderMetadata, ok bool, err error) (*providerMetadataResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &providerMetadataResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapProviderMetadatasWithContext(ctx context.Context, values []*storage.ProviderMetadata, err error) ([]*providerMetadataResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*providerMetadataResolver, len(values))
+	for i, v := range values {
+		output[i] = &providerMetadataResolver{ctx: ctx, root: resolver, data: v}
+	}
+	return output, nil
+}
+
 func (resolver *providerMetadataResolver) Aws(ctx context.Context) (*aWSProviderMetadataResolver, error) {
 	value := resolver.data.GetAws()
 	return resolver.root.wrapAWSProviderMetadata(value, true, nil)
@@ -9026,6 +12682,11 @@ func (resolver *providerMetadataResolver) Aws(ctx context.Context) (*aWSProvider
 func (resolver *providerMetadataResolver) Azure(ctx context.Context) (*azureProviderMetadataResolver, error) {
 	value := resolver.data.GetAzure()
 	return resolver.root.wrapAzureProviderMetadata(value, true, nil)
+}
+
+func (resolver *providerMetadataResolver) Cluster(ctx context.Context) (*clusterMetadataResolver, error) {
+	value := resolver.data.GetCluster()
+	return resolver.root.wrapClusterMetadata(value, true, nil)
 }
 
 func (resolver *providerMetadataResolver) Google(ctx context.Context) (*googleProviderMetadataResolver, error) {
@@ -9110,6 +12771,24 @@ func (resolver *Resolver) wrapReadinessProbes(values []*storage.ReadinessProbe, 
 	return output, nil
 }
 
+func (resolver *Resolver) wrapReadinessProbeWithContext(ctx context.Context, value *storage.ReadinessProbe, ok bool, err error) (*readinessProbeResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &readinessProbeResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapReadinessProbesWithContext(ctx context.Context, values []*storage.ReadinessProbe, err error) ([]*readinessProbeResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*readinessProbeResolver, len(values))
+	for i, v := range values {
+		output[i] = &readinessProbeResolver{ctx: ctx, root: resolver, data: v}
+	}
+	return output, nil
+}
+
 func (resolver *readinessProbeResolver) Defined(ctx context.Context) bool {
 	value := resolver.data.GetDefined()
 	return value
@@ -9139,9 +12818,27 @@ func (resolver *Resolver) wrapRequestComments(values []*storage.RequestComment, 
 	return output, nil
 }
 
+func (resolver *Resolver) wrapRequestCommentWithContext(ctx context.Context, value *storage.RequestComment, ok bool, err error) (*requestCommentResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &requestCommentResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapRequestCommentsWithContext(ctx context.Context, values []*storage.RequestComment, err error) ([]*requestCommentResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*requestCommentResolver, len(values))
+	for i, v := range values {
+		output[i] = &requestCommentResolver{ctx: ctx, root: resolver, data: v}
+	}
+	return output, nil
+}
+
 func (resolver *requestCommentResolver) CreatedAt(ctx context.Context) (*graphql.Time, error) {
 	value := resolver.data.GetCreatedAt()
-	return timestamp(value)
+	return protocompat.ConvertTimestampToGraphqlTimeOrError(value)
 }
 
 func (resolver *requestCommentResolver) Id(ctx context.Context) graphql.ID {
@@ -9179,6 +12876,24 @@ func (resolver *Resolver) wrapResourceses(values []*storage.Resources, err error
 	output := make([]*resourcesResolver, len(values))
 	for i, v := range values {
 		output[i] = &resourcesResolver{root: resolver, data: v}
+	}
+	return output, nil
+}
+
+func (resolver *Resolver) wrapResourcesWithContext(ctx context.Context, value *storage.Resources, ok bool, err error) (*resourcesResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &resourcesResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapResourcesesWithContext(ctx context.Context, values []*storage.Resources, err error) ([]*resourcesResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*resourcesResolver, len(values))
+	for i, v := range values {
+		output[i] = &resourcesResolver{ctx: ctx, root: resolver, data: v}
 	}
 	return output, nil
 }
@@ -9227,6 +12942,24 @@ func (resolver *Resolver) wrapRisks(values []*storage.Risk, err error) ([]*riskR
 	return output, nil
 }
 
+func (resolver *Resolver) wrapRiskWithContext(ctx context.Context, value *storage.Risk, ok bool, err error) (*riskResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &riskResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapRisksWithContext(ctx context.Context, values []*storage.Risk, err error) ([]*riskResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*riskResolver, len(values))
+	for i, v := range values {
+		output[i] = &riskResolver{ctx: ctx, root: resolver, data: v}
+	}
+	return output, nil
+}
+
 func (resolver *riskResolver) Id(ctx context.Context) graphql.ID {
 	value := resolver.data.GetId()
 	return graphql.ID(value)
@@ -9267,6 +13000,24 @@ func (resolver *Resolver) wrapRiskSubjects(values []*storage.RiskSubject, err er
 	output := make([]*riskSubjectResolver, len(values))
 	for i, v := range values {
 		output[i] = &riskSubjectResolver{root: resolver, data: v}
+	}
+	return output, nil
+}
+
+func (resolver *Resolver) wrapRiskSubjectWithContext(ctx context.Context, value *storage.RiskSubject, ok bool, err error) (*riskSubjectResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &riskSubjectResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapRiskSubjectsWithContext(ctx context.Context, values []*storage.RiskSubject, err error) ([]*riskSubjectResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*riskSubjectResolver, len(values))
+	for i, v := range values {
+		output[i] = &riskSubjectResolver{ctx: ctx, root: resolver, data: v}
 	}
 	return output, nil
 }
@@ -9333,6 +13084,24 @@ func (resolver *Resolver) wrapRisk_Results(values []*storage.Risk_Result, err er
 	return output, nil
 }
 
+func (resolver *Resolver) wrapRisk_ResultWithContext(ctx context.Context, value *storage.Risk_Result, ok bool, err error) (*risk_ResultResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &risk_ResultResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapRisk_ResultsWithContext(ctx context.Context, values []*storage.Risk_Result, err error) ([]*risk_ResultResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*risk_ResultResolver, len(values))
+	for i, v := range values {
+		output[i] = &risk_ResultResolver{ctx: ctx, root: resolver, data: v}
+	}
+	return output, nil
+}
+
 func (resolver *risk_ResultResolver) Factors(ctx context.Context) ([]*risk_Result_FactorResolver, error) {
 	value := resolver.data.GetFactors()
 	return resolver.root.wrapRisk_Result_Factors(value, nil)
@@ -9372,6 +13141,24 @@ func (resolver *Resolver) wrapRisk_Result_Factors(values []*storage.Risk_Result_
 	return output, nil
 }
 
+func (resolver *Resolver) wrapRisk_Result_FactorWithContext(ctx context.Context, value *storage.Risk_Result_Factor, ok bool, err error) (*risk_Result_FactorResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &risk_Result_FactorResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapRisk_Result_FactorsWithContext(ctx context.Context, values []*storage.Risk_Result_Factor, err error) ([]*risk_Result_FactorResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*risk_Result_FactorResolver, len(values))
+	for i, v := range values {
+		output[i] = &risk_Result_FactorResolver{ctx: ctx, root: resolver, data: v}
+	}
+	return output, nil
+}
+
 func (resolver *risk_Result_FactorResolver) Message(ctx context.Context) string {
 	value := resolver.data.GetMessage()
 	return value
@@ -9406,6 +13193,24 @@ func (resolver *Resolver) wrapRoles(values []*storage.Role, err error) ([]*roleR
 	return output, nil
 }
 
+func (resolver *Resolver) wrapRoleWithContext(ctx context.Context, value *storage.Role, ok bool, err error) (*roleResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &roleResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapRolesWithContext(ctx context.Context, values []*storage.Role, err error) ([]*roleResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*roleResolver, len(values))
+	for i, v := range values {
+		output[i] = &roleResolver{ctx: ctx, root: resolver, data: v}
+	}
+	return output, nil
+}
+
 func (resolver *roleResolver) AccessScopeId(ctx context.Context) string {
 	value := resolver.data.GetAccessScopeId()
 	return value
@@ -9431,6 +13236,11 @@ func (resolver *roleResolver) PermissionSetId(ctx context.Context) string {
 	return value
 }
 
+func (resolver *roleResolver) Traits(ctx context.Context) (*traitsResolver, error) {
+	value := resolver.data.GetTraits()
+	return resolver.root.wrapTraits(value, true, nil)
+}
+
 type scannerHealthInfoResolver struct {
 	ctx  context.Context
 	root *Resolver
@@ -9451,6 +13261,24 @@ func (resolver *Resolver) wrapScannerHealthInfos(values []*storage.ScannerHealth
 	output := make([]*scannerHealthInfoResolver, len(values))
 	for i, v := range values {
 		output[i] = &scannerHealthInfoResolver{root: resolver, data: v}
+	}
+	return output, nil
+}
+
+func (resolver *Resolver) wrapScannerHealthInfoWithContext(ctx context.Context, value *storage.ScannerHealthInfo, ok bool, err error) (*scannerHealthInfoResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &scannerHealthInfoResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapScannerHealthInfosWithContext(ctx context.Context, values []*storage.ScannerHealthInfo, err error) ([]*scannerHealthInfoResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*scannerHealthInfoResolver, len(values))
+	for i, v := range values {
+		output[i] = &scannerHealthInfoResolver{ctx: ctx, root: resolver, data: v}
 	}
 	return output, nil
 }
@@ -9484,6 +13312,24 @@ func (resolver *Resolver) wrapScopes(values []*storage.Scope, err error) ([]*sco
 	return output, nil
 }
 
+func (resolver *Resolver) wrapScopeWithContext(ctx context.Context, value *storage.Scope, ok bool, err error) (*scopeResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &scopeResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapScopesWithContext(ctx context.Context, values []*storage.Scope, err error) ([]*scopeResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*scopeResolver, len(values))
+	for i, v := range values {
+		output[i] = &scopeResolver{ctx: ctx, root: resolver, data: v}
+	}
+	return output, nil
+}
+
 func (resolver *scopeResolver) Cluster(ctx context.Context) string {
 	value := resolver.data.GetCluster()
 	return value
@@ -9496,6 +13342,58 @@ func (resolver *scopeResolver) Label(ctx context.Context) (*scope_LabelResolver,
 
 func (resolver *scopeResolver) Namespace(ctx context.Context) string {
 	value := resolver.data.GetNamespace()
+	return value
+}
+
+type scopeObjectResolver struct {
+	ctx  context.Context
+	root *Resolver
+	data *v1.ScopeObject
+}
+
+func (resolver *Resolver) wrapScopeObject(value *v1.ScopeObject, ok bool, err error) (*scopeObjectResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &scopeObjectResolver{root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapScopeObjects(values []*v1.ScopeObject, err error) ([]*scopeObjectResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*scopeObjectResolver, len(values))
+	for i, v := range values {
+		output[i] = &scopeObjectResolver{root: resolver, data: v}
+	}
+	return output, nil
+}
+
+func (resolver *Resolver) wrapScopeObjectWithContext(ctx context.Context, value *v1.ScopeObject, ok bool, err error) (*scopeObjectResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &scopeObjectResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapScopeObjectsWithContext(ctx context.Context, values []*v1.ScopeObject, err error) ([]*scopeObjectResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*scopeObjectResolver, len(values))
+	for i, v := range values {
+		output[i] = &scopeObjectResolver{ctx: ctx, root: resolver, data: v}
+	}
+	return output, nil
+}
+
+func (resolver *scopeObjectResolver) Id(ctx context.Context) graphql.ID {
+	value := resolver.data.GetId()
+	return graphql.ID(value)
+}
+
+func (resolver *scopeObjectResolver) Name(ctx context.Context) string {
+	value := resolver.data.GetName()
 	return value
 }
 
@@ -9519,6 +13417,24 @@ func (resolver *Resolver) wrapScope_Labels(values []*storage.Scope_Label, err er
 	output := make([]*scope_LabelResolver, len(values))
 	for i, v := range values {
 		output[i] = &scope_LabelResolver{root: resolver, data: v}
+	}
+	return output, nil
+}
+
+func (resolver *Resolver) wrapScope_LabelWithContext(ctx context.Context, value *storage.Scope_Label, ok bool, err error) (*scope_LabelResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &scope_LabelResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapScope_LabelsWithContext(ctx context.Context, values []*storage.Scope_Label, err error) ([]*scope_LabelResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*scope_LabelResolver, len(values))
+	for i, v := range values {
+		output[i] = &scope_LabelResolver{ctx: ctx, root: resolver, data: v}
 	}
 	return output, nil
 }
@@ -9575,6 +13491,24 @@ func (resolver *Resolver) wrapSearchResults(values []*v1.SearchResult, err error
 	return output, nil
 }
 
+func (resolver *Resolver) wrapSearchResultWithContext(ctx context.Context, value *v1.SearchResult, ok bool, err error) (*searchResultResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &searchResultResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapSearchResultsWithContext(ctx context.Context, values []*v1.SearchResult, err error) ([]*searchResultResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*searchResultResolver, len(values))
+	for i, v := range values {
+		output[i] = &searchResultResolver{ctx: ctx, root: resolver, data: v}
+	}
+	return output, nil
+}
+
 func (resolver *searchResultResolver) Category(ctx context.Context) string {
 	value := resolver.data.GetCategory()
 	return value.String()
@@ -9625,6 +13559,24 @@ func (resolver *Resolver) wrapSecrets(values []*storage.Secret, err error) ([]*s
 	return output, nil
 }
 
+func (resolver *Resolver) wrapSecretWithContext(ctx context.Context, value *storage.Secret, ok bool, err error) (*secretResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &secretResolver{ctx: ctx, root: resolver, data: value, list: nil}, nil
+}
+
+func (resolver *Resolver) wrapSecretsWithContext(ctx context.Context, values []*storage.Secret, err error) ([]*secretResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*secretResolver, len(values))
+	for i, v := range values {
+		output[i] = &secretResolver{ctx: ctx, root: resolver, data: v, list: nil}
+	}
+	return output, nil
+}
+
 func (resolver *Resolver) wrapListSecrets(values []*storage.ListSecret, err error) ([]*secretResolver, error) {
 	if err != nil || values == nil {
 		return nil, err
@@ -9669,7 +13621,7 @@ func (resolver *secretResolver) CreatedAt(ctx context.Context) (*graphql.Time, e
 	if resolver.data == nil {
 		value = resolver.list.GetCreatedAt()
 	}
-	return timestamp(value)
+	return protocompat.ConvertTimestampToGraphqlTimeOrError(value)
 }
 
 func (resolver *secretResolver) Files(ctx context.Context) ([]*secretDataFileResolver, error) {
@@ -9744,6 +13696,24 @@ func (resolver *Resolver) wrapSecretContainerRelationships(values []*storage.Sec
 	return output, nil
 }
 
+func (resolver *Resolver) wrapSecretContainerRelationshipWithContext(ctx context.Context, value *storage.SecretContainerRelationship, ok bool, err error) (*secretContainerRelationshipResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &secretContainerRelationshipResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapSecretContainerRelationshipsWithContext(ctx context.Context, values []*storage.SecretContainerRelationship, err error) ([]*secretContainerRelationshipResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*secretContainerRelationshipResolver, len(values))
+	for i, v := range values {
+		output[i] = &secretContainerRelationshipResolver{ctx: ctx, root: resolver, data: v}
+	}
+	return output, nil
+}
+
 func (resolver *secretContainerRelationshipResolver) Id(ctx context.Context) graphql.ID {
 	value := resolver.data.GetId()
 	return graphql.ID(value)
@@ -9774,6 +13744,24 @@ func (resolver *Resolver) wrapSecretDataFiles(values []*storage.SecretDataFile, 
 	output := make([]*secretDataFileResolver, len(values))
 	for i, v := range values {
 		output[i] = &secretDataFileResolver{root: resolver, data: v}
+	}
+	return output, nil
+}
+
+func (resolver *Resolver) wrapSecretDataFileWithContext(ctx context.Context, value *storage.SecretDataFile, ok bool, err error) (*secretDataFileResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &secretDataFileResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapSecretDataFilesWithContext(ctx context.Context, values []*storage.SecretDataFile, err error) ([]*secretDataFileResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*secretDataFileResolver, len(values))
+	for i, v := range values {
+		output[i] = &secretDataFileResolver{ctx: ctx, root: resolver, data: v}
 	}
 	return output, nil
 }
@@ -9850,6 +13838,24 @@ func (resolver *Resolver) wrapSecretDeploymentRelationships(values []*storage.Se
 	return output, nil
 }
 
+func (resolver *Resolver) wrapSecretDeploymentRelationshipWithContext(ctx context.Context, value *storage.SecretDeploymentRelationship, ok bool, err error) (*secretDeploymentRelationshipResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &secretDeploymentRelationshipResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapSecretDeploymentRelationshipsWithContext(ctx context.Context, values []*storage.SecretDeploymentRelationship, err error) ([]*secretDeploymentRelationshipResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*secretDeploymentRelationshipResolver, len(values))
+	for i, v := range values {
+		output[i] = &secretDeploymentRelationshipResolver{ctx: ctx, root: resolver, data: v}
+	}
+	return output, nil
+}
+
 func (resolver *secretDeploymentRelationshipResolver) Id(ctx context.Context) graphql.ID {
 	value := resolver.data.GetId()
 	return graphql.ID(value)
@@ -9880,6 +13886,24 @@ func (resolver *Resolver) wrapSecretRelationships(values []*storage.SecretRelati
 	output := make([]*secretRelationshipResolver, len(values))
 	for i, v := range values {
 		output[i] = &secretRelationshipResolver{root: resolver, data: v}
+	}
+	return output, nil
+}
+
+func (resolver *Resolver) wrapSecretRelationshipWithContext(ctx context.Context, value *storage.SecretRelationship, ok bool, err error) (*secretRelationshipResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &secretRelationshipResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapSecretRelationshipsWithContext(ctx context.Context, values []*storage.SecretRelationship, err error) ([]*secretRelationshipResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*secretRelationshipResolver, len(values))
+	for i, v := range values {
+		output[i] = &secretRelationshipResolver{ctx: ctx, root: resolver, data: v}
 	}
 	return output, nil
 }
@@ -9937,6 +13961,24 @@ func (resolver *Resolver) wrapSecurityContexts(values []*storage.SecurityContext
 	output := make([]*securityContextResolver, len(values))
 	for i, v := range values {
 		output[i] = &securityContextResolver{root: resolver, data: v}
+	}
+	return output, nil
+}
+
+func (resolver *Resolver) wrapSecurityContextWithContext(ctx context.Context, value *storage.SecurityContext, ok bool, err error) (*securityContextResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &securityContextResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapSecurityContextsWithContext(ctx context.Context, values []*storage.SecurityContext, err error) ([]*securityContextResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*securityContextResolver, len(values))
+	for i, v := range values {
+		output[i] = &securityContextResolver{ctx: ctx, root: resolver, data: v}
 	}
 	return output, nil
 }
@@ -10000,6 +14042,24 @@ func (resolver *Resolver) wrapSecurityContext_SELinuxs(values []*storage.Securit
 	return output, nil
 }
 
+func (resolver *Resolver) wrapSecurityContext_SELinuxWithContext(ctx context.Context, value *storage.SecurityContext_SELinux, ok bool, err error) (*securityContext_SELinuxResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &securityContext_SELinuxResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapSecurityContext_SELinuxsWithContext(ctx context.Context, values []*storage.SecurityContext_SELinux, err error) ([]*securityContext_SELinuxResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*securityContext_SELinuxResolver, len(values))
+	for i, v := range values {
+		output[i] = &securityContext_SELinuxResolver{ctx: ctx, root: resolver, data: v}
+	}
+	return output, nil
+}
+
 func (resolver *securityContext_SELinuxResolver) Level(ctx context.Context) string {
 	value := resolver.data.GetLevel()
 	return value
@@ -10040,6 +14100,24 @@ func (resolver *Resolver) wrapSecurityContext_SeccompProfiles(values []*storage.
 	output := make([]*securityContext_SeccompProfileResolver, len(values))
 	for i, v := range values {
 		output[i] = &securityContext_SeccompProfileResolver{root: resolver, data: v}
+	}
+	return output, nil
+}
+
+func (resolver *Resolver) wrapSecurityContext_SeccompProfileWithContext(ctx context.Context, value *storage.SecurityContext_SeccompProfile, ok bool, err error) (*securityContext_SeccompProfileResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &securityContext_SeccompProfileResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapSecurityContext_SeccompProfilesWithContext(ctx context.Context, values []*storage.SecurityContext_SeccompProfile, err error) ([]*securityContext_SeccompProfileResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*securityContext_SeccompProfileResolver, len(values))
+	for i, v := range values {
+		output[i] = &securityContext_SeccompProfileResolver{ctx: ctx, root: resolver, data: v}
 	}
 	return output, nil
 }
@@ -10092,6 +14170,24 @@ func (resolver *Resolver) wrapSensorDeploymentIdentifications(values []*storage.
 	output := make([]*sensorDeploymentIdentificationResolver, len(values))
 	for i, v := range values {
 		output[i] = &sensorDeploymentIdentificationResolver{root: resolver, data: v}
+	}
+	return output, nil
+}
+
+func (resolver *Resolver) wrapSensorDeploymentIdentificationWithContext(ctx context.Context, value *storage.SensorDeploymentIdentification, ok bool, err error) (*sensorDeploymentIdentificationResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &sensorDeploymentIdentificationResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapSensorDeploymentIdentificationsWithContext(ctx context.Context, values []*storage.SensorDeploymentIdentification, err error) ([]*sensorDeploymentIdentificationResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*sensorDeploymentIdentificationResolver, len(values))
+	for i, v := range values {
+		output[i] = &sensorDeploymentIdentificationResolver{ctx: ctx, root: resolver, data: v}
 	}
 	return output, nil
 }
@@ -10150,6 +14246,24 @@ func (resolver *Resolver) wrapServiceAccounts(values []*storage.ServiceAccount, 
 	return output, nil
 }
 
+func (resolver *Resolver) wrapServiceAccountWithContext(ctx context.Context, value *storage.ServiceAccount, ok bool, err error) (*serviceAccountResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &serviceAccountResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapServiceAccountsWithContext(ctx context.Context, values []*storage.ServiceAccount, err error) ([]*serviceAccountResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*serviceAccountResolver, len(values))
+	for i, v := range values {
+		output[i] = &serviceAccountResolver{ctx: ctx, root: resolver, data: v}
+	}
+	return output, nil
+}
+
 func (resolver *serviceAccountResolver) Annotations(ctx context.Context) labels {
 	value := resolver.data.GetAnnotations()
 	return labelsResolver(value)
@@ -10172,7 +14286,7 @@ func (resolver *serviceAccountResolver) ClusterName(ctx context.Context) string 
 
 func (resolver *serviceAccountResolver) CreatedAt(ctx context.Context) (*graphql.Time, error) {
 	value := resolver.data.GetCreatedAt()
-	return timestamp(value)
+	return protocompat.ConvertTimestampToGraphqlTimeOrError(value)
 }
 
 func (resolver *serviceAccountResolver) Id(ctx context.Context) graphql.ID {
@@ -10229,6 +14343,24 @@ func (resolver *Resolver) wrapSetBasedLabelSelectors(values []*storage.SetBasedL
 	return output, nil
 }
 
+func (resolver *Resolver) wrapSetBasedLabelSelectorWithContext(ctx context.Context, value *storage.SetBasedLabelSelector, ok bool, err error) (*setBasedLabelSelectorResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &setBasedLabelSelectorResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapSetBasedLabelSelectorsWithContext(ctx context.Context, values []*storage.SetBasedLabelSelector, err error) ([]*setBasedLabelSelectorResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*setBasedLabelSelectorResolver, len(values))
+	for i, v := range values {
+		output[i] = &setBasedLabelSelectorResolver{ctx: ctx, root: resolver, data: v}
+	}
+	return output, nil
+}
+
 func (resolver *setBasedLabelSelectorResolver) Requirements(ctx context.Context) ([]*setBasedLabelSelector_RequirementResolver, error) {
 	value := resolver.data.GetRequirements()
 	return resolver.root.wrapSetBasedLabelSelector_Requirements(value, nil)
@@ -10272,6 +14404,24 @@ func (resolver *Resolver) wrapSetBasedLabelSelector_Requirements(values []*stora
 	output := make([]*setBasedLabelSelector_RequirementResolver, len(values))
 	for i, v := range values {
 		output[i] = &setBasedLabelSelector_RequirementResolver{root: resolver, data: v}
+	}
+	return output, nil
+}
+
+func (resolver *Resolver) wrapSetBasedLabelSelector_RequirementWithContext(ctx context.Context, value *storage.SetBasedLabelSelector_Requirement, ok bool, err error) (*setBasedLabelSelector_RequirementResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &setBasedLabelSelector_RequirementResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapSetBasedLabelSelector_RequirementsWithContext(ctx context.Context, values []*storage.SetBasedLabelSelector_Requirement, err error) ([]*setBasedLabelSelector_RequirementResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*setBasedLabelSelector_RequirementResolver, len(values))
+	for i, v := range values {
+		output[i] = &setBasedLabelSelector_RequirementResolver{ctx: ctx, root: resolver, data: v}
 	}
 	return output, nil
 }
@@ -10333,6 +14483,24 @@ func (resolver *Resolver) wrapSignatures(values []*storage.Signature, err error)
 	return output, nil
 }
 
+func (resolver *Resolver) wrapSignatureWithContext(ctx context.Context, value *storage.Signature, ok bool, err error) (*signatureResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &signatureResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapSignaturesWithContext(ctx context.Context, values []*storage.Signature, err error) ([]*signatureResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*signatureResolver, len(values))
+	for i, v := range values {
+		output[i] = &signatureResolver{ctx: ctx, root: resolver, data: v}
+	}
+	return output, nil
+}
+
 func (resolver *signatureResolver) Cosign(ctx context.Context) (*cosignSignatureResolver, error) {
 	value := resolver.data.GetCosign()
 	return resolver.root.wrapCosignSignature(value, true, nil)
@@ -10380,6 +14548,24 @@ func (resolver *Resolver) wrapSimpleAccessScopes(values []*storage.SimpleAccessS
 	return output, nil
 }
 
+func (resolver *Resolver) wrapSimpleAccessScopeWithContext(ctx context.Context, value *storage.SimpleAccessScope, ok bool, err error) (*simpleAccessScopeResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &simpleAccessScopeResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapSimpleAccessScopesWithContext(ctx context.Context, values []*storage.SimpleAccessScope, err error) ([]*simpleAccessScopeResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*simpleAccessScopeResolver, len(values))
+	for i, v := range values {
+		output[i] = &simpleAccessScopeResolver{ctx: ctx, root: resolver, data: v}
+	}
+	return output, nil
+}
+
 func (resolver *simpleAccessScopeResolver) Description(ctx context.Context) string {
 	value := resolver.data.GetDescription()
 	return value
@@ -10398,6 +14584,11 @@ func (resolver *simpleAccessScopeResolver) Name(ctx context.Context) string {
 func (resolver *simpleAccessScopeResolver) Rules(ctx context.Context) (*simpleAccessScope_RulesResolver, error) {
 	value := resolver.data.GetRules()
 	return resolver.root.wrapSimpleAccessScope_Rules(value, true, nil)
+}
+
+func (resolver *simpleAccessScopeResolver) Traits(ctx context.Context) (*traitsResolver, error) {
+	value := resolver.data.GetTraits()
+	return resolver.root.wrapTraits(value, true, nil)
 }
 
 type simpleAccessScope_RulesResolver struct {
@@ -10420,6 +14611,24 @@ func (resolver *Resolver) wrapSimpleAccessScope_Ruleses(values []*storage.Simple
 	output := make([]*simpleAccessScope_RulesResolver, len(values))
 	for i, v := range values {
 		output[i] = &simpleAccessScope_RulesResolver{root: resolver, data: v}
+	}
+	return output, nil
+}
+
+func (resolver *Resolver) wrapSimpleAccessScope_RulesWithContext(ctx context.Context, value *storage.SimpleAccessScope_Rules, ok bool, err error) (*simpleAccessScope_RulesResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &simpleAccessScope_RulesResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapSimpleAccessScope_RulesesWithContext(ctx context.Context, values []*storage.SimpleAccessScope_Rules, err error) ([]*simpleAccessScope_RulesResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*simpleAccessScope_RulesResolver, len(values))
+	for i, v := range values {
+		output[i] = &simpleAccessScope_RulesResolver{ctx: ctx, root: resolver, data: v}
 	}
 	return output, nil
 }
@@ -10468,6 +14677,24 @@ func (resolver *Resolver) wrapSimpleAccessScope_Rules_Namespaces(values []*stora
 	return output, nil
 }
 
+func (resolver *Resolver) wrapSimpleAccessScope_Rules_NamespaceWithContext(ctx context.Context, value *storage.SimpleAccessScope_Rules_Namespace, ok bool, err error) (*simpleAccessScope_Rules_NamespaceResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &simpleAccessScope_Rules_NamespaceResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapSimpleAccessScope_Rules_NamespacesWithContext(ctx context.Context, values []*storage.SimpleAccessScope_Rules_Namespace, err error) ([]*simpleAccessScope_Rules_NamespaceResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*simpleAccessScope_Rules_NamespaceResolver, len(values))
+	for i, v := range values {
+		output[i] = &simpleAccessScope_Rules_NamespaceResolver{ctx: ctx, root: resolver, data: v}
+	}
+	return output, nil
+}
+
 func (resolver *simpleAccessScope_Rules_NamespaceResolver) ClusterName(ctx context.Context) string {
 	value := resolver.data.GetClusterName()
 	return value
@@ -10502,6 +14729,24 @@ func (resolver *Resolver) wrapSlimUsers(values []*storage.SlimUser, err error) (
 	return output, nil
 }
 
+func (resolver *Resolver) wrapSlimUserWithContext(ctx context.Context, value *storage.SlimUser, ok bool, err error) (*slimUserResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &slimUserResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapSlimUsersWithContext(ctx context.Context, values []*storage.SlimUser, err error) ([]*slimUserResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*slimUserResolver, len(values))
+	for i, v := range values {
+		output[i] = &slimUserResolver{ctx: ctx, root: resolver, data: v}
+	}
+	return output, nil
+}
+
 func (resolver *slimUserResolver) Id(ctx context.Context) graphql.ID {
 	value := resolver.data.GetId()
 	return graphql.ID(value)
@@ -10510,6 +14755,24 @@ func (resolver *slimUserResolver) Id(ctx context.Context) graphql.ID {
 func (resolver *slimUserResolver) Name(ctx context.Context) string {
 	value := resolver.data.GetName()
 	return value
+}
+
+func toSource(value *string) storage.Source {
+	if value != nil {
+		return storage.Source(storage.Source_value[*value])
+	}
+	return storage.Source(0)
+}
+
+func toSources(values *[]string) []storage.Source {
+	if values == nil {
+		return nil
+	}
+	output := make([]storage.Source, len(*values))
+	for i, v := range *values {
+		output[i] = toSource(&v)
+	}
+	return output
 }
 
 func toSourceType(value *string) storage.SourceType {
@@ -10550,6 +14813,24 @@ func (resolver *Resolver) wrapSplunks(values []*storage.Splunk, err error) ([]*s
 	output := make([]*splunkResolver, len(values))
 	for i, v := range values {
 		output[i] = &splunkResolver{root: resolver, data: v}
+	}
+	return output, nil
+}
+
+func (resolver *Resolver) wrapSplunkWithContext(ctx context.Context, value *storage.Splunk, ok bool, err error) (*splunkResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &splunkResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapSplunksWithContext(ctx context.Context, values []*storage.Splunk, err error) ([]*splunkResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*splunkResolver, len(values))
+	for i, v := range values {
+		output[i] = &splunkResolver{ctx: ctx, root: resolver, data: v}
 	}
 	return output, nil
 }
@@ -10604,6 +14885,24 @@ func (resolver *Resolver) wrapStaticClusterConfigs(values []*storage.StaticClust
 	output := make([]*staticClusterConfigResolver, len(values))
 	for i, v := range values {
 		output[i] = &staticClusterConfigResolver{root: resolver, data: v}
+	}
+	return output, nil
+}
+
+func (resolver *Resolver) wrapStaticClusterConfigWithContext(ctx context.Context, value *storage.StaticClusterConfig, ok bool, err error) (*staticClusterConfigResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &staticClusterConfigResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapStaticClusterConfigsWithContext(ctx context.Context, values []*storage.StaticClusterConfig, err error) ([]*staticClusterConfigResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*staticClusterConfigResolver, len(values))
+	for i, v := range values {
+		output[i] = &staticClusterConfigResolver{ctx: ctx, root: resolver, data: v}
 	}
 	return output, nil
 }
@@ -10682,6 +14981,24 @@ func (resolver *Resolver) wrapSubjects(values []*storage.Subject, err error) ([]
 	return output, nil
 }
 
+func (resolver *Resolver) wrapSubjectWithContext(ctx context.Context, value *storage.Subject, ok bool, err error) (*subjectResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &subjectResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapSubjectsWithContext(ctx context.Context, values []*storage.Subject, err error) ([]*subjectResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*subjectResolver, len(values))
+	for i, v := range values {
+		output[i] = &subjectResolver{ctx: ctx, root: resolver, data: v}
+	}
+	return output, nil
+}
+
 func (resolver *subjectResolver) ClusterId(ctx context.Context) string {
 	value := resolver.data.GetClusterId()
 	return value
@@ -10754,6 +15071,24 @@ func (resolver *Resolver) wrapSumoLogics(values []*storage.SumoLogic, err error)
 	return output, nil
 }
 
+func (resolver *Resolver) wrapSumoLogicWithContext(ctx context.Context, value *storage.SumoLogic, ok bool, err error) (*sumoLogicResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &sumoLogicResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapSumoLogicsWithContext(ctx context.Context, values []*storage.SumoLogic, err error) ([]*sumoLogicResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*sumoLogicResolver, len(values))
+	for i, v := range values {
+		output[i] = &sumoLogicResolver{ctx: ctx, root: resolver, data: v}
+	}
+	return output, nil
+}
+
 func (resolver *sumoLogicResolver) HttpSourceAddress(ctx context.Context) string {
 	value := resolver.data.GetHttpSourceAddress()
 	return value
@@ -10788,8 +15123,36 @@ func (resolver *Resolver) wrapSyslogs(values []*storage.Syslog, err error) ([]*s
 	return output, nil
 }
 
+func (resolver *Resolver) wrapSyslogWithContext(ctx context.Context, value *storage.Syslog, ok bool, err error) (*syslogResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &syslogResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapSyslogsWithContext(ctx context.Context, values []*storage.Syslog, err error) ([]*syslogResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*syslogResolver, len(values))
+	for i, v := range values {
+		output[i] = &syslogResolver{ctx: ctx, root: resolver, data: v}
+	}
+	return output, nil
+}
+
+func (resolver *syslogResolver) ExtraFields(ctx context.Context) ([]*keyValuePairResolver, error) {
+	value := resolver.data.GetExtraFields()
+	return resolver.root.wrapKeyValuePairs(value, nil)
+}
+
 func (resolver *syslogResolver) LocalFacility(ctx context.Context) string {
 	value := resolver.data.GetLocalFacility()
+	return value.String()
+}
+
+func (resolver *syslogResolver) MessageFormat(ctx context.Context) string {
+	value := resolver.data.GetMessageFormat()
 	return value.String()
 }
 
@@ -10834,6 +15197,24 @@ func toSyslog_LocalFacilities(values *[]string) []storage.Syslog_LocalFacility {
 	return output
 }
 
+func toSyslog_MessageFormat(value *string) storage.Syslog_MessageFormat {
+	if value != nil {
+		return storage.Syslog_MessageFormat(storage.Syslog_MessageFormat_value[*value])
+	}
+	return storage.Syslog_MessageFormat(0)
+}
+
+func toSyslog_MessageFormats(values *[]string) []storage.Syslog_MessageFormat {
+	if values == nil {
+		return nil
+	}
+	output := make([]storage.Syslog_MessageFormat, len(*values))
+	for i, v := range *values {
+		output[i] = toSyslog_MessageFormat(&v)
+	}
+	return output
+}
+
 type syslog_TCPConfigResolver struct {
 	ctx  context.Context
 	root *Resolver
@@ -10854,6 +15235,24 @@ func (resolver *Resolver) wrapSyslog_TCPConfigs(values []*storage.Syslog_TCPConf
 	output := make([]*syslog_TCPConfigResolver, len(values))
 	for i, v := range values {
 		output[i] = &syslog_TCPConfigResolver{root: resolver, data: v}
+	}
+	return output, nil
+}
+
+func (resolver *Resolver) wrapSyslog_TCPConfigWithContext(ctx context.Context, value *storage.Syslog_TCPConfig, ok bool, err error) (*syslog_TCPConfigResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &syslog_TCPConfigResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapSyslog_TCPConfigsWithContext(ctx context.Context, values []*storage.Syslog_TCPConfig, err error) ([]*syslog_TCPConfigResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*syslog_TCPConfigResolver, len(values))
+	for i, v := range values {
+		output[i] = &syslog_TCPConfigResolver{ctx: ctx, root: resolver, data: v}
 	}
 	return output, nil
 }
@@ -10898,6 +15297,24 @@ func (resolver *Resolver) wrapTaints(values []*storage.Taint, err error) ([]*tai
 	output := make([]*taintResolver, len(values))
 	for i, v := range values {
 		output[i] = &taintResolver{root: resolver, data: v}
+	}
+	return output, nil
+}
+
+func (resolver *Resolver) wrapTaintWithContext(ctx context.Context, value *storage.Taint, ok bool, err error) (*taintResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &taintResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapTaintsWithContext(ctx context.Context, values []*storage.Taint, err error) ([]*taintResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*taintResolver, len(values))
+	for i, v := range values {
+		output[i] = &taintResolver{ctx: ctx, root: resolver, data: v}
 	}
 	return output, nil
 }
@@ -10959,9 +15376,27 @@ func (resolver *Resolver) wrapTokenMetadatas(values []*storage.TokenMetadata, er
 	return output, nil
 }
 
+func (resolver *Resolver) wrapTokenMetadataWithContext(ctx context.Context, value *storage.TokenMetadata, ok bool, err error) (*tokenMetadataResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &tokenMetadataResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapTokenMetadatasWithContext(ctx context.Context, values []*storage.TokenMetadata, err error) ([]*tokenMetadataResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*tokenMetadataResolver, len(values))
+	for i, v := range values {
+		output[i] = &tokenMetadataResolver{ctx: ctx, root: resolver, data: v}
+	}
+	return output, nil
+}
+
 func (resolver *tokenMetadataResolver) Expiration(ctx context.Context) (*graphql.Time, error) {
 	value := resolver.data.GetExpiration()
-	return timestamp(value)
+	return protocompat.ConvertTimestampToGraphqlTimeOrError(value)
 }
 
 func (resolver *tokenMetadataResolver) Id(ctx context.Context) graphql.ID {
@@ -10971,7 +15406,7 @@ func (resolver *tokenMetadataResolver) Id(ctx context.Context) graphql.ID {
 
 func (resolver *tokenMetadataResolver) IssuedAt(ctx context.Context) (*graphql.Time, error) {
 	value := resolver.data.GetIssuedAt()
-	return timestamp(value)
+	return protocompat.ConvertTimestampToGraphqlTimeOrError(value)
 }
 
 func (resolver *tokenMetadataResolver) Name(ctx context.Context) string {
@@ -11014,6 +15449,24 @@ func (resolver *Resolver) wrapTolerations(values []*storage.Toleration, err erro
 	output := make([]*tolerationResolver, len(values))
 	for i, v := range values {
 		output[i] = &tolerationResolver{root: resolver, data: v}
+	}
+	return output, nil
+}
+
+func (resolver *Resolver) wrapTolerationWithContext(ctx context.Context, value *storage.Toleration, ok bool, err error) (*tolerationResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &tolerationResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapTolerationsWithContext(ctx context.Context, values []*storage.Toleration, err error) ([]*tolerationResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*tolerationResolver, len(values))
+	for i, v := range values {
+		output[i] = &tolerationResolver{ctx: ctx, root: resolver, data: v}
 	}
 	return output, nil
 }
@@ -11080,9 +15533,138 @@ func (resolver *Resolver) wrapTolerationsConfigs(values []*storage.TolerationsCo
 	return output, nil
 }
 
+func (resolver *Resolver) wrapTolerationsConfigWithContext(ctx context.Context, value *storage.TolerationsConfig, ok bool, err error) (*tolerationsConfigResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &tolerationsConfigResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapTolerationsConfigsWithContext(ctx context.Context, values []*storage.TolerationsConfig, err error) ([]*tolerationsConfigResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*tolerationsConfigResolver, len(values))
+	for i, v := range values {
+		output[i] = &tolerationsConfigResolver{ctx: ctx, root: resolver, data: v}
+	}
+	return output, nil
+}
+
 func (resolver *tolerationsConfigResolver) Disabled(ctx context.Context) bool {
 	value := resolver.data.GetDisabled()
 	return value
+}
+
+type traitsResolver struct {
+	ctx  context.Context
+	root *Resolver
+	data *storage.Traits
+}
+
+func (resolver *Resolver) wrapTraits(value *storage.Traits, ok bool, err error) (*traitsResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &traitsResolver{root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapTraitses(values []*storage.Traits, err error) ([]*traitsResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*traitsResolver, len(values))
+	for i, v := range values {
+		output[i] = &traitsResolver{root: resolver, data: v}
+	}
+	return output, nil
+}
+
+func (resolver *Resolver) wrapTraitsWithContext(ctx context.Context, value *storage.Traits, ok bool, err error) (*traitsResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &traitsResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapTraitsesWithContext(ctx context.Context, values []*storage.Traits, err error) ([]*traitsResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*traitsResolver, len(values))
+	for i, v := range values {
+		output[i] = &traitsResolver{ctx: ctx, root: resolver, data: v}
+	}
+	return output, nil
+}
+
+func (resolver *traitsResolver) MutabilityMode(ctx context.Context) string {
+	value := resolver.data.GetMutabilityMode()
+	return value.String()
+}
+
+func (resolver *traitsResolver) Origin(ctx context.Context) string {
+	value := resolver.data.GetOrigin()
+	return value.String()
+}
+
+func (resolver *traitsResolver) Visibility(ctx context.Context) string {
+	value := resolver.data.GetVisibility()
+	return value.String()
+}
+
+func toTraits_MutabilityMode(value *string) storage.Traits_MutabilityMode {
+	if value != nil {
+		return storage.Traits_MutabilityMode(storage.Traits_MutabilityMode_value[*value])
+	}
+	return storage.Traits_MutabilityMode(0)
+}
+
+func toTraits_MutabilityModes(values *[]string) []storage.Traits_MutabilityMode {
+	if values == nil {
+		return nil
+	}
+	output := make([]storage.Traits_MutabilityMode, len(*values))
+	for i, v := range *values {
+		output[i] = toTraits_MutabilityMode(&v)
+	}
+	return output
+}
+
+func toTraits_Origin(value *string) storage.Traits_Origin {
+	if value != nil {
+		return storage.Traits_Origin(storage.Traits_Origin_value[*value])
+	}
+	return storage.Traits_Origin(0)
+}
+
+func toTraits_Origins(values *[]string) []storage.Traits_Origin {
+	if values == nil {
+		return nil
+	}
+	output := make([]storage.Traits_Origin, len(*values))
+	for i, v := range *values {
+		output[i] = toTraits_Origin(&v)
+	}
+	return output
+}
+
+func toTraits_Visibility(value *string) storage.Traits_Visibility {
+	if value != nil {
+		return storage.Traits_Visibility(storage.Traits_Visibility_value[*value])
+	}
+	return storage.Traits_Visibility(0)
+}
+
+func toTraits_Visibilities(values *[]string) []storage.Traits_Visibility {
+	if values == nil {
+		return nil
+	}
+	output := make([]storage.Traits_Visibility, len(*values))
+	for i, v := range *values {
+		output[i] = toTraits_Visibility(&v)
+	}
+	return output
 }
 
 type upgradeProgressResolver struct {
@@ -11109,9 +15691,27 @@ func (resolver *Resolver) wrapUpgradeProgresses(values []*storage.UpgradeProgres
 	return output, nil
 }
 
+func (resolver *Resolver) wrapUpgradeProgressWithContext(ctx context.Context, value *storage.UpgradeProgress, ok bool, err error) (*upgradeProgressResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &upgradeProgressResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapUpgradeProgressesWithContext(ctx context.Context, values []*storage.UpgradeProgress, err error) ([]*upgradeProgressResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*upgradeProgressResolver, len(values))
+	for i, v := range values {
+		output[i] = &upgradeProgressResolver{ctx: ctx, root: resolver, data: v}
+	}
+	return output, nil
+}
+
 func (resolver *upgradeProgressResolver) Since(ctx context.Context) (*graphql.Time, error) {
 	value := resolver.data.GetSince()
-	return timestamp(value)
+	return protocompat.ConvertTimestampToGraphqlTimeOrError(value)
 }
 
 func (resolver *upgradeProgressResolver) UpgradeState(ctx context.Context) string {
@@ -11166,6 +15766,24 @@ func (resolver *Resolver) wrapV1Metadatas(values []*storage.V1Metadata, err erro
 	return output, nil
 }
 
+func (resolver *Resolver) wrapV1MetadataWithContext(ctx context.Context, value *storage.V1Metadata, ok bool, err error) (*v1MetadataResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &v1MetadataResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapV1MetadatasWithContext(ctx context.Context, values []*storage.V1Metadata, err error) ([]*v1MetadataResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*v1MetadataResolver, len(values))
+	for i, v := range values {
+		output[i] = &v1MetadataResolver{ctx: ctx, root: resolver, data: v}
+	}
+	return output, nil
+}
+
 func (resolver *v1MetadataResolver) Author(ctx context.Context) string {
 	value := resolver.data.GetAuthor()
 	return value
@@ -11178,7 +15796,7 @@ func (resolver *v1MetadataResolver) Command(ctx context.Context) []string {
 
 func (resolver *v1MetadataResolver) Created(ctx context.Context) (*graphql.Time, error) {
 	value := resolver.data.GetCreated()
-	return timestamp(value)
+	return protocompat.ConvertTimestampToGraphqlTimeOrError(value)
 }
 
 func (resolver *v1MetadataResolver) Digest(ctx context.Context) string {
@@ -11235,6 +15853,24 @@ func (resolver *Resolver) wrapV2Metadatas(values []*storage.V2Metadata, err erro
 	return output, nil
 }
 
+func (resolver *Resolver) wrapV2MetadataWithContext(ctx context.Context, value *storage.V2Metadata, ok bool, err error) (*v2MetadataResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &v2MetadataResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapV2MetadatasWithContext(ctx context.Context, values []*storage.V2Metadata, err error) ([]*v2MetadataResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*v2MetadataResolver, len(values))
+	for i, v := range values {
+		output[i] = &v2MetadataResolver{ctx: ctx, root: resolver, data: v}
+	}
+	return output, nil
+}
+
 func (resolver *v2MetadataResolver) Digest(ctx context.Context) string {
 	value := resolver.data.GetDigest()
 	return value
@@ -11278,6 +15914,24 @@ func (resolver *Resolver) wrapVolumes(values []*storage.Volume, err error) ([]*v
 	output := make([]*volumeResolver, len(values))
 	for i, v := range values {
 		output[i] = &volumeResolver{root: resolver, data: v}
+	}
+	return output, nil
+}
+
+func (resolver *Resolver) wrapVolumeWithContext(ctx context.Context, value *storage.Volume, ok bool, err error) (*volumeResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &volumeResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapVolumesWithContext(ctx context.Context, values []*storage.Volume, err error) ([]*volumeResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*volumeResolver, len(values))
+	for i, v := range values {
+		output[i] = &volumeResolver{ctx: ctx, root: resolver, data: v}
 	}
 	return output, nil
 }
@@ -11354,8 +16008,26 @@ func (resolver *Resolver) wrapVulnerabilityRequest_CVEses(values []*storage.Vuln
 	return output, nil
 }
 
-func (resolver *vulnerabilityRequest_CVEsResolver) Ids(ctx context.Context) []string {
-	value := resolver.data.GetIds()
+func (resolver *Resolver) wrapVulnerabilityRequest_CVEsWithContext(ctx context.Context, value *storage.VulnerabilityRequest_CVEs, ok bool, err error) (*vulnerabilityRequest_CVEsResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &vulnerabilityRequest_CVEsResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapVulnerabilityRequest_CVEsesWithContext(ctx context.Context, values []*storage.VulnerabilityRequest_CVEs, err error) ([]*vulnerabilityRequest_CVEsResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*vulnerabilityRequest_CVEsResolver, len(values))
+	for i, v := range values {
+		output[i] = &vulnerabilityRequest_CVEsResolver{ctx: ctx, root: resolver, data: v}
+	}
+	return output, nil
+}
+
+func (resolver *vulnerabilityRequest_CVEsResolver) Cves(ctx context.Context) []string {
+	value := resolver.data.GetCves()
 	return value
 }
 
@@ -11379,6 +16051,24 @@ func (resolver *Resolver) wrapVulnerabilityRequest_Scopes(values []*storage.Vuln
 	output := make([]*vulnerabilityRequest_ScopeResolver, len(values))
 	for i, v := range values {
 		output[i] = &vulnerabilityRequest_ScopeResolver{root: resolver, data: v}
+	}
+	return output, nil
+}
+
+func (resolver *Resolver) wrapVulnerabilityRequest_ScopeWithContext(ctx context.Context, value *storage.VulnerabilityRequest_Scope, ok bool, err error) (*vulnerabilityRequest_ScopeResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &vulnerabilityRequest_ScopeResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapVulnerabilityRequest_ScopesWithContext(ctx context.Context, values []*storage.VulnerabilityRequest_Scope, err error) ([]*vulnerabilityRequest_ScopeResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*vulnerabilityRequest_ScopeResolver, len(values))
+	for i, v := range values {
+		output[i] = &vulnerabilityRequest_ScopeResolver{ctx: ctx, root: resolver, data: v}
 	}
 	return output, nil
 }
@@ -11445,6 +16135,24 @@ func (resolver *Resolver) wrapVulnerabilityRequest_Scope_Globals(values []*stora
 	return output, nil
 }
 
+func (resolver *Resolver) wrapVulnerabilityRequest_Scope_GlobalWithContext(ctx context.Context, value *storage.VulnerabilityRequest_Scope_Global, ok bool, err error) (*vulnerabilityRequest_Scope_GlobalResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &vulnerabilityRequest_Scope_GlobalResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapVulnerabilityRequest_Scope_GlobalsWithContext(ctx context.Context, values []*storage.VulnerabilityRequest_Scope_Global, err error) ([]*vulnerabilityRequest_Scope_GlobalResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*vulnerabilityRequest_Scope_GlobalResolver, len(values))
+	for i, v := range values {
+		output[i] = &vulnerabilityRequest_Scope_GlobalResolver{ctx: ctx, root: resolver, data: v}
+	}
+	return output, nil
+}
+
 type vulnerabilityRequest_Scope_ImageResolver struct {
 	ctx  context.Context
 	root *Resolver
@@ -11465,6 +16173,24 @@ func (resolver *Resolver) wrapVulnerabilityRequest_Scope_Images(values []*storag
 	output := make([]*vulnerabilityRequest_Scope_ImageResolver, len(values))
 	for i, v := range values {
 		output[i] = &vulnerabilityRequest_Scope_ImageResolver{root: resolver, data: v}
+	}
+	return output, nil
+}
+
+func (resolver *Resolver) wrapVulnerabilityRequest_Scope_ImageWithContext(ctx context.Context, value *storage.VulnerabilityRequest_Scope_Image, ok bool, err error) (*vulnerabilityRequest_Scope_ImageResolver, error) {
+	if !ok || err != nil || value == nil {
+		return nil, err
+	}
+	return &vulnerabilityRequest_Scope_ImageResolver{ctx: ctx, root: resolver, data: value}, nil
+}
+
+func (resolver *Resolver) wrapVulnerabilityRequest_Scope_ImagesWithContext(ctx context.Context, values []*storage.VulnerabilityRequest_Scope_Image, err error) ([]*vulnerabilityRequest_Scope_ImageResolver, error) {
+	if err != nil || len(values) == 0 {
+		return nil, err
+	}
+	output := make([]*vulnerabilityRequest_Scope_ImageResolver, len(values))
+	for i, v := range values {
+		output[i] = &vulnerabilityRequest_Scope_ImageResolver{ctx: ctx, root: resolver, data: v}
 	}
 	return output, nil
 }

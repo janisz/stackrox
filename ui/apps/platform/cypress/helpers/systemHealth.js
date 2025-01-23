@@ -2,7 +2,7 @@ import * as api from '../constants/apiEndpoints';
 import { systemHealthUrl } from '../constants/SystemHealth';
 
 import { visitFromLeftNavExpandable } from './nav';
-import { visit } from './visit';
+import { visit, visitWithStaticResponseForCapabilities } from './visit';
 
 // clock
 
@@ -13,232 +13,75 @@ export function setClock(currentDatetime) {
 
 // visit
 
+export const integrationHealthVulnDefinitionsAlias =
+    'integrationhealth/vulndefinitions?component=*';
+export const integrationHealthDeclarativeConfigsAlias = 'declarative-config/health';
+
+const SystemHealthHeadingSelector = 'h1:contains("System Health")';
+const routeMatcherMap = {
+    'integrationhealth/imageintegrations': {
+        method: 'GET',
+        url: api.integrationHealth.imageIntegrations,
+    },
+    imageintegrations: {
+        method: 'GET',
+        url: api.integrations.imageIntegrations,
+    },
+    'integrationhealth/notifiers': {
+        method: 'GET',
+        url: api.integrationHealth.notifiers,
+    },
+    notifiers: {
+        method: 'GET',
+        url: api.integrations.notifiers,
+    },
+    'integrationhealth/externalbackups': {
+        method: 'GET',
+        url: api.integrationHealth.externalBackups,
+    },
+    externalbackups: {
+        method: 'GET',
+        url: api.integrations.externalBackups,
+    },
+    clusters: {
+        method: 'GET',
+        url: '/v1/clusters',
+    },
+    [integrationHealthVulnDefinitionsAlias]: {
+        method: 'GET',
+        url: api.integrationHealth.vulnDefinitions,
+    },
+    [integrationHealthDeclarativeConfigsAlias]: {
+        method: 'GET',
+        url: '/v1/declarative-config/health',
+    },
+};
+
 export function visitSystemHealthFromLeftNav() {
-    cy.intercept('GET', api.clusters.list).as('getClusters');
-    cy.intercept('GET', api.integrations.externalBackups).as('getBackupIntegrations');
-    cy.intercept('GET', api.integrations.imageIntegrations).as('getImageIntegrations');
-    cy.intercept('GET', api.integrations.notifiers).as('getNotifierIntegrations');
-    cy.intercept('GET', api.integrationHealth.externalBackups).as('getBackupIntegrationsHealth');
-    cy.intercept('GET', api.integrationHealth.imageIntegrations).as('getImageIntegrationsHealth');
-    cy.intercept('GET', api.integrationHealth.notifiers).as('getNotifierIntegrationsHealth');
-    cy.intercept('GET', api.integrationHealth.vulnDefinitions).as('getVulnDefinitionsHealth');
+    visitFromLeftNavExpandable('Platform Configuration', 'System Health', routeMatcherMap);
 
-    visitFromLeftNavExpandable('Platform Configuration', 'System Health');
-
-    cy.wait([
-        '@getClusters',
-        '@getBackupIntegrations',
-        '@getImageIntegrations',
-        '@getNotifierIntegrations',
-        '@getBackupIntegrationsHealth',
-        '@getImageIntegrationsHealth',
-        '@getNotifierIntegrationsHealth',
-        '@getVulnDefinitionsHealth',
-    ]);
-    cy.get('h1:contains("System Health")');
+    cy.location('pathname').should('eq', systemHealthUrl);
+    cy.get(SystemHealthHeadingSelector);
 }
 
-export function visitSystemHealth() {
-    cy.intercept('GET', api.clusters.list).as('getClusters');
-    cy.intercept('GET', api.integrations.externalBackups).as('getBackupIntegrations');
-    cy.intercept('GET', api.integrations.imageIntegrations).as('getImageIntegrations');
-    cy.intercept('GET', api.integrations.notifiers).as('getNotifierIntegrations');
-    cy.intercept('GET', api.integrationHealth.externalBackups).as('getBackupIntegrationsHealth');
-    cy.intercept('GET', api.integrationHealth.imageIntegrations).as('getImageIntegrationsHealth');
-    cy.intercept('GET', api.integrationHealth.notifiers).as('getNotifierIntegrationsHealth');
-    cy.intercept('GET', api.integrationHealth.vulnDefinitions).as('getVulnDefinitionsHealth');
+export function visitSystemHealth(staticResponseMap) {
+    visit(systemHealthUrl, routeMatcherMap, staticResponseMap);
 
-    visit(systemHealthUrl);
-
-    cy.wait([
-        '@getClusters',
-        '@getBackupIntegrations',
-        '@getImageIntegrations',
-        '@getNotifierIntegrations',
-        '@getBackupIntegrationsHealth',
-        '@getImageIntegrationsHealth',
-        '@getNotifierIntegrationsHealth',
-        '@getVulnDefinitionsHealth',
-    ]);
-    cy.get('h1:contains("System Health")');
+    cy.get(SystemHealthHeadingSelector);
 }
 
-// visit clusters
+export function visitSystemHealthWithStaticResponseForCapabilities(
+    staticResponseForCapabilities,
+    keysToRemoveFromRouteMatcherMap = []
+) {
+    const updatedRouteMatcherMap = { ...routeMatcherMap };
+    keysToRemoveFromRouteMatcherMap.forEach((key) => delete updatedRouteMatcherMap[key]);
 
-export function visitSystemHealthWithClustersFixture(fixturePath) {
-    cy.intercept('GET', api.clusters.list, {
-        fixture: fixturePath,
-    }).as('getClusters');
-    cy.intercept('GET', api.integrations.externalBackups).as('getBackupIntegrations');
-    cy.intercept('GET', api.integrations.imageIntegrations).as('getImageIntegrations');
-    cy.intercept('GET', api.integrations.notifiers).as('getNotifierIntegrations');
-    cy.intercept('GET', api.integrationHealth.externalBackups).as('getBackupIntegrationsHealth');
-    cy.intercept('GET', api.integrationHealth.imageIntegrations).as('getImageIntegrationsHealth');
-    cy.intercept('GET', api.integrationHealth.notifiers).as('getNotifierIntegrationsHealth');
-    cy.intercept('GET', api.integrationHealth.vulnDefinitions).as('getVulnDefinitionsHealth');
+    visitWithStaticResponseForCapabilities(
+        systemHealthUrl,
+        staticResponseForCapabilities,
+        updatedRouteMatcherMap
+    );
 
-    visit(systemHealthUrl);
-
-    cy.wait([
-        '@getClusters',
-        '@getBackupIntegrations',
-        '@getImageIntegrations',
-        '@getNotifierIntegrations',
-        '@getBackupIntegrationsHealth',
-        '@getImageIntegrationsHealth',
-        '@getNotifierIntegrationsHealth',
-        '@getVulnDefinitionsHealth',
-    ]);
-    cy.get('h1:contains("System Health")');
-}
-
-export function visitSystemHealthWithClustersFixtureFilteredByNames(fixturePath, clusterNames) {
-    cy.fixture(fixturePath).then(({ clusters }) => {
-        cy.intercept('GET', api.clusters.list, {
-            body: { clusters: clusters.filter(({ name }) => clusterNames.includes(name)) },
-        }).as('getClusters');
-        cy.intercept('GET', api.integrations.externalBackups).as('getBackupIntegrations');
-        cy.intercept('GET', api.integrations.imageIntegrations).as('getImageIntegrations');
-        cy.intercept('GET', api.integrations.notifiers).as('getNotifierIntegrations');
-        cy.intercept('GET', api.integrationHealth.externalBackups).as(
-            'getBackupIntegrationsHealth'
-        );
-        cy.intercept('GET', api.integrationHealth.imageIntegrations).as(
-            'getImageIntegrationsHealth'
-        );
-        cy.intercept('GET', api.integrationHealth.notifiers).as('getNotifierIntegrationsHealth');
-        cy.intercept('GET', api.integrationHealth.vulnDefinitions).as('getVulnDefinitionsHealth');
-
-        visit(systemHealthUrl);
-
-        cy.wait([
-            '@getClusters',
-            '@getBackupIntegrations',
-            '@getImageIntegrations',
-            '@getNotifierIntegrations',
-            '@getBackupIntegrationsHealth',
-            '@getImageIntegrationsHealth',
-            '@getNotifierIntegrationsHealth',
-            '@getVulnDefinitionsHealth',
-        ]);
-        cy.get('h1:contains("System Health")');
-    });
-}
-
-// visit integrations
-
-export function visitSystemHealthWithBackupIntegrations(externalBackups, integrationHealth) {
-    cy.intercept('GET', api.clusters.list).as('getClusters');
-    cy.intercept('GET', api.integrations.externalBackups, {
-        body: { externalBackups },
-    }).as('getBackupIntegrations');
-    cy.intercept('GET', api.integrations.imageIntegrations).as('getImageIntegrations');
-    cy.intercept('GET', api.integrations.notifiers).as('getNotifierIntegrations');
-    cy.intercept('GET', api.integrationHealth.externalBackups, {
-        body: { integrationHealth },
-    }).as('getBackupIntegrationsHealth');
-    cy.intercept('GET', api.integrationHealth.imageIntegrations).as('getImageIntegrationsHealth');
-    cy.intercept('GET', api.integrationHealth.notifiers).as('getNotifierIntegrationsHealth');
-    cy.intercept('GET', api.integrationHealth.vulnDefinitions).as('getVulnDefinitionsHealth');
-
-    visit(systemHealthUrl);
-
-    cy.wait([
-        '@getClusters',
-        '@getBackupIntegrations',
-        '@getImageIntegrations',
-        '@getNotifierIntegrations',
-        '@getBackupIntegrationsHealth',
-        '@getImageIntegrationsHealth',
-        '@getNotifierIntegrationsHealth',
-        '@getVulnDefinitionsHealth',
-    ]);
-    cy.get('h1:contains("System Health")');
-}
-
-export function visitSystemHealthWithImageIntegrations(integrations, integrationHealth) {
-    cy.intercept('GET', api.clusters.list).as('getClusters');
-    cy.intercept('GET', api.integrations.externalBackups).as('getBackupIntegrations');
-    cy.intercept('GET', api.integrations.imageIntegrations, {
-        body: { integrations },
-    }).as('getImageIntegrations');
-    cy.intercept('GET', api.integrations.notifiers).as('getNotifierIntegrations');
-    cy.intercept('GET', api.integrationHealth.externalBackups).as('getBackupIntegrationsHealth');
-    cy.intercept('GET', api.integrationHealth.imageIntegrations, {
-        body: { integrationHealth },
-    }).as('getImageIntegrationsHealth');
-    cy.intercept('GET', api.integrationHealth.notifiers).as('getNotifierIntegrationsHealth');
-    cy.intercept('GET', api.integrationHealth.vulnDefinitions).as('getVulnDefinitionsHealth');
-
-    visit(systemHealthUrl);
-
-    cy.wait([
-        '@getClusters',
-        '@getBackupIntegrations',
-        '@getImageIntegrations',
-        '@getNotifierIntegrations',
-        '@getBackupIntegrationsHealth',
-        '@getImageIntegrationsHealth',
-        '@getNotifierIntegrationsHealth',
-        '@getVulnDefinitionsHealth',
-    ]);
-    cy.get('h1:contains("System Health")');
-}
-
-export function visitSystemHealthWithNotifierIntegrations(notifiers, integrationHealth) {
-    cy.intercept('GET', api.clusters.list).as('getClusters');
-    cy.intercept('GET', api.integrations.externalBackups).as('getBackupIntegrations');
-    cy.intercept('GET', api.integrations.imageIntegrations).as('getImageIntegrations');
-    cy.intercept('GET', api.integrations.notifiers, {
-        body: { notifiers },
-    }).as('getNotifierIntegrations');
-    cy.intercept('GET', api.integrationHealth.externalBackups).as('getBackupIntegrationsHealth');
-    cy.intercept('GET', api.integrationHealth.imageIntegrations).as('getImageIntegrationsHealth');
-    cy.intercept('GET', api.integrationHealth.notifiers, {
-        body: { integrationHealth },
-    }).as('getNotifierIntegrationsHealth');
-    cy.intercept('GET', api.integrationHealth.vulnDefinitions).as('getVulnDefinitionsHealth');
-
-    visit(systemHealthUrl);
-
-    cy.wait([
-        '@getClusters',
-        '@getBackupIntegrations',
-        '@getImageIntegrations',
-        '@getNotifierIntegrations',
-        '@getBackupIntegrationsHealth',
-        '@getImageIntegrationsHealth',
-        '@getNotifierIntegrationsHealth',
-        '@getVulnDefinitionsHealth',
-    ]);
-    cy.get('h1:contains("System Health")');
-}
-
-// visit vulnerability definitions
-
-export function visitSystemHealthWithVulnerabilityDefinitionsTimestamp(lastUpdatedTimestamp) {
-    cy.intercept('GET', api.clusters.list).as('getClusters');
-    cy.intercept('GET', api.integrations.externalBackups).as('getBackupIntegrations');
-    cy.intercept('GET', api.integrations.imageIntegrations).as('getImageIntegrations');
-    cy.intercept('GET', api.integrations.notifiers).as('getNotifierIntegrations');
-    cy.intercept('GET', api.integrationHealth.externalBackups).as('getBackupIntegrationsHealth');
-    cy.intercept('GET', api.integrationHealth.imageIntegrations).as('getImageIntegrationsHealth');
-    cy.intercept('GET', api.integrationHealth.notifiers).as('getNotifierIntegrationsHealth');
-    cy.intercept('GET', api.integrationHealth.vulnDefinitions, {
-        body: { lastUpdatedTimestamp },
-    }).as('getVulnDefinitionsHealth');
-
-    visit(systemHealthUrl);
-
-    cy.wait([
-        '@getClusters',
-        '@getBackupIntegrations',
-        '@getImageIntegrations',
-        '@getNotifierIntegrations',
-        '@getBackupIntegrationsHealth',
-        '@getImageIntegrationsHealth',
-        '@getNotifierIntegrationsHealth',
-        '@getVulnDefinitionsHealth',
-    ]);
-    cy.get('h1:contains("System Health")');
+    cy.get(SystemHealthHeadingSelector);
 }

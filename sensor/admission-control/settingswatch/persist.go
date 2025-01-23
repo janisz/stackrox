@@ -4,7 +4,6 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/gogo/protobuf/proto"
 	"github.com/pkg/errors"
 	"github.com/stackrox/rox/generated/internalapi/sensor"
 	"github.com/stackrox/rox/pkg/concurrency"
@@ -41,7 +40,7 @@ func RunSettingsPersister(mgr manager.Manager) error {
 
 type persister struct {
 	ctx              concurrency.Waitable
-	settingsStreamIt concurrency.ValueStreamIter
+	settingsStreamIt concurrency.ValueStreamIter[*sensor.AdmissionControlSettings]
 	outC             chan<- *sensor.AdmissionControlSettings
 }
 
@@ -81,7 +80,7 @@ func (p *persister) loadExisting() (*sensor.AdmissionControlSettings, error) {
 	}
 
 	var settings sensor.AdmissionControlSettings
-	if err := proto.Unmarshal(bytes, &settings); err != nil {
+	if err := settings.UnmarshalVTUnsafe(bytes); err != nil {
 		return nil, errors.Wrapf(err, "unmarshaling initial admission control settings from %s", settingsPath)
 	}
 
@@ -89,16 +88,7 @@ func (p *persister) loadExisting() (*sensor.AdmissionControlSettings, error) {
 }
 
 func (p *persister) persistCurrent() error {
-	val := p.settingsStreamIt.Value()
-	if val == nil {
-		return nil // initial value
-	}
-
-	settings, ok := val.(*sensor.AdmissionControlSettings)
-	if !ok {
-		log.Warnf("Received invalid value of type %T in settings stream", val)
-	}
-
+	settings := p.settingsStreamIt.Value()
 	if settings == nil {
 		if err := os.Remove(settingsPath); err != nil {
 			return errors.Wrapf(err, "removing existing settings path %s", settingsPath)
@@ -106,7 +96,7 @@ func (p *persister) persistCurrent() error {
 		return nil
 	}
 
-	bytes, err := proto.Marshal(settings)
+	bytes, err := settings.MarshalVT()
 	if err != nil {
 		return errors.Wrap(err, "marshaling settings proto")
 	}

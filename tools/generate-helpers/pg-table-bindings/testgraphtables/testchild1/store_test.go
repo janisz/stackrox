@@ -8,58 +8,44 @@ import (
 	"context"
 	"testing"
 
-	"github.com/jackc/pgx/v4/pgxpool"
 	"github.com/stackrox/rox/generated/storage"
-	"github.com/stackrox/rox/pkg/features"
 	"github.com/stackrox/rox/pkg/postgres/pgtest"
+	"github.com/stackrox/rox/pkg/protoassert"
 	"github.com/stackrox/rox/pkg/sac"
+	"github.com/stackrox/rox/pkg/search"
 	"github.com/stackrox/rox/pkg/testutils"
-	"github.com/stackrox/rox/pkg/testutils/envisolator"
 	"github.com/stretchr/testify/suite"
 )
 
-type Testchild1StoreSuite struct {
+type TestChild1StoreSuite struct {
 	suite.Suite
-	envIsolator *envisolator.EnvIsolator
-	store       Store
-	pool        *pgxpool.Pool
+	store  Store
+	testDB *pgtest.TestPostgres
 }
 
-func TestTestchild1Store(t *testing.T) {
-	suite.Run(t, new(Testchild1StoreSuite))
+func TestTestChild1Store(t *testing.T) {
+	suite.Run(t, new(TestChild1StoreSuite))
 }
 
-func (s *Testchild1StoreSuite) SetupTest() {
-	s.envIsolator = envisolator.NewEnvIsolator(s.T())
-	s.envIsolator.Setenv(features.PostgresDatastore.EnvVar(), "true")
+func (s *TestChild1StoreSuite) SetupSuite() {
 
-	if !features.PostgresDatastore.Enabled() {
-		s.T().Skip("Skip postgres store tests")
-		s.T().SkipNow()
-	}
+	s.testDB = pgtest.ForT(s.T())
+	s.store = New(s.testDB.DB)
+}
 
+func (s *TestChild1StoreSuite) SetupTest() {
 	ctx := sac.WithAllAccess(context.Background())
-
-	source := pgtest.GetConnectionString(s.T())
-	config, err := pgxpool.ParseConfig(source)
-	s.Require().NoError(err)
-	pool, err := pgxpool.ConnectConfig(ctx, config)
-	s.Require().NoError(err)
-
-	Destroy(ctx, pool)
-
-	s.pool = pool
-	s.store = New(ctx, pool)
+	tag, err := s.testDB.Exec(ctx, "TRUNCATE test_child1 CASCADE")
+	s.T().Log("test_child1", tag)
+	s.store = New(s.testDB.DB)
+	s.NoError(err)
 }
 
-func (s *Testchild1StoreSuite) TearDownTest() {
-	if s.pool != nil {
-		s.pool.Close()
-	}
-	s.envIsolator.RestoreAll()
+func (s *TestChild1StoreSuite) TearDownSuite() {
+	s.testDB.Teardown(s.T())
 }
 
-func (s *Testchild1StoreSuite) TestStore() {
+func (s *TestChild1StoreSuite) TestStore() {
 	ctx := sac.WithAllAccess(context.Background())
 
 	store := s.store
@@ -72,42 +58,52 @@ func (s *Testchild1StoreSuite) TestStore() {
 	s.False(exists)
 	s.Nil(foundTestChild1)
 
+	withNoAccessCtx := sac.WithNoAccess(ctx)
+
 	s.NoError(store.Upsert(ctx, testChild1))
 	foundTestChild1, exists, err = store.Get(ctx, testChild1.GetId())
 	s.NoError(err)
 	s.True(exists)
-	s.Equal(testChild1, foundTestChild1)
+	protoassert.Equal(s.T(), testChild1, foundTestChild1)
 
-	testChild1Count, err := store.Count(ctx)
+	testChild1Count, err := store.Count(ctx, search.EmptyQuery())
 	s.NoError(err)
 	s.Equal(1, testChild1Count)
+	testChild1Count, err = store.Count(withNoAccessCtx, search.EmptyQuery())
+	s.NoError(err)
+	s.Zero(testChild1Count)
 
 	testChild1Exists, err := store.Exists(ctx, testChild1.GetId())
 	s.NoError(err)
 	s.True(testChild1Exists)
 	s.NoError(store.Upsert(ctx, testChild1))
-
-	foundTestChild1, exists, err = store.Get(ctx, testChild1.GetId())
-	s.NoError(err)
-	s.True(exists)
-	s.Equal(testChild1, foundTestChild1)
+	s.ErrorIs(store.Upsert(withNoAccessCtx, testChild1), sac.ErrResourceAccessDenied)
 
 	s.NoError(store.Delete(ctx, testChild1.GetId()))
 	foundTestChild1, exists, err = store.Get(ctx, testChild1.GetId())
 	s.NoError(err)
 	s.False(exists)
 	s.Nil(foundTestChild1)
+	s.NoError(store.Delete(withNoAccessCtx, testChild1.GetId()))
 
 	var testChild1s []*storage.TestChild1
+	var testChild1IDs []string
 	for i := 0; i < 200; i++ {
 		testChild1 := &storage.TestChild1{}
 		s.NoError(testutils.FullInit(testChild1, testutils.UniqueInitializer(), testutils.JSONFieldsFilter))
 		testChild1s = append(testChild1s, testChild1)
+		testChild1IDs = append(testChild1IDs, testChild1.GetId())
 	}
 
 	s.NoError(store.UpsertMany(ctx, testChild1s))
 
-	testChild1Count, err = store.Count(ctx)
+	testChild1Count, err = store.Count(ctx, search.EmptyQuery())
 	s.NoError(err)
 	s.Equal(200, testChild1Count)
+
+	s.NoError(store.DeleteMany(ctx, testChild1IDs))
+
+	testChild1Count, err = store.Count(ctx, search.EmptyQuery())
+	s.NoError(err)
+	s.Equal(0, testChild1Count)
 }

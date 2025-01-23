@@ -2,44 +2,60 @@ package datastore
 
 import (
 	"context"
+	"testing"
+	"time"
 
-	"github.com/gogo/protobuf/types"
-	"github.com/stackrox/rox/central/cve/image/datastore/internal/store"
-	"github.com/stackrox/rox/central/cve/index"
-	"github.com/stackrox/rox/central/cve/search"
+	"github.com/stackrox/rox/central/cve/common"
+	"github.com/stackrox/rox/central/cve/image/datastore/search"
+	"github.com/stackrox/rox/central/cve/image/datastore/store"
+	pgStore "github.com/stackrox/rox/central/cve/image/datastore/store/postgres"
 	v1 "github.com/stackrox/rox/generated/api/v1"
 	"github.com/stackrox/rox/generated/storage"
+	"github.com/stackrox/rox/pkg/concurrency"
+	"github.com/stackrox/rox/pkg/postgres"
 	searchPkg "github.com/stackrox/rox/pkg/search"
 )
 
 // DataStore is an intermediary to CVE storage.
+//
 //go:generate mockgen-wrapper
 type DataStore interface {
 	Search(ctx context.Context, q *v1.Query) ([]searchPkg.Result, error)
-	SearchCVEs(ctx context.Context, q *v1.Query) ([]*v1.SearchResult, error)
-	SearchRawCVEs(ctx context.Context, q *v1.Query) ([]*storage.CVE, error)
+	SearchImageCVEs(ctx context.Context, q *v1.Query) ([]*v1.SearchResult, error)
+	SearchRawImageCVEs(ctx context.Context, q *v1.Query) ([]*storage.ImageCVE, error)
 
 	Exists(ctx context.Context, id string) (bool, error)
-	Get(ctx context.Context, id string) (*storage.CVE, bool, error)
+	Get(ctx context.Context, id string) (*storage.ImageCVE, bool, error)
 	Count(ctx context.Context, q *v1.Query) (int, error)
-	GetBatch(ctx context.Context, id []string) ([]*storage.CVE, error)
+	GetBatch(ctx context.Context, id []string) ([]*storage.ImageCVE, error)
 
-	Suppress(ctx context.Context, start *types.Timestamp, duration *types.Duration, ids ...string) error
-	Unsuppress(ctx context.Context, ids ...string) error
+	Suppress(ctx context.Context, start *time.Time, duration *time.Duration, cves ...string) error
+	Unsuppress(ctx context.Context, cves ...string) error
+
+	// Deprecated: ApplyException and RevertException are used for database backward compatibility purpose only.
+	// Those functions can be removed after a few releases.
+	ApplyException(ctx context.Context, start *time.Time, expiry *time.Time, cves ...string) error
+	RevertException(ctx context.Context, cves ...string) error
+
 	EnrichImageWithSuppressedCVEs(image *storage.Image)
 }
 
 // New returns a new instance of a DataStore.
-func New(storage store.Store, indexer index.Indexer, searcher search.Searcher) (DataStore, error) {
+func New(storage store.Store, searcher search.Searcher, kf concurrency.KeyFence) DataStore {
 	ds := &datastoreImpl{
 		storage:  storage,
-		indexer:  indexer,
 		searcher: searcher,
 
-		cveSuppressionCache: make(map[string]suppressionCacheEntry),
+		cveSuppressionCache: make(common.CVESuppressionCache),
+		keyFence:            kf,
 	}
-	if err := ds.buildSuppressedCache(); err != nil {
-		return nil, err
-	}
-	return ds, nil
+	ds.buildSuppressedCache()
+	return ds
+}
+
+// GetTestPostgresDataStore provides a datastore connected to postgres for testing purposes.
+func GetTestPostgresDataStore(_ *testing.T, pool postgres.DB) DataStore {
+	dbstore := pgStore.New(pool)
+	searcher := search.New(dbstore)
+	return New(dbstore, searcher, concurrency.NewKeyFence())
 }

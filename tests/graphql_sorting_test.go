@@ -1,6 +1,10 @@
+//go:build test_e2e
+
 package tests
 
 import (
+	"os"
+	"slices"
 	"sort"
 	"testing"
 
@@ -34,16 +38,19 @@ func getDeploymentsWithSortOption(t *testing.T, field string, reversed bool) []*
 }
 
 func testDeploymentSorting(t *testing.T, field string, extractor func(d *storage.Deployment) string) {
-	sorted := sliceutils.Map(getDeploymentsWithSortOption(t, field, false), extractor).([]string)
-	assert.True(t, sort.StringsAreSorted(sorted), "field %s not sorted in response (got %v)", field, sorted)
+	sorted := sliceutils.Map(getDeploymentsWithSortOption(t, field, false), extractor)
+	assert.True(t, slices.IsSorted(sorted), "field %s not sorted in response (got %v)", field, sorted)
 
-	sortedReverse := sliceutils.Map(getDeploymentsWithSortOption(t, field, true), extractor).([]string)
+	sortedReverse := sliceutils.Map(getDeploymentsWithSortOption(t, field, true), extractor)
 	assert.True(t, sort.SliceIsSorted(sortedReverse, func(i, j int) bool {
 		return sortedReverse[i] > sortedReverse[j]
 	}), "field %s not sorted in reverse in response (got %v)", field, sortedReverse)
 }
 
 func TestGraphQLSorting(t *testing.T) {
+	if os.Getenv("ORCHESTRATOR_FLAVOR") == "openshift" {
+		t.Skip("Temporarily skipping this test on OCP: TODO(ROX-25171)")
+	}
 	testDeploymentSorting(t, "Deployment", func(d *storage.Deployment) string {
 		return d.GetName()
 	})

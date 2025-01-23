@@ -1,20 +1,19 @@
+/* eslint-disable no-nested-ternary */
 import React from 'react';
-import { ExternalLink } from 'react-feather';
 import { format } from 'date-fns';
 
 import CollapsibleSection from 'Components/CollapsibleSection';
 import CveType from 'Components/CveType';
 import Metadata from 'Components/Metadata';
-import LabelChip from 'Components/LabelChip';
-import Widget from 'Components/Widget';
+import ExternalLink from 'Components/PatternFly/IconText/ExternalLink';
 import dateTimeFormat from 'constants/dateTimeFormat';
 import entityTypes from 'constants/entityTypes';
-import { getSeverityChipType } from 'utils/vulnerabilityUtils';
 import { isValidURL } from 'utils/urlUtils';
 import RelatedEntitiesSideList from '../RelatedEntitiesSideList';
 
 const emptyCve = {
-    componentCount: 0,
+    imageComponentCount: 0,
+    nodeComponentCount: 0,
     cve: '',
     cvss: 0,
     deploymentCount: 0,
@@ -49,23 +48,19 @@ const VulnMgmtCveOverview = ({ data, entityContext }) => {
         lastModified,
         scoreVersion,
         vulnerabilityTypes,
+        imageComponentCount,
+        nodeComponentCount,
     } = safeData;
+    const operatingSystem = safeData?.operatingSystem;
 
     const linkToMoreInfo = isValidURL(link) ? (
-        <a
-            href={link}
-            className="btn-sm btn-base no-underline p-1"
-            target="_blank"
-            rel="noopener noreferrer nofollow"
-            data-testid="more-info-link"
-        >
-            <span className="pr-1">View Full CVE Description</span>
-            <ExternalLink size={16} />
-        </a>
+        <ExternalLink>
+            <a href={link} target="_blank" rel="noopener noreferrer">
+                View Full CVE Description
+            </a>
+        </ExternalLink>
     ) : (
-        <span className="font-600 uppercase text-center text-base-600 bg-base-100 text-xs p-1">
-            Full Description Unavailable
-        </span>
+        <span>Full description unavailable</span>
     );
 
     const cvssScoreBreakdown = [
@@ -106,74 +101,72 @@ const VulnMgmtCveOverview = ({ data, entityContext }) => {
         },
     ];
 
-    const severityStyle = getSeverityChipType(cvss);
-    const newEntityContext = { ...entityContext, [entityTypes.CVE]: cve };
+    const splitCveType =
+        imageComponentCount > 0
+            ? entityTypes.IMAGE_CVE
+            : nodeComponentCount > 0
+              ? entityTypes.NODE_CVE
+              : entityTypes.CLUSTER_CVE;
+    const newEntityContext = { ...entityContext, [splitCveType]: cve };
+
+    const cveType = Object.keys(newEntityContext).shift();
+    let legacyTypeList = [];
+    if (cveType === entityTypes.CLUSTER && splitCveType === entityTypes.CLUSTER_CVE) {
+        legacyTypeList = vulnerabilityTypes;
+    } else if (splitCveType === entityTypes.IMAGE_CVE || splitCveType === entityTypes.NODE_CVE) {
+        legacyTypeList = [splitCveType];
+    } else {
+        legacyTypeList = [cveType];
+    }
+
+    const metaDataDetails = [
+        {
+            key: 'CVE',
+            value: cve,
+        },
+        {
+            key: 'Environment Impact',
+            value: `${(envImpact * 100).toFixed(0)}%`,
+        },
+        {
+            key: 'CVE Type',
+            value: <CveType types={legacyTypeList} />,
+        },
+        {
+            key: 'CVSS Score',
+            value: cvss && cvss.toFixed(1),
+        },
+        {
+            key: 'Fixability',
+            value: isFixable ? 'Fixable' : 'Not fixable',
+        },
+    ];
+    if (cveType === entityTypes.NODE_CVE || cveType === entityTypes.IMAGE_CVE) {
+        metaDataDetails.push({
+            key: 'Operating System',
+            value: operatingSystem,
+        });
+    }
 
     return (
         <div className="flex h-full" data-testid="entity-overview">
             <div className="flex flex-col flex-grow min-w-0">
                 <CollapsibleSection title="CVE Summary">
-                    <div className="mx-4 grid-dense grid-auto-fit grid grid-gap-6 xxxl:grid-gap-8 grid-columns-1 lg:grid-columns-2 xl:grid-columns-3 mb-4">
-                        <Widget
-                            header="Description & Details"
-                            headerComponents={linkToMoreInfo}
-                            className="bg-base-100 min-h-48 lg:s-2 pdf-page pdf-stretch"
-                        >
-                            <div className="flex flex-col w-full">
-                                <div className="bg-tertiary-200 text-2xl text-base-500 flex flex-col md:flex-row items-start md:items-center justify-between">
-                                    <div className="w-full flex-grow p-4">
-                                        <span className="text-tertiary-800">{cve}</span>
-                                    </div>
-                                    <div className="w-full flex border-t border-base-400 md:border-t-0 justify-end items-center">
-                                        {
-                                            // eslint-disable-next-line eqeqeq
-                                            envImpact == Number(envImpact) && (
-                                                <span className="w-full md:w-auto p-4 border-base-400 text-base-600 border-l whitespace-nowrap">
-                                                    <span>
-                                                        {' '}
-                                                        {`Env. Impact: ${(envImpact * 100).toFixed(
-                                                            0
-                                                        )}%`}
-                                                    </span>
-                                                </span>
-                                            )
-                                        }
-                                        <span
-                                            className="w-full md:w-auto p-4 border-base-400 border-l"
-                                            data-testid="cve-type"
-                                        >
-                                            <CveType context="callout" types={vulnerabilityTypes} />
-                                        </span>
-                                        <span className="w-full md:w-auto p-4 border-base-400 border-l">
-                                            <LabelChip
-                                                text={`CVSS ${cvss && cvss.toFixed(1)}`}
-                                                type={severityStyle}
-                                            />
-                                        </span>
-                                        <span className="w-full md:w-auto p-4 border-base-400 border-l">
-                                            {isFixable ? (
-                                                <LabelChip text="Fixable" type="success" />
-                                            ) : (
-                                                <LabelChip text="Not fixable" type="base" />
-                                            )}
-                                        </span>
-                                    </div>
-                                </div>
-                                <div
-                                    className="p-4 pb-12 leading-loose"
-                                    data-testid="cve-description"
-                                >
-                                    {summary || 'No description available.'}
-                                </div>
-                            </div>
-                        </Widget>
+                    <div className="mx-4 grid-dense grid-auto-fit grid grid-gap-6 xxxl:grid-gap-8 lg:grid-columns-2 xl:grid-columns-3 mb-4">
                         <Metadata
-                            className="bg-base-100 min-h-48 pdf-page"
+                            className="h-full min-w-48 bg-base-100 pdf-page s-2"
+                            headerComponents={linkToMoreInfo}
+                            keyValuePairs={metaDataDetails}
+                            description={summary || 'No description available.'}
+                            title="Description & Details"
+                        />
+                        <Metadata
+                            className="bg-base-100 min-h-48 pdf-page s-1"
                             keyValuePairs={cvssScoreBreakdown}
                             title="CVSS Score Breakdown"
                         />
                         <Metadata
-                            className="bg-base-100 min-h-48 pdf-page"
+                            className="bg-base-100 min-h-48 pdf-page s-1"
                             keyValuePairs={scanningDetails}
                             title="Scanning Details"
                         />
@@ -181,7 +174,7 @@ const VulnMgmtCveOverview = ({ data, entityContext }) => {
                 </CollapsibleSection>
             </div>
             <RelatedEntitiesSideList
-                entityType={entityTypes.CVE}
+                entityType={cveType}
                 entityContext={newEntityContext}
                 data={safeData}
             />

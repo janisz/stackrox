@@ -1,7 +1,13 @@
 .PHONY: all
 all: style test
 
-GRADLE := ./gradlew
+GRADLE = TEST_TARGET="$@" ./gradlew
+GRADLE_TEST_ARGS =
+# Stop testing after the first test failure by defining FAIL_FAST. (Can be
+# achieved on a PR with a ci-fail-fast label)
+ifdef FAIL_FAST
+GRADLE_TEST_ARGS = --fail-fast
+endif
 
 ###########
 ## Style ##
@@ -33,7 +39,7 @@ build/generated: src/main/proto
 	@echo "+ $@"
 	$(GRADLE) generateProto generateTestProto
 
-src/main/proto: ../proto
+src/main/proto: $(shell find ../proto)
 	@echo "+ migrate protos"
 	-rm -r src/main/proto
 	@scripts/migrate_protos.sh
@@ -46,55 +52,69 @@ clean-generated-srcs:
 .PHONY: test
 test: compile
 	@echo "+ $@"
-	$(GRADLE) test -Dgroups=-Upgrade,-SensorBounce,-SensorBounceNext
+	$(GRADLE) testBegin testParallel testRest $(GRADLE_TEST_ARGS)
 
 .PHONY: bat-test
 bat-test: compile
 	@echo "+ $@"
-	$(GRADLE) test -Dgroups=BAT
+	$(GRADLE) testBegin testParallelBAT testBAT $(GRADLE_TEST_ARGS)
 
 .PHONY: smoke-test
 smoke-test: compile
 	@echo "+ $@"
-	$(GRADLE) test -Dgroups=SMOKE
+	$(GRADLE) testSMOKE $(GRADLE_TEST_ARGS)
+
+.PHONY: compatibility-test
+compatibility-test: compile
+	@echo "+ $@"
+	$(GRADLE) testCOMPATIBILITY testCOMPATIBILITYSensorBounce $(GRADLE_TEST_ARGS)
 
 .PHONY: runtime-test
 runtime-test: compile
 	@echo "+ $@"
-	$(GRADLE) test -Dgroups=RUNTIME
+	$(GRADLE) testRUNTIME $(GRADLE_TEST_ARGS)
 
 .PHONY: enforcement-test
 enforcement-test: compile
 	@echo "+ $@"
-	$(GRADLE) test -Dgroups=PolicyEnforcement
+	$(GRADLE) testPolicyEnforcement $(GRADLE_TEST_ARGS)
 
 .PHONY: integration-test
 integration-test: compile
 	@echo "+ $@"
-	$(GRADLE) test -Dgroups=Integration
+	$(GRADLE) testIntegration $(GRADLE_TEST_ARGS)
 
 .PHONY: networkpolicy-simulator-test
 networkpolicy-simulator-test: compile
 	@echo "+ $@"
-	$(GRADLE) test -Dgroups=NetworkPolicySimulation
-
-.PHONY: non-bat-test
-non-bat-test: compile
-	@echo "+ $@"
-	$(GRADLE) test -Dgroups=-BAT,-Upgrade,-SensorBounce,-SensorBounceNext
+	$(GRADLE) testNetworkPolicySimulation $(GRADLE_TEST_ARGS)
 
 .PHONY: upgrade-test
 upgrade-test: compile
 	@echo "+ $@"
-	$(GRADLE) test -Dgroups=Upgrade
+	$(GRADLE) testUpgrade $(GRADLE_TEST_ARGS)
 
 .PHONY: graphql-test
 graphql-test: compile
 	@echo "+ $@"
-	$(GRADLE) test -Dgroups=GraphQL
+	$(GRADLE) testGraphQL $(GRADLE_TEST_ARGS)
 
 .PHONY: sensor-bounce-test
 sensor-bounce-test: compile
 	@echo "+ $@"
-	$(GRADLE) test -Dgroups=SensorBounce
-	$(GRADLE) test -Dgroups=SensorBounceNext
+	$(GRADLE) testSensorBounce testSensorBounceNext $(GRADLE_TEST_ARGS)
+
+.PHONY: pz-test
+pz-test: compile
+	@echo "+ $@"
+	$(GRADLE) testPZ $(GRADLE_TEST_ARGS)
+
+.PHONY: pz-test-debug
+pz-test-debug: compile
+	@echo "+ $@"
+	$(GRADLE) testPZDebug $(GRADLE_TEST_ARGS)
+
+.PHONY: deployment-check-test
+deployment-check-test: compile
+	@echo "+ $@"
+	$(GRADLE) testDeploymentCheck $(GRADLE_TEST_ARGS)

@@ -3,13 +3,13 @@ package manager
 import (
 	"fmt"
 
-	"github.com/gogo/protobuf/types"
 	"github.com/stackrox/rox/central/compliance/framework"
 	v1 "github.com/stackrox/rox/generated/api/v1"
 	"github.com/stackrox/rox/generated/internalapi/compliance"
 	"github.com/stackrox/rox/generated/storage"
 	pkgStandards "github.com/stackrox/rox/pkg/compliance/checks/standards"
 	pkgFramework "github.com/stackrox/rox/pkg/compliance/framework"
+	"github.com/stackrox/rox/pkg/protocompat"
 )
 
 var (
@@ -23,22 +23,50 @@ var (
 
 func getDomainProto(domain framework.ComplianceDomain) *storage.ComplianceDomain {
 	nodes := framework.Nodes(domain)
-	nodeMap := make(map[string]*storage.Node, len(nodes))
+	nodeMap := make(map[string]*storage.ComplianceDomain_Node, len(nodes))
 	for _, node := range nodes {
-		nodeMap[node.GetId()] = node
+		nodeMap[node.GetId()] = convertNode(node)
 	}
 
 	deployments := framework.Deployments(domain)
-	deploymentMap := make(map[string]*storage.Deployment, len(deployments))
+	deploymentMap := make(map[string]*storage.ComplianceDomain_Deployment, len(deployments))
 	for _, deployment := range deployments {
-		deploymentMap[deployment.GetId()] = deployment
+		deploymentMap[deployment.GetId()] = convertDeployment(deployment)
 	}
 
 	return &storage.ComplianceDomain{
 		Id:          domain.ID(),
-		Cluster:     domain.Cluster().Cluster(),
+		Cluster:     convertCluster(domain.Cluster().Cluster()),
 		Nodes:       nodeMap,
 		Deployments: deploymentMap,
+	}
+}
+
+func convertCluster(cluster *storage.Cluster) *storage.ComplianceDomain_Cluster {
+	return &storage.ComplianceDomain_Cluster{
+		Id:   cluster.GetId(),
+		Name: cluster.GetName(),
+	}
+}
+
+func convertDeployment(dep *storage.Deployment) *storage.ComplianceDomain_Deployment {
+	return &storage.ComplianceDomain_Deployment{
+		Id:          dep.GetId(),
+		NamespaceId: dep.GetNamespaceId(),
+		Name:        dep.GetName(),
+		Type:        dep.GetType(),
+		Namespace:   dep.GetNamespace(),
+		ClusterId:   dep.GetClusterId(),
+		ClusterName: dep.GetClusterName(),
+	}
+}
+
+func convertNode(node *storage.Node) *storage.ComplianceDomain_Node {
+	return &storage.ComplianceDomain_Node{
+		Id:          node.GetId(),
+		Name:        node.GetName(),
+		ClusterId:   node.GetClusterId(),
+		ClusterName: node.GetClusterName(),
 	}
 }
 
@@ -132,45 +160,42 @@ func (r *runInstance) metadataProto(fixTimestamps bool) *storage.ComplianceRunMe
 	r.mutex.RLock()
 	defer r.mutex.RUnlock()
 
-	var startTS, finishTS *types.Timestamp
+	runMetadata := &storage.ComplianceRunMetadata{
+		RunId:      r.id,
+		ClusterId:  r.domain.Cluster().Cluster().GetId(),
+		StandardId: r.standard.Standard.ID,
+		Success:    r.status == v1.ComplianceRun_FINISHED && r.err == nil,
+		DomainId:   r.domain.ID(),
+	}
+
 	var err error
 	if !r.startTime.IsZero() {
-		startTS, err = types.TimestampProto(r.startTime)
+		runMetadata.StartTimestamp, err = protocompat.ConvertTimeToTimestampOrError(r.startTime)
 		if err != nil {
 			log.Errorf("could not convert compliance run start timestamp to proto: %v", err)
 		}
 	}
 
 	if !r.finishTime.IsZero() {
-		finishTS, err = types.TimestampProto(r.finishTime)
+		runMetadata.FinishTimestamp, err = protocompat.ConvertTimeToTimestampOrError(r.finishTime)
 		if err != nil {
 			log.Errorf("could not convert compliance run finish timestamp to proto: %v", err)
 		}
 	}
 
 	if fixTimestamps {
-		if startTS == nil {
-			startTS = types.TimestampNow()
+		if runMetadata.StartTimestamp == nil {
+			runMetadata.StartTimestamp = protocompat.TimestampNow()
 		}
-		if finishTS == nil {
-			finishTS = types.TimestampNow()
+		if runMetadata.FinishTimestamp == nil {
+			runMetadata.FinishTimestamp = protocompat.TimestampNow()
 		}
 	}
-	var errMsg string
 	if r.err != nil {
-		errMsg = r.err.Error()
+		runMetadata.ErrorMessage = r.err.Error()
 	}
 
-	return &storage.ComplianceRunMetadata{
-		RunId:           r.id,
-		ClusterId:       r.domain.Cluster().Cluster().GetId(),
-		StandardId:      r.standard.Standard.ID,
-		StartTimestamp:  startTS,
-		FinishTimestamp: finishTS,
-		Success:         r.status == v1.ComplianceRun_FINISHED && r.err == nil,
-		ErrorMessage:    errMsg,
-		DomainId:        r.domain.ID(),
-	}
+	return runMetadata
 }
 
 func (r *runInstance) collectResults(run framework.ComplianceRun, remoteResults map[string]map[string]*compliance.ComplianceStandardResult) *storage.ComplianceRunResults {

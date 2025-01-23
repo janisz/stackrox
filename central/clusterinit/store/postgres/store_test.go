@@ -8,58 +8,44 @@ import (
 	"context"
 	"testing"
 
-	"github.com/jackc/pgx/v4/pgxpool"
 	"github.com/stackrox/rox/generated/storage"
-	"github.com/stackrox/rox/pkg/features"
 	"github.com/stackrox/rox/pkg/postgres/pgtest"
+	"github.com/stackrox/rox/pkg/protoassert"
 	"github.com/stackrox/rox/pkg/sac"
+	"github.com/stackrox/rox/pkg/search"
 	"github.com/stackrox/rox/pkg/testutils"
-	"github.com/stackrox/rox/pkg/testutils/envisolator"
 	"github.com/stretchr/testify/suite"
 )
 
-type ClusterinitbundlesStoreSuite struct {
+type ClusterInitBundlesStoreSuite struct {
 	suite.Suite
-	envIsolator *envisolator.EnvIsolator
-	store       Store
-	pool        *pgxpool.Pool
+	store  Store
+	testDB *pgtest.TestPostgres
 }
 
-func TestClusterinitbundlesStore(t *testing.T) {
-	suite.Run(t, new(ClusterinitbundlesStoreSuite))
+func TestClusterInitBundlesStore(t *testing.T) {
+	suite.Run(t, new(ClusterInitBundlesStoreSuite))
 }
 
-func (s *ClusterinitbundlesStoreSuite) SetupTest() {
-	s.envIsolator = envisolator.NewEnvIsolator(s.T())
-	s.envIsolator.Setenv(features.PostgresDatastore.EnvVar(), "true")
+func (s *ClusterInitBundlesStoreSuite) SetupSuite() {
 
-	if !features.PostgresDatastore.Enabled() {
-		s.T().Skip("Skip postgres store tests")
-		s.T().SkipNow()
-	}
+	s.testDB = pgtest.ForT(s.T())
+	s.store = New(s.testDB.DB)
+}
 
+func (s *ClusterInitBundlesStoreSuite) SetupTest() {
 	ctx := sac.WithAllAccess(context.Background())
-
-	source := pgtest.GetConnectionString(s.T())
-	config, err := pgxpool.ParseConfig(source)
-	s.Require().NoError(err)
-	pool, err := pgxpool.ConnectConfig(ctx, config)
-	s.Require().NoError(err)
-
-	Destroy(ctx, pool)
-
-	s.pool = pool
-	s.store = New(ctx, pool)
+	tag, err := s.testDB.Exec(ctx, "TRUNCATE cluster_init_bundles CASCADE")
+	s.T().Log("cluster_init_bundles", tag)
+	s.store = New(s.testDB.DB)
+	s.NoError(err)
 }
 
-func (s *ClusterinitbundlesStoreSuite) TearDownTest() {
-	if s.pool != nil {
-		s.pool.Close()
-	}
-	s.envIsolator.RestoreAll()
+func (s *ClusterInitBundlesStoreSuite) TearDownSuite() {
+	s.testDB.Teardown(s.T())
 }
 
-func (s *ClusterinitbundlesStoreSuite) TestStore() {
+func (s *ClusterInitBundlesStoreSuite) TestStore() {
 	ctx := sac.WithAllAccess(context.Background())
 
 	store := s.store
@@ -78,12 +64,12 @@ func (s *ClusterinitbundlesStoreSuite) TestStore() {
 	foundInitBundleMeta, exists, err = store.Get(ctx, initBundleMeta.GetId())
 	s.NoError(err)
 	s.True(exists)
-	s.Equal(initBundleMeta, foundInitBundleMeta)
+	protoassert.Equal(s.T(), initBundleMeta, foundInitBundleMeta)
 
-	initBundleMetaCount, err := store.Count(ctx)
+	initBundleMetaCount, err := store.Count(ctx, search.EmptyQuery())
 	s.NoError(err)
 	s.Equal(1, initBundleMetaCount)
-	initBundleMetaCount, err = store.Count(withNoAccessCtx)
+	initBundleMetaCount, err = store.Count(withNoAccessCtx, search.EmptyQuery())
 	s.NoError(err)
 	s.Zero(initBundleMetaCount)
 
@@ -93,11 +79,6 @@ func (s *ClusterinitbundlesStoreSuite) TestStore() {
 	s.NoError(store.Upsert(ctx, initBundleMeta))
 	s.ErrorIs(store.Upsert(withNoAccessCtx, initBundleMeta), sac.ErrResourceAccessDenied)
 
-	foundInitBundleMeta, exists, err = store.Get(ctx, initBundleMeta.GetId())
-	s.NoError(err)
-	s.True(exists)
-	s.Equal(initBundleMeta, foundInitBundleMeta)
-
 	s.NoError(store.Delete(ctx, initBundleMeta.GetId()))
 	foundInitBundleMeta, exists, err = store.Get(ctx, initBundleMeta.GetId())
 	s.NoError(err)
@@ -106,15 +87,23 @@ func (s *ClusterinitbundlesStoreSuite) TestStore() {
 	s.ErrorIs(store.Delete(withNoAccessCtx, initBundleMeta.GetId()), sac.ErrResourceAccessDenied)
 
 	var initBundleMetas []*storage.InitBundleMeta
+	var initBundleMetaIDs []string
 	for i := 0; i < 200; i++ {
 		initBundleMeta := &storage.InitBundleMeta{}
 		s.NoError(testutils.FullInit(initBundleMeta, testutils.UniqueInitializer(), testutils.JSONFieldsFilter))
 		initBundleMetas = append(initBundleMetas, initBundleMeta)
+		initBundleMetaIDs = append(initBundleMetaIDs, initBundleMeta.GetId())
 	}
 
 	s.NoError(store.UpsertMany(ctx, initBundleMetas))
 
-	initBundleMetaCount, err = store.Count(ctx)
+	initBundleMetaCount, err = store.Count(ctx, search.EmptyQuery())
 	s.NoError(err)
 	s.Equal(200, initBundleMetaCount)
+
+	s.NoError(store.DeleteMany(ctx, initBundleMetaIDs))
+
+	initBundleMetaCount, err = store.Count(ctx, search.EmptyQuery())
+	s.NoError(err)
+	s.Equal(0, initBundleMetaCount)
 }

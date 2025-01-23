@@ -1,11 +1,17 @@
 package walker
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"reflect"
 
+	v1 "github.com/stackrox/rox/generated/api/v1"
+	"github.com/stackrox/rox/pkg/auth/permissions"
 	"github.com/stackrox/rox/pkg/logging"
+	"github.com/stackrox/rox/pkg/postgres"
 	"github.com/stackrox/rox/pkg/search"
+	"github.com/stackrox/rox/pkg/set"
 )
 
 var (
@@ -21,6 +27,8 @@ func getSerializedField(s *Schema) Field {
 		Name:       "serialized",
 		ColumnName: "serialized",
 		SQLType:    "bytea",
+		Type:       "[]byte",
+		ModelType:  "[]byte",
 		Schema:     s,
 	}
 }
@@ -35,11 +43,14 @@ func getIdxField(s *Schema) Field {
 		},
 		Type:       reflect.TypeOf(0).String(),
 		ColumnName: "idx",
-		DataType:   Integer,
+		DataType:   postgres.Integer,
 		SQLType:    "integer",
+		ModelType:  reflect.TypeOf(0).String(),
 		Options: PostgresOptions{
-			Ignored:    false,
-			Index:      "btree",
+			Ignored: false,
+			Index: []*PostgresIndexOptions{
+				{IndexType: "btree"},
+			},
 			PrimaryKey: true,
 		},
 	}
@@ -60,6 +71,37 @@ type SchemaRelationship struct {
 	// NoConstraint indicates that this relationship is not enforced at the SQL
 	// level by a foreign key constraint.
 	NoConstraint bool
+
+	// RestrictDelete indicates that this relationship should restrict deletion rather than cascade
+	RestrictDelete bool
+
+	// CycleReference indicates that this relationship is a self reference
+	// this is necessary because parent references and self references would otherwise be named the same
+	CycleReference bool
+}
+
+// ThisSchemaColumnNames generates the sequence of column names for this schema
+func (s *SchemaRelationship) ThisSchemaColumnNames() []string {
+	var seq []string
+	for _, p := range s.MappedColumnNames {
+		seq = append(seq, p.ColumnNameInThisSchema)
+	}
+	return seq
+}
+
+// OtherSchemaColumnNames generates the list of column names for the other schema
+func (s *SchemaRelationship) OtherSchemaColumnNames() []string {
+	var seq []string
+	for _, p := range s.MappedColumnNames {
+		seq = append(seq, p.ColumnNameInOtherSchema)
+	}
+	return seq
+}
+
+// PermissionChecker is a permission checker that could be used by GenericStore
+type PermissionChecker interface {
+	ReadAllowed(ctx context.Context) (bool, error)
+	WriteAllowed(ctx context.Context) (bool, error)
 }
 
 // Schema is the go representation of the schema for a table
@@ -89,6 +131,14 @@ type Schema struct {
 	referencesResolved bool
 
 	OptionsMap search.OptionsMap
+
+	// SearchScope represents the search categories searchable from this schema. This can be used to limit search to only
+	// some categories in cases of overlapping search fields.
+	// This is optional.
+	SearchScope map[v1.SearchCategory]struct{}
+
+	ScopingResource   permissions.ResourceMetadata
+	PermissionChecker PermissionChecker
 }
 
 // TableFieldsGroup is the group of table fields. A slice of this struct can be used where the table order is essential,
@@ -105,13 +155,31 @@ func (s *Schema) SetOptionsMap(optionsMap search.OptionsMap) {
 	}
 }
 
+// SetSearchScope sets search scope for the schema.
+func (s *Schema) SetSearchScope(searchCategories ...v1.SearchCategory) {
+	s.SearchScope = make(map[v1.SearchCategory]struct{})
+	for _, cat := range searchCategories {
+		s.SearchScope[cat] = struct{}{}
+	}
+	for _, c := range s.Children {
+		c.SetSearchScope(searchCategories...)
+	}
+}
+
 // AddFieldWithType adds a field to the schema with the specified data type
-func (s *Schema) AddFieldWithType(field Field, dt DataType) {
+func (s *Schema) AddFieldWithType(field Field, dt postgres.DataType, opts PostgresOptions) {
 	if !field.Include() {
 		return
 	}
+
 	field.DataType = dt
-	field.SQLType = DataTypeToSQLType(dt)
+	if opts.ColumnType != "" {
+		field.SQLType = opts.ColumnType
+	} else {
+		field.SQLType = postgres.DataTypeToSQLType(dt)
+	}
+
+	field.ModelType = postgres.GetToGormModelType(field.Type, field.DataType)
 	s.Fields = append(s.Fields, field)
 }
 
@@ -148,6 +216,9 @@ func (s *Schema) RelationshipsToDefineAsForeignKeys() []SchemaRelationship {
 	}
 	for _, ref := range s.References {
 		if !ref.NoConstraint {
+			if s.Parent != nil && s.Parent.Table == ref.OtherSchema.Table {
+				ref.CycleReference = true
+			}
 			out = append(out, ref)
 		}
 	}
@@ -243,7 +314,7 @@ func (s *Schema) ID() Field {
 			return f
 		}
 	}
-	// If there is only one primary key, that is considered Id column by default even if not specified explicitly.
+	// If there is only one primary key, that is considered ID column by default even if not specified explicitly.
 	pks := s.PrimaryKeys()
 	if len(pks) == 1 {
 		return pks[0]
@@ -291,13 +362,14 @@ func (s *Schema) ResolveReferences(schemaProvider func(messageTypeName string) *
 		otherTable, columnNameInOtherSchema := referencedSchema.findTableAndColumnName(fieldRef.ProtoBufField)
 		if otherTable == nil || columnNameInOtherSchema == "" {
 			log.Panicf("Couldn't resolve reference in field %+v: no field with protobuf name found", f)
-			continue // This continue will not be hit, it's here because the linter doesn't realize that log.Panic panics.
 		}
 		fieldRef.OtherSchema = otherTable
 		fieldRef.ColumnName = columnNameInOtherSchema
 
-		addColumnPairToRelationshipsSlice(&s.References, s, otherTable, f.ColumnName, columnNameInOtherSchema, fieldRef.NoConstraint)
-		addColumnPairToRelationshipsSlice(&otherTable.ReferencedBy, otherTable, s, columnNameInOtherSchema, f.ColumnName, fieldRef.NoConstraint)
+		addColumnPairToRelationshipsSlice(&s.References, s, otherTable, f.ColumnName, columnNameInOtherSchema, fieldRef.NoConstraint, fieldRef.RestrictDelete)
+		if !fieldRef.Directional {
+			addColumnPairToRelationshipsSlice(&otherTable.ReferencedBy, otherTable, s, columnNameInOtherSchema, f.ColumnName, fieldRef.NoConstraint, fieldRef.RestrictDelete)
+		}
 	}
 
 	for _, child := range s.Children {
@@ -305,7 +377,7 @@ func (s *Schema) ResolveReferences(schemaProvider func(messageTypeName string) *
 	}
 }
 
-func addColumnPairToRelationshipsSlice(relationshipsSlice *[]SchemaRelationship, thisSchema, otherSchema *Schema, columnNameInThisSchema, columnNameInOtherSchema string, noConstraint bool) {
+func addColumnPairToRelationshipsSlice(relationshipsSlice *[]SchemaRelationship, thisSchema, otherSchema *Schema, columnNameInThisSchema, columnNameInOtherSchema string, noConstraint bool, restrictDelete bool) {
 	refIdxToModify := -1
 	for i, ref := range *relationshipsSlice {
 		if ref.OtherSchema == otherSchema {
@@ -319,7 +391,7 @@ func addColumnPairToRelationshipsSlice(relationshipsSlice *[]SchemaRelationship,
 	}
 	// This is the first column mapping for this particular schema.
 	if refIdxToModify == -1 {
-		*relationshipsSlice = append(*relationshipsSlice, SchemaRelationship{OtherSchema: otherSchema, NoConstraint: noConstraint})
+		*relationshipsSlice = append(*relationshipsSlice, SchemaRelationship{OtherSchema: otherSchema, NoConstraint: noConstraint, RestrictDelete: restrictDelete})
 		refIdxToModify = len(*relationshipsSlice) - 1
 	}
 	(*relationshipsSlice)[refIdxToModify].MappedColumnNames = append((*relationshipsSlice)[refIdxToModify].MappedColumnNames, ColumnNamePair{
@@ -340,20 +412,36 @@ type SearchField struct {
 	Ignored   bool
 }
 
+// PostgresIndexOptions is the parsed representation of the index subpart of the sql tag in the struct field
+type PostgresIndexOptions struct {
+	IndexName     string
+	IndexType     string
+	IndexCategory string
+	IndexPriority string
+}
+
 // PostgresOptions is the parsed representation of the sql tag on the struct field
 type PostgresOptions struct {
 	ID                     bool
 	Ignored                bool
-	Index                  string
+	Index                  []*PostgresIndexOptions
 	PrimaryKey             bool
 	Unique                 bool
 	IgnorePrimaryKey       bool
 	IgnoreUniqueConstraint bool
+	IgnoreSearchLabels     set.StringSet
 	Reference              *foreignKeyRef
+
+	// Which database type will be used to store this value
+	ColumnType string
 
 	// IgnoreChildFKs is an option used to tell the walker that
 	// foreign keys of children of this field should be ignored.
 	IgnoreChildFKs bool
+
+	// IgnoreChildIndexes is an option used to tell the walker that
+	// index options of children of this field should be ignored.
+	IgnoreChildIndexes bool
 }
 
 type foreignKeyRef struct {
@@ -362,6 +450,12 @@ type foreignKeyRef struct {
 	// If true, this column (foreign key) depends on a column in other table, but does not have a constraint.
 	NoConstraint bool
 
+	// If true, the constraint on this foreign key reference should restrict deletion
+	RestrictDelete bool
+
+	// If true, this means that we only want to create a graph edge out from this field and not have it be bi-directional
+	Directional bool
+
 	// The referenced schema and column name are what we ultimately need for the foreign key reference.
 	// However, we don't want to put this information in the proto message itself, since we
 	// don't want to bleed that level of detail from the  SQL implementation into the proto.
@@ -369,6 +463,19 @@ type foreignKeyRef struct {
 	// time.
 	OtherSchema *Schema
 	ColumnName  string
+}
+
+// FieldInOtherSchema returns the `Field` in the other schema that has the specific column name.
+func (f *foreignKeyRef) FieldInOtherSchema() (Field, error) {
+	if f.OtherSchema == nil {
+		return Field{}, errors.New("OtherSchema is nil, please call ResolveReferences first")
+	}
+	for _, field := range f.OtherSchema.Fields {
+		if field.ColumnName == f.ColumnName {
+			return field, nil
+		}
+	}
+	return Field{}, fmt.Errorf("no field found in schema %s with column %s", f.OtherSchema.Table, f.ColumnName)
 }
 
 // ObjectGetter is wrapper around determining how to represent the variable in the
@@ -392,10 +499,23 @@ type Field struct {
 	Type string
 
 	// DataType is the internal type
-	DataType DataType
-	SQLType  string
-	Options  PostgresOptions
-	Search   SearchField
+	DataType  postgres.DataType
+	SQLType   string
+	ModelType string
+	Options   PostgresOptions
+	Search    SearchField
+	// DerivedSearchFields represents the search fields derived from this search field.
+	DerivedSearchFields []DerivedSearchField
+	// Derived indicates whether the search field (if valid search field) is derived from other search field.
+	Derived bool
+}
+
+// DerivedSearchField represents a search field that's derived.
+// It includes the name of the derived field, as well as the derivation type.
+type DerivedSearchField struct {
+	DerivedFrom     string
+	DerivationType  search.DerivationType
+	DerivedDataType postgres.DataType
 }
 
 // Getter returns the path to the object. If variable is true, then the value is just

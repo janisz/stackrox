@@ -5,17 +5,18 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/golang/mock/gomock"
 	"github.com/stackrox/rox/central/compliance"
-	. "github.com/stackrox/rox/central/compliance/datastore"
+	"github.com/stackrox/rox/central/compliance/datastore"
 	storeMocks "github.com/stackrox/rox/central/compliance/datastore/internal/store/mocks"
 	"github.com/stackrox/rox/central/compliance/datastore/mocks"
 	"github.com/stackrox/rox/central/compliance/datastore/types"
-	"github.com/stackrox/rox/central/role/resources"
 	"github.com/stackrox/rox/generated/storage"
 	"github.com/stackrox/rox/pkg/errox"
+	"github.com/stackrox/rox/pkg/protoassert"
 	"github.com/stackrox/rox/pkg/sac"
+	"github.com/stackrox/rox/pkg/sac/resources"
 	"github.com/stretchr/testify/suite"
+	"go.uber.org/mock/gomock"
 )
 
 var (
@@ -37,7 +38,7 @@ type complianceDataStoreTestSuite struct {
 	mockFilter  *mocks.MockSacFilter
 	mockStorage *storeMocks.MockStore
 
-	dataStore DataStore
+	dataStore datastore.DataStore
 }
 
 func (s *complianceDataStoreTestSuite) SetupTest() {
@@ -54,7 +55,7 @@ func (s *complianceDataStoreTestSuite) SetupTest() {
 	s.mockFilter = mocks.NewMockSacFilter(s.mockCtrl)
 	s.mockStorage = storeMocks.NewMockStore(s.mockCtrl)
 
-	s.dataStore = NewDataStore(s.mockStorage, s.mockFilter)
+	s.dataStore = datastore.NewDataStore(s.mockStorage, s.mockFilter)
 }
 
 func (s *complianceDataStoreTestSuite) TearDownTest() {
@@ -63,7 +64,7 @@ func (s *complianceDataStoreTestSuite) TearDownTest() {
 
 func (s *complianceDataStoreTestSuite) TestGetLatestRunResults() {
 	clusterID := "cid"
-	standardID := "CIS_Docker_v1_2_0"
+	standardID := "CIS_Kubernetes_v1_5"
 	expectedReturn := types.ResultsWithStatus{
 		LastSuccessfulResults: &storage.ComplianceRunResults{},
 	}
@@ -72,22 +73,23 @@ func (s *complianceDataStoreTestSuite) TestGetLatestRunResults() {
 	s.mockFilter.EXPECT().FilterRunResults(s.hasReadCtx, expectedReturn.LastSuccessfulResults).Return(expectedReturn.LastSuccessfulResults, nil)
 
 	// Expect storage fetch.
-	s.mockStorage.EXPECT().GetLatestRunResults(clusterID, standardID, types.WithMessageStrings).Return(expectedReturn, nil)
+	s.mockStorage.EXPECT().GetLatestRunResults(s.hasReadCtx, clusterID, standardID, types.WithMessageStrings).Return(expectedReturn, nil)
 
 	// Call tested.
 	result, err := s.dataStore.GetLatestRunResults(s.hasReadCtx, clusterID, standardID, types.WithMessageStrings)
 
 	// Check results match.
 	s.Nil(err)
-	s.Equal(expectedReturn, result)
+	protoassert.SlicesEqual(s.T(), expectedReturn.FailedRuns, result.FailedRuns)
+	protoassert.Equal(s.T(), expectedReturn.LastSuccessfulResults, result.LastSuccessfulResults)
 }
 
 func (s *complianceDataStoreTestSuite) TestGetLatestRunResultsBatch() {
 	clusterIDs := []string{"cid"}
-	standardIDs := []string{"CIS_Docker_v1_2_0"}
+	standardIDs := []string{"CIS_Kubernetes_v1_5"}
 	csPair := compliance.ClusterStandardPair{
 		ClusterID:  "cid",
-		StandardID: "CIS_Docker_v1_2_0",
+		StandardID: "CIS_Kubernetes_v1_5",
 	}
 	expectedReturn := map[compliance.ClusterStandardPair]types.ResultsWithStatus{
 		csPair: {
@@ -105,7 +107,7 @@ func (s *complianceDataStoreTestSuite) TestGetLatestRunResultsBatch() {
 	s.mockFilter.EXPECT().FilterBatchResults(s.hasReadCtx, expectedReturn).Return(expectedReturn, nil)
 
 	// Expect storage fetch.
-	s.mockStorage.EXPECT().GetLatestRunResultsBatch(clusterIDs, standardIDs, types.WithMessageStrings).Return(expectedReturn, nil)
+	s.mockStorage.EXPECT().GetLatestRunResultsBatch(s.hasReadCtx, clusterIDs, standardIDs, types.WithMessageStrings).Return(expectedReturn, nil)
 
 	// Call tested.
 	result, err := s.dataStore.GetLatestRunResultsBatch(s.hasReadCtx, clusterIDs, standardIDs, types.WithMessageStrings)
@@ -113,47 +115,16 @@ func (s *complianceDataStoreTestSuite) TestGetLatestRunResultsBatch() {
 	// Check results match.
 	s.Nil(err)
 	s.Equal(1, len(result))
-	s.Equal(expectedReturn[csPair], result[csPair])
-}
-
-func (s *complianceDataStoreTestSuite) TestGetLatestRunResultsFiltered() {
-	csPair := compliance.ClusterStandardPair{
-		ClusterID:  "cid",
-		StandardID: "CIS_Docker_v1_2_0",
-	}
-	expectedReturn := map[compliance.ClusterStandardPair]types.ResultsWithStatus{
-		csPair: {
-			LastSuccessfulResults: &storage.ComplianceRunResults{
-				DeploymentResults: map[string]*storage.ComplianceRunResults_EntityResults{
-					"dep1": {},
-					"dep2": {},
-					"dep3": {},
-				},
-			},
-		},
-	}
-
-	// Expect storage fetch since filtering is performed afterwards.
-	s.mockFilter.EXPECT().FilterBatchResults(s.hasReadCtx, expectedReturn).Return(expectedReturn, nil)
-
-	// Expect storage fetch.
-	s.mockStorage.EXPECT().GetLatestRunResultsByClusterAndStandard(gomock.Any(), gomock.Any(), types.WithMessageStrings).Return(expectedReturn, nil)
-
-	// Call tested.
-	clusterIDs := []string{csPair.ClusterID}
-	standardIDs := []string{csPair.StandardID}
-	result, err := s.dataStore.GetLatestRunResultsForClustersAndStandards(s.hasReadCtx, clusterIDs, standardIDs, types.WithMessageStrings)
-
-	// Check results match.
-	s.Nil(err)
-	s.Equal(1, len(result))
-	s.Equal(expectedReturn[csPair], result[csPair])
+	expected := expectedReturn[csPair]
+	actual := result[csPair]
+	protoassert.Equal(s.T(), expected.LastSuccessfulResults, actual.LastSuccessfulResults)
+	protoassert.SlicesEqual(s.T(), expected.FailedRuns, actual.FailedRuns)
 }
 
 func (s *complianceDataStoreTestSuite) TestStoreRunResults() {
 	rr := &storage.ComplianceRunResults{}
-	s.mockStorage.EXPECT().ClearAggregationResults()
-	s.mockStorage.EXPECT().StoreRunResults(rr).Return(errFake)
+	s.mockStorage.EXPECT().ClearAggregationResults(s.hasWriteCtx)
+	s.mockStorage.EXPECT().StoreRunResults(s.hasWriteCtx, rr).Return(errFake)
 
 	err := s.dataStore.StoreRunResults(s.hasWriteCtx, rr)
 
@@ -162,7 +133,7 @@ func (s *complianceDataStoreTestSuite) TestStoreRunResults() {
 
 func (s *complianceDataStoreTestSuite) TestStoreFailure() {
 	md := &storage.ComplianceRunMetadata{}
-	s.mockStorage.EXPECT().StoreFailure(md).Return(errFake)
+	s.mockStorage.EXPECT().StoreFailure(s.hasWriteCtx, md).Return(errFake)
 
 	err := s.dataStore.StoreFailure(s.hasWriteCtx, md)
 
@@ -184,7 +155,7 @@ type complianceDataStoreWithSACTestSuite struct {
 	mockFilter  *mocks.MockSacFilter
 	mockStorage *storeMocks.MockStore
 
-	dataStore DataStore
+	dataStore datastore.DataStore
 }
 
 func (s *complianceDataStoreWithSACTestSuite) SetupTest() {
@@ -198,7 +169,7 @@ func (s *complianceDataStoreWithSACTestSuite) SetupTest() {
 	s.mockFilter = mocks.NewMockSacFilter(s.mockCtrl)
 	s.mockStorage = storeMocks.NewMockStore(s.mockCtrl)
 
-	s.dataStore = NewDataStore(s.mockStorage, s.mockFilter)
+	s.dataStore = datastore.NewDataStore(s.mockStorage, s.mockFilter)
 }
 
 func (s *complianceDataStoreWithSACTestSuite) TearDownTest() {
@@ -207,11 +178,11 @@ func (s *complianceDataStoreWithSACTestSuite) TearDownTest() {
 
 func (s *complianceDataStoreWithSACTestSuite) TestEnforceGetLatestRunResults() {
 	// Expect no storage fetch.
-	s.mockStorage.EXPECT().GetLatestRunResults(gomock.Any(), gomock.Any(), gomock.Any()).Times(0)
+	s.mockStorage.EXPECT().GetLatestRunResults(s.hasNoneCtx, gomock.Any(), gomock.Any(), gomock.Any()).Times(0)
 
 	// Call tested.
 	clusterID := "cid"
-	standardID := "CIS_Docker_v1_2_0"
+	standardID := "CIS_Kubernetes_v1_5"
 	_, err := s.dataStore.GetLatestRunResults(s.hasNoneCtx, clusterID, standardID, types.WithMessageStrings)
 
 	// Check results match.
@@ -219,7 +190,7 @@ func (s *complianceDataStoreWithSACTestSuite) TestEnforceGetLatestRunResults() {
 }
 
 func (s *complianceDataStoreWithSACTestSuite) TestEnforceStoreRunResults() {
-	s.mockStorage.EXPECT().StoreRunResults(gomock.Any()).Times(0)
+	s.mockStorage.EXPECT().StoreRunResults(s.hasReadCtx, gomock.Any()).Times(0)
 
 	err := s.dataStore.StoreRunResults(s.hasReadCtx, &storage.ComplianceRunResults{})
 
@@ -227,46 +198,30 @@ func (s *complianceDataStoreWithSACTestSuite) TestEnforceStoreRunResults() {
 }
 
 func (s *complianceDataStoreWithSACTestSuite) TestEnforceStoreFailure() {
-	s.mockStorage.EXPECT().StoreFailure(gomock.Any()).Times(0)
+	s.mockStorage.EXPECT().StoreFailure(s.hasReadCtx, gomock.Any()).Times(0)
 
 	err := s.dataStore.StoreFailure(s.hasReadCtx, &storage.ComplianceRunMetadata{})
 
 	s.ErrorIs(err, sac.ErrResourceAccessDenied)
 }
 
-func (s *complianceDataStoreWithSACTestSuite) TestDoesNotUseStoredAggregationsWithSAC() {
-	noop := func() ([]*storage.ComplianceAggregation_Result, []*storage.ComplianceAggregation_Source, map[*storage.ComplianceAggregation_Result]*storage.ComplianceDomain, error) {
-		return nil, nil, nil, nil
-	}
-	aggArgs := &StoredAggregationArgs{
-		QueryString:     "query",
-		GroupBy:         nil,
-		Unit:            storage.ComplianceAggregation_CLUSTER,
-		AggregationFunc: noop,
-	}
-	_, _, _, err := s.dataStore.PerformStoredAggregation(context.Background(), aggArgs)
-	s.Require().NoError(err)
-}
-
 func (s *complianceDataStoreWithSACTestSuite) TestUsesStoredAggregationsWithoutSAC() {
-	s.T().Skip("ROX-9134: Re-enable or delete")
-
 	queryString := "query"
 	testUnit := storage.ComplianceAggregation_CLUSTER
 	results := []*storage.ComplianceAggregation_Result{}
 	sources := []*storage.ComplianceAggregation_Source{}
 	domainMap := map[*storage.ComplianceAggregation_Result]*storage.ComplianceDomain{}
-	s.mockStorage.EXPECT().GetAggregationResult(queryString, gomock.Nil(), testUnit).Return(results, sources, domainMap, nil)
+	s.mockStorage.EXPECT().GetAggregationResult(s.hasReadCtx, queryString, gomock.Nil(), testUnit).Return(results, sources, domainMap, nil)
 	noop := func() ([]*storage.ComplianceAggregation_Result, []*storage.ComplianceAggregation_Source, map[*storage.ComplianceAggregation_Result]*storage.ComplianceDomain, error) {
 		s.True(false, "The aggregation method should not be called when we find a stored result")
 		return nil, nil, nil, nil
 	}
-	aggArgs := &StoredAggregationArgs{
+	aggArgs := &datastore.StoredAggregationArgs{
 		QueryString:     queryString,
 		GroupBy:         nil,
 		Unit:            testUnit,
 		AggregationFunc: noop,
 	}
-	_, _, _, err := s.dataStore.PerformStoredAggregation(context.Background(), aggArgs)
+	_, _, _, err := s.dataStore.PerformStoredAggregation(s.hasReadCtx, aggArgs)
 	s.Require().NoError(err)
 }

@@ -12,13 +12,8 @@ import (
 	"github.com/stackrox/rox/pkg/helm/charts"
 	"github.com/stackrox/rox/pkg/images/defaults"
 	"github.com/stackrox/rox/pkg/images/utils"
-	"github.com/stackrox/rox/pkg/logging"
 	"github.com/stackrox/rox/pkg/urlfmt"
 	"github.com/stackrox/rox/pkg/version"
-)
-
-var (
-	log = logging.LoggerForModule()
 )
 
 // RenderOptions are options that control the rendering.
@@ -26,6 +21,8 @@ type RenderOptions struct {
 	CreateUpgraderSA bool
 	SlimCollector    bool
 	IstioVersion     string
+
+	DisablePodSecurityPolicies bool
 }
 
 // FieldsFromClusterAndRenderOpts gets the template values for values.yaml
@@ -35,8 +32,10 @@ func FieldsFromClusterAndRenderOpts(c *storage.Cluster, imageFlavor *defaults.Im
 		return nil, err
 	}
 
-	baseValues := getBaseMetaValues(c, imageFlavor.Versions, &opts)
+	baseValues := getBaseMetaValues(c, imageFlavor.Versions, imageFlavor.ScannerSlimImageName, imageFlavor.ChartRepo, &opts)
 	setMainOverride(mainImage, baseValues)
+	deriveScannerRemoteFromMain(mainImage, baseValues)
+	baseValues.EnablePodSecurityPolicies = !opts.DisablePodSecurityPolicies
 
 	collectorFull, collectorSlim := determineCollectorImages(mainImage, collectorImage, imageFlavor)
 	setCollectorOverrideToMetaValues(collectorFull, collectorSlim, baseValues)
@@ -62,6 +61,15 @@ func MakeClusterImageNames(flavor *defaults.ImageFlavor, c *storage.Cluster) (*s
 	}
 
 	return mainImageName, collectorImageName, nil
+}
+
+// deriveScannerRemoteFromMain sets scanner-slim image remote, so that it comes from the same location as the main image
+func deriveScannerRemoteFromMain(mainImage *storage.ImageName, metaValues *charts.MetaValues) {
+	scannerRemoteSlice := strings.Split(mainImage.Remote, "/")
+	if len(scannerRemoteSlice) > 0 {
+		scannerRemoteSlice[len(scannerRemoteSlice)-1] = metaValues.ScannerSlimImageRemote
+		metaValues.ScannerSlimImageRemote = strings.Join(scannerRemoteSlice, "/")
+	}
 }
 
 // setMainOverride adds main image values to meta values as defined in secured cluster object.
@@ -100,7 +108,7 @@ func determineCollectorImages(clusterMainImage, clusterCollectorImage *storage.I
 	} else if clusterCollectorImage == nil {
 		collectorImageFull = deriveImageWithNewName(clusterMainImage, imageFlavor.CollectorImageName)
 	} else {
-		collectorImageFull = clusterCollectorImage.Clone()
+		collectorImageFull = clusterCollectorImage.CloneVT()
 	}
 	collectorImageFull.Tag = imageFlavor.CollectorImageTag
 	collectorImageSlim := deriveImageWithNewName(collectorImageFull, imageFlavor.CollectorSlimImageName)
@@ -123,7 +131,7 @@ func deriveImageWithNewName(baseImage *storage.ImageName, name string) *storage.
 	}
 }
 
-func getBaseMetaValues(c *storage.Cluster, versions version.Versions, opts *RenderOptions) *charts.MetaValues {
+func getBaseMetaValues(c *storage.Cluster, versions version.Versions, scannerSlimImageRemote string, chartRepo defaults.ChartRepo, opts *RenderOptions) *charts.MetaValues {
 	envVars := make(map[string]string)
 	for _, feature := range features.Flags {
 		envVars[feature.EnvVar()] = strconv.FormatBool(feature.Enabled())
@@ -143,11 +151,7 @@ func getBaseMetaValues(c *storage.Cluster, versions version.Versions, opts *Rend
 
 		CollectionMethod: c.CollectionMethod.String(),
 
-		// Hardcoding RHACS charts repo for now.
-		// TODO: fill ChartRepo based on the current image flavor.
-		ChartRepo: defaults.ChartRepo{
-			URL: "http://mirror.openshift.com/pub/rhacs/charts",
-		},
+		ChartRepo: chartRepo,
 
 		TolerationsEnabled: !c.GetTolerationsConfig().GetDisabled(),
 		CreateUpgraderSA:   opts.CreateUpgraderSA,
@@ -159,6 +163,9 @@ func getBaseMetaValues(c *storage.Cluster, versions version.Versions, opts *Rend
 		OfflineMode: env.OfflineModeEnv.BooleanSetting(),
 
 		SlimCollector: opts.SlimCollector,
+
+		ScannerImageTag:        versions.ScannerVersion,
+		ScannerSlimImageRemote: scannerSlimImageRemote,
 
 		KubectlOutput: true,
 
@@ -175,5 +182,7 @@ func getBaseMetaValues(c *storage.Cluster, versions version.Versions, opts *Rend
 		AdmissionControllerEnabled:       c.GetDynamicConfig().GetAdmissionControllerConfig().GetEnabled(),
 		AdmissionControlEnforceOnUpdates: c.GetDynamicConfig().GetAdmissionControllerConfig().GetEnforceOnUpdates(),
 		ReleaseBuild:                     buildinfo.ReleaseBuild,
+
+		EnablePodSecurityPolicies: false,
 	}
 }

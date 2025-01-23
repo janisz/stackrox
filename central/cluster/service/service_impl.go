@@ -2,13 +2,14 @@ package service
 
 import (
 	"context"
+	"time"
 
-	"github.com/grpc-ecosystem/grpc-gateway/runtime"
+	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
 	"github.com/pkg/errors"
 	"github.com/stackrox/rox/central/cluster/datastore"
+	configDatastore "github.com/stackrox/rox/central/config/datastore"
 	"github.com/stackrox/rox/central/probesources"
 	"github.com/stackrox/rox/central/risk/manager"
-	"github.com/stackrox/rox/central/role/resources"
 	v1 "github.com/stackrox/rox/generated/api/v1"
 	"github.com/stackrox/rox/generated/storage"
 	"github.com/stackrox/rox/pkg/auth/permissions"
@@ -18,12 +19,16 @@ import (
 	"github.com/stackrox/rox/pkg/grpc/authz/perrpc"
 	"github.com/stackrox/rox/pkg/grpc/authz/user"
 	"github.com/stackrox/rox/pkg/images/defaults"
+	"github.com/stackrox/rox/pkg/maputil"
+	"github.com/stackrox/rox/pkg/protocompat"
+	"github.com/stackrox/rox/pkg/sac/resources"
 	"github.com/stackrox/rox/pkg/search"
+	"github.com/stackrox/rox/pkg/timeutil"
 	"google.golang.org/grpc"
 )
 
 var (
-	authorizer = or.SensorOrAuthorizer(perrpc.FromMap(map[authz.Authorizer][]string{
+	authorizer = or.SensorOr(perrpc.FromMap(map[authz.Authorizer][]string{
 		user.With(permissions.View(resources.Cluster)): {
 			"/v1.ClustersService/GetClusters",
 			"/v1.ClustersService/GetCluster",
@@ -40,9 +45,12 @@ var (
 
 // ClusterService is the struct that manages the cluster API
 type serviceImpl struct {
-	datastore    datastore.DataStore
-	riskManager  manager.Manager
-	probeSources probesources.ProbeSources
+	v1.UnimplementedClustersServiceServer
+
+	datastore          datastore.DataStore
+	riskManager        manager.Manager
+	probeSources       probesources.ProbeSources
+	sysConfigDatastore configDatastore.DataStore
 }
 
 // RegisterServiceServer registers this service with the given gRPC Server.
@@ -102,8 +110,65 @@ func (s *serviceImpl) getCluster(ctx context.Context, id string) (*v1.ClusterRes
 		return nil, errors.Wrap(errox.NotFound, "Not found")
 	}
 
+	clusterRetentionInfo, err := s.getClusterRetentionInfo(ctx, cluster)
+	if err != nil {
+		return nil, err
+	}
+
 	return &v1.ClusterResponse{
-		Cluster: cluster,
+		Cluster:              cluster,
+		ClusterRetentionInfo: clusterRetentionInfo,
+	}, nil
+}
+
+func (s *serviceImpl) getClusterRetentionInfo(ctx context.Context, cluster *storage.Cluster) (*v1.DecommissionedClusterRetentionInfo, error) {
+	if cluster.GetHealthStatus().GetSensorHealthStatus() != storage.ClusterHealthStatus_UNHEALTHY {
+		return nil, nil
+	}
+
+	systemPrivateConfig, err := s.sysConfigDatastore.GetPrivateConfig(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	clusterRetentionConfig := systemPrivateConfig.GetDecommissionedClusterRetention()
+	if clusterRetentionConfig == nil || clusterRetentionConfig.GetRetentionDurationDays() == 0 {
+		// If retention is disabled, there is no "days remaining" calculation to be done.
+		return nil, nil
+	}
+
+	if maputil.MapsIntersect(clusterRetentionConfig.GetIgnoreClusterLabels(), cluster.GetLabels()) {
+		return &v1.DecommissionedClusterRetentionInfo{
+			RetentionInfo: &v1.DecommissionedClusterRetentionInfo_IsExcluded{
+				IsExcluded: true,
+			},
+		}, nil
+	}
+
+	timeNow := time.Now()
+	retentionDays := clusterRetentionConfig.GetRetentionDurationDays()
+
+	configCreateTime, err := protocompat.ConvertTimestampToTimeOrError(clusterRetentionConfig.GetCreatedAt())
+	if err != nil {
+		return nil, err
+	}
+
+	lastContactTime, err := protocompat.ConvertTimestampToTimeOrError(cluster.GetHealthStatus().GetLastContact())
+	if err != nil {
+		return nil, err
+	}
+
+	daysRemaining := int32(0)
+	if lastContactTime.Before(configCreateTime) {
+		daysRemaining = retentionDays - int32(timeutil.TimeDiffDays(timeNow, configCreateTime))
+	} else {
+		daysRemaining = retentionDays - int32(timeutil.TimeDiffDays(timeNow, lastContactTime))
+	}
+
+	return &v1.DecommissionedClusterRetentionInfo{
+		RetentionInfo: &v1.DecommissionedClusterRetentionInfo_DaysUntilDeletion{
+			DaysUntilDeletion: daysRemaining,
+		},
 	}, nil
 }
 
@@ -118,9 +183,35 @@ func (s *serviceImpl) GetClusters(ctx context.Context, req *v1.GetClustersReques
 	if err != nil {
 		return nil, err
 	}
+
+	clusterIDToRetentionInfoMap, err := s.getClusterIDToRetentionInfoMap(ctx, clusters)
+	if err != nil {
+		return nil, err
+	}
+
 	return &v1.ClustersList{
-		Clusters: clusters,
+		Clusters:                 clusters,
+		ClusterIdToRetentionInfo: clusterIDToRetentionInfoMap,
 	}, nil
+}
+
+func (s *serviceImpl) getClusterIDToRetentionInfoMap(
+	ctx context.Context,
+	clusters []*storage.Cluster,
+) (map[string]*v1.DecommissionedClusterRetentionInfo, error) {
+	result := make(map[string]*v1.DecommissionedClusterRetentionInfo)
+
+	for _, cluster := range clusters {
+		retentionInfo, err := s.getClusterRetentionInfo(ctx, cluster)
+		if err != nil {
+			return nil, err
+		}
+		if retentionInfo != nil {
+			result[cluster.GetId()] = retentionInfo
+		}
+	}
+
+	return result, nil
 }
 
 // DeleteCluster removes a cluster

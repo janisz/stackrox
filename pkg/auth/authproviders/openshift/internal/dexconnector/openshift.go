@@ -14,13 +14,14 @@ import (
 	"strings"
 	"time"
 
-	"github.com/dexidp/dex/connector"
-	"github.com/dexidp/dex/storage/kubernetes/k8sapi"
 	"github.com/pkg/errors"
+	"github.com/stackrox/rox/pkg/grpc/requestinfo"
 	"github.com/stackrox/rox/pkg/httputil/proxy"
+	"github.com/stackrox/rox/pkg/netutil"
 	"github.com/stackrox/rox/pkg/set"
 	"github.com/stackrox/rox/pkg/utils"
 	"golang.org/x/oauth2"
+	k8sapi "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -38,6 +39,8 @@ import (
 //     verification                                                           //
 //   * add validation for connectivity to OAuth2 endpoints                    //
 //   * extract fetching user info into identity() function                    //
+//   * deduce redirect URI's host and scheme via MakeRedirectURI() function   //
+//   * use our custom proxy configuration mechanism                           //
 //                                                                            //
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -63,8 +66,8 @@ type openshiftConnector struct {
 	oauth2Config *oauth2.Config
 }
 
-var _ connector.CallbackConnector = (*openshiftConnector)(nil)
-var _ connector.RefreshConnector = (*openshiftConnector)(nil)
+var _ CallbackConnector = (*openshiftConnector)(nil)
+var _ RefreshConnector = (*openshiftConnector)(nil)
 
 type user struct {
 	k8sapi.TypeMeta   `json:",inline"`
@@ -201,14 +204,28 @@ func validateEndpoint(endpoint string, tlsConfig *tls.Config) error {
 }
 
 // LoginURL returns the URL to redirect the user to login with.
-func (c *openshiftConnector) LoginURL(_ connector.Scopes, callbackURL string, state string) (string, error) {
-	clonedConfig := *c.oauth2Config
-	clonedConfig.RedirectURL = callbackURL
-	return clonedConfig.AuthCodeURL(state, oauth2.SetAuthURLParam("redirect_uri", callbackURL)), nil
+func (c *openshiftConnector) LoginURL(_ Scopes, callbackURL string, state string) (string, error) {
+	return c.oauth2Config.AuthCodeURL(state, oauth2.SetAuthURLParam("redirect_uri", callbackURL)), nil
+}
+
+// MakeRedirectURI constructs redirect URI from request info and the path.
+func MakeRedirectURI(ri *requestinfo.RequestInfo, path string) *url.URL {
+	scheme := "https"
+
+	// Allow HTTP only if the client did not use TLS and the host is localhost.
+	if !ri.ClientUsedTLS && netutil.IsLocalEndpoint(ri.Hostname) {
+		scheme = "http"
+	}
+
+	return &url.URL{
+		Scheme: scheme,
+		Host:   ri.Hostname,
+		Path:   path,
+	}
 }
 
 // HandleCallback parses the request and returns the user's identity.
-func (c *openshiftConnector) HandleCallback(s connector.Scopes, r *http.Request) (identity connector.Identity, err error) {
+func (c *openshiftConnector) HandleCallback(s Scopes, r *http.Request) (identity Identity, err error) {
 	q := r.URL.Query()
 	if errType := q.Get("error"); errType != "" {
 		return identity, &oauth2Error{errType, q.Get("error_description")}
@@ -219,7 +236,19 @@ func (c *openshiftConnector) HandleCallback(s connector.Scopes, r *http.Request)
 		ctx = context.WithValue(r.Context(), oauth2.HTTPClient, c.httpClient)
 	}
 
-	token, err := c.oauth2Config.Exchange(ctx, q.Get("code"))
+	ri := requestinfo.FromContext(ctx)
+	redirectURI := MakeRedirectURI(&ri, ri.HTTPRequest.URL.Path)
+
+	// Our service might be accessible via different routes and hence specify
+	// different redirect URIs in the login URL to authorization server. The
+	// latter must check that the redirect URI passed with the initial request
+	// equals the one passed during the code exchange. Hence we dynamically
+	// adjust the redirect URI in the oauth2 config here to the URL deduced
+	// from the request to us, which we expect to match the redirect URL we
+	// included in login URL earlier in the flow.
+	token, err := c.oauth2Config.Exchange(ctx, q.Get("code"),
+		oauth2.SetAuthURLParam("redirect_uri", redirectURI.String()))
+
 	if err != nil {
 		return identity, errors.Wrap(err, "failed to get token")
 	}
@@ -231,11 +260,11 @@ func (c *openshiftConnector) HandleCallback(s connector.Scopes, r *http.Request)
 // fetch fresh user info and build Identity from it. We expect the oauth token
 // to only contain the access token, hence once it expires, no user info can
 // be fetched and this function returns an error.
-func (c *openshiftConnector) Refresh(ctx context.Context, s connector.Scopes, oldID connector.Identity) (connector.Identity, error) {
+func (c *openshiftConnector) Refresh(ctx context.Context, s Scopes, oldID Identity) (Identity, error) {
 	var token oauth2.Token
 	err := json.Unmarshal(oldID.ConnectorData, &token)
 	if err != nil {
-		return connector.Identity{}, errors.Wrap(err, "parsing token")
+		return Identity{}, errors.Wrap(err, "parsing token")
 	}
 	if c.httpClient != nil {
 		ctx = context.WithValue(ctx, oauth2.HTTPClient, c.httpClient)
@@ -243,14 +272,14 @@ func (c *openshiftConnector) Refresh(ctx context.Context, s connector.Scopes, ol
 	return c.identity(ctx, s, &token)
 }
 
-func (c *openshiftConnector) identity(ctx context.Context, s connector.Scopes, token *oauth2.Token) (identity connector.Identity, err error) {
+func (c *openshiftConnector) identity(ctx context.Context, s Scopes, token *oauth2.Token) (identity Identity, err error) {
 	client := c.oauth2Config.Client(ctx, token)
 	user, err := c.user(ctx, client)
 	if err != nil {
 		return identity, errors.Wrap(err, "openshift: get user")
 	}
 
-	identity = connector.Identity{
+	identity = Identity{
 		UserID:            user.UID,
 		Username:          user.Name,
 		PreferredUsername: user.Name,
@@ -304,7 +333,7 @@ func newHTTPClient(certPool *x509.CertPool) (*http.Client, error) {
 	return &http.Client{
 		Transport: &http.Transport{
 			TLSClientConfig: &tls.Config{RootCAs: certPool},
-			Proxy:           http.ProxyFromEnvironment,
+			Proxy:           proxy.FromConfig(),
 			DialContext: (&net.Dialer{
 				Timeout:   30 * time.Second,
 				KeepAlive: 30 * time.Second,

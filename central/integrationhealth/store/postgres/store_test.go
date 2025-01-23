@@ -8,58 +8,44 @@ import (
 	"context"
 	"testing"
 
-	"github.com/jackc/pgx/v4/pgxpool"
 	"github.com/stackrox/rox/generated/storage"
-	"github.com/stackrox/rox/pkg/features"
 	"github.com/stackrox/rox/pkg/postgres/pgtest"
+	"github.com/stackrox/rox/pkg/protoassert"
 	"github.com/stackrox/rox/pkg/sac"
+	"github.com/stackrox/rox/pkg/search"
 	"github.com/stackrox/rox/pkg/testutils"
-	"github.com/stackrox/rox/pkg/testutils/envisolator"
 	"github.com/stretchr/testify/suite"
 )
 
-type IntegrationhealthStoreSuite struct {
+type IntegrationHealthsStoreSuite struct {
 	suite.Suite
-	envIsolator *envisolator.EnvIsolator
-	store       Store
-	pool        *pgxpool.Pool
+	store  Store
+	testDB *pgtest.TestPostgres
 }
 
-func TestIntegrationhealthStore(t *testing.T) {
-	suite.Run(t, new(IntegrationhealthStoreSuite))
+func TestIntegrationHealthsStore(t *testing.T) {
+	suite.Run(t, new(IntegrationHealthsStoreSuite))
 }
 
-func (s *IntegrationhealthStoreSuite) SetupTest() {
-	s.envIsolator = envisolator.NewEnvIsolator(s.T())
-	s.envIsolator.Setenv(features.PostgresDatastore.EnvVar(), "true")
+func (s *IntegrationHealthsStoreSuite) SetupSuite() {
 
-	if !features.PostgresDatastore.Enabled() {
-		s.T().Skip("Skip postgres store tests")
-		s.T().SkipNow()
-	}
+	s.testDB = pgtest.ForT(s.T())
+	s.store = New(s.testDB.DB)
+}
 
+func (s *IntegrationHealthsStoreSuite) SetupTest() {
 	ctx := sac.WithAllAccess(context.Background())
-
-	source := pgtest.GetConnectionString(s.T())
-	config, err := pgxpool.ParseConfig(source)
-	s.Require().NoError(err)
-	pool, err := pgxpool.ConnectConfig(ctx, config)
-	s.Require().NoError(err)
-
-	Destroy(ctx, pool)
-
-	s.pool = pool
-	s.store = New(ctx, pool)
+	tag, err := s.testDB.Exec(ctx, "TRUNCATE integration_healths CASCADE")
+	s.T().Log("integration_healths", tag)
+	s.store = New(s.testDB.DB)
+	s.NoError(err)
 }
 
-func (s *IntegrationhealthStoreSuite) TearDownTest() {
-	if s.pool != nil {
-		s.pool.Close()
-	}
-	s.envIsolator.RestoreAll()
+func (s *IntegrationHealthsStoreSuite) TearDownSuite() {
+	s.testDB.Teardown(s.T())
 }
 
-func (s *IntegrationhealthStoreSuite) TestStore() {
+func (s *IntegrationHealthsStoreSuite) TestStore() {
 	ctx := sac.WithAllAccess(context.Background())
 
 	store := s.store
@@ -78,12 +64,12 @@ func (s *IntegrationhealthStoreSuite) TestStore() {
 	foundIntegrationHealth, exists, err = store.Get(ctx, integrationHealth.GetId())
 	s.NoError(err)
 	s.True(exists)
-	s.Equal(integrationHealth, foundIntegrationHealth)
+	protoassert.Equal(s.T(), integrationHealth, foundIntegrationHealth)
 
-	integrationHealthCount, err := store.Count(ctx)
+	integrationHealthCount, err := store.Count(ctx, search.EmptyQuery())
 	s.NoError(err)
 	s.Equal(1, integrationHealthCount)
-	integrationHealthCount, err = store.Count(withNoAccessCtx)
+	integrationHealthCount, err = store.Count(withNoAccessCtx, search.EmptyQuery())
 	s.NoError(err)
 	s.Zero(integrationHealthCount)
 
@@ -93,11 +79,6 @@ func (s *IntegrationhealthStoreSuite) TestStore() {
 	s.NoError(store.Upsert(ctx, integrationHealth))
 	s.ErrorIs(store.Upsert(withNoAccessCtx, integrationHealth), sac.ErrResourceAccessDenied)
 
-	foundIntegrationHealth, exists, err = store.Get(ctx, integrationHealth.GetId())
-	s.NoError(err)
-	s.True(exists)
-	s.Equal(integrationHealth, foundIntegrationHealth)
-
 	s.NoError(store.Delete(ctx, integrationHealth.GetId()))
 	foundIntegrationHealth, exists, err = store.Get(ctx, integrationHealth.GetId())
 	s.NoError(err)
@@ -106,15 +87,23 @@ func (s *IntegrationhealthStoreSuite) TestStore() {
 	s.ErrorIs(store.Delete(withNoAccessCtx, integrationHealth.GetId()), sac.ErrResourceAccessDenied)
 
 	var integrationHealths []*storage.IntegrationHealth
+	var integrationHealthIDs []string
 	for i := 0; i < 200; i++ {
 		integrationHealth := &storage.IntegrationHealth{}
 		s.NoError(testutils.FullInit(integrationHealth, testutils.UniqueInitializer(), testutils.JSONFieldsFilter))
 		integrationHealths = append(integrationHealths, integrationHealth)
+		integrationHealthIDs = append(integrationHealthIDs, integrationHealth.GetId())
 	}
 
 	s.NoError(store.UpsertMany(ctx, integrationHealths))
 
-	integrationHealthCount, err = store.Count(ctx)
+	integrationHealthCount, err = store.Count(ctx, search.EmptyQuery())
 	s.NoError(err)
 	s.Equal(200, integrationHealthCount)
+
+	s.NoError(store.DeleteMany(ctx, integrationHealthIDs))
+
+	integrationHealthCount, err = store.Count(ctx, search.EmptyQuery())
+	s.NoError(err)
+	s.Equal(0, integrationHealthCount)
 }

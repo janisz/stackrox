@@ -4,11 +4,10 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/docker/distribution/reference"
+	"github.com/distribution/reference"
 	"github.com/pkg/errors"
 	"github.com/stackrox/rox/generated/storage"
 	"github.com/stackrox/rox/pkg/cve"
-	"github.com/stackrox/rox/pkg/logging"
 	"github.com/stackrox/rox/pkg/set"
 	"github.com/stackrox/rox/pkg/stringutils"
 )
@@ -18,7 +17,10 @@ const (
 )
 
 var (
-	log = logging.LoggerForModule()
+	// digestPrefixes lists the prefixes for valid, OCI-compliant image digests.
+	// Please see https://github.com/opencontainers/image-spec/blob/main/descriptor.md#registered-algorithms
+	// for more information.
+	digestPrefixes = []string{"sha256:", "sha512:"}
 )
 
 // GenerateImageFromStringWithDefaultTag generates an image type from a common string format and returns an error if
@@ -92,6 +94,27 @@ func NormalizeImageFullNameNoSha(name *storage.ImageName) *storage.ImageName {
 	return name
 }
 
+// NormalizeImageFullName mimics NormalizeImageFullNameNoSha but accepts a digest,
+// allows an empty tag, and does not modify name if it's malformed.
+func NormalizeImageFullName(name *storage.ImageName, digest string) *storage.ImageName {
+	if name.GetTag() == "" && digest == "" {
+		// Input is malformed, do nothing.
+		return name
+	}
+
+	if digest != "" {
+		digest = fmt.Sprintf("@%s", digest)
+	}
+
+	tag := name.GetTag()
+	if tag != "" {
+		tag = fmt.Sprintf(":%s", tag)
+	}
+
+	name.FullName = fmt.Sprintf("%s/%s%s%s", name.GetRegistry(), name.GetRemote(), tag, digest)
+	return name
+}
+
 // GenerateImageFromString generates an image type from a common string format and returns an error if
 // there was an issue parsing it
 func GenerateImageFromString(imageStr string) (*storage.ContainerImage, error) {
@@ -121,21 +144,11 @@ func GenerateImageFromStringWithOverride(imageStr, registryOverride string) (*st
 
 // GetSHA returns the SHA of the image, if it exists.
 func GetSHA(img *storage.Image) string {
-	return GetSHAFromIDAndMetadata(img.GetId(), img.GetMetadata())
-}
-
-// GetSHAFromIDAndMetadata returns the SHA of the image based on the given ID and metadata, if it exists.
-func GetSHAFromIDAndMetadata(id string, metadata *storage.ImageMetadata) string {
-	if id != "" {
-		return id
-	}
-	if d := metadata.GetV2().GetDigest(); d != "" {
-		return d
-	}
-	if d := metadata.GetV1().GetDigest(); d != "" {
-		return d
-	}
-	return ""
+	return stringutils.FirstNonEmpty(
+		img.GetId(),
+		img.GetMetadata().GetV2().GetDigest(),
+		img.GetMetadata().GetV1().GetDigest(),
+	)
 }
 
 // Reference returns what to use as the reference when talking to registries
@@ -149,7 +162,7 @@ func Reference(img *storage.Image) string {
 	return "latest"
 }
 
-// IsPullable returns whether or not Kubernetes things the image is pullable
+// IsPullable returns whether Kubernetes thinks the image is pullable.
 func IsPullable(imageStr string) bool {
 	parts := strings.SplitN(imageStr, "://", 2)
 	if len(parts) == 2 {
@@ -165,16 +178,29 @@ func IsPullable(imageStr string) bool {
 	return err == nil
 }
 
+// RemoveScheme removes the scheme from an image string. For example:
+// "docker-pullable://rest-of-image" becomes "rest-of-image"
+func RemoveScheme(imageStr string) string {
+	_, after, found := strings.Cut(imageStr, "://")
+	if found {
+		return after
+	}
+	return imageStr
+}
+
 // IsValidImageString returns whether the given string can be parsed as a docker image reference
 func IsValidImageString(imageStr string) error {
 	_, err := reference.ParseAnyReference(imageStr)
 	return err
 }
 
-// ExtractImageDigest returns the image sha if it exists within the string.
+// ExtractImageDigest returns the image sha, if it exists, within the string.
+// Otherwise, the empty string is returned.
 func ExtractImageDigest(imageStr string) string {
-	if idx := strings.Index(imageStr, "sha256:"); idx != -1 {
-		return imageStr[idx:]
+	for _, prefix := range digestPrefixes {
+		if idx := strings.Index(imageStr, prefix); idx != -1 {
+			return imageStr[idx:]
+		}
 	}
 
 	return ""
@@ -203,14 +229,9 @@ func GetFullyQualifiedFullName(holder nameHolder) string {
 	return fmt.Sprintf("%s@%s", holder.GetName().GetFullName(), holder.GetId())
 }
 
-// GetImageID returns the id of the image based on the currently set values
-func GetImageID(img *storage.Image) string {
-	return stringutils.FirstNonEmpty(img.GetId(), img.GetMetadata().GetV2().GetDigest(), img.GetMetadata().GetV1().GetDigest())
-}
-
 // StripCVEDescriptions takes in an image and returns a stripped down version without the descriptions of CVEs
 func StripCVEDescriptions(img *storage.Image) *storage.Image {
-	newImage := img.Clone()
+	newImage := img.CloneVT()
 	StripCVEDescriptionsNoClone(newImage)
 	return newImage
 }

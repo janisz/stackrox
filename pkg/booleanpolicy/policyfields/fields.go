@@ -45,6 +45,11 @@ func ContainsCVSSField(p *storage.Policy) bool {
 	return booleanpolicy.ContainsValueWithFieldName(p, fieldnames.CVSS)
 }
 
+// ContainsNVDCVSSField returns whether the given policy contains a NVD CVSS field.
+func ContainsNVDCVSSField(p *storage.Policy) bool {
+	return booleanpolicy.ContainsValueWithFieldName(p, fieldnames.NvdCvss)
+}
+
 // ContainsSeverityField returns whether the given policy contains a Severity field.
 func ContainsSeverityField(p *storage.Policy) bool {
 	return booleanpolicy.ContainsValueWithFieldName(p, fieldnames.Severity)
@@ -106,7 +111,10 @@ func ContainsMemResourceLimit(p *storage.Policy) bool {
 	return booleanpolicy.ContainsValueWithFieldName(p, fieldnames.ContainerMemLimit)
 }
 
-// ContainsUnscannedImageField returns whether the policy contains the unscanned image field.
-func ContainsUnscannedImageField(p *storage.Policy) bool {
-	return booleanpolicy.ContainsValueWithFieldName(p, fieldnames.UnscannedImage)
+// ContainsScanRequiredFields returns whether the policy contains fields related to image scanning,
+// which require a scan result and may otherwise fail, i.e. fieldnames.UnscannedImage or
+// fieldnames.ImageSignatureVerifiedBy.
+func ContainsScanRequiredFields(p *storage.Policy) bool {
+	return booleanpolicy.ContainsValueWithFieldName(p, fieldnames.UnscannedImage) ||
+		booleanpolicy.ContainsValueWithFieldName(p, fieldnames.ImageSignatureVerifiedBy)
 }

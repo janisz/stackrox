@@ -6,9 +6,7 @@ import {
     defaultColumnClassName,
     nonSortableHeaderClassName,
 } from 'Components/Table';
-import LabelChip from 'Components/LabelChip';
 import TopCvssLabel from 'Components/TopCvssLabel';
-import WorkflowListPage from 'Containers/Workflow/WorkflowListPage';
 import entityTypes from 'constants/entityTypes';
 import { LIST_PAGE_SIZE } from 'constants/workflowPages.constants';
 import CVEStackedPill from 'Components/CVEStackedPill';
@@ -21,6 +19,7 @@ import removeEntityContextColumns from 'utils/tableUtils';
 import { componentSortFields } from 'constants/sortFields';
 
 import { getFilteredComponentColumns } from './ListComponents.utils';
+import WorkflowListPage from '../WorkflowListPage';
 
 export const defaultComponentSort = [
     {
@@ -29,7 +28,7 @@ export const defaultComponentSort = [
     },
 ];
 
-export function getComponentTableColumns(workflowState) {
+export function getComponentTableColumns(workflowState, isFeatureFlagEnabled) {
     const tableColumns = [
         {
             Header: 'Id',
@@ -81,25 +80,8 @@ export function getComponentTableColumns(workflowState) {
             Header: `Active`,
             headerClassName: `w-1/10 text-center ${nonSortableHeaderClassName}`,
             className: `w-1/10 ${defaultColumnClassName}`,
-            // eslint-disable-next-line
             Cell: ({ original }) => {
-                const activeStatus = original.activeState?.state || 'Undetermined';
-                switch (activeStatus) {
-                    case 'Active': {
-                        return (
-                            <div className="mx-auto">
-                                <LabelChip text={activeStatus} type="alert" size="large" />
-                            </div>
-                        );
-                    }
-                    case 'Inactive': {
-                        return <div className="mx-auto">{activeStatus}</div>;
-                    }
-                    case 'Undetermined':
-                    default: {
-                        return <div className="mx-auto">Undetermined</div>;
-                    }
-                }
+                return original.activeState?.state || 'Undetermined';
             },
             id: componentSortFields.ACTIVE,
             accessor: 'isActive',
@@ -119,16 +101,12 @@ export function getComponentTableColumns(workflowState) {
         },
         {
             Header: `Top CVSS`,
-            headerClassName: `w-1/10 text-center ${defaultHeaderClassName}`,
+            headerClassName: `w-1/10 ${defaultHeaderClassName}`,
             className: `w-1/10 ${defaultColumnClassName}`,
             Cell: ({ original }) => {
                 const { topVuln } = original;
                 if (!topVuln) {
-                    return (
-                        <div className="mx-auto flex flex-col">
-                            <span>–</span>
-                        </div>
-                    );
+                    return 'N/A';
                 }
                 const { cvss, scoreVersion } = topVuln;
                 return <TopCvssLabel cvss={cvss} version={scoreVersion} />;
@@ -157,7 +135,7 @@ export function getComponentTableColumns(workflowState) {
         {
             Header: `Images`,
             entityType: entityTypes.IMAGE,
-            headerClassName: `w-1/8 ${defaultHeaderClassName}`,
+            headerClassName: `w-1/8 ${nonSortableHeaderClassName}`,
             className: `w-1/8 ${defaultColumnClassName}`,
             id: componentSortFields.IMAGE_COUNT,
             accessor: 'imageCount',
@@ -169,7 +147,9 @@ export function getComponentTableColumns(workflowState) {
                     selectedRowId={original.id}
                 />
             ),
-            sortField: componentSortFields.IMAGE_COUNT,
+            // TODO: restore sorting on this field, see https://issues.redhat.com/browse/ROX-12548 for context
+            // sortField: componentSortFields.IMAGES,
+            sortable: false,
         },
         {
             Header: `Deployments`,
@@ -215,7 +195,11 @@ export function getComponentTableColumns(workflowState) {
         },
     ];
 
-    const componentColumnsBasedOnContext = getFilteredComponentColumns(tableColumns, workflowState);
+    const componentColumnsBasedOnContext = getFilteredComponentColumns(
+        tableColumns,
+        workflowState,
+        isFeatureFlagEnabled
+    );
 
     return removeEntityContextColumns(componentColumnsBasedOnContext, workflowState);
 }

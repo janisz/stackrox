@@ -1,8 +1,8 @@
 import React from 'react';
+import { useLocation, useRouteMatch } from 'react-router-dom';
 import pluralize from 'pluralize';
 import { format } from 'date-fns';
 
-import LabelChip from 'Components/LabelChip';
 import {
     defaultHeaderClassName,
     defaultColumnClassName,
@@ -16,7 +16,9 @@ import { roleSortFields } from 'constants/sortFields';
 import { K8S_ROLES_QUERY } from 'queries/role';
 import queryService from 'utils/queryService';
 import URLService from 'utils/URLService';
+import { getConfigMgmtPathForEntitiesAndId } from '../entities';
 import List from './List';
+import NoEntitiesIconText from './utilities/NoEntitiesIconText';
 
 export const defaultRoleSort = [
     {
@@ -37,6 +39,14 @@ const buildTableColumns = (match, location, entityContext) => {
             Header: `Role`,
             headerClassName: `w-1/8 ${defaultHeaderClassName}`,
             className: `w-1/8 ${defaultColumnClassName}`,
+            Cell: ({ original, pdf }) => {
+                const url = getConfigMgmtPathForEntitiesAndId('ROLE', original.id);
+                return (
+                    <TableCellLink pdf={pdf} url={url}>
+                        {original.name}
+                    </TableCellLink>
+                );
+            },
             accessor: 'name',
             id: roleSortFields.ROLE,
             sortField: roleSortFields.ROLE,
@@ -131,7 +141,7 @@ const buildTableColumns = (match, location, entityContext) => {
                 if (!subjectsLength) {
                     return !serviceAccountsLength ||
                         (serviceAccountsLength === 1 && serviceAccounts[0].message) ? (
-                        <LabelChip text="No Users & Groups" type="alert" />
+                        <NoEntitiesIconText text="No Users & Groups" isTextOnly={pdf} />
                     ) : (
                         'No Users & Groups'
                     );
@@ -172,7 +182,7 @@ const buildTableColumns = (match, location, entityContext) => {
                         (serviceAccountsLength === 1 && serviceAccounts[0].message)) &&
                     !subjectsLength
                 ) {
-                    return <LabelChip text="No Service Accounts" type="alert" />;
+                    return <NoEntitiesIconText text="No Service Accounts" isTextOnly={pdf} />;
                 }
                 if (!serviceAccountsLength) {
                     return 'No Service Accounts';
@@ -209,8 +219,6 @@ const buildTableColumns = (match, location, entityContext) => {
 const createTableRows = (data) => data.results;
 
 const Roles = ({
-    match,
-    location,
     className,
     selectedRowId,
     onRowClick,
@@ -219,6 +227,8 @@ const Roles = ({
     totalResults,
     entityContext,
 }) => {
+    const location = useLocation();
+    const match = useRouteMatch();
     const autoFocusSearchInput = !selectedRowId;
     const tableColumns = buildTableColumns(match, location, entityContext);
     const queryText = queryService.objectToWhereClause(query);

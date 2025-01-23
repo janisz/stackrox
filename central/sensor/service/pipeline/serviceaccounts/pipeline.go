@@ -15,6 +15,7 @@ import (
 	"github.com/stackrox/rox/central/serviceaccount/datastore"
 	"github.com/stackrox/rox/generated/internalapi/central"
 	"github.com/stackrox/rox/generated/storage"
+	"github.com/stackrox/rox/pkg/centralsensor"
 	"github.com/stackrox/rox/pkg/concurrency"
 	"github.com/stackrox/rox/pkg/logging"
 	"github.com/stackrox/rox/pkg/metrics"
@@ -23,6 +24,8 @@ import (
 
 var (
 	log = logging.LoggerForModule()
+
+	_ pipeline.Fragment = (*pipelineImpl)(nil)
 )
 
 // Template design pattern. We define control flow here and defer logic to subclasses.
@@ -51,6 +54,10 @@ type pipelineImpl struct {
 	riskReprocessor reprocessor.Loop
 
 	reconciliationSignal concurrency.Signal
+}
+
+func (s *pipelineImpl) Capabilities() []centralsensor.CentralCapability {
+	return nil
 }
 
 func (s *pipelineImpl) Reconcile(ctx context.Context, clusterID string, storeMap *reconciliation.StoreMap) error {
@@ -169,7 +176,7 @@ func (s *pipelineImpl) enrichCluster(ctx context.Context, sa *storage.ServiceAcc
 
 func (s *pipelineImpl) persistServiceAccount(ctx context.Context, action central.ResourceAction, sa *storage.ServiceAccount) error {
 	switch action {
-	case central.ResourceAction_CREATE_RESOURCE, central.ResourceAction_UPDATE_RESOURCE:
+	case central.ResourceAction_CREATE_RESOURCE, central.ResourceAction_UPDATE_RESOURCE, central.ResourceAction_SYNC_RESOURCE:
 		return s.serviceaccounts.UpsertServiceAccount(ctx, sa)
 	case central.ResourceAction_REMOVE_RESOURCE:
 		return s.serviceaccounts.RemoveServiceAccount(ctx, sa.GetId())
@@ -178,4 +185,4 @@ func (s *pipelineImpl) persistServiceAccount(ctx context.Context, action central
 	}
 }
 
-func (s *pipelineImpl) OnFinish(clusterID string) {}
+func (s *pipelineImpl) OnFinish(_ string) {}

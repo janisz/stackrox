@@ -12,15 +12,15 @@ import PolicyPage from './PolicyPage';
 function PoliciesPage() {
     /*
      * Examples of urls for PolicyPage:
-     * /main/policies/:policyId
-     * /main/policies/:policyId?action=edit
-     * /main/policies?action=create
+     * /main/policymanagement/policies/:policyId
+     * /main/policymanagement/policies/:policyId?action=edit
+     * /main/policymanagement/policies?action=create
      *
      * Examples of urls for PolicyTablePage:
-     * /main/policies
-     * /main/policies?s[Lifecycle Stage]=BUILD
-     * /main/policies?s[Lifecycle Stage]=BUILD&s[Lifecycle State]=DEPLOY
-     * /main/policies?s[Lifecycle State]=RUNTIME&s[Severity]=CRITICAL_SEVERITY
+     * /main/policymanagement/policies
+     * /main/policymanagement/policies?s[Lifecycle Stage]=BUILD
+     * /main/policymanagement/policies?s[Lifecycle Stage]=BUILD&s[Lifecycle State]=DEPLOY
+     * /main/policymanagement/policies?s[Lifecycle State]=RUNTIME&s[Severity]=CRITICAL_SEVERITY
      */
     const location = useLocation();
     const { search } = location;
@@ -29,8 +29,9 @@ function PoliciesPage() {
     const { policyId } = useParams();
 
     const { hasReadAccess, hasReadWriteAccess } = usePermissions();
-    const hasReadAccessForPolicy = hasReadAccess('Policy');
-    const hasWriteAccessForPolicy = hasReadWriteAccess('Policy');
+    const hasReadAccessForPolicy = hasReadAccess('WorkflowAdministration');
+    const hasWriteAccessForPolicy =
+        hasReadWriteAccess('WorkflowAdministration') && hasReadAccess('Alert');
 
     if (!hasReadAccessForPolicy) {
         return <NotFoundMessage title="404: We couldn't find that page" />;

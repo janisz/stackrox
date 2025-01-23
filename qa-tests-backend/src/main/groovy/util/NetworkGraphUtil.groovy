@@ -13,7 +13,9 @@ import services.NetworkGraphService
 @Slf4j
 class NetworkGraphUtil {
 
-    static final NETWORK_FLOW_UPDATE_CADENCE_IN_SECONDS = 30 // Network flow data is updated every 30 seconds
+    // more time is needed on few architectures
+    static final NETWORK_FLOW_UPDATE_CADENCE_IN_SECONDS =
+        ((Env.REMOTE_CLUSTER_ARCH == "x86_64" ) ? 30 : 120)
 
     static int edgeCount(NetworkGraphServiceOuterClass.NetworkGraph graph) {
         int numEdges = 0
@@ -109,7 +111,8 @@ class NetworkGraphUtil {
         }
     }
 
-    static checkForEdge(String sourceId, String targetId, Timestamp since = null, int timeoutSeconds = 90) {
+    static checkForEdge(String sourceId, String targetId, Timestamp since = null,
+                        int timeoutSeconds = 90, String query = null) {
         int intervalSeconds = 1
         int waitTime
         def startTime = System.currentTimeMillis()
@@ -118,7 +121,7 @@ class NetworkGraphUtil {
                 sleep intervalSeconds * 1000
             }
 
-            def graph = NetworkGraphService.getNetworkGraph(since)
+            def graph = NetworkGraphService.getNetworkGraph(since, query)
             def edges = NetworkGraphUtil.findEdges(graph, sourceId, targetId)
             if (edges != null && edges.size() > 0) {
                 log.debug "Found source ${sourceId} -> target ${targetId} " +

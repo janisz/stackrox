@@ -3,11 +3,11 @@ package service
 import (
 	"context"
 
-	"github.com/grpc-ecosystem/grpc-gateway/runtime"
+	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
 	"github.com/pkg/errors"
+	deploymentUtils "github.com/stackrox/rox/central/deployment/utils"
 	"github.com/stackrox/rox/central/networkbaseline/datastore"
 	"github.com/stackrox/rox/central/networkbaseline/manager"
-	"github.com/stackrox/rox/central/role/resources"
 	v1 "github.com/stackrox/rox/generated/api/v1"
 	"github.com/stackrox/rox/generated/storage"
 	"github.com/stackrox/rox/pkg/auth/permissions"
@@ -16,16 +16,17 @@ import (
 	"github.com/stackrox/rox/pkg/grpc/authz/perrpc"
 	"github.com/stackrox/rox/pkg/grpc/authz/user"
 	"github.com/stackrox/rox/pkg/networkgraph"
+	"github.com/stackrox/rox/pkg/sac/resources"
 	"google.golang.org/grpc"
 )
 
 var (
 	authorizer = perrpc.FromMap(map[authz.Authorizer][]string{
-		user.With(permissions.View(resources.NetworkBaseline)): {
+		user.With(permissions.View(resources.DeploymentExtension)): {
 			"/v1.NetworkBaselineService/GetNetworkBaseline",
 			"/v1.NetworkBaselineService/GetNetworkBaselineStatusForFlows",
 		},
-		user.With(permissions.Modify(resources.NetworkBaseline)): {
+		user.With(permissions.Modify(resources.DeploymentExtension)): {
 			"/v1.NetworkBaselineService/ModifyBaselineStatusForPeers",
 			"/v1.NetworkBaselineService/LockNetworkBaseline",
 			"/v1.NetworkBaselineService/UnlockNetworkBaseline",
@@ -34,6 +35,8 @@ var (
 )
 
 type serviceImpl struct {
+	v1.UnimplementedNetworkBaselineServiceServer
+
 	datastore datastore.ReadOnlyDataStore
 	manager   manager.Manager
 }
@@ -53,6 +56,7 @@ func (s *serviceImpl) AuthFuncOverride(ctx context.Context, fullMethodName strin
 	return ctx, authorizer.Authorized(ctx, fullMethodName)
 }
 
+// GetNetworkBaselineStatusForFlows - gets the status of the flows within the baseline.
 func (s *serviceImpl) GetNetworkBaselineStatusForFlows(
 	ctx context.Context,
 	request *v1.NetworkBaselineStatusRequest,
@@ -63,7 +67,10 @@ func (s *serviceImpl) GetNetworkBaselineStatusForFlows(
 		return nil, err
 	}
 	if !found {
-		return nil, errox.NotFound.New("network baseline for the deployment does not exist")
+		baseline, err = s.createBaseline(ctx, request.GetDeploymentId())
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	// Got the baseline, check status of each passed in peer
@@ -71,19 +78,42 @@ func (s *serviceImpl) GetNetworkBaselineStatusForFlows(
 	return &v1.NetworkBaselineStatusResponse{Statuses: statuses}, nil
 }
 
+// GetNetworkBaseline gets the network baseline associated with the deployment.
 func (s *serviceImpl) GetNetworkBaseline(
 	ctx context.Context,
 	request *v1.ResourceByID,
 ) (*storage.NetworkBaseline, error) {
 	if request.GetId() == "" {
-		return nil, errors.Wrap(errox.InvalidArgs, "Network baseline id must be provided")
+		return nil, errors.Wrap(errox.InvalidArgs, "Deployment id for the network baseline must be provided")
 	}
 	baseline, found, err := s.datastore.GetNetworkBaseline(ctx, request.GetId())
 	if err != nil {
 		return nil, err
 	}
 	if !found {
-		return nil, errors.Wrapf(errox.NotFound, "network baseline with id %q does not exist", request.GetId())
+		baseline, err = s.createBaseline(ctx, request.GetId())
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	return baseline, nil
+}
+
+func (s *serviceImpl) createBaseline(ctx context.Context, deploymentID string) (*storage.NetworkBaseline, error) {
+	// We didn't find one but user asked for one.  Let's try to build one
+	err := s.manager.CreateNetworkBaseline(deploymentID)
+	if err != nil {
+		return nil, err
+	}
+
+	// Grab the newly created baseline
+	baseline, found, err := s.datastore.GetNetworkBaseline(ctx, deploymentID)
+	if err != nil {
+		return nil, err
+	}
+	if !found {
+		return nil, errors.Wrapf(errox.NotFound, "Network baseline for deployment id %q does not exist", deploymentID)
 	}
 
 	return baseline, nil
@@ -125,6 +155,8 @@ func (s *serviceImpl) getStatusesForPeers(
 	return statuses
 }
 
+// getBaselinePeerByEntityID indexes the peers from the provided baseline
+// by their (type, ID) information.
 func (s *serviceImpl) getBaselinePeerByEntityID(
 	baseline *storage.NetworkBaseline,
 ) map[networkgraph.Entity]*storage.NetworkBaselinePeer {
@@ -132,11 +164,30 @@ func (s *serviceImpl) getBaselinePeerByEntityID(
 
 	peers := baseline.GetPeers()
 	for _, peer := range peers {
+		peerType := peer.GetEntity().GetInfo().GetType()
+		peerId := peer.GetEntity().GetInfo().GetId()
 		key := networkgraph.Entity{
-			Type: peer.GetEntity().GetInfo().GetType(),
-			ID:   peer.GetEntity().GetInfo().GetId(),
+			Type: peerType,
+			ID:   peerId,
 		}
 		result[key] = peer
+		// In UI flows, the peers for flow comparison to the baseline are
+		// the ones received from the network graph call.
+		// Scoped Access Control masking in network graph generates new
+		// identifiers for entities that are not in the allowed scope of
+		// the requested, and this in a deterministic way.
+		// Here, the peer is also referenced by the ID that would be
+		// generated for the network graph, so that flows coming from or
+		// targeting masked entities would still be flagged as belonging to
+		// the network baseline.
+		if peerType == storage.NetworkEntityInfo_DEPLOYMENT {
+			deploymentName := peer.GetEntity().GetInfo().GetDeployment().GetName()
+			maskedKey := networkgraph.Entity{
+				Type: peerType,
+				ID:   deploymentUtils.GetMaskedDeploymentID(peerId, deploymentName),
+			}
+			result[maskedKey] = peer
+		}
 	}
 
 	return result

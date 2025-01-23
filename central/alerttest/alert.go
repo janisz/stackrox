@@ -2,13 +2,14 @@ package alerttest
 
 import (
 	"github.com/stackrox/rox/generated/storage"
+	"github.com/stackrox/rox/pkg/fixtures/fixtureconsts"
 )
 
 // Constants for unit tests that need fake Alerts.
 const (
-	FakeAlertID     = "fake-alert-id"
+	FakeAlertID     = fixtureconsts.AlertFake
 	FakeClusterName = "fakeCluster"
-	FakePolicyID    = "fake-policy-id"
+	FakePolicyID    = fixtureconsts.PolicyFake
 	FakeTag1        = "FakeTag1"
 	FakeTag2        = "FakeTag2"
 	FakeTag3        = "FakeTag3"
@@ -52,7 +53,6 @@ func NewFakeAlertWithTwoTags() *storage.Alert {
 	return &storage.Alert{
 		Id:             FakeAlertID,
 		LifecycleStage: storage.LifecycleStage_RUNTIME,
-		Tags:           NewFakeTwoTags(),
 	}
 }
 
@@ -61,7 +61,6 @@ func NewFakeAlertWithThreeTags() *storage.Alert {
 	return &storage.Alert{
 		Id:             FakeAlertID,
 		LifecycleStage: storage.LifecycleStage_RUNTIME,
-		Tags:           NewFakeThreeTags(),
 	}
 }
 
@@ -70,7 +69,6 @@ func NewFakeAlertWithOneTag() *storage.Alert {
 	return &storage.Alert{
 		Id:             FakeAlertID,
 		LifecycleStage: storage.LifecycleStage_RUNTIME,
-		Tags:           []string{FakeTag3},
 	}
 }
 

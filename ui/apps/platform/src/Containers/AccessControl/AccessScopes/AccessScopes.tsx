@@ -4,7 +4,6 @@ import { useHistory, useLocation, useParams } from 'react-router-dom';
 import {
     Alert,
     AlertActionCloseButton,
-    AlertVariant,
     Bullseye,
     Button,
     PageSection,
@@ -17,7 +16,6 @@ import {
     accessScopeNew,
     createAccessScope,
     deleteAccessScope,
-    getIsDefaultAccessScopeId,
     fetchAccessScopes,
     updateAccessScope,
 } from 'services/AccessScopesService';
@@ -34,10 +32,14 @@ import './AccessScopes.css';
 import AccessControlHeading from '../AccessControlHeading';
 import AccessControlBreadcrumbs from '../AccessControlBreadcrumbs';
 import AccessControlHeaderActionBar from '../AccessControlHeaderActionBar';
+import usePermissions from '../../../hooks/usePermissions';
+import { isUserResource } from '../traits';
 
 const entityType = 'ACCESS_SCOPE';
 
 function AccessScopes(): ReactElement {
+    const { hasReadWriteAccess } = usePermissions();
+    const hasWriteAccessForPage = hasReadWriteAccess('Access');
     const history = useHistory();
     const { search } = useLocation();
     const queryObject = getQueryObject(search);
@@ -64,7 +66,8 @@ function AccessScopes(): ReactElement {
                 setAlertAccessScopes(
                     <Alert
                         title="Fetch access scopes failed"
-                        variant={AlertVariant.danger}
+                        component="p"
+                        variant="danger"
                         isInline
                     >
                         {error.message}
@@ -88,7 +91,8 @@ function AccessScopes(): ReactElement {
                 setAlertRoles(
                     <Alert
                         title="Fetch roles failed"
-                        variant={AlertVariant.warning}
+                        component="p"
+                        variant="warning"
                         isInline
                         actionClose={actionClose}
                     >
@@ -158,13 +162,17 @@ function AccessScopes(): ReactElement {
                     <AccessControlHeaderActionBar
                         displayComponent={
                             <AccessControlDescription>
-                                Add predefined sets of authorized Kubernetes resources that users
+                                Create predefined sets of authorized Kubernetes resources that users
                                 should be able to access
                             </AccessControlDescription>
                         }
                         actionComponent={
-                            <Button variant="primary" onClick={handleCreate}>
-                                Add access scope
+                            <Button
+                                isDisabled={!hasWriteAccessForPage}
+                                variant="primary"
+                                onClick={handleCreate}
+                            >
+                                Create access scope
                             </Button>
                         }
                     />
@@ -172,9 +180,7 @@ function AccessScopes(): ReactElement {
             ) : (
                 <AccessControlBreadcrumbs
                     entityType={entityType}
-                    entityName={action === 'create' ? 'Add access scope' : accessScope?.name}
-                    isDisabled={hasAction}
-                    isList={isList}
+                    entityName={action === 'create' ? 'Create access scope' : accessScope?.name}
                 />
             )}
             {alertAccessScopes}
@@ -182,7 +188,7 @@ function AccessScopes(): ReactElement {
             <PageSection variant={isList ? 'default' : 'light'}>
                 {counterFetching !== 0 ? (
                     <Bullseye>
-                        <Spinner isSVG />
+                        <Spinner />
                     </Bullseye>
                 ) : isList ? (
                     <AccessScopesList
@@ -199,7 +205,7 @@ function AccessScopes(): ReactElement {
                     />
                 ) : (
                     <AccessScopeFormWrapper
-                        isActionable={!accessScope || !getIsDefaultAccessScopeId(entityId)}
+                        isActionable={!accessScope || isUserResource(accessScope.traits)}
                         action={action}
                         accessScope={accessScope ?? accessScopeNew}
                         accessScopes={accessScopes}

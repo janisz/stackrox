@@ -1,11 +1,11 @@
 package runtime
 
 import (
-	ptypes "github.com/gogo/protobuf/types"
 	"github.com/stackrox/rox/generated/storage"
 	"github.com/stackrox/rox/pkg/alert/convert"
 	"github.com/stackrox/rox/pkg/booleanpolicy"
 	"github.com/stackrox/rox/pkg/booleanpolicy/augmentedobjs"
+	"github.com/stackrox/rox/pkg/protocompat"
 	"github.com/stackrox/rox/pkg/uuid"
 )
 
@@ -16,7 +16,7 @@ func constructProcessAlert(policy *storage.Policy, deployment *storage.Deploymen
 	}
 	alert := constructGenericRuntimeAlert(policy, deployment, violations.AlertViolations)
 	alert.ProcessViolation = violations.ProcessViolation
-	if action, msg := buildEnforcement(policy, deployment); action != storage.EnforcementAction_UNSET_ENFORCEMENT {
+	if action, msg := buildEnforcement(policy); action != storage.EnforcementAction_UNSET_ENFORCEMENT {
 		alert.Enforcement = &storage.Alert_Enforcement{
 			Action:  action,
 			Message: msg,
@@ -44,7 +44,7 @@ func constructKubeEventAlert(
 	}
 
 	alert := constructGenericRuntimeAlert(policy, kubeResource.(*storage.Deployment), violations.AlertViolations)
-	if action, msg := buildKubeEventEnforcement(policy, kubeEvent); action != storage.EnforcementAction_UNSET_ENFORCEMENT {
+	if action, msg := buildKubeEventEnforcement(policy); action != storage.EnforcementAction_UNSET_ENFORCEMENT {
 		alert.Enforcement = &storage.Alert_Enforcement{
 			Action:  action,
 			Message: msg,
@@ -56,7 +56,7 @@ func constructKubeEventAlert(
 func constructNetworkFlowAlert(
 	policy *storage.Policy,
 	deployment *storage.Deployment,
-	flow *augmentedobjs.NetworkFlowDetails,
+	_ *augmentedobjs.NetworkFlowDetails,
 	violations booleanpolicy.Violations,
 ) *storage.Alert {
 	if len(violations.AlertViolations) == 0 {
@@ -74,11 +74,11 @@ func constructGenericRuntimeAlert(
 ) *storage.Alert {
 	return &storage.Alert{
 		Id:             uuid.NewV4().String(),
-		Policy:         policy.Clone(),
+		Policy:         policy.CloneVT(),
 		LifecycleStage: storage.LifecycleStage_RUNTIME,
 		Entity:         convert.ToAlertDeployment(deployment),
 		Violations:     violations,
-		Time:           ptypes.TimestampNow(),
+		Time:           protocompat.TimestampNow(),
 	}
 }
 
@@ -89,15 +89,15 @@ func constructResourceRuntimeAlert(
 ) *storage.Alert {
 	return &storage.Alert{
 		Id:             uuid.NewV4().String(),
-		Policy:         policy.Clone(),
+		Policy:         policy.CloneVT(),
 		LifecycleStage: storage.LifecycleStage_RUNTIME,
 		Entity:         convert.ToAlertResource(kubeEvent),
 		Violations:     violations,
-		Time:           ptypes.TimestampNow(),
+		Time:           protocompat.TimestampNow(),
 	}
 }
 
-func buildEnforcement(policy *storage.Policy, deployment *storage.Deployment) (enforcement storage.EnforcementAction, message string) {
+func buildEnforcement(policy *storage.Policy) (enforcement storage.EnforcementAction, message string) {
 	for _, enforcementAction := range policy.GetEnforcementActions() {
 		if enforcementAction == storage.EnforcementAction_KILL_POD_ENFORCEMENT {
 			return storage.EnforcementAction_KILL_POD_ENFORCEMENT,
@@ -107,7 +107,7 @@ func buildEnforcement(policy *storage.Policy, deployment *storage.Deployment) (e
 	return storage.EnforcementAction_UNSET_ENFORCEMENT, ""
 }
 
-func buildKubeEventEnforcement(policy *storage.Policy, kubeEvent *storage.KubernetesEvent) (enforcement storage.EnforcementAction, message string) {
+func buildKubeEventEnforcement(policy *storage.Policy) (enforcement storage.EnforcementAction, message string) {
 	for _, enforcementAction := range policy.GetEnforcementActions() {
 		if enforcementAction == storage.EnforcementAction_FAIL_KUBE_REQUEST_ENFORCEMENT {
 			return storage.EnforcementAction_FAIL_KUBE_REQUEST_ENFORCEMENT,

@@ -1,13 +1,17 @@
 import static io.stackrox.proto.api.v1.SearchServiceOuterClass.RawQuery.newBuilder
+import static util.Helpers.trueWithin
+
+import com.google.protobuf.util.Timestamps
+import orchestratormanager.OrchestratorTypes
 
 import io.stackrox.proto.api.v1.DeploymentServiceOuterClass.ListDeploymentsWithProcessInfoResponse.DeploymentWithProcessInfo
 import io.stackrox.proto.storage.DeploymentOuterClass.ListDeployment
 import io.stackrox.proto.storage.ProcessBaselineOuterClass
 
 import objects.Deployment
-import orchestratormanager.OrchestratorTypes
 import services.ClusterService
 import services.DeploymentService
+import services.ImageService
 import services.ProcessBaselineService
 import services.ProcessService
 import util.Env
@@ -16,6 +20,7 @@ import util.Timer
 import spock.lang.IgnoreIf
 import spock.lang.Shared
 import spock.lang.Stepwise
+import spock.lang.Tag
 
 // RiskTest - Test coverage for functionality used on the Risk page and not covered elsewhere.
 // i.e.
@@ -23,6 +28,7 @@ import spock.lang.Stepwise
 // - CountDeployments
 // - GetGroupedProcessByDeploymentAndContainer
 
+@Tag("PZ")
 @Stepwise // tests are ordered and dependent
 class RiskTest extends BaseSpecification {
     @Shared
@@ -42,7 +48,7 @@ class RiskTest extends BaseSpecification {
     private List<DeploymentWithProcessInfo> whenOneHasRisk
 
     static final private int RETRIES = isRaceBuild() ? 120 : (
-            (Env.mustGetOrchestratorType() == OrchestratorTypes.OPENSHIFT) ? 50 : 24)
+            (Env.mustGetOrchestratorType() == OrchestratorTypes.OPENSHIFT) ? 70 : 35)
     static final private int RETRY_DELAY = 5
     static final private List<Deployment> DEPLOYMENTS = []
     static final private String TEST_NAMESPACE = "qa-risk-${UUID.randomUUID()}"
@@ -51,8 +57,7 @@ class RiskTest extends BaseSpecification {
         clusterId = ClusterService.getClusterId()
 
         // ROX-6260: pre scan the image to avoid different risk scores
-        Services.scanImage(TEST_IMAGE)
-
+        ImageService.scanImage(TEST_IMAGE, false)
         for (int i = 0; i < 2; i++) {
             DEPLOYMENTS.push(
                     new Deployment()
@@ -66,6 +71,7 @@ class RiskTest extends BaseSpecification {
         orchestrator.batchCreateDeployments(DEPLOYMENTS)
         for (Deployment d : DEPLOYMENTS) {
             assert Services.waitForDeployment(d)
+            debugProcessBaseline(d)
         }
         deploymentWithRisk = DEPLOYMENTS[0]
         deploymentWithoutRisk = DEPLOYMENTS[1]
@@ -73,7 +79,7 @@ class RiskTest extends BaseSpecification {
 
     def cleanupSpec() {
         for (Deployment deployment : DEPLOYMENTS) {
-            orchestrator.deleteDeployment(deployment)
+            orchestrator.deleteAndWaitForDeploymentDeletion(deployment)
         }
         orchestrator.deleteNamespace(TEST_NAMESPACE)
     }
@@ -90,31 +96,31 @@ class RiskTest extends BaseSpecification {
         while (t.IsValid()) {
             def response = listDeployments()
             if (!response || response.size() < DEPLOYMENTS.size()) {
-                println "not yet ready to test - no deployments found"
+                log.info "not yet ready to test - no deployments found"
                 continue
             }
             if (response.any { it.baselineStatusesList.size() == 0 }) {
-                println "not yet ready to test - container summary status are not set"
+                log.info "not yet ready to test - container summary status are not set"
                 continue
             }
 
             def processesFound = true
             for (int i = 0; i < DEPLOYMENTS.size(); i++) {
                 def processes = ProcessBaselineService.getProcessBaseline(clusterId, DEPLOYMENTS[i], null, 0)
-                if (!processes || processes.elementsList.size() == 0) {
-                    println "not yet ready to test - processes not found for ${DEPLOYMENTS[i].name}"
+                if (!processes || processes.elementsList.size() != 2) {
+                    log.info "not yet ready to test - processes not found for ${DEPLOYMENTS[i].name}"
                     processesFound = false
                 }
 
                 if (processes) {
                     processes.elementsList.forEach { element ->
-                        println "SR found ${element.element.processName} for ${DEPLOYMENTS[i].name}"
+                        log.info "SR found ${element.element.processName} for ${DEPLOYMENTS[i].name}"
                     }
                 }
             }
 
             if (!processesFound) {
-                println "not yet ready to test - processes not found"
+                log.info "not yet ready to test - processes not found"
                 continue
             }
 
@@ -125,11 +131,11 @@ class RiskTest extends BaseSpecification {
                     .collect { it.deployment.name }
 
             if (!deploymentNamesWithoutRisk.isEmpty()) {
-                print "not yet ready to test - risks not found ${deploymentNamesWithoutRisk}"
+                log.info "not yet ready to test - risks not found ${deploymentNamesWithoutRisk}"
                 continue
             }
 
-            println "ready to test"
+            log.info "ready to test"
             whenEquivalent = response
             break
         }
@@ -138,29 +144,23 @@ class RiskTest extends BaseSpecification {
 
         def one = whenEquivalent.get(0)
         def two = whenEquivalent.get(1)
-        println debugPriorityAndState(one)
-        println debugPriorityAndState(two)
+        log.info debugPriorityAndState(one)
+        log.info debugPriorityAndState(two)
 
         then:
         "should have the same risk"
-        risk(one.deployment) == risk(two.deployment)
+        trueWithin(10, 3) { risk(one.deployment) == risk(two.deployment) } ||
+                risk(one.deployment) == risk(two.deployment)
 
         and:
         "should be at equivalent priority"
-        one.deployment.priority == two.deployment.priority
+        trueWithin(10, 3) { priority(one.deployment) == priority(two.deployment) } ||
+                priority(one.deployment) == priority(two.deployment)
 
         and:
         "not anomalous"
         !one.baselineStatusesList.get(0).anomalousProcessesExecuted
         !two.baselineStatusesList.get(0).anomalousProcessesExecuted
-
-        // TODO(ROX-6194): Remove after the deprecation cycle started with the 55.0 release.
-        and:
-        "`.whitelistStatusesList` shall be identical to `.baselineStatusesList`"
-        assert one.whitelistStatusesList.size() == one.baselineStatusesList.size()
-        assert two.whitelistStatusesList.size() == two.baselineStatusesList.size()
-        assert one.whitelistStatusesList.get(0) == one.baselineStatusesList.get(0)
-        assert two.whitelistStatusesList.get(0) == two.baselineStatusesList.get(0)
     }
 
     // Skip for OpenShift, it does not reliably find all processes
@@ -176,13 +176,13 @@ class RiskTest extends BaseSpecification {
             for (int i = 0; i < DEPLOYMENTS.size(); i++) {
                 def processes = ProcessService.getGroupedProcessByDeploymentAndContainer(DEPLOYMENTS[i].deploymentUid)
                 if (!processes || processes.size() < 2) {
-                    println "not yet ready to test - all processes not found for ${DEPLOYMENTS[i].name}"
+                    log.info "not yet ready to test - all processes not found for ${DEPLOYMENTS[i].name}"
                     allFound = false
                 }
 
                 if (processes) {
                     processes.forEach { group ->
-                        println "SR found process ${group.name} for ${DEPLOYMENTS[i].name}"
+                        log.info "SR found process ${group.name} for ${DEPLOYMENTS[i].name}"
                     }
                 }
             }
@@ -198,7 +198,7 @@ class RiskTest extends BaseSpecification {
         // Note: This test (and ProcessWLTest.groovy) rely heavily on the deployed SR using an
         // artificially reduced process discovery phase. i.e. "1m" instead of the default 1 hour.
         // See ROX_BASELINE_GENERATION_DURATION.
-        println "sleeping for 60 seconds to ensure the discovery phase is over"
+        log.info "sleeping for 60 seconds to ensure the discovery phase is over"
         sleep(60000)
 
         def before = whenEquivalent
@@ -223,17 +223,19 @@ class RiskTest extends BaseSpecification {
                 after = after.reverse()
             }
             debugBeforeAndAfter(before, after)
+            debugProcessBaseline(DEPLOYMENTS[withRiskIndex])
+            debugProcessBaseline(DEPLOYMENTS[withoutRiskIndex])
             if (after.get(withRiskIndex).deployment.priority == after.get(withoutRiskIndex).deployment.priority) {
-                println "not yet ready to test - there is no change yet to priorities"
+                log.info "not yet ready to test - there is no change yet to priorities"
                 after = null
                 continue
             }
             if (!after.get(withRiskIndex).baselineStatusesList.get(0).anomalousProcessesExecuted) {
-                println "not yet ready to test - there is no anomalous process spotted yet"
+                log.info "not yet ready to test - there is no anomalous process spotted yet"
                 after = null
                 continue
             }
-            println "ready to test"
+            log.info "ready to test"
             break
         }
         assert after
@@ -249,14 +251,6 @@ class RiskTest extends BaseSpecification {
 
         and:
         after.get(withRiskIndex).baselineStatusesList.get(0).anomalousProcessesExecuted
-
-        // TODO(ROX-6194): Remove after the deprecation cycle started with the 55.0 release.
-        and:
-        "`.whitelistStatusesList` shall be identical to `.baselineStatusesList`"
-        assert after.get(withRiskIndex).whitelistStatusesList.size() ==
-                after.get(withRiskIndex).baselineStatusesList.size()
-        assert after.get(withRiskIndex).whitelistStatusesList.get(0) ==
-                after.get(withRiskIndex).baselineStatusesList.get(0)
     }
 
     def "Risk changes when an anomalous process is added to the baseline"() {
@@ -280,10 +274,10 @@ class RiskTest extends BaseSpecification {
                     [] as String
             )
             if (!response || response.size() == 0) {
-                println "not yet ready to test - could not update the baseline"
+                log.info "not yet ready to test - could not update the baseline"
                 continue
             }
-            println "the process baseline is updated"
+            log.info "the process baseline is updated"
             break
         }
         assert response && response.size() > 0
@@ -299,16 +293,16 @@ class RiskTest extends BaseSpecification {
             }
             debugBeforeAndAfter(before, after)
             if (risk(after.get(withRiskIndex).deployment) == riskBefore) {
-                println "not yet ready to test - there is no change yet to risk score"
+                log.info "not yet ready to test - there is no change yet to risk score"
                 after = null
                 continue
             }
             if (after.get(withRiskIndex).baselineStatusesList.get(0).anomalousProcessesExecuted) {
-                println "not yet ready to test - the process anomaly is not cleared"
+                log.info "not yet ready to test - the process anomaly is not cleared"
                 after = null
                 continue
             }
-            println "ready to test"
+            log.info "ready to test"
             break
         }
         assert after
@@ -318,14 +312,6 @@ class RiskTest extends BaseSpecification {
         assert risk(after.get(withRiskIndex).deployment) < riskBefore
 
         assert !after.get(withRiskIndex).baselineStatusesList.get(0).anomalousProcessesExecuted
-
-        // TODO(ROX-6194): Remove after the deprecation cycle started with the 55.0 release.
-        and:
-        "`.whitelistStatusesList` shall be identical to `.baselineStatusesList`"
-        assert after.get(withRiskIndex).whitelistStatusesList.size() ==
-                after.get(withRiskIndex).baselineStatusesList.size()
-        assert after.get(withRiskIndex).whitelistStatusesList.get(0) ==
-                after.get(withRiskIndex).baselineStatusesList.get(0)
     }
 
     def debugBeforeAndAfter(
@@ -334,21 +320,22 @@ class RiskTest extends BaseSpecification {
         def withRiskIndex = before.get(0).deployment.name == deploymentWithRisk.name ? 0 : 1
         def withoutRiskIndex = (withRiskIndex + 1) % 2
 
-        println "Before:"
-        println "\tDeployment with risk:    ${debugPriorityAndState(before.get(withRiskIndex))}"
-        println "\tDeployment without risk: ${debugPriorityAndState(before.get(withoutRiskIndex))}"
-        println "After:"
-        println "\tDeployment with risk:    ${debugPriorityAndState(after.get(withRiskIndex))}"
-        println "\tDeployment without risk: ${debugPriorityAndState(after.get(withoutRiskIndex))}"
-        println "Process List:"
-        println "\tDeployment with risk:    ${debugProcesses(deploymentWithRisk.deploymentUid)}"
-        println "\tDeployment without risk: ${debugProcesses(deploymentWithoutRisk.deploymentUid)}"
+        log.info "Before:"
+        log.info "\tDeployment with risk:    ${debugPriorityAndState(before.get(withRiskIndex))}"
+        log.info "\tDeployment without risk: ${debugPriorityAndState(before.get(withoutRiskIndex))}"
+        log.info "After:"
+        log.info "\tDeployment with risk:    ${debugPriorityAndState(after.get(withRiskIndex))}"
+        log.info "\tDeployment without risk: ${debugPriorityAndState(after.get(withoutRiskIndex))}"
+        log.info "Process List:"
+        log.info "\tDeployment with risk:    ${debugProcesses(deploymentWithRisk.deploymentUid)}"
+        log.info "\tDeployment without risk: ${debugProcesses(deploymentWithoutRisk.deploymentUid)}"
     }
 
     def debugPriorityAndState(DeploymentWithProcessInfo dpl) {
         return "${dpl.deployment.name} "+
             "priority ${dpl.deployment.priority}, "+
-            "anomalous ${dpl.baselineStatusesList?.get(0)?.anomalousProcessesExecuted}"
+            "anomalous ${dpl.baselineStatusesList?.get(0)?.anomalousProcessesExecuted}, "+
+            "status ${dpl.baselineStatusesList?.get(0)?.baselineStatus}"
     }
 
     def debugProcesses(String uid) {
@@ -359,8 +346,26 @@ class RiskTest extends BaseSpecification {
         return processes*.name.join(", ")
     }
 
+    def debugProcessBaseline(Deployment deployment) {
+        def bl = ProcessBaselineService.getProcessBaseline(clusterId, deployment, null, 0)
+        if (!bl) {
+            log.info "Deployment ${deployment.getName()} has no baseline"
+            return
+        }
+
+        log.info "Processes for ${deployment.getName()}: ${bl.elementsList*.element.processName.join(",")}"
+        log.info "\tStackrox lock at " +
+                "${bl.hasStackRoxLockedTimestamp() ? Timestamps.toString(bl.getStackRoxLockedTimestamp()) : "none"}"
+        log.info "\tUser lock at " +
+                "${bl.hasUserLockedTimestamp() ? Timestamps.toString(bl.getUserLockedTimestamp()) : "none"}"
+    }
+
     private static float risk(ListDeployment deployment) {
         DeploymentService.getDeploymentWithRisk(deployment.id).deployment.riskScore
+    }
+
+    private static long priority(ListDeployment deployment) {
+        DeploymentService.getDeployment(deployment.id)?.priority
     }
 
     private static List<DeploymentWithProcessInfo> listDeployments() {

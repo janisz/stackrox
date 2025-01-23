@@ -1,7 +1,6 @@
 package pgsearch
 
 import (
-	"errors"
 	"fmt"
 	"regexp"
 	"strings"
@@ -19,10 +18,6 @@ func newStringQuery(ctx *queryAndFieldContext) (*QueryEntry, error) {
 }
 
 func newStringQueryWhereClause(columnName string, value string, queryModifiers ...pkgSearch.QueryModifier) (WhereClause, error) {
-	if len(value) == 0 {
-		return WhereClause{}, errors.New("value in search query cannot be empty")
-	}
-
 	if len(queryModifiers) == 0 {
 		return WhereClause{
 			Query:  fmt.Sprintf("%s ilike $$", columnName),
@@ -44,7 +39,8 @@ func newStringQueryWhereClause(columnName string, value string, queryModifiers .
 				Query:  fmt.Sprintf("NOT (%s ilike $$)", columnName),
 				Values: []interface{}{value + "%"},
 				equivalentGoFunc: func(foundValue interface{}) bool {
-					return !strings.HasPrefix(foundValue.(string), value)
+					foundVal := strings.ToLower(foundValue.(string))
+					return !strings.HasPrefix(foundVal, value)
 				},
 			}, nil
 		}
@@ -61,7 +57,8 @@ func newStringQueryWhereClause(columnName string, value string, queryModifiers .
 			Query:  fmt.Sprintf("%s %s~* $$", columnName, negationString),
 			Values: []interface{}{value},
 			equivalentGoFunc: func(foundValue interface{}) bool {
-				return re.MatchString(foundValue.(string)) != negated
+				foundVal := strings.ToLower(foundValue.(string))
+				return re.MatchString(foundVal) != negated
 			},
 		}, nil
 	case pkgSearch.Equality:
@@ -69,7 +66,7 @@ func newStringQueryWhereClause(columnName string, value string, queryModifiers .
 			Query:  fmt.Sprintf("%s %s= $$", columnName, negationString),
 			Values: []interface{}{value},
 			equivalentGoFunc: func(foundValue interface{}) bool {
-				return (foundValue.(string) == value) != negated
+				return strings.EqualFold(foundValue.(string), value) != negated
 			},
 		}, nil
 	}

@@ -1,16 +1,13 @@
 import React from 'react';
 import PropTypes from 'prop-types';
 import { format } from 'date-fns';
-import { DescriptionList, Flex, FlexItem, Divider } from '@patternfly/react-core';
+import { DescriptionList, Flex, Divider } from '@patternfly/react-core';
 
 import dateTimeFormat from 'constants/dateTimeFormat';
 import DescriptionListItem from 'Components/DescriptionListItem';
 import KeyValue from 'Components/KeyValue';
-import ProcessTags from 'Containers/AnalystNotes/ProcessTags';
-import FormCollapsibleButton from 'Containers/AnalystNotes/FormCollapsibleButton';
 
-function ProcessCardContent({ process, areAnalystNotesVisible, selectProcessId }) {
-    const { id, deploymentId, containerName } = process;
+function ProcessCardContent({ process }) {
     const { time, args, execFilePath, containerId, lineage, uid } = process.signal;
     const processTime = new Date(time);
     const timeFormat = format(processTime, dateTimeFormat);
@@ -23,10 +20,6 @@ function ProcessCardContent({ process, areAnalystNotesVisible, selectProcessId }
         );
     }
 
-    function selectProcessIdHandler() {
-        selectProcessId(id);
-    }
-
     return (
         <div label={process.id}>
             <Flex
@@ -34,46 +27,24 @@ function ProcessCardContent({ process, areAnalystNotesVisible, selectProcessId }
                 alignItems={{ default: 'alignItemsFlexStart' }}
             >
                 <Divider component="div" />
-                <span className="pf-u-background-color-warning pf-u-px-md pf-u-py-sm">
+                <span className="pf-v5-u-background-color-warning pf-v5-u-px-md pf-v5-u-py-sm">
                     {execFilePath}
                 </span>
-                <Flex>
-                    <FormCollapsibleButton
-                        deploymentID={deploymentId}
-                        containerName={containerName}
-                        execFilePath={execFilePath}
-                        args={args}
-                        isOpen={areAnalystNotesVisible}
-                        onClick={selectProcessIdHandler}
-                    />
-                </Flex>
             </Flex>
             <DescriptionList
                 columnModifier={{
                     default: '2Col',
                 }}
-                className="pf-u-my-md"
+                className="pf-v5-u-my-md"
             >
                 <DescriptionListItem term="Container ID" desc={containerId} />
                 <DescriptionListItem term="Time" desc={timeFormat} />
                 <DescriptionListItem term="User ID" desc={uid} />
             </DescriptionList>
-            <DescriptionList className="pf-u-mb-md">
+            <DescriptionList className="pf-v5-u-mb-md">
                 <DescriptionListItem term="Arguments" desc={args} />
             </DescriptionList>
             {ancestors}
-            {areAnalystNotesVisible && (
-                <Flex direction={{ default: 'column' }} className="pf-u-mb-md">
-                    <FlexItem>
-                        <ProcessTags
-                            deploymentID={deploymentId}
-                            containerName={containerName}
-                            execFilePath={execFilePath}
-                            args={args}
-                        />
-                    </FlexItem>
-                </Flex>
-            )}
         </div>
     );
 }
@@ -92,8 +63,6 @@ ProcessCardContent.propTypes = {
             uid: PropTypes.string.isRequired,
         }),
     }).isRequired,
-    areAnalystNotesVisible: PropTypes.bool.isRequired,
-    selectProcessId: PropTypes.func.isRequired,
 };
 
 export default ProcessCardContent;

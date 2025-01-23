@@ -1,8 +1,14 @@
 package pgsearch
 
 import (
+	"fmt"
+	"time"
+
+	"github.com/pkg/errors"
 	"github.com/stackrox/rox/pkg/logging"
+	"github.com/stackrox/rox/pkg/postgres"
 	"github.com/stackrox/rox/pkg/postgres/walker"
+	"github.com/stackrox/rox/pkg/search"
 )
 
 var (
@@ -12,8 +18,14 @@ var (
 // SelectQueryField represents a field that's queried in a select.
 type SelectQueryField struct {
 	SelectPath string // This goes into the "SELECT" portion of the SQL.
-	FieldType  walker.DataType
+	Alias      string // Alias for "SelectPath". Primarily used for derived fields.
+	FieldType  postgres.DataType
 	FieldPath  string // This is the search.Field.FieldPath for this field.
+
+	// FromGroupBy indicates that the field is present in group by clause.
+	FromGroupBy bool
+	// DerivedField indicates that the field is derived from a proto field(/table column).
+	DerivedField bool
 
 	// PostTransform is a function that will be applied to the returned rows from SQL before
 	// further processing.
@@ -35,10 +47,20 @@ type SelectQueryField struct {
 	PostTransform func(interface{}) interface{}
 }
 
+// PathForSelectPortion returns the selector string that goes into SELECT portion of the SQL.
+func (f *SelectQueryField) PathForSelectPortion() string {
+	if f.Alias == "" {
+		return f.SelectPath
+	}
+	return fmt.Sprintf("%s as %s", f.SelectPath, f.Alias)
+}
+
 // QueryEntry is an entry with clauses added by portions of the query.
 type QueryEntry struct {
 	Where          WhereClause
+	Having         *WhereClause
 	SelectedFields []SelectQueryField
+	GroupBy        []string
 
 	// This is populated only in the case of enums, so that callers know how to
 	// convert the returned enum value to a string.
@@ -64,7 +86,8 @@ type WhereClause struct {
 // NewFalseQuery always returns false
 func NewFalseQuery() *QueryEntry {
 	return &QueryEntry{Where: WhereClause{
-		Query: "false",
+		Query:            "false",
+		equivalentGoFunc: func(_ interface{}) bool { return false },
 	}}
 }
 
@@ -76,15 +99,50 @@ func NewTrueQuery() *QueryEntry {
 }
 
 // MatchFieldQuery is a simple query that performs operations on a single field.
-func MatchFieldQuery(dbField *walker.Field, value string, highlight bool) (*QueryEntry, error) {
+func MatchFieldQuery(dbField *walker.Field, derivedMetadata *walker.DerivedSearchField, value string, highlight bool, now time.Time) (*QueryEntry, error) {
 	if dbField == nil {
 		return nil, nil
 	}
 	// Need to find base value
+	if dbField.Schema.OptionsMap == nil {
+		return nil, errors.Errorf("Options Map for %s does not exist", dbField.Schema.Table)
+	}
 	field, ok := dbField.Schema.OptionsMap.Get(dbField.Search.FieldName)
 	if !ok {
-		log.Infof("Options Map for %s does not have field: %v", dbField.Schema.Table, dbField.Search.FieldName)
 		return nil, nil
 	}
-	return matchFieldQuery(dbField, field, value, highlight)
+
+	qualifiedColName := dbField.Schema.Table + "." + dbField.ColumnName
+	dataType := dbField.DataType
+	if dbField.SQLType == "uuid" {
+		dataType = postgres.UUID
+	}
+	if dbField.SQLType == "cidr" {
+		dataType = postgres.CIDR
+	}
+	// Derived types map to functions on a field.  For example,
+	// a CountDerivationType will ultimately produce
+	// count(field_x) as field_x_count.  Similarly
+	// max(field_x) as field_x_max will be the resulting select of a
+	// MaxDerivationType
+	if derivedMetadata != nil {
+		switch derivedMetadata.DerivationType {
+		case search.CountDerivationType:
+			qualifiedColName = fmt.Sprintf("count(%s)", qualifiedColName)
+			dataType = postgres.Integer
+		case search.MaxDerivationType:
+			qualifiedColName = fmt.Sprintf("max(%s)", qualifiedColName)
+		default:
+			return nil, errors.Errorf("unsupported derivation type %s", derivedMetadata.DerivationType)
+		}
+	}
+	qe, err := matchFieldQuery(qualifiedColName, dataType, field, derivedMetadata, value, highlight, now)
+	if err != nil {
+		return nil, err
+	}
+	return qe, nil
+}
+
+func isWildCardOrNullStringQuery(value string) bool {
+	return value == search.WildcardString || value == search.NullString
 }

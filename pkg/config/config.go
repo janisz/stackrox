@@ -5,24 +5,27 @@ import (
 	"strings"
 
 	"github.com/ghodss/yaml"
+	"github.com/pkg/errors"
 	"github.com/stackrox/rox/pkg/errorhelpers"
 	"github.com/stackrox/rox/pkg/logging"
 	"github.com/stackrox/rox/pkg/sync"
 )
 
 var (
-	path = "/etc/stackrox/central-config.yaml"
+	configPath   = "/etc/stackrox/central-config.yaml"
+	dbConfigPath = "/etc/ext-db/central-external-db.yaml"
 )
 
 var (
 	defaultBucketFillFraction = 0.5
 	defaultCompactionState    = true
-	defaultDBSource           = "host=central-db.stackrox port=5432 database=postgres user=postgres sslmode=verify-full statement_timeout=600000 pool_min_conns=1 pool_max_conns=90"
+	defaultDBSource           = "host=central-db.stackrox port=5432 user=postgres sslmode=verify-full statement_timeout=600000 pool_min_conns=1 pool_max_conns=90 client_encoding=UTF8"
+	defaultDatabase           = "central_active"
 
 	once   sync.Once
 	config *Config
 
-	log = logging.CreatePersistentLogger(logging.CurrentModule(), 0)
+	log = logging.CreateLogger(logging.CurrentModule(), 0)
 )
 
 // Compaction defines the compaction configuration
@@ -75,7 +78,9 @@ func (m *Maintenance) validate() error {
 
 // CentralDB defines the config options to access central-db
 type CentralDB struct {
-	Source string `yaml:"source"`
+	Source       string `yaml:"source"`
+	External     bool   `yaml:"external"`
+	DatabaseName string
 }
 
 func (c *CentralDB) applyDefaults() {
@@ -83,12 +88,41 @@ func (c *CentralDB) applyDefaults() {
 	if c.Source == "" {
 		c.Source = defaultDBSource
 	}
+
+	c.DatabaseName = strings.TrimSpace(c.DatabaseName)
+	if c.DatabaseName == "" {
+		c.DatabaseName = defaultDatabase
+	}
 }
 
-// Config defines the configuration for Central
+func (c *CentralDB) validate() error {
+	if c.DatabaseName == "" {
+		return errors.New("unexpected empty database name")
+	}
+	if c.Source == "" {
+		return errors.New("unexpected empty database source")
+	}
+	return nil
+}
+
+// Config defines all the configuration for Central
 type Config struct {
+	Maintenance Maintenance
+	CentralDB   CentralDB
+}
+
+type yamlConfig interface {
+	centralConfig | externalDBConfig
+}
+
+// Central Config
+type centralConfig struct {
 	Maintenance Maintenance `yaml:"maintenance"`
-	CentralDB   CentralDB   `yaml:"centralDB"`
+}
+
+// External DB Config
+type externalDBConfig struct {
+	CentralDB CentralDB `yaml:"centralDB"`
 }
 
 func (c *Config) applyDefaults() {
@@ -101,24 +135,40 @@ func (c *Config) validate() error {
 	if err := c.Maintenance.validate(); err != nil {
 		errorList.AddError(err)
 	}
+	if err := c.CentralDB.validate(); err != nil {
+		errorList.AddError(err)
+	}
 	return errorList.ToError()
 }
 
-// readConfig reads the configuration file
-func readConfig() (*Config, error) {
+// readConfig reads a configuration file
+func readConfig[T yamlConfig](path string) (*T, error) {
+	var conf T
 	bytes, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			conf := new(Config)
-			conf.applyDefaults()
-			return conf, nil
+			return &conf, nil
 		}
 		return nil, err
 	}
-	var conf Config
 	if err := yaml.Unmarshal(bytes, &conf); err != nil {
 		return nil, err
 	}
+
+	return &conf, nil
+}
+
+func readConfigs() (*Config, error) {
+	centralConf, err := readConfig[centralConfig](configPath)
+	if err != nil {
+		return nil, err
+	}
+	dbConf, err := readConfig[externalDBConfig](dbConfigPath)
+	if err != nil {
+		return nil, err
+	}
+
+	conf := Config{Maintenance: centralConf.Maintenance, CentralDB: dbConf.CentralDB}
 	conf.applyDefaults()
 	if err := conf.validate(); err != nil {
 		return nil, err
@@ -130,7 +180,7 @@ func readConfig() (*Config, error) {
 func GetConfig() *Config {
 	once.Do(func() {
 		var err error
-		config, err = readConfig()
+		config, err = readConfigs()
 		if err != nil {
 			config = nil
 			log.Errorf("Error reading config file: %v", err)

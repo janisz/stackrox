@@ -3,10 +3,12 @@ package derivelocalvalues
 import (
 	"bytes"
 	"testing"
+	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/stackrox/rox/pkg/errox"
 	"github.com/stackrox/rox/roxctl/common/environment"
+	"github.com/stackrox/rox/roxctl/common/io"
 	"github.com/stackrox/rox/roxctl/common/printer"
 	"github.com/stretchr/testify/suite"
 )
@@ -22,9 +24,9 @@ type helmDeriveLocalValuesTestSuite struct {
 }
 
 func (suite *helmDeriveLocalValuesTestSuite) SetupTest() {
-	testIO, _, _, _ := environment.TestIO()
+	testIO, _, _, _ := io.TestIO()
 	suite.helmDeriveLocalValuesCommand = helmDeriveLocalValuesCommand{}
-	suite.helmDeriveLocalValuesCommand.env = environment.NewCLIEnvironment(testIO, printer.DefaultColorPrinter())
+	suite.helmDeriveLocalValuesCommand.env = environment.NewTestCLIEnvironment(suite.T(), testIO, printer.DefaultColorPrinter())
 }
 
 func (suite *helmDeriveLocalValuesTestSuite) TestInvalidCommandArgs() {
@@ -77,9 +79,9 @@ func (suite *helmDeriveLocalValuesTestSuite) TestConstruct() {
 	chartName := "test_chartName"
 
 	helmCmd := suite.helmDeriveLocalValuesCommand
-	helmCmd.Construct(chartName)
+	helmCmd.Construct(Command(helmCmd.env), chartName)
 	suite.Assert().Equal(chartName, helmCmd.chartName)
-
+	suite.Assert().Equal(time.Minute, helmCmd.timeout)
 }
 
 func (suite *helmDeriveLocalValuesTestSuite) TestValidate() {

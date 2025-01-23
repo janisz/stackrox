@@ -1,34 +1,35 @@
+import { AlertProps } from '@patternfly/react-core';
 import { ReactNode, useState } from 'react';
 
-export type AlertVariantType = 'default' | 'info' | 'success' | 'danger' | 'warning';
+export type AlertVariantType = AlertProps['variant'];
 
 export type Toast = {
     title: string;
     variant: AlertVariantType;
-    key: number;
+    key: string;
     children?: ReactNode;
 };
 
 type UseToasts = {
     toasts: Toast[];
-    addToast: (title, variant?: AlertVariantType, children?: ReactNode) => void;
-    removeToast: (key) => void;
+    addToast: (title: string, variant?: AlertVariantType, children?: ReactNode) => void;
+    removeToast: (key: string) => void;
 };
 
 function useToasts(): UseToasts {
     const [toasts, setToasts] = useState<Toast[]>([]);
 
     function getUniqueId() {
-        return new Date().getTime();
+        return `${new Date().toISOString()} ${Math.random()}`;
     }
 
-    function addToast(title, variant = 'default' as AlertVariantType, children) {
+    function addToast(title: string, variant: AlertVariantType = undefined, children: ReactNode) {
         const key = getUniqueId();
-        setToasts([...toasts, { title, variant, key, children }]);
+        setToasts((prevToasts) => [{ title, variant, key, children }, ...prevToasts]);
     }
 
-    function removeToast(key) {
-        setToasts([...toasts.filter((el) => el.key !== key)]);
+    function removeToast(key: string) {
+        setToasts((prevToasts) => [...prevToasts.filter((el) => el.key !== key)]);
     }
 
     return {

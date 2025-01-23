@@ -8,58 +8,44 @@ import (
 	"context"
 	"testing"
 
-	"github.com/jackc/pgx/v4/pgxpool"
 	"github.com/stackrox/rox/generated/storage"
-	"github.com/stackrox/rox/pkg/features"
 	"github.com/stackrox/rox/pkg/postgres/pgtest"
+	"github.com/stackrox/rox/pkg/protoassert"
 	"github.com/stackrox/rox/pkg/sac"
+	"github.com/stackrox/rox/pkg/search"
 	"github.com/stackrox/rox/pkg/testutils"
-	"github.com/stackrox/rox/pkg/testutils/envisolator"
 	"github.com/stretchr/testify/suite"
 )
 
-type NetworkentityStoreSuite struct {
+type NetworkEntitiesStoreSuite struct {
 	suite.Suite
-	envIsolator *envisolator.EnvIsolator
-	store       Store
-	pool        *pgxpool.Pool
+	store  Store
+	testDB *pgtest.TestPostgres
 }
 
-func TestNetworkentityStore(t *testing.T) {
-	suite.Run(t, new(NetworkentityStoreSuite))
+func TestNetworkEntitiesStore(t *testing.T) {
+	suite.Run(t, new(NetworkEntitiesStoreSuite))
 }
 
-func (s *NetworkentityStoreSuite) SetupTest() {
-	s.envIsolator = envisolator.NewEnvIsolator(s.T())
-	s.envIsolator.Setenv(features.PostgresDatastore.EnvVar(), "true")
+func (s *NetworkEntitiesStoreSuite) SetupSuite() {
 
-	if !features.PostgresDatastore.Enabled() {
-		s.T().Skip("Skip postgres store tests")
-		s.T().SkipNow()
-	}
+	s.testDB = pgtest.ForT(s.T())
+	s.store = New(s.testDB.DB)
+}
 
+func (s *NetworkEntitiesStoreSuite) SetupTest() {
 	ctx := sac.WithAllAccess(context.Background())
-
-	source := pgtest.GetConnectionString(s.T())
-	config, err := pgxpool.ParseConfig(source)
-	s.Require().NoError(err)
-	pool, err := pgxpool.ConnectConfig(ctx, config)
-	s.Require().NoError(err)
-
-	Destroy(ctx, pool)
-
-	s.pool = pool
-	s.store = New(ctx, pool)
+	tag, err := s.testDB.Exec(ctx, "TRUNCATE network_entities CASCADE")
+	s.T().Log("network_entities", tag)
+	s.store = New(s.testDB.DB)
+	s.NoError(err)
 }
 
-func (s *NetworkentityStoreSuite) TearDownTest() {
-	if s.pool != nil {
-		s.pool.Close()
-	}
-	s.envIsolator.RestoreAll()
+func (s *NetworkEntitiesStoreSuite) TearDownSuite() {
+	s.testDB.Teardown(s.T())
 }
 
-func (s *NetworkentityStoreSuite) TestStore() {
+func (s *NetworkEntitiesStoreSuite) TestStore() {
 	ctx := sac.WithAllAccess(context.Background())
 
 	store := s.store
@@ -72,42 +58,52 @@ func (s *NetworkentityStoreSuite) TestStore() {
 	s.False(exists)
 	s.Nil(foundNetworkEntity)
 
+	withNoAccessCtx := sac.WithNoAccess(ctx)
+
 	s.NoError(store.Upsert(ctx, networkEntity))
 	foundNetworkEntity, exists, err = store.Get(ctx, networkEntity.GetInfo().GetId())
 	s.NoError(err)
 	s.True(exists)
-	s.Equal(networkEntity, foundNetworkEntity)
+	protoassert.Equal(s.T(), networkEntity, foundNetworkEntity)
 
-	networkEntityCount, err := store.Count(ctx)
+	networkEntityCount, err := store.Count(ctx, search.EmptyQuery())
 	s.NoError(err)
 	s.Equal(1, networkEntityCount)
+	networkEntityCount, err = store.Count(withNoAccessCtx, search.EmptyQuery())
+	s.NoError(err)
+	s.Zero(networkEntityCount)
 
 	networkEntityExists, err := store.Exists(ctx, networkEntity.GetInfo().GetId())
 	s.NoError(err)
 	s.True(networkEntityExists)
 	s.NoError(store.Upsert(ctx, networkEntity))
-
-	foundNetworkEntity, exists, err = store.Get(ctx, networkEntity.GetInfo().GetId())
-	s.NoError(err)
-	s.True(exists)
-	s.Equal(networkEntity, foundNetworkEntity)
+	s.ErrorIs(store.Upsert(withNoAccessCtx, networkEntity), sac.ErrResourceAccessDenied)
 
 	s.NoError(store.Delete(ctx, networkEntity.GetInfo().GetId()))
 	foundNetworkEntity, exists, err = store.Get(ctx, networkEntity.GetInfo().GetId())
 	s.NoError(err)
 	s.False(exists)
 	s.Nil(foundNetworkEntity)
+	s.ErrorIs(store.Delete(withNoAccessCtx, networkEntity.GetInfo().GetId()), sac.ErrResourceAccessDenied)
 
 	var networkEntitys []*storage.NetworkEntity
+	var networkEntityIDs []string
 	for i := 0; i < 200; i++ {
 		networkEntity := &storage.NetworkEntity{}
 		s.NoError(testutils.FullInit(networkEntity, testutils.UniqueInitializer(), testutils.JSONFieldsFilter))
 		networkEntitys = append(networkEntitys, networkEntity)
+		networkEntityIDs = append(networkEntityIDs, networkEntity.GetInfo().GetId())
 	}
 
 	s.NoError(store.UpsertMany(ctx, networkEntitys))
 
-	networkEntityCount, err = store.Count(ctx)
+	networkEntityCount, err = store.Count(ctx, search.EmptyQuery())
 	s.NoError(err)
 	s.Equal(200, networkEntityCount)
+
+	s.NoError(store.DeleteMany(ctx, networkEntityIDs))
+
+	networkEntityCount, err = store.Count(ctx, search.EmptyQuery())
+	s.NoError(err)
+	s.Equal(0, networkEntityCount)
 }

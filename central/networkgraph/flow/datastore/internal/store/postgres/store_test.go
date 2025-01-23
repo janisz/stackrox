@@ -1,105 +1,122 @@
+//go:build sql_integration
+
 package postgres
 
 import (
 	"context"
 	"testing"
+	"time"
 
-	"github.com/jackc/pgx/v4/pgxpool"
 	"github.com/stackrox/rox/generated/storage"
-	"github.com/stackrox/rox/pkg/features"
+	"github.com/stackrox/rox/pkg/fixtures/fixtureconsts"
+	"github.com/stackrox/rox/pkg/postgres"
 	"github.com/stackrox/rox/pkg/postgres/pgtest"
+	"github.com/stackrox/rox/pkg/protoassert"
+	"github.com/stackrox/rox/pkg/protocompat"
 	"github.com/stackrox/rox/pkg/testutils"
-	"github.com/stackrox/rox/pkg/testutils/envisolator"
+	"github.com/stackrox/rox/pkg/timestamp"
 	"github.com/stretchr/testify/suite"
+	"gorm.io/gorm"
+)
+
+const (
+	clusterID = fixtureconsts.Cluster1
+
+	flowsCountStmt = "select count(*) from network_flows_v2"
 )
 
 type NetworkflowStoreSuite struct {
 	suite.Suite
-	envIsolator *envisolator.EnvIsolator
+	store  FlowStore
+	ctx    context.Context
+	pool   postgres.DB
+	gormDB *gorm.DB
 }
 
 func TestNetworkflowStore(t *testing.T) {
 	suite.Run(t, new(NetworkflowStoreSuite))
 }
 
-func (s *NetworkflowStoreSuite) SetupTest() {
-	s.envIsolator = envisolator.NewEnvIsolator(s.T())
+func (s *NetworkflowStoreSuite) SetupSuite() {
+	s.ctx = context.Background()
 
-	if !features.PostgresDatastore.Enabled() {
-		s.T().Skip("Skip postgres store tests")
-		s.T().SkipNow()
-	} else {
-		s.envIsolator.Setenv(features.PostgresDatastore.EnvVar(), "true")
-	}
+	source := pgtest.GetConnectionString(s.T())
+	config, err := postgres.ParseConfig(source)
+	s.Require().NoError(err)
+	s.pool, err = postgres.New(s.ctx, config)
+	s.NoError(err)
+	s.gormDB = pgtest.OpenGormDB(s.T(), source)
+}
+
+func (s *NetworkflowStoreSuite) SetupTest() {
+	Destroy(s.ctx, s.pool)
+	s.store = CreateTableAndNewStore(s.ctx, s.pool, s.gormDB, clusterID)
 }
 
 func (s *NetworkflowStoreSuite) TearDownTest() {
-	s.envIsolator.RestoreAll()
+	if s.pool != nil {
+		// Clean up
+		Destroy(s.ctx, s.pool)
+	}
+}
+
+func (s *NetworkflowStoreSuite) TearDownSuite() {
+	if s.pool != nil {
+		s.pool.Close()
+	}
+	if s.gormDB != nil {
+		pgtest.CloseGormDB(s.T(), s.gormDB)
+	}
 }
 
 func (s *NetworkflowStoreSuite) TestStore() {
-	ctx := context.Background()
-	clusterID := "22"
-
-	source := pgtest.GetConnectionString(s.T())
-	config, err := pgxpool.ParseConfig(source)
-	s.Require().NoError(err)
-	pool, err := pgxpool.ConnectConfig(ctx, config)
-	s.NoError(err)
-	defer pool.Close()
-
-	Destroy(ctx, pool)
-	store := New(ctx, pool, clusterID)
+	secondCluster := fixtureconsts.Cluster2
+	store2 := New(s.pool, secondCluster)
 
 	networkFlow := &storage.NetworkFlow{
 		Props: &storage.NetworkFlowProperties{
 			SrcEntity:  &storage.NetworkEntityInfo{Type: storage.NetworkEntityInfo_DEPLOYMENT, Id: "a"},
-			DstEntity:  &storage.NetworkEntityInfo{Type: storage.NetworkEntityInfo_DEPLOYMENT, Id: "a"},
+			DstEntity:  &storage.NetworkEntityInfo{Type: storage.NetworkEntityInfo_DEPLOYMENT, Id: "b"},
 			DstPort:    1,
 			L4Protocol: storage.L4Protocol_L4_PROTOCOL_TCP,
 		},
-		ClusterId: clusterID,
+		LastSeenTimestamp: protocompat.GetProtoTimestampFromSeconds(1),
+		ClusterId:         clusterID,
 	}
+	zeroTs := timestamp.MicroTS(0)
 
-	foundNetworkFlow, exists, err := store.Get(ctx, networkFlow.GetProps().GetSrcEntity().GetType(), networkFlow.GetProps().GetSrcEntity().GetId(), networkFlow.GetProps().GetDstEntity().GetType(), networkFlow.GetProps().GetDstEntity().GetId(), networkFlow.GetProps().GetDstPort(), networkFlow.GetProps().GetL4Protocol())
+	foundNetworkFlows, _, err := s.store.GetAllFlows(s.ctx, nil)
 	s.NoError(err)
-	s.False(exists)
-	s.Nil(foundNetworkFlow)
+	s.Len(foundNetworkFlows, 0)
 
 	// Adding the same thing twice to ensure that we only retrieve 1 based on serial Flow_Id implementation
-	s.NoError(store.Upsert(ctx, networkFlow))
-	s.NoError(store.Upsert(ctx, networkFlow))
-	foundNetworkFlow, exists, err = store.Get(ctx, networkFlow.GetProps().GetSrcEntity().GetType(), networkFlow.GetProps().GetSrcEntity().GetId(), networkFlow.GetProps().GetDstEntity().GetType(), networkFlow.GetProps().GetDstEntity().GetId(), networkFlow.GetProps().GetDstPort(), networkFlow.GetProps().GetL4Protocol())
+	s.NoError(s.store.UpsertFlows(s.ctx, []*storage.NetworkFlow{networkFlow}, zeroTs))
+	networkFlow.LastSeenTimestamp = protocompat.GetProtoTimestampFromSeconds(2)
+	s.NoError(s.store.UpsertFlows(s.ctx, []*storage.NetworkFlow{networkFlow}, zeroTs))
+	foundNetworkFlows, _, err = s.store.GetAllFlows(s.ctx, nil)
 	s.NoError(err)
-	s.True(exists)
-	s.Equal(networkFlow, foundNetworkFlow)
+	s.Len(foundNetworkFlows, 1)
+	protoassert.Equal(s.T(), networkFlow, foundNetworkFlows[0])
 
-	networkFlowCount, err := store.Count(ctx)
+	// Check the get all flows by since time
+	time3 := time.Unix(3, 0)
+	foundNetworkFlows, _, err = s.store.GetAllFlows(s.ctx, &time3)
 	s.NoError(err)
-	s.Equal(networkFlowCount, 1)
+	s.Len(foundNetworkFlows, 0)
 
-	networkFlowExists, err := store.Exists(ctx, networkFlow.GetProps().GetSrcEntity().GetType(), networkFlow.GetProps().GetSrcEntity().GetId(), networkFlow.GetProps().GetDstEntity().GetType(), networkFlow.GetProps().GetDstEntity().GetId(), networkFlow.GetProps().GetDstPort(), networkFlow.GetProps().GetL4Protocol())
+	s.NoError(s.store.RemoveFlow(s.ctx, networkFlow.GetProps()))
+	foundNetworkFlows, _, err = s.store.GetAllFlows(s.ctx, nil)
 	s.NoError(err)
-	s.True(networkFlowExists)
-	s.NoError(store.Upsert(ctx, networkFlow))
+	s.Len(foundNetworkFlows, 0)
 
-	foundNetworkFlow, exists, err = store.Get(ctx, networkFlow.GetProps().GetSrcEntity().GetType(), networkFlow.GetProps().GetSrcEntity().GetId(), networkFlow.GetProps().GetDstEntity().GetType(), networkFlow.GetProps().GetDstEntity().GetId(), networkFlow.GetProps().GetDstPort(), networkFlow.GetProps().GetL4Protocol())
+	s.NoError(s.store.UpsertFlows(s.ctx, []*storage.NetworkFlow{networkFlow}, zeroTs))
+
+	err = s.store.RemoveFlowsForDeployment(s.ctx, networkFlow.GetProps().GetSrcEntity().GetId())
 	s.NoError(err)
-	s.True(exists)
-	s.Equal(networkFlow, foundNetworkFlow)
 
-	s.NoError(store.Delete(ctx, networkFlow.GetProps().GetSrcEntity().GetType(), networkFlow.GetProps().GetSrcEntity().GetId(), networkFlow.GetProps().GetDstEntity().GetType(), networkFlow.GetProps().GetDstEntity().GetId(), networkFlow.GetProps().GetDstPort(), networkFlow.GetProps().GetL4Protocol()))
-	foundNetworkFlow, exists, err = store.Get(ctx, networkFlow.GetProps().GetSrcEntity().GetType(), networkFlow.GetProps().GetSrcEntity().GetId(), networkFlow.GetProps().GetDstEntity().GetType(), networkFlow.GetProps().GetDstEntity().GetId(), networkFlow.GetProps().GetDstPort(), networkFlow.GetProps().GetL4Protocol())
+	foundNetworkFlows, _, err = s.store.GetAllFlows(s.ctx, nil)
 	s.NoError(err)
-	s.False(exists)
-	s.Nil(foundNetworkFlow)
-
-	s.NoError(store.Upsert(ctx, networkFlow))
-
-	err = store.RemoveFlowsForDeployment(ctx, networkFlow.GetProps().GetSrcEntity().GetId())
-	s.NoError(err)
-	s.False(exists)
-	s.Nil(foundNetworkFlow)
+	s.Len(foundNetworkFlows, 0)
 
 	var networkFlows []*storage.NetworkFlow
 	flowCount := 100
@@ -109,12 +126,332 @@ func (s *NetworkflowStoreSuite) TestStore() {
 		networkFlows = append(networkFlows, networkFlow)
 	}
 
-	s.NoError(store.UpsertMany(ctx, networkFlows))
+	s.NoError(s.store.UpsertFlows(s.ctx, networkFlows, zeroTs))
 
-	networkFlowCount, err = store.Count(ctx)
+	foundNetworkFlows, _, err = s.store.GetAllFlows(s.ctx, nil)
 	s.NoError(err)
-	s.Equal(networkFlowCount, flowCount)
+	s.Len(foundNetworkFlows, flowCount)
 
-	// Clean up
-	Destroy(ctx, pool)
+	// Make sure store for second cluster does not find any flows
+	foundNetworkFlows, _, err = store2.GetAllFlows(s.ctx, nil)
+	s.NoError(err)
+	s.Len(foundNetworkFlows, 0)
+
+	// Add a flow to the second cluster
+	networkFlow.ClusterId = secondCluster
+	s.NoError(store2.UpsertFlows(s.ctx, []*storage.NetworkFlow{networkFlow}, zeroTs))
+
+	foundNetworkFlows, _, err = store2.GetAllFlows(s.ctx, nil)
+	s.NoError(err)
+	s.Len(foundNetworkFlows, 1)
+
+	pred := func(props *storage.NetworkFlowProperties) bool {
+		return true
+	}
+	foundNetworkFlows, _, err = store2.GetMatchingFlows(s.ctx, pred, nil)
+	s.NoError(err)
+	s.Len(foundNetworkFlows, 1)
+
+	// Store 1 flows should remain
+	foundNetworkFlows, _, err = s.store.GetAllFlows(s.ctx, nil)
+	s.NoError(err)
+	s.Len(foundNetworkFlows, flowCount)
+}
+
+func (s *NetworkflowStoreSuite) TestPruneStaleNetworkFlows() {
+	flows := []*storage.NetworkFlow{
+		{
+			Props: &storage.NetworkFlowProperties{
+				DstPort: 22,
+				DstEntity: &storage.NetworkEntityInfo{
+					Type: 2,
+					Id:   "TestDst1",
+				},
+				SrcEntity: &storage.NetworkEntityInfo{
+					Type: 2,
+					Id:   "TestSrc1",
+				},
+			},
+			ClusterId:         clusterID,
+			LastSeenTimestamp: nil,
+		},
+		{
+			Props: &storage.NetworkFlowProperties{
+				DstPort: 22,
+				DstEntity: &storage.NetworkEntityInfo{
+					Type: 2,
+					Id:   "TestDst2",
+				},
+				SrcEntity: &storage.NetworkEntityInfo{
+					Type: 2,
+					Id:   "TestSrc2",
+				},
+			},
+			ClusterId:         clusterID,
+			LastSeenTimestamp: protocompat.TimestampNow(),
+		},
+		{
+			Props: &storage.NetworkFlowProperties{
+				DstPort: 22,
+				DstEntity: &storage.NetworkEntityInfo{
+					Type: 2,
+					Id:   "TestDst1",
+				},
+				SrcEntity: &storage.NetworkEntityInfo{
+					Type: 2,
+					Id:   "TestSrc1",
+				},
+			},
+			ClusterId:         clusterID,
+			LastSeenTimestamp: protocompat.TimestampNow(),
+		},
+		{
+			Props: &storage.NetworkFlowProperties{
+				DstPort: 22,
+				DstEntity: &storage.NetworkEntityInfo{
+					Type: 2,
+					Id:   "TestDst1",
+				},
+				SrcEntity: &storage.NetworkEntityInfo{
+					Type: 2,
+					Id:   "TestSrc1",
+				},
+			},
+			ClusterId:         clusterID,
+			LastSeenTimestamp: protocompat.TimestampNow(),
+		},
+		{
+			Props: &storage.NetworkFlowProperties{
+				DstPort: 22,
+				DstEntity: &storage.NetworkEntityInfo{
+					Type: 2,
+					Id:   "TestDst1",
+				},
+				SrcEntity: &storage.NetworkEntityInfo{
+					Type: 2,
+					Id:   "TestSrc1",
+				},
+			},
+			ClusterId:         clusterID,
+			LastSeenTimestamp: protocompat.TimestampNow(),
+		},
+		{
+			Props: &storage.NetworkFlowProperties{
+				DstPort: 22,
+				DstEntity: &storage.NetworkEntityInfo{
+					Type: 2,
+					Id:   "TestDst2",
+				},
+				SrcEntity: &storage.NetworkEntityInfo{
+					Type: 2,
+					Id:   "TestSrc2",
+				},
+			},
+			ClusterId:         clusterID,
+			LastSeenTimestamp: nil,
+		},
+	}
+
+	err := s.store.UpsertFlows(s.ctx, flows, timestamp.Now())
+	s.Nil(err)
+
+	row := s.pool.QueryRow(s.ctx, flowsCountStmt)
+	var count int
+	err = row.Scan(&count)
+	s.Nil(err)
+	s.Equal(count, len(flows))
+
+	err = s.store.RemoveStaleFlows(s.ctx)
+	s.Nil(err)
+
+	row = s.pool.QueryRow(s.ctx, flowsCountStmt)
+	err = row.Scan(&count)
+	s.Nil(err)
+	s.Equal(count, 2)
+}
+
+func deploymentIngressFlowsPredicate(props *storage.NetworkFlowProperties) bool {
+	return props.GetDstEntity().GetType() == storage.NetworkEntityInfo_DEPLOYMENT
+}
+
+func (s *NetworkflowStoreSuite) TestGetMatching() {
+	now, err := protocompat.ConvertTimeToTimestampOrError(time.Now().Truncate(time.Microsecond))
+	s.Require().NoError(err)
+
+	flows := []*storage.NetworkFlow{
+		{
+			Props: &storage.NetworkFlowProperties{
+				DstPort: 22,
+				DstEntity: &storage.NetworkEntityInfo{
+					Type: storage.NetworkEntityInfo_INTERNET,
+					Id:   "TestInternetDst1",
+				},
+				SrcEntity: &storage.NetworkEntityInfo{
+					Type: storage.NetworkEntityInfo_DEPLOYMENT,
+					Id:   "TestDeploymentSrc1",
+				},
+			},
+			ClusterId:         clusterID,
+			LastSeenTimestamp: nil,
+		},
+		{
+			Props: &storage.NetworkFlowProperties{
+				DstPort: 22,
+				DstEntity: &storage.NetworkEntityInfo{
+					Type: storage.NetworkEntityInfo_DEPLOYMENT,
+					Id:   "TestDeploymentDst1",
+				},
+				SrcEntity: &storage.NetworkEntityInfo{
+					Type: storage.NetworkEntityInfo_INTERNET,
+					Id:   "TestInternetSrc1",
+				},
+			},
+			ClusterId:         clusterID,
+			LastSeenTimestamp: now,
+		},
+		{
+			Props: &storage.NetworkFlowProperties{
+				DstPort: 22,
+				DstEntity: &storage.NetworkEntityInfo{
+					Type: storage.NetworkEntityInfo_DEPLOYMENT,
+					Id:   "TestDeploymentDst2",
+				},
+				SrcEntity: &storage.NetworkEntityInfo{
+					Type: storage.NetworkEntityInfo_DEPLOYMENT,
+					Id:   "TestDeploymentSrc1",
+				},
+			},
+			ClusterId:         clusterID,
+			LastSeenTimestamp: now,
+		},
+	}
+
+	err = s.store.UpsertFlows(s.ctx, flows, timestamp.Now())
+	s.Nil(err)
+
+	// Normalize flow timestamps
+
+	filteredFlows, _, err := s.store.GetMatchingFlows(s.ctx, deploymentIngressFlowsPredicate, nil)
+	s.Nil(err)
+	protoassert.ElementsMatch(s.T(), []*storage.NetworkFlow{flows[1], flows[2]}, filteredFlows)
+}
+
+func (s *NetworkflowStoreSuite) TestGetFlowsForDeployment() {
+	now, err := protocompat.ConvertTimeToTimestampOrError(time.Now().Truncate(time.Microsecond))
+	s.Require().NoError(err)
+
+	flows := []*storage.NetworkFlow{
+		{
+			Props: &storage.NetworkFlowProperties{
+				DstPort: 22,
+				DstEntity: &storage.NetworkEntityInfo{
+					Type: storage.NetworkEntityInfo_INTERNET,
+					Id:   "TestInternetDst1",
+				},
+				SrcEntity: &storage.NetworkEntityInfo{
+					Type: storage.NetworkEntityInfo_DEPLOYMENT,
+					Id:   "TestDeploymentSrc1",
+				},
+			},
+			ClusterId:         clusterID,
+			LastSeenTimestamp: nil,
+		},
+		{
+			Props: &storage.NetworkFlowProperties{
+				DstPort: 22,
+				DstEntity: &storage.NetworkEntityInfo{
+					Type: storage.NetworkEntityInfo_DEPLOYMENT,
+					Id:   "TestDeploymentDst1",
+				},
+				SrcEntity: &storage.NetworkEntityInfo{
+					Type: storage.NetworkEntityInfo_INTERNET,
+					Id:   "TestInternetSrc1",
+				},
+			},
+			ClusterId:         clusterID,
+			LastSeenTimestamp: now,
+		},
+		{
+			Props: &storage.NetworkFlowProperties{
+				DstPort: 22,
+				DstEntity: &storage.NetworkEntityInfo{
+					Type: storage.NetworkEntityInfo_DEPLOYMENT,
+					Id:   "TestDeploymentDst2",
+				},
+				SrcEntity: &storage.NetworkEntityInfo{
+					Type: storage.NetworkEntityInfo_DEPLOYMENT,
+					Id:   "TestDeploymentSrc1",
+				},
+			},
+			ClusterId:         clusterID,
+			LastSeenTimestamp: now,
+		},
+	}
+
+	err = s.store.UpsertFlows(s.ctx, flows, timestamp.Now())
+	s.Nil(err)
+
+	deploymentFlows, err := s.store.GetFlowsForDeployment(s.ctx, "TestDeploymentSrc1")
+	s.Nil(err)
+	protoassert.ElementsMatch(s.T(), []*storage.NetworkFlow{flows[0], flows[2]}, deploymentFlows)
+}
+
+func (s *NetworkflowStoreSuite) TestGetExternalFlowsForDeployment() {
+	now, err := protocompat.ConvertTimeToTimestampOrError(time.Now().Truncate(time.Microsecond))
+	s.Require().NoError(err)
+
+	flows := []*storage.NetworkFlow{
+		{
+			Props: &storage.NetworkFlowProperties{
+				DstPort: 22,
+				DstEntity: &storage.NetworkEntityInfo{
+					Type: storage.NetworkEntityInfo_EXTERNAL_SOURCE,
+					Id:   "TestExternalDst1",
+				},
+				SrcEntity: &storage.NetworkEntityInfo{
+					Type: storage.NetworkEntityInfo_DEPLOYMENT,
+					Id:   "TestDeployment1",
+				},
+			},
+			ClusterId:         clusterID,
+			LastSeenTimestamp: nil,
+		},
+		{
+			Props: &storage.NetworkFlowProperties{
+				DstPort: 22,
+				DstEntity: &storage.NetworkEntityInfo{
+					Type: storage.NetworkEntityInfo_DEPLOYMENT,
+					Id:   "TestDeployment1",
+				},
+				SrcEntity: &storage.NetworkEntityInfo{
+					Type: storage.NetworkEntityInfo_EXTERNAL_SOURCE,
+					Id:   "TestExternalSrc1",
+				},
+			},
+			ClusterId:         clusterID,
+			LastSeenTimestamp: now,
+		},
+		{
+			Props: &storage.NetworkFlowProperties{
+				DstPort: 22,
+				DstEntity: &storage.NetworkEntityInfo{
+					Type: storage.NetworkEntityInfo_DEPLOYMENT,
+					Id:   "TestDeploymentDst2",
+				},
+				SrcEntity: &storage.NetworkEntityInfo{
+					Type: storage.NetworkEntityInfo_DEPLOYMENT,
+					Id:   "TestDeployment1",
+				},
+			},
+			ClusterId:         clusterID,
+			LastSeenTimestamp: now,
+		},
+	}
+
+	err = s.store.UpsertFlows(s.ctx, flows, timestamp.Now())
+	s.Nil(err)
+
+	deploymentFlows, err := s.store.GetExternalFlowsForDeployment(s.ctx, "TestDeployment1")
+	s.Nil(err)
+	protoassert.ElementsMatch(s.T(), []*storage.NetworkFlow{flows[0], flows[1]}, deploymentFlows)
 }

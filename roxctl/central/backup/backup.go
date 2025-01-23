@@ -10,9 +10,9 @@ import (
 
 	"github.com/pkg/errors"
 	"github.com/spf13/cobra"
+	"github.com/stackrox/rox/pkg/errox"
 	"github.com/stackrox/rox/pkg/fileutils"
 	"github.com/stackrox/rox/pkg/httputil"
-	"github.com/stackrox/rox/pkg/mathutil"
 	"github.com/stackrox/rox/pkg/stringutils"
 	"github.com/stackrox/rox/pkg/utils"
 	"github.com/stackrox/rox/roxctl/central/db/transfer"
@@ -31,24 +31,30 @@ func Command(cliEnvironment environment.Environment, full *bool) *cobra.Command 
 	centralBackupCmd := &centralBackupCommand{env: cliEnvironment}
 
 	c := &cobra.Command{
-		Use:          "backup",
+		Use:   "backup",
+		Short: "Create a backup of the StackRox database and certificates.",
+		Long: `Create a backup of the StackRox database, certificates and keys (.zip file).
+You can use it to restore central service and the database.`,
 		SilenceUsage: true,
 		RunE: util.RunENoArgs(func(c *cobra.Command) error {
 			return centralBackupCmd.backup(flags.Timeout(c), *full)
 		}),
 	}
 
-	c.Flags().StringVar(&centralBackupCmd.output, "output", "", `where to write the backup.
+	c.Flags().StringVar(&centralBackupCmd.output, "output", "", `Where to write the backup.
 If the provided path is a file path, the backup will be written to the file, overwriting it if it already exists. (The directory MUST exist.)
 If the provided path is a directory, the backup will be saved in that directory with the server-provided filename.
 If this argument is omitted, the backup will be saved in the current working directory with the server-provided filename.`)
+	c.Flags().BoolVar(&centralBackupCmd.certsOnly, "certs-only", false, `Only backs up the certs.
+If using an external database this will be how a backup bundle with certs is generated.`)
 	flags.AddTimeoutWithDefault(c, 1*time.Hour)
 	return c
 }
 
 type centralBackupCommand struct {
 	// Properties that are bound to cobra flags.
-	output string
+	output    string
+	certsOnly bool
 
 	// Properties that are injected or constructed.
 	env environment.Environment
@@ -66,7 +72,7 @@ func parseUserProvidedOutput(userProvidedOutput string) (string, error) {
 		}
 		// If they specified a directory, it must exist.
 		if strings.HasSuffix(userProvidedOutput, string(os.PathSeparator)) {
-			return "", errors.Errorf("invalid output %q: directory does not exist", userProvidedOutput)
+			return "", errox.InvalidArgs.Newf("invalid output %q: directory does not exist", userProvidedOutput)
 		}
 		// Now we know they've provided a filename. We check to make sure the containing directory exists.
 		containingDir := filepath.Dir(userProvidedOutput)
@@ -75,7 +81,8 @@ func parseUserProvidedOutput(userProvidedOutput string) (string, error) {
 			return "", err
 		}
 		if !dirExists {
-			return "", errors.Errorf("invalid output %q: containing directory %q does not exist", userProvidedOutput, containingDir)
+			return "", errox.InvalidArgs.Newf("invalid output %q: containing directory %q does not exist",
+				userProvidedOutput, containingDir)
 		}
 		return userProvidedOutput, nil
 	}
@@ -108,7 +115,9 @@ func (cmd *centralBackupCommand) backup(timeout time.Duration, full bool) error 
 	deadline := time.Now().Add(timeout)
 
 	var endpoint string
-	if full {
+	if cmd.certsOnly {
+		endpoint = "/api/extensions/certs/backup"
+	} else if full {
 		endpoint = "/api/extensions/backup"
 	} else {
 		endpoint = "/db/backup"
@@ -142,7 +151,7 @@ func (cmd *centralBackupCommand) backup(timeout time.Duration, full bool) error 
 	switch resp.StatusCode {
 	case http.StatusOK:
 	case http.StatusUnauthorized, http.StatusForbidden:
-		return errors.New("Invalid credentials. Please add/fix your credentials")
+		return errox.NotAuthorized.New("Invalid credentials. Please add/fix your credentials")
 	default:
 		return errors.Wrap(httputil.ResponseToError(resp), "Error when trying to get a backup.")
 	}
@@ -158,7 +167,7 @@ func (cmd *centralBackupCommand) backup(timeout time.Duration, full bool) error 
 	}
 	defer utils.IgnoreError(file.Close)
 
-	if err := transfer.Copy(reqCtx, cancel, filename, mathutil.MaxInt64(0, resp.ContentLength), resp.Body, file, deadline, idleTimeout); err != nil {
+	if err := transfer.Copy(reqCtx, cancel, filename, max(0, resp.ContentLength), resp.Body, file, deadline, idleTimeout); err != nil {
 		return err
 	}
 

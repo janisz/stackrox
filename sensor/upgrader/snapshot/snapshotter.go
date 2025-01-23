@@ -14,7 +14,7 @@ import (
 	v1 "k8s.io/api/core/v1"
 	k8sErrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime/serializer/json"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 )
 
 var (
@@ -24,14 +24,15 @@ var (
 )
 
 type snapshotter struct {
-	ctx  *upgradectx.UpgradeContext
-	opts Options
+	ctx             *upgradectx.UpgradeContext
+	opts            Options
+	sensorNamespace string
 }
 
-func (s *snapshotter) SnapshotState() ([]k8sutil.Object, error) {
+func (s *snapshotter) SnapshotState() ([]*unstructured.Unstructured, error) {
 	coreV1Client := s.ctx.ClientSet().CoreV1()
 
-	snapshotSecret, err := coreV1Client.Secrets(common.Namespace).Get(s.ctx.Context(), secretName, metav1.GetOptions{})
+	snapshotSecret, err := coreV1Client.Secrets(s.sensorNamespace).Get(s.ctx.Context(), secretName, metav1.GetOptions{})
 	if k8sErrors.IsNotFound(err) {
 		snapshotSecret = nil
 		err = nil
@@ -58,7 +59,7 @@ func (s *snapshotter) SnapshotState() ([]k8sutil.Object, error) {
 	}
 
 	if s.opts.Store {
-		_, err = coreV1Client.Secrets(common.Namespace).Create(s.ctx.Context(), snapshotSecret, metav1.CreateOptions{})
+		_, err = coreV1Client.Secrets(s.sensorNamespace).Create(s.ctx.Context(), snapshotSecret, metav1.CreateOptions{})
 		if err != nil {
 			return nil, errors.Wrap(err, "creating state snapshot secret")
 		}
@@ -66,7 +67,7 @@ func (s *snapshotter) SnapshotState() ([]k8sutil.Object, error) {
 	return objects, nil
 }
 
-func (s *snapshotter) stateFromSecret(secret *v1.Secret) ([]k8sutil.Object, error) {
+func (s *snapshotter) stateFromSecret(secret *v1.Secret) ([]*unstructured.Unstructured, error) {
 	if processID := secret.Labels[common.UpgradeProcessIDLabelKey]; processID != s.ctx.ProcessID() {
 		return nil, errors.Errorf("state snapshot secret belongs to wrong upgrade process %q, expected %s", processID, s.ctx.ProcessID())
 	}
@@ -95,17 +96,11 @@ func (s *snapshotter) stateFromSecret(secret *v1.Secret) ([]k8sutil.Object, erro
 
 	objBytes := bytes.Split(allObjBytes, jsonSeparator)
 
-	universalDeserializer := s.ctx.UniversalDecoder()
-
-	result := make([]k8sutil.Object, 0, len(objBytes))
+	result := make([]*unstructured.Unstructured, 0, len(objBytes))
 	for _, serialized := range objBytes {
-		runtimeObj, _, err := universalDeserializer.Decode(serialized, nil, nil)
+		obj, err := k8sutil.UnstructuredFromYAML(string(serialized))
 		if err != nil {
 			return nil, errors.Wrap(err, "could not deserialize object in stored snapshot")
-		}
-		obj, _ := runtimeObj.(k8sutil.Object)
-		if obj == nil {
-			return nil, errors.Errorf("object of kind %v does not have object metadata", runtimeObj.GetObjectKind().GroupVersionKind())
 		}
 		result = append(result, obj)
 	}
@@ -113,18 +108,17 @@ func (s *snapshotter) stateFromSecret(secret *v1.Secret) ([]k8sutil.Object, erro
 	return result, nil
 }
 
-func (s *snapshotter) createStateSnapshot() ([]k8sutil.Object, *v1.Secret, error) {
+func (s *snapshotter) createStateSnapshot() ([]*unstructured.Unstructured, *v1.Secret, error) {
 	objs, err := s.ctx.ListCurrentObjects()
 	if err != nil {
 		return nil, nil, err
 	}
 
 	byteSlices := make([][]byte, 0, len(objs))
-	jsonSerializer := json.NewSerializer(json.DefaultMetaFactory, nil, nil, false)
 	for i := range objs {
 		obj := objs[i]
 		var buf bytes.Buffer
-		if err := jsonSerializer.Encode(obj, &buf); err != nil {
+		if err := unstructured.UnstructuredJSONScheme.Encode(obj, &buf); err != nil {
 			return nil, nil, errors.Wrapf(err, "marshaling object of kind %v to JSON", obj.GetObjectKind().GroupVersionKind())
 		}
 		byteSlices = append(byteSlices, buf.Bytes())
@@ -133,18 +127,18 @@ func (s *snapshotter) createStateSnapshot() ([]k8sutil.Object, *v1.Secret, error
 	var compressedData bytes.Buffer
 	gzipWriter, err := gzip.NewWriterLevel(&compressedData, gzip.BestCompression)
 	if err != nil {
-		return nil, nil, utils.Should(err) // level is valid, so expect no error
+		return nil, nil, utils.ShouldErr(err) // level is valid, so expect no error
 	}
 	if _, err := gzipWriter.Write(bytes.Join(byteSlices, jsonSeparator)); err != nil {
-		return nil, nil, utils.Should(err)
+		return nil, nil, utils.ShouldErr(err)
 	}
 	if err := gzipWriter.Close(); err != nil {
-		return nil, nil, utils.Should(err)
+		return nil, nil, utils.ShouldErr(err)
 	}
 
 	secret := &v1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
-			Namespace: common.Namespace,
+			Namespace: s.sensorNamespace,
 			Name:      secretName,
 		},
 		Type: v1.SecretTypeOpaque,

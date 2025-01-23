@@ -2,6 +2,7 @@ import { combineReducers } from 'redux';
 import isEqual from 'lodash/isEqual';
 
 import { createFetchingActionTypes, createFetchingActions } from 'utils/fetchingReduxRoutines';
+import { replacedResourceMapping } from '../constants/accessControl';
 
 export const ACCESS_LEVEL = Object.freeze({
     READ_WRITE_ACCESS: 'READ_WRITE_ACCESS',
@@ -105,7 +106,7 @@ const getUserRolePermissionsError = (state) => state.error;
 const getIsLoadingUserRolePermissions = (state) => state.isLoading;
 
 /*
- * Given resource string (for example, "APIToken") and role or permissionSet object,
+ * Given resource string (for example, "Integration") and role or permissionSet object,
  * return access level (for example, "READ_ACCESS").
  */
 const getAccessForPermission = (resource, userRolePermissionsArg) => {
@@ -114,12 +115,39 @@ const getAccessForPermission = (resource, userRolePermissionsArg) => {
 
 export const getHasReadPermission = (resource, userRolePermissionsArg) => {
     const access = getAccessForPermission(resource, userRolePermissionsArg);
-    return access === ACCESS_LEVEL.READ_WRITE_ACCESS || access === ACCESS_LEVEL.READ_ACCESS;
+    if (access === ACCESS_LEVEL.READ_WRITE_ACCESS || access === ACCESS_LEVEL.READ_ACCESS) {
+        return true;
+    }
+    // If the given resource doesn't yield the required access, try with the replacing resource (if there is any).
+    if (replacedResourceMapping.has(resource)) {
+        const replacingResourceAccess = getAccessForPermission(
+            replacedResourceMapping.get(resource),
+            userRolePermissionsArg
+        );
+        return (
+            replacingResourceAccess === ACCESS_LEVEL.READ_WRITE_ACCESS ||
+            replacingResourceAccess === ACCESS_LEVEL.READ_ACCESS
+        );
+    }
+    // Return false if neither the resource nor the replacing resource have the correct access.
+    return false;
 };
 
 export const getHasReadWritePermission = (resource, userRolePermissionsArg) => {
     const access = getAccessForPermission(resource, userRolePermissionsArg);
-    return access === ACCESS_LEVEL.READ_WRITE_ACCESS;
+    if (access === ACCESS_LEVEL.READ_WRITE_ACCESS) {
+        return true;
+    }
+    // If the given resource doesn't yield the required access, try with the replacing resource (if there is any).
+    if (replacedResourceMapping.has(resource)) {
+        const replacingResourceAccess = getAccessForPermission(
+            replacedResourceMapping.get(resource),
+            userRolePermissionsArg
+        );
+        return replacingResourceAccess === ACCESS_LEVEL.READ_WRITE_ACCESS;
+    }
+    // Return false if neither the resource nor the replacing resource have the correct access.
+    return false;
 };
 
 export const selectors = {

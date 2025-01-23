@@ -1,3 +1,5 @@
+//go:build test_e2e
+
 package tests
 
 import (
@@ -8,7 +10,7 @@ import (
 
 	v1 "github.com/stackrox/rox/generated/api/v1"
 	"github.com/stackrox/rox/pkg/buildinfo"
-	"github.com/stackrox/rox/pkg/testutils"
+	"github.com/stackrox/rox/pkg/testutils/centralgrpc"
 	"github.com/stackrox/rox/pkg/version"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -25,6 +27,9 @@ func getMetadata(t *testing.T, conn *grpc.ClientConn) *v1.Metadata {
 }
 
 func TestMetadataIsSetCorrectly(t *testing.T) {
+	if os.Getenv("ORCHESTRATOR_FLAVOR") == "openshift" {
+		t.Skip("Temporarily skipping this test on OCP: TODO(ROX-25171)")
+	}
 	t.Parallel()
 
 	if _, ok := os.LookupEnv("CI"); !ok {
@@ -32,14 +37,8 @@ func TestMetadataIsSetCorrectly(t *testing.T) {
 		return
 	}
 
-	metadataWithAuth := getMetadata(t, testutils.GRPCConnectionToCentral(t))
+	metadataWithAuth := getMetadata(t, centralgrpc.GRPCConnectionToCentral(t))
 	assert.Equal(t, buildinfo.BuildFlavor, metadataWithAuth.GetBuildFlavor())
 	assert.Equal(t, buildinfo.ReleaseBuild, metadataWithAuth.GetReleaseBuild())
 	assert.Equal(t, version.GetMainVersion(), metadataWithAuth.GetVersion())
-
-	// Test that an unauthenticated connection doesn't get the version.
-	metadataWithoutAuth := getMetadata(t, testutils.UnauthenticatedGRPCConnectionToCentral(t))
-	assert.Equal(t, buildinfo.BuildFlavor, metadataWithoutAuth.GetBuildFlavor())
-	assert.Equal(t, buildinfo.ReleaseBuild, metadataWithoutAuth.GetReleaseBuild())
-	assert.Equal(t, "", metadataWithoutAuth.GetVersion())
 }

@@ -3,7 +3,7 @@
 The currently maintained helm charts consists of the `stackrox-central-services`
 and `stackrox-secured-cluster-services` charts.
 
-Helm charts are distributed by `https://charts.stackrox.io` and [stackrox/helm-charts](https://github.com/stackrox/helm-charts).
+Helm charts are distributed by `https://mirror.openshift.com/pub/rhacs/charts/`, `https://charts.stackrox.io` and [stackrox/helm-charts](https://github.com/stackrox/helm-charts).
 The [stackrox/release-artifacts](https://github.com/stackrox/release-artifacts) repository takes care of the publishing automation.
 
 ## StackRox central services
@@ -12,7 +12,8 @@ Location: `./helm/stackrox-central`
 
 Installs:
  - `central`
- - `scanner`
+ - `scanner`, if enabled
+ - `scanner-v4`, if enabled
 
 ## StackRox secured cluster services
 
@@ -22,6 +23,7 @@ Installs:
  - `admission-controller`
  - `sensor`
  - `collector`
+ - `scanner`, if enabled
 
 ## Developing helm charts
 
@@ -38,6 +40,26 @@ Meta templating does the following:
  - Merge files from `./shared/*` into both charts
  - Renders `.htpl` files based on passed values, see `pkg/helm/charts/meta.go`
 
+#### .helmtplignore.htpl file
+
+To ignore files at the meta templating stage you can add them to the `.helmtplignore.htpl` located in each chart's 
+root directory. The ignored files will never appear in the resulting helm chart used by users.
+This is useful to exclude files, for example for a feature which is not yet released.
+You can also add conditions to the file like checking for feature flags.
+
+#### Feature Flags
+
+To access the feature flags you can use `.FeatureFlags.ROX_FLAG_NAME`. The feature flags work the same as in the StackRox
+project. You can find all [meta values here](https://github.com/stackrox/stackrox/blob/master/pkg/helm/charts/meta.go#L11-L11).
+
+Example:
+
+```
+[< if .FeatureFlags.ROX_LOCAL_IMAGE_SCANNING >]
+  // code here is only rendered to the Helm chart if the feature flag is true.
+[< end >]
+```
+
 ### Workflow
 
 This example shows how to work with the `stackrox central services` chart.
@@ -48,7 +70,7 @@ $ cdrox
 
 # Receive the rendered helm chart from roxctl
 # To use a custom template path use the `--debug-path=</path/to/templates>` argument.
-$ ./bin/darwin/roxctl helm output central-services --image-defaults=development_build --debug
+$ ./bin/darwin_amd64/roxctl helm output central-services --image-defaults=development_build --debug
 
 # Install the helm chart
 $ helm upgrade --install -n stackrox stackrox-central-services --create-namespace  ./stackrox-central-services-chart \
@@ -61,9 +83,6 @@ $ helm list -n stackrox
 
 # To uninstall central, run:
 $ helm uninstall stackrox-central-services -n stackrox
-
-# Delete the pvc if you want to reset the database
-$ kubectl -n stackrox delete pvc stackrox-db
 
 # To access central, forward port 443:
 $ kubectl -n stackrox port-forward svc/central 8000:443 &

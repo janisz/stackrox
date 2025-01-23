@@ -8,58 +8,42 @@ import (
 	"context"
 	"testing"
 
-	"github.com/jackc/pgx/v4/pgxpool"
 	"github.com/stackrox/rox/generated/storage"
-	"github.com/stackrox/rox/pkg/features"
 	"github.com/stackrox/rox/pkg/postgres/pgtest"
 	"github.com/stackrox/rox/pkg/sac"
 	"github.com/stackrox/rox/pkg/testutils"
-	"github.com/stackrox/rox/pkg/testutils/envisolator"
 	"github.com/stretchr/testify/suite"
 )
 
-type ImageComponentRelationsStoreSuite struct {
+type ImageComponentEdgesStoreSuite struct {
 	suite.Suite
-	envIsolator *envisolator.EnvIsolator
-	store       Store
-	pool        *pgxpool.Pool
+	store  Store
+	testDB *pgtest.TestPostgres
 }
 
-func TestImageComponentRelationsStore(t *testing.T) {
-	suite.Run(t, new(ImageComponentRelationsStoreSuite))
+func TestImageComponentEdgesStore(t *testing.T) {
+	suite.Run(t, new(ImageComponentEdgesStoreSuite))
 }
 
-func (s *ImageComponentRelationsStoreSuite) SetupTest() {
-	s.envIsolator = envisolator.NewEnvIsolator(s.T())
-	s.envIsolator.Setenv(features.PostgresDatastore.EnvVar(), "true")
+func (s *ImageComponentEdgesStoreSuite) SetupSuite() {
 
-	if !features.PostgresDatastore.Enabled() {
-		s.T().Skip("Skip postgres store tests")
-		s.T().SkipNow()
-	}
+	s.testDB = pgtest.ForT(s.T())
+	s.store = New(s.testDB.DB)
+}
 
+func (s *ImageComponentEdgesStoreSuite) SetupTest() {
 	ctx := sac.WithAllAccess(context.Background())
-
-	source := pgtest.GetConnectionString(s.T())
-	config, err := pgxpool.ParseConfig(source)
-	s.Require().NoError(err)
-	pool, err := pgxpool.ConnectConfig(ctx, config)
-	s.Require().NoError(err)
-
-	Destroy(ctx, pool)
-
-	s.pool = pool
-	s.store = New(ctx, pool)
+	tag, err := s.testDB.Exec(ctx, "TRUNCATE image_component_edges CASCADE")
+	s.T().Log("image_component_edges", tag)
+	s.store = New(s.testDB.DB)
+	s.NoError(err)
 }
 
-func (s *ImageComponentRelationsStoreSuite) TearDownTest() {
-	if s.pool != nil {
-		s.pool.Close()
-	}
-	s.envIsolator.RestoreAll()
+func (s *ImageComponentEdgesStoreSuite) TearDownSuite() {
+	s.testDB.Teardown(s.T())
 }
 
-func (s *ImageComponentRelationsStoreSuite) TestStore() {
+func (s *ImageComponentEdgesStoreSuite) TestStore() {
 	ctx := sac.WithAllAccess(context.Background())
 
 	store := s.store
@@ -67,7 +51,7 @@ func (s *ImageComponentRelationsStoreSuite) TestStore() {
 	imageComponentEdge := &storage.ImageComponentEdge{}
 	s.NoError(testutils.FullInit(imageComponentEdge, testutils.SimpleInitializer(), testutils.JSONFieldsFilter))
 
-	foundImageComponentEdge, exists, err := store.Get(ctx, imageComponentEdge.GetId(), imageComponentEdge.GetImageId(), imageComponentEdge.GetImageComponentId())
+	foundImageComponentEdge, exists, err := store.Get(ctx, imageComponentEdge.GetId())
 	s.NoError(err)
 	s.False(exists)
 	s.Nil(foundImageComponentEdge)

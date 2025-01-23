@@ -2,17 +2,15 @@ package output
 
 import (
 	"fmt"
-	"os"
 	"strconv"
 	"testing"
 
 	"github.com/spf13/cobra"
-	"github.com/stackrox/rox/pkg/buildinfo"
-	"github.com/stackrox/rox/pkg/buildinfo/testbuildinfo"
 	"github.com/stackrox/rox/pkg/images/defaults"
 	"github.com/stackrox/rox/pkg/version/testutils"
 	"github.com/stackrox/rox/roxctl/common/environment"
 	"github.com/stackrox/rox/roxctl/common/flags"
+	"github.com/stackrox/rox/roxctl/common/io"
 	"github.com/stackrox/rox/roxctl/common/printer"
 	"github.com/stackrox/rox/roxctl/helm/internal/common"
 	"github.com/stretchr/testify/assert"
@@ -36,7 +34,6 @@ type HelmChartTestSuite struct {
 
 func (s *HelmChartTestSuite) SetupTest() {
 	testutils.SetExampleVersion(s.T())
-	testbuildinfo.SetForTest(s.T())
 }
 
 func TestHelmLint(t *testing.T) {
@@ -61,8 +58,9 @@ func (s *HelmChartTestSuite) TestOutputHelmChart() {
 		{flavor: "dummy", rhacs: false, wantErr: true},
 
 		// Group: Valid --image-defaults, no --rhacs
-		{flavor: defaults.ImageFlavorNameStackRoxIORelease, rhacs: false},
+		{flavor: defaults.ImageFlavorNameDevelopmentBuild, rhacs: false},
 		{flavor: defaults.ImageFlavorNameRHACSRelease, rhacs: false},
+		{flavor: defaults.ImageFlavorNameOpenSource, rhacs: false},
 
 		// Group: --rhacs only (test backwards-compatibility with versions < v3.68)
 		{flavor: "", flavorProvided: false, rhacs: true},
@@ -71,18 +69,13 @@ func (s *HelmChartTestSuite) TestOutputHelmChart() {
 		// Providing both flags shall produce flag-collision error
 		{flavor: "", flavorProvided: true, rhacs: true, wantErr: true},
 		{flavor: "dummy", rhacs: true, wantErr: true},
-		{flavor: defaults.ImageFlavorNameStackRoxIORelease, rhacs: true, wantErr: true},
+		{flavor: defaults.ImageFlavorNameDevelopmentBuild, rhacs: true, wantErr: true},
 		{flavor: defaults.ImageFlavorNameRHACSRelease, rhacs: true, wantErr: true},
+		{flavor: defaults.ImageFlavorNameOpenSource, rhacs: true, wantErr: true},
 	}
-	// development flavor can be used only on non-released builds
-	if !buildinfo.ReleaseBuild {
-		tests = append(tests,
-			testCase{flavor: defaults.ImageFlavorNameDevelopmentBuild, rhacs: true, wantErr: true}, // error: collision of --rhacs and --image-defaults
-			testCase{flavor: defaults.ImageFlavorNameDevelopmentBuild, rhacs: false},
-		)
-	}
-	testIO, _, _, _ := environment.TestIO()
-	env := environment.NewCLIEnvironment(testIO, printer.DefaultColorPrinter())
+
+	testIO, _, _, _ := io.TestIO()
+	env := environment.NewTestCLIEnvironment(s.T(), testIO, printer.DefaultColorPrinter())
 
 	for _, tt := range tests {
 		tt := tt
@@ -104,9 +97,10 @@ func (s *HelmChartTestSuite) TestOutputHelmChart() {
 }
 
 func (s *HelmChartTestSuite) TestHelmLint() {
-	flavorsToTest := []string{defaults.ImageFlavorNameStackRoxIORelease, defaults.ImageFlavorNameRHACSRelease}
-	if !buildinfo.ReleaseBuild {
-		flavorsToTest = append(flavorsToTest, defaults.ImageFlavorNameDevelopmentBuild)
+	flavorsToTest := []string{
+		defaults.ImageFlavorNameDevelopmentBuild,
+		defaults.ImageFlavorNameRHACSRelease,
+		defaults.ImageFlavorNameOpenSource,
 	}
 
 	for chartName := range common.ChartTemplates {
@@ -124,8 +118,8 @@ func (s *HelmChartTestSuite) TestHelmLint() {
 func testChartLint(t *testing.T, chartName string, rhacs bool, imageFlavor string) {
 	outputDir := t.TempDir()
 
-	testIO, _, _, _ := environment.TestIO()
-	env := environment.NewCLIEnvironment(testIO, printer.DefaultColorPrinter())
+	testIO, _, _, _ := io.TestIO()
+	env := environment.NewTestCLIEnvironment(t, testIO, printer.DefaultColorPrinter())
 
 	err := executeHelpOutputCommand(chartName, outputDir, true, imageFlavor, imageFlavor != "", rhacs, env)
 	require.NoErrorf(t, err, "failed to output helm chart %s", chartName)
@@ -165,11 +159,14 @@ func executeHelpOutputCommand(chartName, outputDir string, removeOutputDir bool,
 }
 
 func testChartInNamespaceLint(t *testing.T, chartDir string, namespace string) {
-	linter := lint.All(chartDir, nil, namespace, false)
+	// The 'ca.cert' config option MUST be set to StackRox's Service CA certificate
+	// in order for the admission controller to be usable
+	// To not produce warning let's provide it
+	values := map[string]any{"ca": map[string]any{"cert": "fake"}}
+	linter := lint.All(chartDir, values, namespace, false)
 
 	assert.LessOrEqualf(t, linter.HighestSeverity, maxTolerableSev, "linting chart produced warnings with severity %v", linter.HighestSeverity)
 	for _, msg := range linter.Messages {
-		fmt.Fprintln(os.Stderr, msg.Error())
 		assert.LessOrEqual(t, msg.Severity, maxTolerableSev, msg.Error())
 	}
 }

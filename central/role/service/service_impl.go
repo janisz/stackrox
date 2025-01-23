@@ -4,30 +4,30 @@ import (
 	"context"
 	"sort"
 
-	"github.com/grpc-ecosystem/grpc-gateway/runtime"
+	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
 	"github.com/pkg/errors"
 	clusterDS "github.com/stackrox/rox/central/cluster/datastore"
 	namespaceDS "github.com/stackrox/rox/central/namespace/datastore"
 	rolePkg "github.com/stackrox/rox/central/role"
 	"github.com/stackrox/rox/central/role/datastore"
-	"github.com/stackrox/rox/central/role/resources"
+	"github.com/stackrox/rox/central/role/sachelper"
 	v1 "github.com/stackrox/rox/generated/api/v1"
 	"github.com/stackrox/rox/generated/storage"
+	"github.com/stackrox/rox/pkg/accessscope"
 	"github.com/stackrox/rox/pkg/auth/permissions"
 	"github.com/stackrox/rox/pkg/errox"
 	"github.com/stackrox/rox/pkg/grpc/authn"
 	"github.com/stackrox/rox/pkg/grpc/authz"
-	"github.com/stackrox/rox/pkg/grpc/authz/allow"
 	"github.com/stackrox/rox/pkg/grpc/authz/perrpc"
 	"github.com/stackrox/rox/pkg/grpc/authz/user"
-	"github.com/stackrox/rox/pkg/logging"
 	"github.com/stackrox/rox/pkg/sac/effectiveaccessscope"
+	"github.com/stackrox/rox/pkg/sac/resources"
 	"google.golang.org/grpc"
 )
 
 var (
 	authorizer = perrpc.FromMap(map[authz.Authorizer][]string{
-		user.With(permissions.View(resources.Role)): {
+		user.With(permissions.View(resources.Access)): {
 			"/v1.RoleService/GetRoles",
 			"/v1.RoleService/GetRole",
 			"/v1.RoleService/ListPermissionSets",
@@ -35,10 +35,10 @@ var (
 			"/v1.RoleService/ListSimpleAccessScopes",
 			"/v1.RoleService/GetSimpleAccessScope",
 		},
-		user.With(permissions.View(resources.Role), permissions.View(resources.Cluster), permissions.View(resources.Namespace)): {
+		user.With(permissions.View(resources.Access), permissions.View(resources.Cluster), permissions.View(resources.Namespace)): {
 			"/v1.RoleService/ComputeEffectiveAccessScope",
 		},
-		user.With(permissions.Modify(resources.Role)): {
+		user.With(permissions.Modify(resources.Access)): {
 			"/v1.RoleService/CreateRole",
 			"/v1.RoleService/SetDefaultRole",
 			"/v1.RoleService/UpdateRole",
@@ -50,21 +50,23 @@ var (
 			"/v1.RoleService/PutSimpleAccessScope",
 			"/v1.RoleService/DeleteSimpleAccessScope",
 		},
-		allow.Anonymous(): {
-			"/v1.RoleService/GetResources",
+		user.Authenticated(): {
 			"/v1.RoleService/GetMyPermissions",
+			"/v1.RoleService/GetResources",
+			"/v1.RoleService/GetClustersForPermissions",
+			"/v1.RoleService/GetNamespacesForClusterAndPermissions",
 		},
 	})
 )
 
-var (
-	log = logging.LoggerForModule()
-)
-
 type serviceImpl struct {
+	v1.UnimplementedRoleServiceServer
+
 	roleDataStore      datastore.DataStore
 	clusterDataStore   clusterDS.DataStore
 	namespaceDataStore namespaceDS.DataStore
+	clusterSACHelper   sachelper.ClusterSacHelper
+	namespaceSACHelper sachelper.ClusterNamespaceSacHelper
 }
 
 func (s *serviceImpl) RegisterServiceServer(grpcServer *grpc.Server) {
@@ -117,12 +119,6 @@ func (s *serviceImpl) CreateRole(ctx context.Context, roleRequest *v1.CreateRole
 	}
 	role.Name = roleRequest.GetName()
 
-	// Empty access scope ID is deprecated. Fill the default during the adoption
-	// period.
-	// TODO(ROX-9510): remove this block.
-	if role.GetAccessScopeId() == "" {
-		role.AccessScopeId = rolePkg.AccessScopeIncludeAll.GetId()
-	}
 	err := s.roleDataStore.AddRole(ctx, role)
 	if err != nil {
 		return nil, err
@@ -131,12 +127,6 @@ func (s *serviceImpl) CreateRole(ctx context.Context, roleRequest *v1.CreateRole
 }
 
 func (s *serviceImpl) UpdateRole(ctx context.Context, role *storage.Role) (*v1.Empty, error) {
-	// Empty access scope ID is deprecated. Fill the default during the adoption
-	// period.
-	// TODO(ROX-9510): remove this block.
-	if role.GetAccessScopeId() == "" {
-		role.AccessScopeId = rolePkg.AccessScopeIncludeAll.GetId()
-	}
 	err := s.roleDataStore.UpdateRole(ctx, role)
 	if err != nil {
 		return nil, err
@@ -310,7 +300,7 @@ func (s *serviceImpl) DeleteSimpleAccessScope(ctx context.Context, id *v1.Resour
 func (s *serviceImpl) ComputeEffectiveAccessScope(ctx context.Context, req *v1.ComputeEffectiveAccessScopeRequest) (*storage.EffectiveAccessScope, error) {
 	// If we're here, service-level authz has already verified that the caller
 	// has at least READ permission on the Role resource.
-	err := rolePkg.ValidateSimpleAccessScopeRules(req.GetAccessScope().GetSimpleRules())
+	err := accessscope.ValidateSimpleAccessScopeRules(req.GetAccessScope().GetSimpleRules())
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to compute effective access scope")
 	}
@@ -328,7 +318,7 @@ func (s *serviceImpl) ComputeEffectiveAccessScope(ctx context.Context, req *v1.C
 		return nil, errors.Errorf("failed to compute effective access scope: %v", err)
 	}
 
-	namespaces, err := s.namespaceDataStore.GetNamespaces(readScopesCtx)
+	namespaces, err := s.namespaceDataStore.GetAllNamespaces(readScopesCtx)
 	if err != nil {
 		return nil, errors.Errorf("failed to compute effective access scope: %v", err)
 	}
@@ -338,6 +328,35 @@ func (s *serviceImpl) ComputeEffectiveAccessScope(ctx context.Context, req *v1.C
 		return nil, errors.Errorf("failed to compute effective access scope: %v", err)
 	}
 
+	return response, nil
+}
+
+func (s *serviceImpl) GetClustersForPermissions(ctx context.Context, req *v1.GetClustersForPermissionsRequest) (*v1.GetClustersForPermissionsResponse, error) {
+	requestedPermissions := req.GetPermissions()
+
+	clusters, err := s.clusterSACHelper.GetClustersForPermissions(ctx, requestedPermissions, req.GetPagination())
+	if err != nil {
+		return nil, err
+	}
+
+	response := &v1.GetClustersForPermissionsResponse{
+		Clusters: clusters,
+	}
+	return response, nil
+}
+
+func (s *serviceImpl) GetNamespacesForClusterAndPermissions(ctx context.Context, req *v1.GetNamespaceForClusterAndPermissionsRequest) (*v1.GetNamespacesForClusterAndPermissionsResponse, error) {
+	requestedPermissions := req.GetPermissions()
+	clusterID := req.GetClusterId()
+
+	namespaces, err := s.namespaceSACHelper.GetNamespacesForClusterAndPermissions(ctx, clusterID, requestedPermissions)
+	if err != nil {
+		return nil, err
+	}
+
+	response := &v1.GetNamespacesForClusterAndPermissionsResponse{
+		Namespaces: namespaces,
+	}
 	return response, nil
 }
 

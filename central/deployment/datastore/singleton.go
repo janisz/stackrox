@@ -2,12 +2,10 @@ package datastore
 
 import (
 	"github.com/stackrox/rox/central/deployment/cache"
-	"github.com/stackrox/rox/central/deployment/datastore/internal/processtagsstore"
 	"github.com/stackrox/rox/central/globaldb"
-	"github.com/stackrox/rox/central/globaldb/dackbox"
-	"github.com/stackrox/rox/central/globalindex"
 	imageDatastore "github.com/stackrox/rox/central/image/datastore"
 	nfDS "github.com/stackrox/rox/central/networkgraph/flow/datastore"
+	platformmatcher "github.com/stackrox/rox/central/platform/matcher"
 	pbDS "github.com/stackrox/rox/central/processbaseline/datastore"
 	"github.com/stackrox/rox/central/processindicator/filter"
 	"github.com/stackrox/rox/central/ranking"
@@ -25,20 +23,11 @@ var (
 )
 
 func initialize() {
-	ad = New(dackbox.GetGlobalDackBox(),
-		dackbox.GetKeyFence(),
-		processtagsstore.New(globaldb.GetGlobalDB()),
-		globalindex.GetGlobalIndex(),
-		globalindex.GetProcessIndex(),
-		imageDatastore.Singleton(),
-		pbDS.Singleton(),
-		nfDS.Singleton(),
-		riskDS.Singleton(),
-		cache.DeletedDeploymentCacheSingleton(),
-		filter.Singleton(),
-		ranking.ClusterRanker(),
-		ranking.NamespaceRanker(),
-		ranking.DeploymentRanker())
+	var err error
+	ad, err = New(globaldb.GetPostgres(), imageDatastore.Singleton(), pbDS.Singleton(), nfDS.Singleton(), riskDS.Singleton(), cache.DeletedDeploymentsSingleton(), filter.Singleton(), ranking.ClusterRanker(), ranking.NamespaceRanker(), ranking.DeploymentRanker(), platformmatcher.Singleton())
+	if err != nil {
+		log.Fatalf("could not initialize deployment datastore: %v", err)
+	}
 }
 
 // Singleton provides the interface for non-service external interaction.

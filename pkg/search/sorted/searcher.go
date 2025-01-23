@@ -9,6 +9,7 @@ import (
 )
 
 // Ranker returns the rank for the given id for the given field.
+//
 //go:generate mockgen-wrapper
 type Ranker interface {
 	// GetRankForID returns the rank of the object referenced by the given ID.
@@ -24,7 +25,7 @@ func Searcher(searcher search.Searcher, field search.FieldLabel, ranker Ranker) 
 			var reversed bool
 			if q.GetPagination() != nil && len(q.GetPagination().GetSortOptions()) == 1 {
 				if q.GetPagination().GetSortOptions()[0].GetField() == field.String() {
-					indexQuery = q.Clone()
+					indexQuery = q.CloneVT()
 					sortByRank = true
 					reversed = indexQuery.GetPagination().GetSortOptions()[0].GetReversed()
 					indexQuery.Pagination = nil

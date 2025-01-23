@@ -1,4 +1,5 @@
 import React from 'react';
+import { useLocation, useRouteMatch } from 'react-router-dom';
 import { gql } from '@apollo/client';
 import pluralize from 'pluralize';
 
@@ -8,15 +9,16 @@ import {
     nonSortableHeaderClassName,
 } from 'Components/Table';
 import TableCellLink from 'Components/TableCellLink';
-import LabelChip from 'Components/LabelChip';
-import StatusChip from 'Components/StatusChip';
+import PolicyStatusIconText from 'Components/PatternFly/IconText/PolicyStatusIconText';
 import { entityListPropTypes, entityListDefaultprops } from 'constants/entityPageProps';
 import entityTypes from 'constants/entityTypes';
 import { CLIENT_SIDE_SEARCH_OPTIONS as SEARCH_OPTIONS } from 'constants/searchOptions';
 import { clusterSortFields } from 'constants/sortFields';
 import queryService from 'utils/queryService';
 import URLService from 'utils/URLService';
+import { getConfigMgmtPathForEntitiesAndId } from '../entities';
 import List from './List';
+import NoEntitiesIconText from './utilities/NoEntitiesIconText';
 import filterByPolicyStatus from './utilities/filterByPolicyStatus';
 
 const CLUSTERS_QUERY = gql`
@@ -68,6 +70,14 @@ const buildTableColumns = (match, location) => {
             Header: `Cluster`,
             headerClassName: `w-1/8 ${defaultHeaderClassName}`,
             className: `w-1/8 ${defaultColumnClassName}`,
+            Cell: ({ original, pdf }) => {
+                const url = getConfigMgmtPathForEntitiesAndId('CLUSTER', original.id);
+                return (
+                    <TableCellLink pdf={pdf} url={url}>
+                        {original.name}
+                    </TableCellLink>
+                );
+            },
             accessor: 'name',
             id: clusterSortFields.CLUSTER,
             sortField: clusterSortFields.CLUSTER,
@@ -84,8 +94,10 @@ const buildTableColumns = (match, location) => {
             headerClassName: `w-1/8 ${nonSortableHeaderClassName}`,
             className: `w-1/8 ${defaultColumnClassName}`,
             Cell: ({ original, pdf }) => {
-                const { policyStatus } = original;
-                return <StatusChip status={policyStatus.status} asString={pdf} />;
+                const {
+                    policyStatus: { status },
+                } = original;
+                return <PolicyStatusIconText isPass={status === 'pass'} isTextOnly={pdf} />;
             },
             id: 'status',
             accessor: (d) => d.policyStatus.status,
@@ -101,7 +113,7 @@ const buildTableColumns = (match, location) => {
                 const { passingCount, failingCount, unknownCount } = complianceControlCount;
                 const totalCount = passingCount + failingCount + unknownCount;
                 if (!totalCount) {
-                    return <LabelChip text="No Controls" type="alert" />;
+                    return <NoEntitiesIconText text="No Controls" isTextOnly={pdf} />;
                 }
                 const url = URLService.getURL(match, location)
                     .push(original.id)
@@ -123,7 +135,7 @@ const buildTableColumns = (match, location) => {
             Cell: ({ original, pdf }) => {
                 const { subjectCount } = original;
                 if (!subjectCount) {
-                    return <LabelChip text="No Users & Groups" type="alert" />;
+                    return <NoEntitiesIconText text="No Users & Groups" isTextOnly={pdf} />;
                 }
                 const url = URLService.getURL(match, location)
                     .push(original.id)
@@ -147,7 +159,7 @@ const buildTableColumns = (match, location) => {
             Cell: ({ original, pdf }) => {
                 const { serviceAccountCount } = original;
                 if (!serviceAccountCount) {
-                    return <LabelChip text="No Service Accounts" type="alert" />;
+                    return <NoEntitiesIconText text="No Service Accounts" isTextOnly={pdf} />;
                 }
                 const url = URLService.getURL(match, location)
                     .push(original.id)
@@ -174,7 +186,7 @@ const buildTableColumns = (match, location) => {
             Cell: ({ original, pdf }) => {
                 const { k8sRoleCount } = original;
                 if (!k8sRoleCount) {
-                    return <LabelChip text="No Roles" type="alert" />;
+                    return <NoEntitiesIconText text="No Roles" isTextOnly={pdf} />;
                 }
                 const url = URLService.getURL(match, location)
                     .push(original.id)
@@ -197,7 +209,9 @@ const buildTableColumns = (match, location) => {
 
 const createTableRows = (data) => data.results;
 
-const Clusters = ({ match, location, className, selectedRowId, onRowClick, query, data }) => {
+const Clusters = ({ className, selectedRowId, onRowClick, query, data }) => {
+    const location = useLocation();
+    const match = useRouteMatch();
     const autoFocusSearchInput = !selectedRowId;
     const tableColumns = buildTableColumns(match, location);
     const { [SEARCH_OPTIONS.POLICY_STATUS.CATEGORY]: policyStatus, ...restQuery } = query || {};

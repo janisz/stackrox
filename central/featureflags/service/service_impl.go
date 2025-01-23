@@ -4,7 +4,7 @@ import (
 	"context"
 	"sort"
 
-	"github.com/grpc-ecosystem/grpc-gateway/runtime"
+	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
 	v1 "github.com/stackrox/rox/generated/api/v1"
 	"github.com/stackrox/rox/pkg/features"
 	"github.com/stackrox/rox/pkg/grpc/authz"
@@ -16,12 +16,18 @@ import (
 var (
 	authorizer = perrpc.FromMap(map[authz.Authorizer][]string{
 		allow.Anonymous(): {
+			// This endpoint is used by the UI to populate framework
+			// information which is done at UI start when there is no
+			// authenticated user yet. It should stay anonymous / public
+			// as long as the UI needs it at startup time.
 			"/v1.FeatureFlagService/GetFeatureFlags",
 		},
 	})
 )
 
-type serviceImpl struct{}
+type serviceImpl struct {
+	v1.UnimplementedFeatureFlagServiceServer
+}
 
 func (s *serviceImpl) GetFeatureFlags(context.Context, *v1.Empty) (*v1.GetFeatureFlagsResponse, error) {
 	resp := &v1.GetFeatureFlagsResponse{}
@@ -32,6 +38,7 @@ func (s *serviceImpl) GetFeatureFlags(context.Context, *v1.Empty) (*v1.GetFeatur
 			Enabled: feature.Enabled(),
 		})
 	}
+
 	sort.Slice(resp.FeatureFlags, func(i, j int) bool {
 		return resp.FeatureFlags[i].GetName() < resp.FeatureFlags[j].GetName()
 	})

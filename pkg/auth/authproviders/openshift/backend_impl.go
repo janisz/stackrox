@@ -4,11 +4,8 @@ import (
 	"context"
 	"crypto/x509"
 	"net/http"
-	"net/url"
-	"os"
 	"time"
 
-	"github.com/dexidp/dex/connector"
 	"github.com/pkg/errors"
 	"github.com/stackrox/rox/pkg/auth/authproviders"
 	"github.com/stackrox/rox/pkg/auth/authproviders/idputil"
@@ -17,8 +14,9 @@ import (
 	"github.com/stackrox/rox/pkg/env"
 	"github.com/stackrox/rox/pkg/grpc/requestinfo"
 	"github.com/stackrox/rox/pkg/httputil"
-	"github.com/stackrox/rox/pkg/netutil"
+	"github.com/stackrox/rox/pkg/logging"
 	"github.com/stackrox/rox/pkg/satoken"
+	"github.com/stackrox/rox/pkg/sync"
 )
 
 const (
@@ -33,32 +31,33 @@ const (
 	// serviceOperatorCAPath points to the secret of the service account, which within an OpenShift environment
 	// also has the service-ca.crt, which includes the CA to verify certificates issued by the service-ca operator.
 	// This could be i.e. the default ingress controller certificate.
-	serviceOperatorCAPath = "/run/secrets/kubernetes.io/serviceaccount/service-ca.crt"
+	serviceOperatorCAPath = "/var/run/secrets/kubernetes.io/serviceaccount/service-ca.crt"
 	// internalServicesCAPath points to the secret of the service account, which includes the internal CAs to
 	// verify internal cluster services.
 	// This could be i.e. the openshiftAPIUrl or other internal services.
-	internalServicesCAPath = "/run/secrets/kubernetes.io/serviceaccount/ca.crt"
+	internalServicesCAPath = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
 	// injectedCAPath points to the bundle of user-provided and system CA certificates
 	// merged by the Cluster Network Operator.
 	injectedCAPath = "/etc/pki/injected-ca-trust/tls-ca-bundle.pem"
 )
 
 var (
-	defaultScopes = connector.Scopes{
+	defaultScopes = dexconnector.Scopes{
 		OfflineAccess: true,
 		Groups:        true,
 	}
 )
 
 type callbackAndRefreshConnector interface {
-	connector.CallbackConnector
-	connector.RefreshConnector
+	dexconnector.CallbackConnector
+	dexconnector.RefreshConnector
 }
 
 type backend struct {
-	id                 string
-	baseRedirectURL    url.URL
-	openshiftConnector callbackAndRefreshConnector
+	id                      string
+	baseRedirectURLPath     string
+	openshiftConnector      callbackAndRefreshConnector
+	openshiftConnectorMutex sync.Mutex
 }
 
 type openShiftSettings struct {
@@ -67,17 +66,36 @@ type openShiftSettings struct {
 	trustedCertPool *x509.CertPool
 }
 
-var _ authproviders.RefreshTokenEnabledBackend = (*backend)(nil)
+var (
+	_ authproviders.Backend                    = (*backend)(nil)
+	_ authproviders.RefreshTokenEnabledBackend = (*backend)(nil)
+)
 
-func newBackend(id string, callbackURLPath string, _ map[string]string) (authproviders.Backend, error) {
-	settings, err := getOpenShiftSettings()
+func newBackend(id string, callbackURLPath string, _ map[string]string) (*backend, error) {
+	openshiftConnector, err := createOpenshiftConnector()
 	if err != nil {
 		return nil, err
 	}
 
-	baseRedirectURL := url.URL{
-		Scheme: "https",
-		Path:   callbackURLPath,
+	b := &backend{
+		id:                  id,
+		baseRedirectURLPath: callbackURLPath,
+		openshiftConnector:  openshiftConnector,
+	}
+
+	// Register backend for notification on openshift certificate updates.
+	// And refresh connection to OpenShift in case certificates changed
+	// between the backend creation and its registration.
+	registerBackend(b)
+	b.recreateOpenshiftConnector()
+
+	return b, nil
+}
+
+func createOpenshiftConnector() (callbackAndRefreshConnector, error) {
+	settings, err := getOpenShiftSettings()
+	if err != nil {
+		return nil, err
 	}
 
 	dexCfg := dexconnector.Config{
@@ -92,13 +110,7 @@ func newBackend(id string, callbackURLPath string, _ map[string]string) (authpro
 		return nil, errors.Wrap(err, "failed to create dex openshiftConnector for OpenShift's OAuth Server")
 	}
 
-	b := &backend{
-		id:                 id,
-		baseRedirectURL:    baseRedirectURL,
-		openshiftConnector: openshiftConnector,
-	}
-
-	return b, nil
+	return openshiftConnector, nil
 }
 
 // There is no config but static settings instead.
@@ -109,15 +121,10 @@ func (b *backend) Config() map[string]string {
 func (b *backend) LoginURL(clientState string, ri *requestinfo.RequestInfo) (string, error) {
 	state := idputil.MakeState(b.id, clientState)
 
-	// baseRedirectURL does not include the hostname, take it from the request.
-	// Allow HTTP only if the client did not use TLS and the host is localhost.
-	redirectURL := b.baseRedirectURL
-	redirectURL.Host = ri.Hostname
-	if !ri.ClientUsedTLS && netutil.IsLocalEndpoint(redirectURL.Host) {
-		redirectURL.Scheme = "http"
-	}
+	// Augment baseRedirectURLPath to a redirect URL with hostname, etc set.
+	redirectURI := dexconnector.MakeRedirectURI(ri, b.baseRedirectURLPath)
 
-	return b.openshiftConnector.LoginURL(defaultScopes, redirectURL.String(), state)
+	return b.openshiftConnector.LoginURL(defaultScopes, redirectURI.String(), state)
 }
 
 func (b *backend) RefreshURL() string {
@@ -129,12 +136,13 @@ func (b *backend) OnEnable(_ authproviders.Provider) {}
 func (b *backend) OnDisable(_ authproviders.Provider) {}
 
 func (b *backend) ProcessHTTPRequest(_ http.ResponseWriter, r *http.Request) (*authproviders.AuthResponse, error) {
-	if r.URL.Path != b.baseRedirectURL.Path {
+	if r.URL.Path != b.baseRedirectURLPath {
 		return nil, httputil.Errorf(http.StatusNotFound, "path %q not found", r.URL.Path)
 	}
 	if r.Method != http.MethodGet {
 		return nil, httputil.Errorf(http.StatusMethodNotAllowed, "unsupported method %q, only GET requests are allowed to this URL", r.Method)
 	}
+
 	id, err := b.openshiftConnector.HandleCallback(defaultScopes, r)
 	if err != nil {
 		return nil, errors.Wrap(err, "retrieving user identity")
@@ -142,11 +150,11 @@ func (b *backend) ProcessHTTPRequest(_ http.ResponseWriter, r *http.Request) (*a
 	return b.idToAuthResponse(&id), nil
 }
 
-func (b *backend) idToAuthResponse(id *connector.Identity) *authproviders.AuthResponse {
+func (b *backend) idToAuthResponse(id *dexconnector.Identity) *authproviders.AuthResponse {
 	// OpenShift doesn't provide emails in their users API response, see
 	// https://docs.openshift.com/container-platform/4.9/rest_api/user_and_group_apis/user-user-openshift-io-v1.html
 	attributes := map[string][]string{
-		authproviders.UseridAttribute: {id.UserID},
+		authproviders.UseridAttribute: {string(id.UserID)},
 		authproviders.NameAttribute:   {id.Username},
 		authproviders.GroupsAttribute: id.Groups,
 	}
@@ -167,7 +175,7 @@ func (b *backend) idToAuthResponse(id *connector.Identity) *authproviders.AuthRe
 // RefreshAccessToken attempts to fetch user info and issue an updated auth
 // status. If the refresh token has expired, error is returned.
 func (b *backend) RefreshAccessToken(ctx context.Context, refreshTokenData authproviders.RefreshTokenData) (*authproviders.AuthResponse, error) {
-	id, err := b.openshiftConnector.Refresh(ctx, defaultScopes, connector.Identity{
+	id, err := b.openshiftConnector.Refresh(ctx, defaultScopes, dexconnector.Identity{
 		ConnectorData: []byte(refreshTokenData.RefreshToken),
 	})
 	if err != nil {
@@ -186,6 +194,19 @@ func (b *backend) ExchangeToken(_ context.Context, _ string, _ string) (*authpro
 
 func (b *backend) Validate(_ context.Context, _ *tokens.Claims) error {
 	return nil
+}
+
+func (b *backend) recreateOpenshiftConnector() {
+	openshiftConnector, err := createOpenshiftConnector()
+	if err != nil {
+		log.Errorw("failed to create updated dex openshiftConnector for OpenShift's OAuth Server with new CAs, "+
+			"new certs will not be applied. This may lead to unwanted TLS connection issues.", logging.Err(err))
+		return
+	}
+
+	b.openshiftConnectorMutex.Lock()
+	defer b.openshiftConnectorMutex.Unlock()
+	b.openshiftConnector = openshiftConnector
 }
 
 func getOpenShiftSettings() (openShiftSettings, error) {
@@ -225,8 +246,8 @@ func getSystemCertPoolWithAdditionalCA(additionalCAPaths ...string) (*x509.CertP
 
 func addAdditionalCAsToCertPool(additionalCAPaths []string, certPool *x509.CertPool) (*x509.CertPool, error) {
 	for _, caPath := range additionalCAPaths {
-		rootCABytes, err := os.ReadFile(caPath)
-		if errors.Is(err, os.ErrNotExist) {
+		rootCABytes, exists, err := readCA(caPath)
+		if !exists {
 			continue
 		}
 		if err != nil {

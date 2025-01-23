@@ -7,7 +7,7 @@ import { workflowEntityPropTypes, workflowEntityDefaultProps } from 'constants/e
 import entityTypes from 'constants/entityTypes';
 import { defaultCountKeyMap } from 'constants/workflowPages.constants';
 import workflowStateContext from 'Containers/workflowStateContext';
-import WorkflowEntityPage from 'Containers/Workflow/WorkflowEntityPage';
+import WorkflowEntityPage from '../WorkflowEntityPage';
 import VulnMgmtNodeOverview from './VulnMgmtNodeOverview';
 import EntityList from '../../List/VulnMgmtList';
 import {
@@ -40,7 +40,7 @@ const VulmMgmtNode = ({
                 kernelVersion
                 kubeletVersion
                 osImage
-                topVuln {
+                topVuln: topNodeVulnerability {
                     cvss
                     scoreVersion
                 }
@@ -53,7 +53,7 @@ const VulmMgmtNode = ({
                     key
                     value
                 }
-                vulnCount
+                nodeVulnerabilityCount
                 notes
                 scan {
                     scanTime

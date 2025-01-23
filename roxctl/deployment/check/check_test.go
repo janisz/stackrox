@@ -22,6 +22,7 @@ import (
 	"github.com/stackrox/rox/roxctl/summaries/policy"
 	"github.com/stretchr/testify/suite"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/test/bufconn"
 )
 
@@ -209,12 +210,15 @@ var (
 
 // mock for testing implementing v1.DetectionServiceServer
 type mockDetectionServiceServer struct {
-	v1.DetectionServiceServer
+	v1.UnimplementedDetectionServiceServer
+
 	alerts         []*storage.Alert
 	ignoredObjRefs []string
+	request        *v1.DeployYAMLDetectionRequest
 }
 
-func (m *mockDetectionServiceServer) DetectDeployTimeFromYAML(ctx context.Context, req *v1.DeployYAMLDetectionRequest) (*v1.DeployDetectionResponse, error) {
+func (m *mockDetectionServiceServer) DetectDeployTimeFromYAML(_ context.Context, request *v1.DeployYAMLDetectionRequest) (*v1.DeployDetectionResponse, error) {
+	m.request = request
 	return &v1.DeployDetectionResponse{
 		Runs: []*v1.DeployDetectionResponse_Run{
 			{
@@ -236,13 +240,15 @@ type deployCheckTestSuite struct {
 }
 
 func (d *deployCheckTestSuite) createGRPCMockDetectionService(alerts []*storage.Alert,
-	ignoredObjRefs []string) (*grpc.ClientConn, func()) {
+	ignoredObjRefs []string,
+) (*grpc.ClientConn, func(), *mockDetectionServiceServer) {
 	buffer := 1024 * 1024
 	listener := bufconn.Listen(buffer)
 
+	mockDetectionService := mockDetectionServiceServer{alerts: alerts, ignoredObjRefs: ignoredObjRefs}
 	server := grpc.NewServer()
 	v1.RegisterDetectionServiceServer(server,
-		&mockDetectionServiceServer{alerts: alerts, ignoredObjRefs: ignoredObjRefs})
+		&mockDetectionService)
 
 	go func() {
 		utils.IgnoreError(func() error { return server.Serve(listener) })
@@ -250,7 +256,7 @@ func (d *deployCheckTestSuite) createGRPCMockDetectionService(alerts []*storage.
 
 	conn, err := grpc.DialContext(context.Background(), "", grpc.WithContextDialer(func(ctx context.Context, s string) (net.Conn, error) {
 		return listener.Dial()
-	}), grpc.WithInsecure())
+	}), grpc.WithTransportCredentials(insecure.NewCredentials()))
 	d.Require().NoError(err)
 
 	closeFunction := func() {
@@ -258,7 +264,7 @@ func (d *deployCheckTestSuite) createGRPCMockDetectionService(alerts []*storage.
 		server.Stop()
 	}
 
-	return conn, closeFunction
+	return conn, closeFunction, &mockDetectionService
 }
 
 func (d *deployCheckTestSuite) createMockEnvironmentWithConn(conn *grpc.ClientConn) (environment.Environment, *bytes.Buffer, *bytes.Buffer) {
@@ -267,12 +273,65 @@ func (d *deployCheckTestSuite) createMockEnvironmentWithConn(conn *grpc.ClientCo
 
 func (d *deployCheckTestSuite) SetupTest() {
 	d.defaultDeploymentCheckCommand = deploymentCheckCommand{
-		file:               "testdata/deployment.yaml",
+		files:              []string{"testdata/deployment.yaml"},
 		retryDelay:         3,
 		retryCount:         3,
 		timeout:            1 * time.Minute,
 		printAllViolations: true,
+		namespace:          defaultNamespace,
 	}
+}
+
+func (d *deployCheckTestSuite) TestNormalizeYaml() {
+	cases := map[string]struct {
+		inputYaml              string
+		expectedNormalizedYaml string
+	}{
+		"Should trim leading and trailing whitespace": {
+			inputYaml:              " \n   \t\t \n \nYAMLCONTENT\n \t\t \n \n\t\n\t  ",
+			expectedNormalizedYaml: "YAMLCONTENT\n",
+		},
+		"Should add missing newline at EOF": {
+			inputYaml:              "YAMLCONTENT",
+			expectedNormalizedYaml: "YAMLCONTENT\n",
+		},
+		"Should remove \"---\\n\" prefix": {
+			inputYaml:              "---\nYAMLCONTENT\n",
+			expectedNormalizedYaml: "YAMLCONTENT\n",
+		},
+		"Should remove \"---\" postfix": {
+			inputYaml:              "YAMLCONTENT\n---",
+			expectedNormalizedYaml: "YAMLCONTENT\n",
+		},
+		"Should not remove \"---\" prefix or postfix not separated from yaml content by \\n": {
+			inputYaml:              "---YAMLCONTENT---\n",
+			expectedNormalizedYaml: "---YAMLCONTENT---\n",
+		},
+	}
+	for name, c := range cases {
+		d.Run(name, func() {
+			d.Assert().Equal(c.expectedNormalizedYaml, normalizeYaml(c.inputYaml))
+		})
+	}
+}
+
+func (d *deployCheckTestSuite) TestMultipleFiles() {
+	deployCheckCmd := d.defaultDeploymentCheckCommand
+	deployCheckCmd.files = []string{"testdata/deployment.yaml", "testdata/deployment2.yaml"}
+
+	conn, closeF, server := d.createGRPCMockDetectionService(testDeploymentAlertsWithoutFailure, nil)
+	defer closeF()
+	deployCheckCmd.env, _, _ = d.createMockEnvironmentWithConn(conn)
+
+	tablePrinter, err := printer.NewTabularPrinterFactory(defaultDeploymentCheckHeaders,
+		defaultDeploymentCheckJSONPathExpression).CreatePrinter("table")
+	d.Require().NoError(err)
+	deployCheckCmd.printer = tablePrinter
+	d.Require().NoError(deployCheckCmd.Check())
+	expectedBinary, err := os.ReadFile("testdata/testMultipleFilesExpectedYaml.yaml")
+	d.Require().NoError(err)
+	expectedString := string(expectedBinary)
+	d.Assert().Equal(expectedString, server.request.GetYaml())
 }
 
 func (d *deployCheckTestSuite) TestConstruct() {
@@ -290,6 +349,7 @@ func (d *deployCheckTestSuite) TestConstruct() {
 
 	testCmd := &cobra.Command{Use: "test"}
 	testCmd.Flags().Duration("timeout", expectedTimeout, "")
+	testCmd.Flags().Duration("retry-timeout", expectedTimeout, "")
 
 	cases := map[string]struct {
 		timeout    time.Duration
@@ -336,15 +396,15 @@ func (d *deployCheckTestSuite) TestConstruct() {
 
 func (d *deployCheckTestSuite) TestValidate() {
 	cases := map[string]struct {
-		file       string
+		files      []string
 		shouldFail bool
 		error      error
 	}{
 		"should not fail with default file name": {
-			file: d.defaultDeploymentCheckCommand.file,
+			files: d.defaultDeploymentCheckCommand.files,
 		},
 		"should fail with non existing file name": {
-			file:       "invalidfile",
+			files:      []string{"invalidfile"},
 			shouldFail: true,
 			error:      errox.InvalidArgs,
 		},
@@ -353,7 +413,7 @@ func (d *deployCheckTestSuite) TestValidate() {
 	for name, c := range cases {
 		d.Run(name, func() {
 			deployCheckCmd := d.defaultDeploymentCheckCommand
-			deployCheckCmd.file = c.file
+			deployCheckCmd.files = c.files
 
 			err := deployCheckCmd.Validate()
 			if c.shouldFail {
@@ -496,7 +556,7 @@ func (d *deployCheckTestSuite) runLegacyOutputTests(cases map[string]outputForma
 	for name, c := range cases {
 		d.Run(name, func() {
 			var out *bytes.Buffer
-			conn, closeFunction := d.createGRPCMockDetectionService(c.alerts, c.ignoredObjRefs)
+			conn, closeFunction, _ := d.createGRPCMockDetectionService(c.alerts, c.ignoredObjRefs)
 			defer closeFunction()
 
 			deployCheckCmd := d.defaultDeploymentCheckCommand
@@ -511,13 +571,14 @@ func (d *deployCheckTestSuite) runLegacyOutputTests(cases map[string]outputForma
 			}
 			expectedOutput, err := os.ReadFile(path.Join("testdata", c.expectedOutput))
 			d.Require().NoError(err)
-			d.Assert().Equal(string(expectedOutput), out.String())
+			d.JSONEq(string(expectedOutput), out.String())
 		})
 	}
 }
 
 func (d *deployCheckTestSuite) runOutputTests(cases map[string]outputFormatTest, printer printer.ObjectPrinter,
-	standardizedFormat bool) {
+	standardizedFormat bool,
+) {
 	const colorTestPrefix = "color_"
 	for name, c := range cases {
 		d.Run(name, func() {
@@ -560,8 +621,9 @@ func (d *deployCheckTestSuite) assertError(deployCheckCmd deploymentCheckCommand
 }
 
 func (d *deployCheckTestSuite) createDeployCheckCmd(c outputFormatTest, printer printer.ObjectPrinter,
-	standardizedFormat bool) (deploymentCheckCommand, *bytes.Buffer, *bytes.Buffer, func()) {
-	conn, closeF := d.createGRPCMockDetectionService(c.alerts, c.ignoredObjRefs)
+	standardizedFormat bool,
+) (deploymentCheckCommand, *bytes.Buffer, *bytes.Buffer, func()) {
+	conn, closeF, _ := d.createGRPCMockDetectionService(c.alerts, c.ignoredObjRefs)
 
 	deployCheckCmd := d.defaultDeploymentCheckCommand
 	deployCheckCmd.printer = printer

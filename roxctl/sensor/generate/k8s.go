@@ -19,17 +19,19 @@ func (s *sensorGenerateK8sCommand) ConstructK8s() {
 func k8s(generateCmd *sensorGenerateCommand) *cobra.Command {
 	k8sCommand := sensorGenerateK8sCommand{sensorGenerateCommand: generateCmd}
 	c := &cobra.Command{
-		Use: "k8s",
+		Use:   "k8s",
+		Short: "Generate the required files to deploy StackRox services into a Kubernetes cluster.",
+		Long:  "Generate the required YAML configuration files to deploy StackRox Sensor, Collector, and Admission controller (optional) into a Kubernetes cluster.",
 		RunE: util.RunENoArgs(func(c *cobra.Command) error {
 			k8sCommand.ConstructK8s()
 
-			if err := clusterValidation.ValidatePartial(&k8sCommand.cluster); err.ToError() != nil {
+			if err := clusterValidation.ValidatePartial(k8sCommand.cluster); err.ToError() != nil {
 				return err.ToError()
 			}
 			return k8sCommand.fullClusterCreation()
 		}),
 	}
 
-	c.PersistentFlags().BoolVar(&k8sCommand.cluster.AdmissionControllerEvents, "admission-controller-listen-on-events", true, "enable admission controller webhook to listen on Kubernetes events")
+	c.PersistentFlags().BoolVar(&k8sCommand.cluster.AdmissionControllerEvents, "admission-controller-listen-on-events", true, "Enable admission controller webhook to listen on Kubernetes events")
 	return c
 }

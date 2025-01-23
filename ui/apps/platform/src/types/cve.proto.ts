@@ -1,11 +1,24 @@
-export type VulnerabilitySeverity =
-    // | 'UNKNOWN_VULNERABILITY_SEVERITY'
-    | 'LOW_VULNERABILITY_SEVERITY'
-    | 'MODERATE_VULNERABILITY_SEVERITY'
-    | 'IMPORTANT_VULNERABILITY_SEVERITY'
-    | 'CRITICAL_VULNERABILITY_SEVERITY';
+export const vulnerabilitySeverities = [
+    'UNKNOWN_VULNERABILITY_SEVERITY',
+    'LOW_VULNERABILITY_SEVERITY',
+    'MODERATE_VULNERABILITY_SEVERITY',
+    'IMPORTANT_VULNERABILITY_SEVERITY',
+    'CRITICAL_VULNERABILITY_SEVERITY',
+] as const;
 
-export type VulnerabilityState = 'OBSERVED' | 'DEFERRED' | 'FALSE_POSITIVE';
+export type VulnerabilitySeverity = (typeof vulnerabilitySeverities)[number];
+
+export function isVulnerabilitySeverity(value: unknown): value is VulnerabilitySeverity {
+    return vulnerabilitySeverities.some((severity) => severity === value);
+}
+
+export const vulnerabilityStates = ['OBSERVED', 'DEFERRED', 'FALSE_POSITIVE'] as const;
+
+export type VulnerabilityState = (typeof vulnerabilityStates)[number];
+
+export function isVulnerabilityState(value: unknown): value is VulnerabilityState {
+    return vulnerabilityStates.some((state) => state === value);
+}
 
 export type CVSSV2 = {
     vector: string;

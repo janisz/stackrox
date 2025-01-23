@@ -84,6 +84,9 @@ var (
 	// CentralSubject is the identity used in certificates for Central.
 	CentralSubject = Subject{ServiceType: storage.ServiceType_CENTRAL_SERVICE, Identifier: "Central"}
 
+	// CentralDBSubject is the identity used in certificates for Central DB.
+	CentralDBSubject = Subject{ServiceType: storage.ServiceType_CENTRAL_DB_SERVICE, Identifier: "Central DB"}
+
 	// SensorSubject is the identity used in certificates for Sensor.
 	SensorSubject = Subject{ServiceType: storage.ServiceType_SENSOR_SERVICE, Identifier: "Sensor"}
 
@@ -95,6 +98,18 @@ var (
 
 	// ScannerDBSubject is the identity used in certificates for Scanners Postgres DB
 	ScannerDBSubject = Subject{ServiceType: storage.ServiceType_SCANNER_DB_SERVICE, Identifier: "Scanner DB"}
+
+	// ScannerV4IndexerSubject is the identity used in certificates for Scanner V4 Indexer.
+	ScannerV4IndexerSubject = Subject{ServiceType: storage.ServiceType_SCANNER_V4_INDEXER_SERVICE, Identifier: "Scanner V4 Indexer"}
+
+	// ScannerV4MatcherSubject is the identity used in certificates for Scanner V4 Matcher.
+	ScannerV4MatcherSubject = Subject{ServiceType: storage.ServiceType_SCANNER_V4_MATCHER_SERVICE, Identifier: "Scanner V4 Matcher"}
+
+	// ScannerV4DBSubject is the identity used in certificates for Scanner V4 DB.
+	ScannerV4DBSubject = Subject{ServiceType: storage.ServiceType_SCANNER_V4_DB_SERVICE, Identifier: "Scanner V4 DB"}
+
+	// ScannerV4Subject is the identity used in certificates for Scanner V4 running in combo-mode (testing, only).
+	ScannerV4Subject = Subject{ServiceType: storage.ServiceType_SCANNER_V4_SERVICE, Identifier: "Scanner V4"}
 
 	readCACertOnce     sync.Once
 	caCert             *x509.Certificate
@@ -326,10 +341,8 @@ func RandomSerial() (*big.Int, error) {
 
 func generateIdentity(subj Subject, serial *big.Int) *storage.ServiceIdentity {
 	return &storage.ServiceIdentity{
-		Id:   subj.Identifier,
-		Type: subj.ServiceType,
-		Srl: &storage.ServiceIdentity_SerialStr{
-			SerialStr: serial.String(),
-		},
+		Id:        subj.Identifier,
+		Type:      subj.ServiceType,
+		SerialStr: serial.String(),
 	}
 }

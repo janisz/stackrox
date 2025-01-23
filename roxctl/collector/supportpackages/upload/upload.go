@@ -12,21 +12,19 @@ import (
 	"strings"
 	"time"
 
-	"github.com/gogo/protobuf/proto"
 	"github.com/pkg/errors"
 	v1 "github.com/stackrox/rox/generated/api/v1"
+	"github.com/stackrox/rox/pkg/errox"
 	"github.com/stackrox/rox/pkg/httputil"
 	"github.com/stackrox/rox/pkg/ioutils"
 	"github.com/stackrox/rox/pkg/probeupload"
-	"github.com/stackrox/rox/pkg/roxctl/common"
+	pkgCommon "github.com/stackrox/rox/pkg/roxctl/common"
 	"github.com/stackrox/rox/pkg/utils"
 	"github.com/stackrox/rox/roxctl/central/db/transfer"
+	"github.com/stackrox/rox/roxctl/common"
 )
 
 const (
-	grpcTimeout       = 30 * time.Second
-	uploadIdleTimeout = 30 * time.Second
-
 	kernelModulesDirPrefix = "kernel-modules/"
 )
 
@@ -53,7 +51,7 @@ func analyzePackageFile(pkg *zip.Reader) (map[string]*zip.File, bool) {
 }
 
 func (cmd *collectorSPUploadCommand) retrieveExistingProbeFiles(probeFilesInPackage map[string]*zip.File) ([]*v1.ProbeUploadManifest_File, error) {
-	conn, err := cmd.env.GRPCConnection()
+	conn, err := cmd.env.GRPCConnection(common.WithRetryTimeout(cmd.retryTimeout))
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to establish a gRPC connection to Central")
 	}
@@ -65,7 +63,7 @@ func (cmd *collectorSPUploadCommand) retrieveExistingProbeFiles(probeFilesInPack
 		req.FilesToCheck = append(req.FilesToCheck, probeFileName)
 	}
 
-	ctx, cancel := context.WithTimeout(common.Context(), grpcTimeout)
+	ctx, cancel := context.WithTimeout(pkgCommon.Context(), cmd.timeout)
 	defer cancel()
 
 	resp, err := probeUploadClient.GetExistingProbes(ctx, req)
@@ -93,7 +91,7 @@ func buildUploadManifest(probeFilesInPackage map[string]*zip.File, existingFiles
 		if pkgEntry == nil {
 			continue
 		}
-		if existingFile.GetSize_() == int64(pkgEntry.UncompressedSize64) && existingFile.GetCrc32() == pkgEntry.CRC32 {
+		if existingFile.GetSize() == int64(pkgEntry.UncompressedSize64) && existingFile.GetCrc32() == pkgEntry.CRC32 {
 			delete(probeFilesInPackage, existingFile.GetName())
 		} else if !overwrite {
 			nonOverwrittenFiles = append(nonOverwrittenFiles, pkgEntry)
@@ -106,7 +104,7 @@ func buildUploadManifest(probeFilesInPackage map[string]*zip.File, existingFiles
 	for fileName, pkgEntry := range probeFilesInPackage {
 		mf.Files = append(mf.Files, &v1.ProbeUploadManifest_File{
 			Name:  fileName,
-			Size_: int64(pkgEntry.UncompressedSize64),
+			Size:  int64(pkgEntry.UncompressedSize64),
 			Crc32: pkgEntry.CRC32,
 		})
 		readerFuncs = append(readerFuncs, readerFuncForZipEntry(pkgEntry))
@@ -118,10 +116,10 @@ func buildUploadManifest(probeFilesInPackage map[string]*zip.File, existingFiles
 func (cmd *collectorSPUploadCommand) doFileUpload(manifest *v1.ProbeUploadManifest, data io.Reader) error {
 	totalSize, err := probeupload.AnalyzeManifest(manifest)
 	if err != nil {
-		return utils.Should(errors.Wrap(err, "generated invalid manifest"))
+		return utils.ShouldErr(errors.Wrap(err, "generated invalid manifest"))
 	}
 
-	manifestBytes, err := proto.Marshal(manifest)
+	manifestBytes, err := manifest.MarshalVT()
 	if err != nil {
 		return errors.Wrap(err, "failed to marshal manifest")
 	}
@@ -147,7 +145,7 @@ func (cmd *collectorSPUploadCommand) doFileUpload(manifest *v1.ProbeUploadManife
 	req.URL.RawQuery = urlParams.Encode()
 
 	cmd.env.Logger().InfofLn("Uploading %d files from support package ...\n", len(manifest.GetFiles()))
-	resp, err := transfer.ViaHTTP(req, httpClient, time.Now(), uploadIdleTimeout)
+	resp, err := transfer.ViaHTTP(req, httpClient, time.Now(), cmd.timeout)
 	if err != nil {
 		return errors.Wrap(err, "HTTP transport error while uploading collector support files")
 	}
@@ -176,7 +174,7 @@ func (cmd *collectorSPUploadCommand) uploadFilesFromPackage() error {
 	}
 
 	if len(probeFiles) == 0 {
-		return errors.New("the given support package contains no relevant files")
+		return errox.NotFound.New("the given support package contains no relevant files")
 	}
 
 	existingFiles, err := cmd.retrieveExistingProbeFiles(probeFiles)

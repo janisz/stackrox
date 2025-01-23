@@ -1,42 +1,96 @@
 import { BaseBackupIntegration } from 'types/externalBackup.proto';
 import { FeatureFlagEnvVar } from 'types/featureFlag';
-import { BaseImageIntegration } from 'types/imageIntegration.proto';
 import {
-    AuthPluginType,
+    BaseImageIntegration,
+    ClairifyImageIntegration,
+    GoogleImageIntegration,
+    QuayImageIntegration,
+} from 'types/imageIntegration.proto';
+import {
+    AuthProviderIntegration,
     AuthProviderType,
     BackupIntegrationType,
-    BaseIntegration,
+    CloudSourceIntegrationType,
     ImageIntegrationType,
     NotifierIntegrationType,
     SignatureIntegrationType,
 } from 'types/integration';
-import { SumoLogicNotifierIntegration, SyslogNotifierIntegration } from 'types/notifier.proto';
+import {
+    BaseNotifierIntegration,
+    SumoLogicNotifierIntegration,
+    SyslogNotifierIntegration,
+} from 'types/notifier.proto';
 import { SignatureIntegration } from 'types/signatureIntegration.proto';
 
-import { daysOfWeek, timesOfDay } from './integrationUtils';
+import { getOriginLabel } from 'Containers/AccessControl/traits';
+import { AuthMachineToMachineConfig } from 'services/MachineAccessService';
+import { CloudSourceIntegration } from 'services/CloudSourceService';
+import {
+    backupScheduleDescriptor,
+    categoriesUtilsForClairifyScanner,
+    categoriesUtilsForRegistryScanner,
+    transformDurationLongForm,
+} from './integrationUtils';
 
-export type AccessorFunction = (integration: BaseIntegration) => string;
+const { getCategoriesText: getCategoriesTextForClairifyScanner } =
+    categoriesUtilsForClairifyScanner;
+const { getCategoriesText: getCategoriesTextForRegistryScanner } =
+    categoriesUtilsForRegistryScanner;
 
-export type IntegrationTableColumnDescriptor = {
+export type AccessorFunction<Integration> = (integration: Integration) => string;
+
+export type IntegrationTableColumnDescriptor<Integration> = {
     Header: string;
-    accessor: string | AccessorFunction;
-    featureFlagDependency?: FeatureFlagEnvVar;
+    accessor: string | AccessorFunction<Integration>;
+    featureFlagDependency?: FeatureFlagEnvVar[];
 };
 
 /*
  * To add a table column behind a feature flag:
  * 1. Add to string union type in types/featureFlag.ts file.
  * 2. Add the following property to the table column descriptor:
- *    featureFlagDependency: 'ROX_WHATEVER',
+ *    featureFlagDependency: ['ROX_WHATEVER_1', 'ROX_WHATEVER_2'],
  */
 
 type IntegrationTableColumnDescriptorMap = {
-    authPlugins: Record<AuthPluginType, IntegrationTableColumnDescriptor[]>;
-    authProviders: Record<AuthProviderType, IntegrationTableColumnDescriptor[]>;
-    backups: Record<BackupIntegrationType, IntegrationTableColumnDescriptor[]>;
-    imageIntegrations: Record<ImageIntegrationType, IntegrationTableColumnDescriptor[]>;
-    notifiers: Record<NotifierIntegrationType, IntegrationTableColumnDescriptor[]>;
-    signatureIntegrations: Record<SignatureIntegrationType, IntegrationTableColumnDescriptor[]>;
+    authProviders: Record<
+        AuthProviderType,
+        IntegrationTableColumnDescriptor<AuthProviderIntegration>[]
+    >;
+    backups: Record<
+        BackupIntegrationType,
+        IntegrationTableColumnDescriptor<BaseBackupIntegration>[]
+    >;
+    imageIntegrations: Record<
+        ImageIntegrationType,
+        IntegrationTableColumnDescriptor<BaseImageIntegration>[]
+    > & {
+        clairify: IntegrationTableColumnDescriptor<ClairifyImageIntegration>[];
+        google: IntegrationTableColumnDescriptor<GoogleImageIntegration>[];
+        quay: IntegrationTableColumnDescriptor<QuayImageIntegration>[];
+    };
+    notifiers: Record<
+        NotifierIntegrationType,
+        IntegrationTableColumnDescriptor<BaseNotifierIntegration>[]
+    > & {
+        sumologic: IntegrationTableColumnDescriptor<SumoLogicNotifierIntegration>[];
+        syslog: IntegrationTableColumnDescriptor<SyslogNotifierIntegration>[];
+    };
+    signatureIntegrations: Record<
+        SignatureIntegrationType,
+        IntegrationTableColumnDescriptor<SignatureIntegration>[]
+    >;
+    cloudSources: Record<
+        CloudSourceIntegrationType,
+        IntegrationTableColumnDescriptor<CloudSourceIntegration>[]
+    >;
+};
+
+const originColumnDescriptor = {
+    accessor: (integration) => {
+        return getOriginLabel(integration.traits);
+    },
+    Header: 'Origin',
 };
 
 const tableColumnDescriptor: Readonly<IntegrationTableColumnDescriptorMap> = {
@@ -45,6 +99,30 @@ const tableColumnDescriptor: Readonly<IntegrationTableColumnDescriptorMap> = {
         apitoken: [
             { accessor: 'name', Header: 'Name' },
             { accessor: 'role', Header: 'Role' },
+        ],
+        machineAccess: [
+            {
+                accessor: (config) => {
+                    const { type } = <AuthMachineToMachineConfig>config;
+                    if (type === 'GENERIC') {
+                        return 'Generic';
+                    }
+                    if (type === 'GITHUB_ACTIONS') {
+                        return 'GitHub action';
+                    }
+                    return 'Unknown';
+                },
+                Header: 'Configuration',
+            },
+            { accessor: 'issuer', Header: 'Issuer' },
+            {
+                accessor: (config) => {
+                    return transformDurationLongForm(
+                        (<AuthMachineToMachineConfig>config).tokenExpirationDuration
+                    );
+                },
+                Header: 'Token lifetime',
+            },
         ],
     },
     notifiers: {
@@ -81,12 +159,18 @@ const tableColumnDescriptor: Readonly<IntegrationTableColumnDescriptorMap> = {
             { accessor: 'labelKey', Header: 'Recipient Annotation Key' },
             { accessor: 'email.server', Header: 'Server' },
         ],
+        acscsEmail: [
+            { accessor: 'name', Header: 'Name' },
+            { accessor: 'labelDefault', Header: 'Default Recipient' },
+            { accessor: 'labelKey', Header: 'Recipient Annotation Key' },
+        ],
         cscc: [
             { accessor: 'name', Header: 'Name' },
             { accessor: 'cscc.sourceId', Header: 'Google Cloud SCC Source ID' },
         ],
         splunk: [
             { accessor: 'name', Header: 'Name' },
+            originColumnDescriptor,
             {
                 accessor: 'splunk.httpEndpoint',
                 Header: 'URL',
@@ -96,6 +180,7 @@ const tableColumnDescriptor: Readonly<IntegrationTableColumnDescriptorMap> = {
         pagerduty: [{ accessor: 'name', Header: 'Name' }],
         generic: [
             { accessor: 'name', Header: 'Name' },
+            originColumnDescriptor,
             { accessor: 'generic.endpoint', Header: 'Endpoint' },
         ],
         sumologic: [
@@ -104,9 +189,7 @@ const tableColumnDescriptor: Readonly<IntegrationTableColumnDescriptorMap> = {
             {
                 Header: 'Skip TLS Certificate Verification',
                 accessor: (integration) =>
-                    (integration as SumoLogicNotifierIntegration).sumologic.skipTLSVerify
-                        ? 'Yes (Insecure)'
-                        : 'No (Secure)',
+                    integration.sumologic.skipTLSVerify ? 'Yes (Insecure)' : 'No (Secure)',
             },
         ],
         syslog: [
@@ -115,10 +198,17 @@ const tableColumnDescriptor: Readonly<IntegrationTableColumnDescriptorMap> = {
             {
                 Header: 'Skip TLS Certificate Verification',
                 accessor: (integration) =>
-                    (integration as SyslogNotifierIntegration).syslog.tcpConfig.skipTlsVerify
-                        ? 'Yes (Insecure)'
-                        : 'No (Secure)',
+                    integration.syslog.tcpConfig.skipTlsVerify ? 'Yes (Insecure)' : 'No (Secure)',
             },
+        ],
+        microsoftSentinel: [
+            { accessor: 'name', Header: 'Name' },
+            {
+                accessor: 'microsoftSentinel.logIngestionEndpoint',
+                Header: 'Log ingestion endpoint',
+            },
+            { accessor: 'microsoftSentinel.directoryTenantId', Header: 'Directory tenant ID' },
+            { accessor: 'microsoftSentinel.applicationClientId', Header: 'Application client ID' },
         ],
     },
     imageIntegrations: {
@@ -128,8 +218,7 @@ const tableColumnDescriptor: Readonly<IntegrationTableColumnDescriptorMap> = {
             { accessor: 'docker.username', Header: 'Username' },
             {
                 Header: 'Autogenerated',
-                accessor: (integration) =>
-                    (integration as BaseImageIntegration).autogenerated ? 'True' : 'False',
+                accessor: (integration) => (integration.autogenerated ? 'True' : 'False'),
             },
         ],
         artifactregistry: [
@@ -145,29 +234,56 @@ const tableColumnDescriptor: Readonly<IntegrationTableColumnDescriptorMap> = {
         quay: [
             { accessor: 'name', Header: 'Name' },
             { accessor: 'quay.endpoint', Header: 'Endpoint' },
+            {
+                Header: 'Type',
+                accessor: (integration) =>
+                    getCategoriesTextForRegistryScanner(integration.categories),
+            },
         ],
         clair: [
             { accessor: 'name', Header: 'Name' },
             { accessor: 'clair.endpoint', Header: 'Endpoint' },
         ],
+        clairV4: [
+            { accessor: 'name', Header: 'Name' },
+            { accessor: 'clairV4.endpoint', Header: 'Endpoint' },
+        ],
         clairify: [
             { accessor: 'name', Header: 'Name' },
             { accessor: 'clairify.endpoint', Header: 'Endpoint' },
+            {
+                Header: 'Type',
+                accessor: (integration) =>
+                    getCategoriesTextForClairifyScanner(integration.categories),
+            },
+        ],
+        scannerv4: [
+            { accessor: 'name', Header: 'Name' },
+            { accessor: 'scannerV4.indexerEndpoint', Header: 'Indexer Endpoint' },
+            { accessor: 'scannerV4.matcherEndpoint', Header: 'Matcher Endpoint' },
+        ],
+        ghcr: [
+            { accessor: 'name', Header: 'Name' },
+            { accessor: 'docker.endpoint', Header: 'Endpoint' },
+            { accessor: 'docker.username', Header: 'Username' },
         ],
         google: [
             { accessor: 'name', Header: 'Name' },
             { accessor: 'google.endpoint', Header: 'Endpoint' },
             { accessor: 'google.project', Header: 'Project' },
+            {
+                Header: 'Type',
+                accessor: (integration) =>
+                    getCategoriesTextForRegistryScanner(integration.categories),
+            },
         ],
         ecr: [
             { accessor: 'name', Header: 'Name' },
-            { accessor: 'ecr.registryId', Header: 'Registry ID' },
+            { accessor: 'ecr.registryId', Header: '12-digit AWS ID' },
             { accessor: 'ecr.region', Header: 'Region' },
             {
                 Header: 'Autogenerated',
-                accessor: (integration) =>
-                    (integration as BaseImageIntegration).autogenerated ? 'True' : 'False',
-                featureFlagDependency: 'ROX_ECR_AUTO_INTEGRATION',
+                accessor: (integration) => (integration.autogenerated ? 'True' : 'False'),
             },
         ],
         nexus: [
@@ -194,9 +310,7 @@ const tableColumnDescriptor: Readonly<IntegrationTableColumnDescriptorMap> = {
         signature: [
             { accessor: 'name', Header: 'Name' },
             {
-                accessor: (integration) => {
-                    return (integration as SignatureIntegration).cosign ? 'Cosign' : '';
-                },
+                accessor: (integration) => (integration.cosign ? 'Cosign' : ''),
                 Header: 'Verification methods',
             },
         ],
@@ -205,40 +319,27 @@ const tableColumnDescriptor: Readonly<IntegrationTableColumnDescriptorMap> = {
         s3: [
             { accessor: 'name', Header: 'Name' },
             { accessor: 's3.bucket', Header: 'Bucket' },
-            {
-                accessor: (integration) => {
-                    const { schedule } = integration as BaseBackupIntegration;
-                    if (schedule.intervalType === 'WEEKLY') {
-                        return `Weekly on ${daysOfWeek[schedule.weekly.day]} @ ${
-                            timesOfDay[schedule.hour]
-                        } UTC`;
-                    }
-                    return `Daily @ ${timesOfDay[schedule.hour]} UTC`;
-                },
-                Header: 'Schedule',
-            },
+            backupScheduleDescriptor(),
+        ],
+        s3compatible: [
+            { accessor: 'name', Header: 'Name' },
+            { accessor: 's3compatible.bucket', Header: 'Bucket' },
+            backupScheduleDescriptor(),
         ],
         gcs: [
             { accessor: 'name', Header: 'Name' },
             { accessor: 'gcs.bucket', Header: 'Bucket' },
-            {
-                accessor: (integration) => {
-                    const { schedule } = integration as BaseBackupIntegration;
-                    if (schedule.intervalType === 'WEEKLY') {
-                        return `Weekly on ${daysOfWeek[schedule.weekly.day]} @ ${
-                            timesOfDay[schedule.hour]
-                        } UTC`;
-                    }
-                    return `Daily @ ${timesOfDay[schedule.hour]} UTC`;
-                },
-                Header: 'Schedule',
-            },
+            backupScheduleDescriptor(),
         ],
     },
-    authPlugins: {
-        scopedAccess: [
+    cloudSources: {
+        paladinCloud: [
             { accessor: 'name', Header: 'Name' },
-            { accessor: 'endpointConfig.endpoint', Header: 'Endpoint' },
+            { accessor: 'paladinCloud.endpoint', Header: 'Endpoint' },
+        ],
+        ocm: [
+            { accessor: 'name', Header: 'Name' },
+            { accessor: 'ocm.endpoint', Header: 'Endpoint' },
         ],
     },
 };

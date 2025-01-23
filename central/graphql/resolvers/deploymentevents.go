@@ -11,6 +11,8 @@ import (
 	"github.com/stackrox/rox/generated/storage"
 	"github.com/stackrox/rox/pkg/containerid"
 	processBaselinePkg "github.com/stackrox/rox/pkg/processbaseline"
+	"github.com/stackrox/rox/pkg/protocompat"
+	"github.com/stackrox/rox/pkg/search/paginated"
 	"github.com/stackrox/rox/pkg/set"
 	"github.com/stackrox/rox/pkg/utils"
 )
@@ -43,7 +45,6 @@ func init() {
 			"uid: Int!",
 			"parentName: String",
 			"parentUid: Int!",
-			"whitelisted: Boolean!", // TODO(ROX-6194): Remove after the deprecation cycle started with the 55.0 release.
 			"inBaseline: Boolean!",
 		}, "DeploymentEvent"),
 		schema.AddType("PolicyViolationEvent", []string{
@@ -201,12 +202,6 @@ func (resolver *ProcessActivityEventResolver) ParentUID() int32 {
 	return resolver.parentUID
 }
 
-// Whitelisted returns true if this process is in baseline.
-// TODO(ROX-6194): Remove after the deprecation cycle started with the 55.0 release.
-func (resolver *ProcessActivityEventResolver) Whitelisted() bool {
-	return resolver.InBaseline()
-}
-
 // InBaseline returns true if this process is in baseline.
 func (resolver *ProcessActivityEventResolver) InBaseline() bool {
 	if resolver.canReadBaseline {
@@ -217,7 +212,7 @@ func (resolver *ProcessActivityEventResolver) InBaseline() bool {
 }
 
 func (resolver *Resolver) getProcessActivityEvents(ctx context.Context, query *v1.Query) ([]*ProcessActivityEventResolver, error) {
-	if err := readIndicators(ctx); err != nil {
+	if err := readDeploymentExtensions(ctx); err != nil {
 		return nil, err
 	}
 
@@ -230,7 +225,7 @@ func (resolver *Resolver) getProcessActivityEvents(ctx context.Context, query *v
 	baselines := make(map[string]*set.StringSet)
 	// This determines if we should read baseline information.
 	// nil means we can.
-	canReadBaseline := readBaselines(ctx) == nil
+	canReadBaseline := readDeploymentExtensions(ctx) == nil
 	for _, indicator := range indicators {
 		var keyStr, procName string
 		if canReadBaseline {
@@ -258,8 +253,9 @@ func (resolver *Resolver) getProcessActivityEvents(ctx context.Context, query *v
 			}
 		}
 
-		timestamp, ok := convertTimestamp(indicator.GetSignal().GetName(), "indicator", indicator.GetSignal().GetTime())
-		if !ok {
+		timestamp, err := protocompat.ConvertTimestampToTimeOrError(indicator.GetSignal().GetTime())
+		if err != nil {
+			logTimestampConversionError(indicator.GetSignal().GetName(), "indicator", err)
 			continue
 		}
 		// -1 indicates we do not have parent UID information (either no parent exists or we do not know its UID).
@@ -355,6 +351,7 @@ func (resolver *Resolver) getPolicyViolationEvents(ctx context.Context, query *v
 		return nil, err
 	}
 
+	query = paginated.FillDefaultSortOption(query, paginated.GetViolationTimeSortOption())
 	alerts, err := resolver.ViolationsDataStore.SearchRawAlerts(ctx, query)
 	if err != nil {
 		return nil, errors.Wrap(err, "retrieving alerts from search")
@@ -371,8 +368,9 @@ func (resolver *Resolver) getPolicyViolationEvents(ctx context.Context, query *v
 
 	policyViolationEvents := make([]*PolicyViolationEventResolver, 0, len(alerts))
 	for _, alert := range alerts {
-		timestamp, ok := convertTimestamp(alert.GetPolicy().GetName(), "alert", alert.GetTime())
-		if !ok {
+		timestamp, err := protocompat.ConvertTimestampToTimeOrError(alert.GetTime())
+		if err != nil {
+			logTimestampConversionError(alert.GetPolicy().GetName(), "alert", err)
 			continue
 		}
 		policy := alert.GetPolicy()

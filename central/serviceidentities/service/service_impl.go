@@ -3,9 +3,8 @@ package service
 import (
 	"context"
 
-	"github.com/grpc-ecosystem/grpc-gateway/runtime"
+	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
 	"github.com/pkg/errors"
-	"github.com/stackrox/rox/central/role/resources"
 	"github.com/stackrox/rox/central/serviceidentities/datastore"
 	v1 "github.com/stackrox/rox/generated/api/v1"
 	"github.com/stackrox/rox/generated/storage"
@@ -15,16 +14,17 @@ import (
 	"github.com/stackrox/rox/pkg/grpc/authz/perrpc"
 	"github.com/stackrox/rox/pkg/grpc/authz/user"
 	"github.com/stackrox/rox/pkg/mtls"
+	"github.com/stackrox/rox/pkg/sac/resources"
 	"google.golang.org/grpc"
 )
 
 var (
 	authorizer = perrpc.FromMap(map[authz.Authorizer][]string{
-		user.With(permissions.View(resources.ServiceIdentity)): {
+		user.With(permissions.View(resources.Administration)): {
 			"/v1.ServiceIdentityService/GetServiceIdentities",
 			"/v1.ServiceIdentityService/GetAuthorities",
 		},
-		user.With(permissions.Modify(resources.ServiceIdentity)): {
+		user.With(permissions.Modify(resources.Administration)): {
 			"/v1.ServiceIdentityService/CreateServiceIdentity",
 		},
 	})
@@ -32,6 +32,8 @@ var (
 
 // IdentityService is the struct that manages the Service Identity API
 type serviceImpl struct {
+	v1.UnimplementedServiceIdentityServiceServer
+
 	dataStore datastore.DataStore
 }
 
@@ -90,7 +92,7 @@ func (s *serviceImpl) CreateServiceIdentity(ctx context.Context, request *v1.Cre
 }
 
 // GetAuthorities returns the authorities currently in use.
-func (s *serviceImpl) GetAuthorities(ctx context.Context, request *v1.Empty) (*v1.Authorities, error) {
+func (s *serviceImpl) GetAuthorities(_ context.Context, _ *v1.Empty) (*v1.Authorities, error) {
 	ca, err := mtls.CACertPEM()
 	if err != nil {
 		return nil, err

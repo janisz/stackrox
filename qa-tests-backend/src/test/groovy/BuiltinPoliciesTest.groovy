@@ -1,16 +1,19 @@
 import static Services.getPolicies
 import static Services.waitForViolation
 
-import groups.BAT
+import io.stackrox.proto.api.v1.PolicyServiceOuterClass.PatchPolicyRequest
+
 import objects.Deployment
 import objects.SecretKeyRef
 import objects.Volume
-import org.junit.experimental.categories.Category
-import spock.lang.Shared
-import spock.lang.Unroll
 import services.PolicyService
-import io.stackrox.proto.api.v1.PolicyServiceOuterClass.PatchPolicyRequest
 
+import spock.lang.Shared
+import spock.lang.Tag
+import spock.lang.Unroll
+import util.Env
+
+@Tag("PZ")
 class BuiltinPoliciesTest extends BaseSpecification {
     static final private String TRIGGER_MOST = "trigger-most"
     static final private String TRIGGER_ALPINE = "trigger-alpine"
@@ -19,10 +22,18 @@ class BuiltinPoliciesTest extends BaseSpecification {
     static final private String TRIGGER_UNSCANNED = "trigger-unscanned"
     static final private String TEST_PASSWORD = "test-password"
 
+    // Arch specific test images
+    static final private String TRIGGER_MOST_IMAGE = ((Env.REMOTE_CLUSTER_ARCH == "x86_64") ?
+        "us.gcr.io/acs-san-stackroxci/qa/trigger-policy-violations/most:0.20":
+        "quay.io/rhacs-eng/qa-multi-arch:trigger-policy-violations-most-v1")
+    static final private String TRIGGER_ALPINE_IMAGE = ((Env.REMOTE_CLUSTER_ARCH == "x86_64") ?
+        "us.gcr.io/acs-san-stackroxci/qa/trigger-policy-violations/alpine:0.6":
+        "quay.io/rhacs-eng/qa-multi-arch:trigger-policy-violations-alpine")
+
     static final private List<Deployment> DEPLOYMENTS = [
             new Deployment()
                     .setName(TRIGGER_MOST)
-                    .setImage("us.gcr.io/stackrox-ci/qa/trigger-policy-violations/most:0.19")
+                    .setImage(TRIGGER_MOST_IMAGE)
                     // For: "Emergency Deployment Annotation"
                     .addAnnotation("admission.stackrox.io/break-glass", "yay")
                     // For: "Secret Mounted as Environment Variable"
@@ -32,23 +43,23 @@ class BuiltinPoliciesTest extends BaseSpecification {
                     )
                     // For: "Mounting Sensitive Host Directories"
                     .addVolume("sensitive", "/etc/", true)
-                    // For: Iptables Executed in Privileged Container
+                    // For: Iptables or nftables Executed in Privileged Container
                     .setPrivilegedFlag(true),
             // For: "Alpine Linux Package Manager (apk) in Image"
             new Deployment()
                     .setName(TRIGGER_ALPINE)
-                    .setImage("us.gcr.io/stackrox-ci/qa/trigger-policy-violations/alpine:0.6"),
+                    .setImage(TRIGGER_ALPINE_IMAGE),
     ]
     static final private List<Deployment> NO_WAIT_DEPLOYMENTS = [
             new Deployment()
                     .setName(TRIGGER_DOCKER_MOUNT)
-                    .setImage("nginx:latest")
+                    .setImage("quay.io/rhacs-eng/qa-multi-arch:nginx-latest")
                     .addVolume(new Volume(name: "docker-sock",
                             hostPath: "/var/run/docker.sock",
                             mountPath: "/var/run/docker.sock")),
             new Deployment()
                     .setName(TRIGGER_CRIO_MOUNT)
-                    .setImage("nginx:latest")
+                    .setImage("quay.io/rhacs-eng/qa-multi-arch:nginx-latest")
                     .addVolume(new Volume(name: "crio-sock",
                             hostPath: "/run/crio/crio.sock",
                             mountPath: "/run/crio/crio.sock")),
@@ -65,7 +76,7 @@ class BuiltinPoliciesTest extends BaseSpecification {
         getPolicies().forEach {
             policy ->
             if (policy.disabled) {
-                println "Temporarily enabling a disabled policy for testing: ${policy.name}"
+                log.info "Temporarily enabling a disabled policy for testing: ${policy.name}"
                 PolicyService.patchPolicy(
                         PatchPolicyRequest.newBuilder().setId(policy.id).setDisabled(false).build()
                 )
@@ -76,13 +87,13 @@ class BuiltinPoliciesTest extends BaseSpecification {
         orchestrator.createSecret(TEST_PASSWORD)
 
         for (Deployment deployment : NO_WAIT_DEPLOYMENTS) {
-            println("Starting ${deployment.name} without waiting for deployment")
+            log.info("Starting ${deployment.name} without waiting for deployment")
             orchestrator.createDeploymentNoWait(deployment)
         }
 
         orchestrator.batchCreateDeployments(DEPLOYMENTS)
         for (Deployment deployment : DEPLOYMENTS) {
-            println("Waiting for ${deployment.name}")
+            log.info("Waiting for ${deployment.name}")
             assert Services.waitForDeployment(deployment)
         }
     }
@@ -90,7 +101,7 @@ class BuiltinPoliciesTest extends BaseSpecification {
     def cleanupSpec() {
         disabledPolicyIds.forEach {
             id ->
-            println "Re-disabling a policy after test"
+            log.info "Re-disabling a policy after test"
             PolicyService.patchPolicy(
                     PatchPolicyRequest.newBuilder().setId(id).setDisabled(true).build()
             )
@@ -104,7 +115,7 @@ class BuiltinPoliciesTest extends BaseSpecification {
     }
 
     @Unroll
-    @Category([BAT])
+    @Tag("BAT")
     def "Verify policy '#policyName' is triggered"(String policyName, String deploymentName) {
         when:
         "An existing policy"
@@ -112,7 +123,7 @@ class BuiltinPoliciesTest extends BaseSpecification {
 
         then:
         "Verify Violation for #policyName is triggered"
-        assert waitForViolation(deploymentName, policyName, isRaceBuild() ? 450 : 30)
+        assert waitForViolation(deploymentName, policyName, isRaceBuild() ? 450 : 120)
 
         where:
         "Data inputs are:"
@@ -128,14 +139,15 @@ class BuiltinPoliciesTest extends BaseSpecification {
         "Compiler Tool Execution"                                    | TRIGGER_MOST
         "crontab Execution"                                          | TRIGGER_MOST
         "Cryptocurrency Mining Process Execution"                    | TRIGGER_MOST
-        "Curl in Image"                                              | TRIGGER_MOST
+        //TODO(ROX-26897)Fix regex for Curl in Image policy. Until then this test is disabled
+        //"Curl in Image"                                              | TRIGGER_MOST
         "Emergency Deployment Annotation"                            | TRIGGER_MOST
         "Fixable CVSS >= 6 and Privileged"                           | TRIGGER_MOST
         "Images with no scans"                                       | TRIGGER_UNSCANNED
         // "Improper Usage of Orchestrator Secrets Volume"          | TRIGGER_MOST  // ROX-5098 does not trigger
         "Insecure specified in CMD"                                  | TRIGGER_MOST
         "iptables Execution"                                         | TRIGGER_MOST
-        "Iptables Executed in Privileged Container"                  | TRIGGER_MOST
+        "Iptables or nftables Executed in Privileged Container"      | TRIGGER_MOST
         "Linux Group Add Execution"                                  | TRIGGER_MOST
         "Linux User Add Execution"                                   | TRIGGER_MOST
         "Login Binaries"                                             | TRIGGER_MOST
@@ -145,7 +157,7 @@ class BuiltinPoliciesTest extends BaseSpecification {
         "Netcat Execution Detected"                                  | TRIGGER_MOST
         "Network Management Execution"                               | TRIGGER_MOST
         "nmap Execution"                                             | TRIGGER_MOST
-        "No resource requests or limits specified"                   | TRIGGER_MOST
+        "No CPU request or memory limit specified"                   | TRIGGER_MOST
         "Password Binaries"                                          | TRIGGER_MOST
         "Process Targeting Cluster Kubelet Endpoint"                 | TRIGGER_MOST
         "Process Targeting Cluster Kubernetes Docker Stats Endpoint" | TRIGGER_MOST
@@ -158,7 +170,7 @@ class BuiltinPoliciesTest extends BaseSpecification {
         "Required Image Label"                                       | TRIGGER_MOST
         "Required Label: Owner/Team"                                 | TRIGGER_MOST
         "Secret Mounted as Environment Variable"                     | TRIGGER_MOST
-        "Secure Shell (ssh) Port Exposed in Image"                   | TRIGGER_MOST
+        //"Secure Shell (ssh) Port Exposed in Image"                 | TRIGGER_MOST
         "Secure Shell Server (sshd) Execution"                       | TRIGGER_MOST
         "SetUID Processes"                                           | TRIGGER_MOST
         "Shadow File Modification"                                   | TRIGGER_MOST

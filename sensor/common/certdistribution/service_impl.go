@@ -6,7 +6,8 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/grpc-ecosystem/grpc-gateway/runtime"
+	"github.com/go-jose/go-jose/v3/jwt"
+	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
 	"github.com/pkg/errors"
 	"github.com/stackrox/rox/generated/internalapi/sensor"
 	"github.com/stackrox/rox/generated/storage"
@@ -21,7 +22,6 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
-	"gopkg.in/square/go-jose.v2/jwt"
 	v1 "k8s.io/api/authentication/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
@@ -29,9 +29,6 @@ import (
 )
 
 const (
-	// cacheDir is the directory in which certificates to be distributed are stored.
-	cacheDir = `/var/cache/stackrox/.certificates`
-
 	maxQueryRate rate.Limit = 1.0
 
 	maxBurstRequests = 10
@@ -42,6 +39,8 @@ var (
 )
 
 type service struct {
+	sensor.UnimplementedCertDistributionServiceServer
+
 	namespace string
 
 	k8sAuthnClient authenticationV1.AuthenticationV1Interface
@@ -61,7 +60,7 @@ func (s *service) RegisterServiceServer(grpcSrv *grpc.Server) {
 	sensor.RegisterCertDistributionServiceServer(grpcSrv, s)
 }
 
-func (s *service) RegisterServiceHandler(ctx context.Context, mux *runtime.ServeMux, cc *grpc.ClientConn) error {
+func (s *service) RegisterServiceHandler(_ context.Context, _ *runtime.ServeMux, _ *grpc.ClientConn) error {
 	return nil
 }
 
@@ -114,8 +113,8 @@ func (s *service) verifyToken(ctx context.Context, token string, expectedSubject
 }
 
 func (s *service) loadCertsForService(serviceName string) (certPEM, keyPEM string, err error) {
-	certFileName := filepath.Join(cacheDir, serviceName+"-cert.pem")
-	keyFileName := filepath.Join(cacheDir, serviceName+"-key.pem")
+	certFileName := filepath.Join(cacheDir.Setting(), serviceName+"-cert.pem")
+	keyFileName := filepath.Join(cacheDir.Setting(), serviceName+"-key.pem")
 
 	if allExist, err := fileutils.AllExist(certFileName, keyFileName); err != nil {
 		return "", "", errors.New("failed to check for existence of certificates")

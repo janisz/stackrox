@@ -1,15 +1,18 @@
 package services
 
-import static com.jayway.restassured.RestAssured.given
+import static io.restassured.RestAssured.given
 
-import com.jayway.restassured.config.RestAssuredConfig
+import groovy.transform.CompileStatic
+import io.restassured.config.RestAssuredConfig
 import groovy.util.logging.Slf4j
+
+import util.Helpers
 import util.Keys
 
 import javax.net.ssl.SSLContext
 import java.security.SecureRandom
 
-import com.jayway.restassured.config.SSLConfig
+import io.restassured.config.SSLConfig
 import org.apache.http.conn.ssl.SSLSocketFactory
 import util.Env
 
@@ -19,25 +22,30 @@ import io.stackrox.proto.api.v1.Common
 import io.stackrox.proto.storage.AuthProviderOuterClass
 
 @Slf4j
+@CompileStatic
 class AuthProviderService extends BaseService {
-    static getAuthProviderService() {
+    static AuthProviderServiceGrpc.AuthProviderServiceBlockingStub getAuthProviderService() {
         return AuthProviderServiceGrpc.newBlockingStub(getChannel())
     }
 
-    static getAuthProviders() {
-        return getAuthProviderService().getAuthProviders(
-                AuthproviderService.GetAuthProvidersRequest.newBuilder().build()
-        )
+    static AuthproviderService.GetAuthProvidersResponse getAuthProviders() {
+        AuthproviderService.GetAuthProvidersResponse ret = null
+        Helpers.withRetry(3, 2) {
+            ret = getAuthProviderService().getAuthProviders(
+                    AuthproviderService.GetAuthProvidersRequest.newBuilder().build()
+            )
+        }
+        return ret
     }
 
-    static getAuthProvider(String id) {
-        try {
-            return getAuthProviderService().getAuthProvider(
+    static private AuthProviderOuterClass.AuthProvider getAuthProvider(String id) {
+        AuthProviderOuterClass.AuthProvider ret = null
+        Helpers.withRetry(3, 2) {
+            ret = getAuthProviderService().getAuthProvider(
                     AuthproviderService.GetAuthProviderRequest.newBuilder().setId(id).build()
             )
-        } catch (Exception e) {
-            log.error( "Failed getting auth provider", e)
         }
+        return ret
     }
 
     static createAuthProvider(String name, String type, Map<String, String> config, String defaultRole = null) {
@@ -59,7 +67,7 @@ class AuthProviderService extends BaseService {
     }
 
     static deleteAuthProvider(String id) {
-        getAuthProviderService().deleteAuthProvider(Common.ResourceByID.newBuilder().setId(id).build())
+        getAuthProviderService().deleteAuthProvider(Common.DeleteByIDWithForce.newBuilder().setId(id).build())
     }
 
     static getAuthProviderLoginToken(String id) {

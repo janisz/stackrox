@@ -16,6 +16,7 @@ import (
 	"github.com/stackrox/rox/roxctl/common/environment/mocks"
 	"github.com/stretchr/testify/suite"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/test/bufconn"
 )
 
@@ -30,15 +31,16 @@ type clusterDeleteTestSuite struct {
 }
 
 type mockClustersServiceServer struct {
-	v1.ClustersServiceServer
+	v1.UnimplementedClustersServiceServer
+
 	clusters []*storage.Cluster
 }
 
-func (m *mockClustersServiceServer) GetClusters(ctx context.Context, req *v1.GetClustersRequest) (*v1.ClustersList, error) {
+func (m *mockClustersServiceServer) GetClusters(_ context.Context, _ *v1.GetClustersRequest) (*v1.ClustersList, error) {
 	return &v1.ClustersList{Clusters: m.clusters}, nil
 }
 
-func (m *mockClustersServiceServer) DeleteCluster(ctx context.Context, req *v1.ResourceByID) (*v1.Empty, error) {
+func (m *mockClustersServiceServer) DeleteCluster(_ context.Context, _ *v1.ResourceByID) (*v1.Empty, error) {
 	return &v1.Empty{}, nil
 }
 
@@ -55,7 +57,7 @@ func (c *clusterDeleteTestSuite) createGRPCMockClustersService(clusters []*stora
 
 	conn, err := grpc.DialContext(context.Background(), "", grpc.WithContextDialer(func(ctx context.Context, s string) (net.Conn, error) {
 		return listener.Dial()
-	}), grpc.WithInsecure())
+	}), grpc.WithTransportCredentials(insecure.NewCredentials()))
 	c.Require().NoError(err)
 
 	closeFunction := func() {
@@ -68,8 +70,9 @@ func (c *clusterDeleteTestSuite) createGRPCMockClustersService(clusters []*stora
 
 func (c *clusterDeleteTestSuite) SetupTest() {
 	c.defaultClusterDeleteCommand = clusterDeleteCommand{
-		name:    "dummy",
-		timeout: 5 * time.Second,
+		name:         "dummy",
+		timeout:      5 * time.Second,
+		retryTimeout: 5 * time.Second,
 	}
 	os.Stderr = nil
 }
@@ -79,6 +82,7 @@ func (c *clusterDeleteTestSuite) setupCommand(clusters []*storage.Cluster) (*cob
 	mockedEnv, stdout, stderr := mocks.NewEnvWithConn(conn, c.T())
 	cbr := Command(mockedEnv)
 	cbr.PersistentFlags().DurationP("timeout", "t", 5*time.Second, "timeout for API requests")
+	cbr.PersistentFlags().Duration("retry-timeout", 5*time.Second, "retry timeout for API requests")
 
 	return cbr, closeFunction, stdout, stderr
 }
@@ -122,10 +126,12 @@ func (c *clusterDeleteTestSuite) TestConstructSetsTimeoutFlag() {
 	expectedTimeout := 10 * time.Minute
 	testCmd := &cobra.Command{Use: "test"}
 	testCmd.Flags().Duration("timeout", expectedTimeout, "")
+	testCmd.Flags().Duration("retry-timeout", expectedTimeout, "")
 
 	clusterDeleteCmd := c.defaultClusterDeleteCommand
 	err := clusterDeleteCmd.Construct(nil, testCmd)
 
 	c.Assert().NoError(err)
 	c.Assert().Equal(clusterDeleteCmd.timeout, expectedTimeout, "Timeout does not match value of '--timeout' flag.")
+	c.Assert().Equal(clusterDeleteCmd.retryTimeout, expectedTimeout, "Retry timeout does not match value of '--retry-timeout' flag.")
 }

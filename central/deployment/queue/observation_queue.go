@@ -2,8 +2,8 @@ package queue
 
 import (
 	"container/list"
+	"time"
 
-	"github.com/gogo/protobuf/types"
 	"github.com/stackrox/rox/pkg/sync"
 )
 
@@ -11,18 +11,21 @@ import (
 type DeploymentObservation struct {
 	DeploymentID   string
 	InObservation  bool
-	ObservationEnd *types.Timestamp
+	ObservationEnd time.Time
 }
 
-//go:generate mockgen-wrapper
 // DeploymentObservationQueue interface for observation queue
+//
+//go:generate mockgen-wrapper
 type DeploymentObservationQueue interface {
 	InObservation(deploymentID string) bool
 	Pull() *DeploymentObservation
 	Peek() *DeploymentObservation
 	Push(observation *DeploymentObservation)
+	PutBackInObservation(observation *DeploymentObservation)
 	RemoveDeployment(deploymentID string)
 	RemoveFromObservation(deploymentID string)
+	GetObservationDetails(deploymentID string) *DeploymentObservation
 }
 
 // deploymentObservationQueue queue for deployments in observation window
@@ -93,14 +96,28 @@ func (q *deploymentObservationQueueImpl) Push(observation *DeploymentObservation
 	depObj := q.queue.PushBack(observation)
 	// Reference the list object in the deployment map
 	q.deploymentMap[observation.DeploymentID] = depObj
-
 }
 
-// RemoveDeployment removes a deployment from the list and the map
-func (q *deploymentObservationQueueImpl) RemoveDeployment(deploymentID string) {
+// PutBackInObservation attempts to add an item to the queue, and does nothing if object already exists.
+func (q *deploymentObservationQueueImpl) PutBackInObservation(observation *DeploymentObservation) {
 	q.mutex.Lock()
 	defer q.mutex.Unlock()
 
+	// Currently observing this deployment.  Need to update the time and position in the queue
+	if depObj, found := q.deploymentMap[observation.DeploymentID]; found && depObj != nil {
+		// Remove it from the queue so we can add it back to the end
+		q.queue.Remove(depObj)
+	}
+
+	// We have either never observed this deployment OR we already completed observing.  So we simply add it to the
+	// end of the queue and replace the object in the map.
+	depObj := q.queue.PushBack(observation)
+	// Reference the list object in the deployment map
+	q.deploymentMap[observation.DeploymentID] = depObj
+}
+
+// removeListItem removes the list item associated with a deployment
+func (q *deploymentObservationQueueImpl) removeListItem(deploymentID string) {
 	// The deployment is kept in the map after it has been processed to ensure we
 	// do not process it again.  In that case the depObj will be nil
 	depObj, found := q.deploymentMap[deploymentID]
@@ -112,7 +129,22 @@ func (q *deploymentObservationQueueImpl) RemoveDeployment(deploymentID string) {
 	if depObj != nil {
 		q.queue.Remove(depObj)
 	}
+}
+
+// removeDeployment removes a deployment from the list and the map
+func (q *deploymentObservationQueueImpl) removeDeployment(deploymentID string) {
+	// remove the corresponding list items
+	q.removeListItem(deploymentID)
+
 	delete(q.deploymentMap, deploymentID)
+}
+
+// RemoveDeployment removes a deployment from the list and the map
+func (q *deploymentObservationQueueImpl) RemoveDeployment(deploymentID string) {
+	q.mutex.Lock()
+	defer q.mutex.Unlock()
+
+	q.removeDeployment(deploymentID)
 }
 
 // RemoveFromObservation removes a deployment from observation
@@ -133,4 +165,19 @@ func (q *deploymentObservationQueueImpl) RemoveFromObservation(deploymentID stri
 	}
 	// Keep the deployment in the map, so we know that we have processed this deployment.
 	q.deploymentMap[deploymentID] = nil
+}
+
+// GetObservationDetails gets the observations details of the deployment
+func (q *deploymentObservationQueueImpl) GetObservationDetails(deploymentID string) *DeploymentObservation {
+	q.mutex.Lock()
+	defer q.mutex.Unlock()
+
+	// The deployment is kept in the map after it has been processed to ensure we
+	// do not process it again.  In that case the depObj will be nil
+	depObj, found := q.deploymentMap[deploymentID]
+	if !found || depObj == nil {
+		return nil
+	}
+
+	return depObj.Value.(*DeploymentObservation)
 }

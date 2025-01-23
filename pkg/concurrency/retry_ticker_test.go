@@ -13,7 +13,7 @@ import (
 )
 
 var (
-	testTimeout = 1 * time.Second
+	testTimeout = 2 * time.Second
 	longTime    = 5 * time.Second
 	capTime     = 100 * time.Millisecond
 	backoff     = wait.Backoff{

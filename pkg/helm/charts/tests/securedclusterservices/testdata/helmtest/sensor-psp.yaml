@@ -1,0 +1,21 @@
+values:
+  imagePullSecrets:
+    allowNone: true
+test:
+    - name: "sensor with deprecated PodSecurityPolicies enabled"
+      values:
+        system:
+          enablePodSecurityPolicies: true
+      expect: |
+        .podsecuritypolicys["stackrox-sensor"] | assertThat(. != null)
+        .rolebindings["stackrox-sensor-psp"] | assertThat(. != null)
+        .clusterroles["stackrox-sensor-psp"] | assertThat(. != null)
+
+    - name: "sensor with deprecated PodSecurityPolicies disabled"
+      values:
+        system:
+          enablePodSecurityPolicies: false
+      expect: |
+        .podsecuritypolicys["stackrox-sensor"] | assertThat(. == null)
+        .rolebindings["stackrox-sensor-psp"] | assertThat(. == null)
+        .clusterroles["stackrox-sensor-psp"] | assertThat(. == null)

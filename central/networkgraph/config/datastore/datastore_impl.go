@@ -2,13 +2,15 @@ package datastore
 
 import (
 	"context"
+	"testing"
 
 	"github.com/pkg/errors"
 	"github.com/stackrox/rox/central/networkgraph/config/datastore/internal/store"
-	"github.com/stackrox/rox/central/role/resources"
+	pgStore "github.com/stackrox/rox/central/networkgraph/config/datastore/internal/store/postgres"
 	"github.com/stackrox/rox/generated/storage"
-	"github.com/stackrox/rox/pkg/logging"
+	"github.com/stackrox/rox/pkg/postgres"
 	"github.com/stackrox/rox/pkg/sac"
+	"github.com/stackrox/rox/pkg/sac/resources"
 	"github.com/stackrox/rox/pkg/utils"
 )
 
@@ -17,8 +19,7 @@ const (
 )
 
 var (
-	graphConfigSAC = sac.ForResource(resources.NetworkGraphConfig)
-	log            = logging.LoggerForModule()
+	administrationSAC = sac.ForResource(resources.Administration)
 )
 
 type datastoreImpl struct {
@@ -26,16 +27,34 @@ type datastoreImpl struct {
 }
 
 // New return new instance of DataStore.
-func New(storage store.Store) DataStore {
+func New(s store.Store) DataStore {
 	ds := &datastoreImpl{
-		store: storage,
+		store: s,
 	}
 
-	if err := ds.initDefaultConfig(context.TODO()); err != nil {
+	ctx := sac.WithGlobalAccessScopeChecker(context.Background(),
+		sac.AllowFixedScopes(
+			sac.AccessModeScopeKeys(storage.Access_READ_ACCESS, storage.Access_READ_WRITE_ACCESS),
+			sac.ResourceScopeKeys(resources.Administration),
+		))
+
+	if err := ds.initDefaultConfig(ctx); err != nil {
 		utils.Should(errors.Wrap(err, "could not initialize default network graph configuration"))
 	}
 
 	return ds
+}
+
+// GetTestPostgresDataStore provides a datastore connected to postgres for testing purposes.
+func GetTestPostgresDataStore(_ testing.TB, pool postgres.DB) (DataStore, error) {
+	dbstore := pgStore.New(pool)
+	return New(dbstore), nil
+}
+
+// GetBenchPostgresDataStore provides a datastore connected to postgres for testing purposes.
+func GetBenchPostgresDataStore(_ testing.TB, pool postgres.DB) (DataStore, error) {
+	dbstore := pgStore.New(pool)
+	return New(dbstore), nil
 }
 
 func (d *datastoreImpl) initDefaultConfig(ctx context.Context) error {
@@ -46,9 +65,10 @@ func (d *datastoreImpl) initDefaultConfig(ctx context.Context) error {
 
 	if !found {
 		defaultConfig := &storage.NetworkGraphConfig{
+			Id:                      networkGraphConfigKey,
 			HideDefaultExternalSrcs: false,
 		}
-		if err := d.store.UpsertWithID(ctx, networkGraphConfigKey, defaultConfig); err != nil {
+		if err := d.store.Upsert(ctx, defaultConfig); err != nil {
 			return err
 		}
 	}
@@ -56,7 +76,7 @@ func (d *datastoreImpl) initDefaultConfig(ctx context.Context) error {
 }
 
 func (d *datastoreImpl) GetNetworkGraphConfig(ctx context.Context) (*storage.NetworkGraphConfig, error) {
-	if ok, err := graphConfigSAC.ReadAllowed(ctx); err != nil {
+	if ok, err := administrationSAC.ReadAllowed(ctx); err != nil {
 		return nil, err
 	} else if !ok {
 		return nil, sac.ErrResourceAccessDenied
@@ -73,11 +93,11 @@ func (d *datastoreImpl) GetNetworkGraphConfig(ctx context.Context) (*storage.Net
 }
 
 func (d *datastoreImpl) UpdateNetworkGraphConfig(ctx context.Context, config *storage.NetworkGraphConfig) error {
-	if ok, err := graphConfigSAC.WriteAllowed(ctx); err != nil {
+	if ok, err := administrationSAC.WriteAllowed(ctx); err != nil {
 		return err
 	} else if !ok {
 		return sac.ErrResourceAccessDenied
 	}
-
-	return d.store.UpsertWithID(ctx, networkGraphConfigKey, config)
+	config.Id = networkGraphConfigKey
+	return d.store.Upsert(ctx, config)
 }

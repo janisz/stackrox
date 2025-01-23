@@ -4,7 +4,6 @@ import { useHistory, useLocation, useParams } from 'react-router-dom';
 import {
     Alert,
     AlertActionCloseButton,
-    AlertVariant,
     Bullseye,
     Button,
     PageSection,
@@ -13,7 +12,6 @@ import {
 } from '@patternfly/react-core';
 
 import NotFoundMessage from 'Components/NotFoundMessage';
-import { getIsDefaultRoleName } from 'constants/accessControl';
 import {
     PermissionSet,
     Role,
@@ -35,10 +33,14 @@ import { getNewPermissionSet, getCompletePermissionSet } from './permissionSets.
 import AccessControlHeaderActionBar from '../AccessControlHeaderActionBar';
 import AccessControlBreadcrumbs from '../AccessControlBreadcrumbs';
 import AccessControlHeading from '../AccessControlHeading';
+import usePermissions from '../../../hooks/usePermissions';
+import { isUserResource } from '../traits';
 
 const entityType = 'PERMISSION_SET';
 
 function PermissionSets(): ReactElement {
+    const { hasReadWriteAccess } = usePermissions();
+    const hasWriteAccessForPage = hasReadWriteAccess('Access');
     const history = useHistory();
     const { search } = useLocation();
     const queryObject = getQueryObject(search);
@@ -68,7 +70,8 @@ function PermissionSets(): ReactElement {
                 setAlertPermissionSets(
                     <Alert
                         title="Fetch permission sets failed"
-                        variant={AlertVariant.danger}
+                        component="p"
+                        variant="danger"
                         isInline
                     >
                         {error.message}
@@ -92,7 +95,8 @@ function PermissionSets(): ReactElement {
                 setAlertRoles(
                     <Alert
                         title="Fetch resources failed"
-                        variant={AlertVariant.warning}
+                        component="p"
+                        variant="warning"
                         isInline
                         actionClose={actionClose}
                     >
@@ -115,7 +119,8 @@ function PermissionSets(): ReactElement {
                 setAlertRoles(
                     <Alert
                         title="Fetch roles failed"
-                        variant={AlertVariant.warning}
+                        component="p"
+                        variant="warning"
                         isInline
                         actionClose={actionClose}
                     >
@@ -185,13 +190,17 @@ function PermissionSets(): ReactElement {
                     <AccessControlHeaderActionBar
                         displayComponent={
                             <AccessControlDescription>
-                                Add predefined sets of application level permissions that users have
-                                when interacting with the platform
+                                Create predefined sets of application level permissions that users
+                                have when interacting with the platform
                             </AccessControlDescription>
                         }
                         actionComponent={
-                            <Button variant="primary" onClick={handleCreate}>
-                                Add permission set
+                            <Button
+                                isDisabled={!hasWriteAccessForPage}
+                                variant="primary"
+                                onClick={handleCreate}
+                            >
+                                Create permission set
                             </Button>
                         }
                     />
@@ -199,9 +208,7 @@ function PermissionSets(): ReactElement {
             ) : (
                 <AccessControlBreadcrumbs
                     entityType={entityType}
-                    entityName={action === 'create' ? 'Add permission set' : permissionSet?.name}
-                    isDisabled={hasAction}
-                    isList={isList}
+                    entityName={action === 'create' ? 'Create permission set' : permissionSet?.name}
                 />
             )}
             {alertPermissionSets}
@@ -210,13 +217,12 @@ function PermissionSets(): ReactElement {
             <PageSection variant={isList ? PageSectionVariants.default : PageSectionVariants.light}>
                 {counterFetching !== 0 ? (
                     <Bullseye>
-                        <Spinner isSVG />
+                        <Spinner />
                     </Bullseye>
                 ) : isList ? (
                     <PermissionSetsList
                         permissionSets={permissionSets}
                         roles={roles}
-                        handleCreate={handleCreate}
                         handleDelete={handleDelete}
                     />
                 ) : typeof entityId === 'string' && !permissionSet ? (
@@ -228,7 +234,7 @@ function PermissionSets(): ReactElement {
                     />
                 ) : (
                     <PermissionSetForm
-                        isActionable={!permissionSet || !getIsDefaultRoleName(permissionSet.name)}
+                        isActionable={!permissionSet || isUserResource(permissionSet.traits)}
                         action={action}
                         permissionSet={
                             permissionSet

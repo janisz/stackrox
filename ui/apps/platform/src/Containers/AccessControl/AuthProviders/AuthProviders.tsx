@@ -1,33 +1,41 @@
 /* eslint-disable no-nested-ternary */
 import React, { ReactElement, useEffect, useState } from 'react';
-import { useSelector, useDispatch } from 'react-redux';
+import { useDispatch, useSelector } from 'react-redux';
 import { createStructuredSelector } from 'reselect';
 import { selectors } from 'reducers';
-import { useHistory, useLocation, useParams } from 'react-router-dom';
+import { useHistory, useLocation, useParams, Link } from 'react-router-dom';
+import ExternalLink from 'Components/PatternFly/IconText/ExternalLink';
 import {
+    Alert,
     Bullseye,
-    Dropdown,
-    DropdownItem,
-    DropdownPosition,
-    DropdownToggle,
+    Button,
+    ExpandableSection,
+    Flex,
     PageSection,
     pluralize,
     Spinner,
     Title,
 } from '@patternfly/react-core';
+import {
+    Dropdown,
+    DropdownItem,
+    DropdownPosition,
+    DropdownToggle,
+} from '@patternfly/react-core/deprecated';
 import { CaretDownIcon } from '@patternfly/react-icons';
 
-import EmptyStateTemplate from 'Components/PatternFly/EmptyStateTemplate';
+import EmptyStateTemplate from 'Components/EmptyStateTemplate';
 import NotFoundMessage from 'Components/NotFoundMessage';
+import useAnalytics, { INVITE_USERS_MODAL_OPENED } from 'hooks/useAnalytics';
 import { actions as authActions, types as authActionTypes } from 'reducers/auth';
 import { actions as groupActions } from 'reducers/groups';
-import {
-    actions as roleActions,
-    types as roleActionTypes,
-    getHasReadWritePermission,
-} from 'reducers/roles';
+import { actions as inviteActions } from 'reducers/invite';
+import { actions as roleActions, types as roleActionTypes } from 'reducers/roles';
 import { AuthProvider } from 'services/AuthService';
-
+import usePermissions from 'hooks/usePermissions';
+import { integrationsPath } from 'routePaths';
+import { getVersionedDocs } from 'utils/versioning';
+import useMetadata from 'hooks/useMetadata';
 import { getEntityPath, getQueryObject } from '../accessControlPaths';
 import { mergeGroupsWithAuthProviders } from './authProviders.utils';
 
@@ -65,23 +73,26 @@ function getNewAuthProviderObj(type) {
 }
 
 function AuthProviders(): ReactElement {
+    const { hasReadWriteAccess } = usePermissions();
+    const hasWriteAccessForPage = hasReadWriteAccess('Access');
     const history = useHistory();
     const { search } = useLocation();
     const queryObject = getQueryObject(search);
     const { action, type } = queryObject;
     const { entityId } = useParams();
     const dispatch = useDispatch();
+    const { analyticsTrack } = useAnalytics();
+    const { version } = useMetadata();
 
     const [isCreateMenuOpen, setIsCreateMenuOpen] = useState(false);
+    const [isInfoExpanded, setIsInfoExpanded] = useState(false);
     const {
         authProviders,
         groups,
         isFetchingAuthProviders,
         isFetchingRoles,
-        userRolePermissions,
         availableProviderTypes,
     } = useSelector(authProviderState);
-    const hasWriteAccess = getHasReadWritePermission('AuthProvider', userRolePermissions);
 
     const authProvidersWithRules = mergeGroupsWithAuthProviders(authProviders, groups);
 
@@ -93,6 +104,13 @@ function AuthProviders(): ReactElement {
 
     function onToggleCreateMenu(isOpen) {
         setIsCreateMenuOpen(isOpen);
+    }
+
+    function onClickInviteUsers() {
+        // track request to invite
+        analyticsTrack(INVITE_USERS_MODAL_OPENED);
+
+        dispatch(inviteActions.setInviteModalVisibility(true));
     }
 
     function onClickCreate(event) {
@@ -117,6 +135,15 @@ function AuthProviders(): ReactElement {
         // The entityId is undefined for create and defined for update.
         history.push(getEntityPath(entityType, entityId, { ...queryObject, action: undefined }));
     }
+
+    function getProviderLabel(): string {
+        const provider = availableProviderTypes.find(({ value }) => value === type) ?? {};
+        return (provider.label as string) ?? 'auth';
+    }
+
+    const onToggle = (_isExpanded: boolean) => {
+        setIsInfoExpanded(_isExpanded);
+    };
 
     const selectedAuthProvider = authProviders.find(({ id }) => id === entityId);
     const hasAction = Boolean(action);
@@ -146,19 +173,28 @@ function AuthProviders(): ReactElement {
                                 users
                             </AccessControlDescription>
                         }
+                        inviteComponent={
+                            hasWriteAccessForPage && (
+                                <Button variant="secondary" onClick={onClickInviteUsers}>
+                                    Invite users
+                                </Button>
+                            )
+                        }
                         actionComponent={
-                            hasWriteAccess && (
+                            hasWriteAccessForPage && (
                                 <Dropdown
-                                    className="auth-provider-dropdown"
+                                    className="auth-provider-dropdown pf-v5-u-ml-md"
                                     onSelect={onClickCreate}
                                     position={DropdownPosition.right}
                                     toggle={
                                         <DropdownToggle
-                                            onToggle={onToggleCreateMenu}
+                                            onToggle={(_event, isOpen) =>
+                                                onToggleCreateMenu(isOpen)
+                                            }
                                             toggleIndicator={CaretDownIcon}
-                                            isPrimary
+                                            toggleVariant="primary"
                                         >
-                                            Add auth provider
+                                            Create auth provider
                                         </DropdownToggle>
                                     }
                                     isOpen={isCreateMenuOpen}
@@ -167,21 +203,76 @@ function AuthProviders(): ReactElement {
                             )
                         }
                     />
+                    <PageSection variant="light">
+                        <Alert
+                            isInline
+                            variant="info"
+                            title="Consider using short-lived tokens for machine-to-machine communications
+                            such as CI/CD pipelines, scripts, and other automation."
+                            component="p"
+                        >
+                            <Flex
+                                direction={{ default: 'column' }}
+                                spaceItems={{ default: 'spaceItemsMd' }}
+                            >
+                                <Flex direction={{ default: 'row' }}>
+                                    <ExternalLink>
+                                        <a
+                                            href={getVersionedDocs(
+                                                version,
+                                                'operating/manage-user-access/configure-short-lived-access.html#configure-short-lived-access'
+                                            )}
+                                            target="_blank"
+                                            rel="noopener noreferrer"
+                                        >
+                                            How to configure short-lived access
+                                        </a>
+                                    </ExternalLink>
+                                    {hasWriteAccessForPage && (
+                                        <Link
+                                            to={`${integrationsPath}/authProviders/machineAccess/create`}
+                                        >
+                                            Create a machine access configuration
+                                        </Link>
+                                    )}
+                                </Flex>
+                                <ExpandableSection
+                                    toggleText="More resources"
+                                    onToggle={(_event, _isExpanded: boolean) =>
+                                        onToggle(_isExpanded)
+                                    }
+                                    isExpanded={isInfoExpanded}
+                                >
+                                    <Flex direction={{ default: 'column' }}>
+                                        <ExternalLink>
+                                            <a
+                                                href="https://github.com/stackrox/central-login"
+                                                target="_blank"
+                                                rel="noopener noreferrer"
+                                            >
+                                                GitHub Action for short-lived access
+                                            </a>
+                                        </ExternalLink>
+                                    </Flex>
+                                </ExpandableSection>
+                            </Flex>
+                        </Alert>
+                    </PageSection>
                 </>
             ) : (
                 <AccessControlBreadcrumbs
                     entityType={entityType}
                     entityName={
-                        action === 'create' ? 'Add auth provider' : selectedAuthProvider?.name
+                        action === 'create'
+                            ? `Create ${getProviderLabel()} provider`
+                            : selectedAuthProvider?.name
                     }
-                    isDisabled={hasAction}
-                    isList={isList}
                 />
             )}
             <PageSection variant={isList ? 'default' : 'light'}>
                 {isFetchingAuthProviders || isFetchingRoles ? (
                     <Bullseye>
-                        <Spinner isSVG />
+                        <Spinner />
                     </Bullseye>
                 ) : isList ? (
                     <PageSection variant="light">
@@ -209,7 +300,7 @@ function AuthProviders(): ReactElement {
                     />
                 ) : (
                     <AuthProviderForm
-                        isActionable={hasWriteAccess}
+                        isActionable={hasWriteAccessForPage}
                         action={action}
                         selectedAuthProvider={selectedAuthProvider ?? getNewAuthProviderObj(type)}
                         onClickCancel={onClickCancel}

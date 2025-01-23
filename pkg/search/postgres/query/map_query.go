@@ -3,7 +3,7 @@ package pgsearch
 import (
 	"encoding/json"
 	"fmt"
-	"sort"
+	"slices"
 	"strings"
 
 	"github.com/stackrox/rox/pkg/search"
@@ -11,19 +11,22 @@ import (
 	"github.com/stackrox/rox/pkg/utils"
 )
 
-func parseMapQuery(label string) (string, string) {
-	spl := strings.SplitN(label, "=", 2)
-	if len(spl) < 2 {
-		return spl[0], ""
-	}
-	return spl[0], spl[1]
+// ParseMapQuery parses a label stored in the form k=v.
+func ParseMapQuery(label string) (string, string, bool) {
+	hasEquals := strings.Contains(label, "=")
+	key, value := stringutils.Split2(label, "=")
+	return key, value, hasEquals
 }
 
 func readMapValue(val interface{}) map[string]string {
 	// Maps are stored in a jsonb column, which we get back as a byte array.
 	// We know that supported maps are only map[string]string, so we unmarshal accordingly.
+	v, ok := val.(*[]byte)
+	if !ok || v == nil || *v == nil {
+		return nil
+	}
 	var mapValue map[string]string
-	if err := json.Unmarshal(*val.(*[]byte), &mapValue); err != nil {
+	if err := json.Unmarshal(*v, &mapValue); err != nil {
 		utils.Should(err)
 		return nil
 	}
@@ -43,11 +46,23 @@ func newMapQuery(ctx *queryAndFieldContext) (*QueryEntry, error) {
 	// <keyQuery>=!<valueQuery> => it means we want one element in the map with key matching keyQuery and value NOT matching valueQuery
 	// !<keyQuery>=!<valueQuery> => NOT SUPPORTED
 	query := ctx.value
-	key, value := parseMapQuery(query)
+	if query == search.WildcardString {
+		return qeWithSelectFieldIfNeeded(ctx, &WhereClause{
+			Query: "true",
+		}, func(i interface{}) interface{} {
+			asMap := readMapValue(i)
+			results := make([]string, 0, len(asMap))
+			for k, v := range asMap {
+				results = append(results, fmt.Sprintf("%s=%s", k, v))
+			}
+			return results
+		}), nil
+	}
 
+	key, value, hasEquals := ParseMapQuery(query)
 	keyNegated := stringutils.ConsumePrefix(&key, search.NegationPrefix)
 	// This is a special case where the query we construct becomes a (non) existence query
-	if value == "" && key != "" {
+	if value == "" && key != "" && hasEquals {
 		var negationString string
 		if keyNegated {
 			negationString = "NOT "
@@ -61,6 +76,9 @@ func newMapQuery(ctx *queryAndFieldContext) (*QueryEntry, error) {
 				return []string(nil)
 			}
 			asMap := readMapValue(i)
+			if asMap == nil {
+				return []string(nil)
+			}
 			return []string{fmt.Sprintf("%s=%s", key, asMap[key])}
 		}), nil
 	}
@@ -106,7 +124,7 @@ func newMapQuery(ctx *queryAndFieldContext) (*QueryEntry, error) {
 		keyEquivGoFunc = keyQuery.equivalentGoFunc
 		valueEquivGoFunc = valueQuery.equivalentGoFunc
 	}
-	combinedWhereClause.Query = fmt.Sprintf("exists (select * from jsonb_each_text(%s) elem where %s)", ctx.qualifiedColumnName, queryPortion)
+	combinedWhereClause.Query = fmt.Sprintf("(jsonb_typeof(%s) = 'object') and (exists (select * from jsonb_each_text(%s) elem where %s))", ctx.qualifiedColumnName, ctx.qualifiedColumnName, queryPortion)
 	return qeWithSelectFieldIfNeeded(ctx, combinedWhereClause, func(i interface{}) interface{} {
 		asMap := readMapValue(i)
 		var out []string
@@ -119,7 +137,7 @@ func newMapQuery(ctx *queryAndFieldContext) (*QueryEntry, error) {
 			}
 			out = append(out, fmt.Sprintf("%s=%s", k, v))
 		}
-		sort.Strings(out)
+		slices.Sort(out)
 		return out
 	}), nil
 }

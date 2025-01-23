@@ -26,26 +26,30 @@ const MockPagination = ({ defaultPage = 1 }) => {
     );
 };
 
+const options = {
+    name: 'Go to previous page', // aria-label attribute
+};
+
 test('can not press the previous button when on the first page', async () => {
     render(<MockPagination defaultPage={1} />);
-    const button = screen.getByTestId('prev-page-button');
+    const button = screen.getByRole('button', options);
 
     // button should be disabled
-    expect(button).toHaveAttribute('disabled');
+    expect(button).toBeDisabled();
 });
 
 test('can press the previous button when on the last page', async () => {
     render(<MockPagination defaultPage={5} />);
-    const button = screen.getByTestId('prev-page-button');
+    const button = screen.getByRole('button', options);
 
     // button should not be disabled
-    expect(button).not.toHaveAttribute('disabled');
+    expect(button).toBeEnabled();
 });
 
 test('pressing the button decreases the page count', async () => {
     const currentPage = 3;
     render(<MockPagination defaultPage={currentPage} />);
-    const button = screen.getByTestId('prev-page-button');
+    const button = screen.getByRole('button', options);
     const input = screen.getByTestId('pagination-input');
 
     fireEvent.click(button);

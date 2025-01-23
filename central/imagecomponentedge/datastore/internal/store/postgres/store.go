@@ -6,232 +6,94 @@ import (
 	"context"
 	"time"
 
-	"github.com/gogo/protobuf/proto"
-	"github.com/jackc/pgx/v4"
-	"github.com/jackc/pgx/v4/pgxpool"
 	"github.com/stackrox/rox/central/metrics"
-	pkgSchema "github.com/stackrox/rox/central/postgres/schema"
 	v1 "github.com/stackrox/rox/generated/api/v1"
 	"github.com/stackrox/rox/generated/storage"
 	"github.com/stackrox/rox/pkg/logging"
 	ops "github.com/stackrox/rox/pkg/metrics"
-	"github.com/stackrox/rox/pkg/postgres/pgutils"
-	"github.com/stackrox/rox/pkg/search/postgres"
+	"github.com/stackrox/rox/pkg/postgres"
+	pkgSchema "github.com/stackrox/rox/pkg/postgres/schema"
+	"github.com/stackrox/rox/pkg/sac/resources"
+	"github.com/stackrox/rox/pkg/search"
+	pgSearch "github.com/stackrox/rox/pkg/search/postgres"
+	"gorm.io/gorm"
 )
 
 const (
-	baseTable  = "image_component_relations"
-	existsStmt = "SELECT EXISTS(SELECT 1 FROM image_component_relations WHERE Id = $1 AND ImageId = $2 AND ImageComponentId = $3)"
-
-	getStmt     = "SELECT serialized FROM image_component_relations WHERE Id = $1 AND ImageId = $2 AND ImageComponentId = $3"
-	deleteStmt  = "DELETE FROM image_component_relations WHERE Id = $1 AND ImageId = $2 AND ImageComponentId = $3"
-	walkStmt    = "SELECT serialized FROM image_component_relations"
-	getManyStmt = "SELECT serialized FROM image_component_relations WHERE Id = ANY($1::text[])"
-
-	deleteManyStmt = "DELETE FROM image_component_relations WHERE Id = ANY($1::text[])"
-
-	batchAfter = 100
-
-	// using copyFrom, we may not even want to batch.  It would probably be simpler
-	// to deal with failures if we just sent it all.  Something to think about as we
-	// proceed and move into more e2e and larger performance testing
-	batchSize = 10000
+	baseTable = "image_component_edges"
+	storeName = "ImageComponentEdge"
 )
 
 var (
-	log    = logging.LoggerForModule()
-	schema = pkgSchema.ImageComponentRelationsSchema
+	log            = logging.LoggerForModule()
+	schema         = pkgSchema.ImageComponentEdgesSchema
+	targetResource = resources.Image
 )
 
+type storeType = storage.ImageComponentEdge
+
+// Store is the interface to interact with the storage for storage.ImageComponentEdge
 type Store interface {
-	Count(ctx context.Context) (int, error)
-	Exists(ctx context.Context, id string, imageId string, imageComponentId string) (bool, error)
-	Get(ctx context.Context, id string, imageId string, imageComponentId string) (*storage.ImageComponentEdge, bool, error)
+	Count(ctx context.Context, q *v1.Query) (int, error)
+	Exists(ctx context.Context, id string) (bool, error)
+	Search(ctx context.Context, q *v1.Query) ([]search.Result, error)
+
+	Get(ctx context.Context, id string) (*storeType, bool, error)
+	GetByQuery(ctx context.Context, query *v1.Query) ([]*storeType, error)
+	GetMany(ctx context.Context, identifiers []string) ([]*storeType, []int, error)
 	GetIDs(ctx context.Context) ([]string, error)
-	GetMany(ctx context.Context, ids []string) ([]*storage.ImageComponentEdge, []int, error)
 
-	Walk(ctx context.Context, fn func(obj *storage.ImageComponentEdge) error) error
-
-	AckKeysIndexed(ctx context.Context, keys ...string) error
-	GetKeysToIndex(ctx context.Context) ([]string, error)
-}
-
-type storeImpl struct {
-	db *pgxpool.Pool
+	Walk(ctx context.Context, fn func(obj *storeType) error) error
+	WalkByQuery(ctx context.Context, query *v1.Query, fn func(obj *storeType) error) error
 }
 
 // New returns a new Store instance using the provided sql instance.
-func New(ctx context.Context, db *pgxpool.Pool) Store {
-	pgutils.CreateTable(ctx, db, pkgSchema.CreateTableImagesStmt)
-	pgutils.CreateTable(ctx, db, pkgSchema.CreateTableImageComponentsStmt)
-	pgutils.CreateTable(ctx, db, pkgSchema.CreateTableImageComponentRelationsStmt)
-
-	return &storeImpl{
-		db: db,
-	}
+func New(db postgres.DB) Store {
+	return pgSearch.NewGenericStore[storeType, *storeType](
+		db,
+		schema,
+		pkGetter,
+		nil,
+		nil,
+		metricsSetAcquireDBConnDuration,
+		metricsSetPostgresOperationDurationTime,
+		pgSearch.GloballyScopedUpsertChecker[storeType, *storeType](targetResource),
+		targetResource,
+	)
 }
 
-// Count returns the number of objects in the store
-func (s *storeImpl) Count(ctx context.Context) (int, error) {
-	defer metrics.SetPostgresOperationDurationTime(time.Now(), ops.Count, "ImageComponentEdge")
+// region Helper functions
 
-	var sacQueryFilter *v1.Query
-
-	return postgres.RunCountRequestForSchema(schema, sacQueryFilter, s.db)
+func pkGetter(obj *storeType) string {
+	return obj.GetId()
 }
 
-// Exists returns if the id exists in the store
-func (s *storeImpl) Exists(ctx context.Context, id string, imageId string, imageComponentId string) (bool, error) {
-	defer metrics.SetPostgresOperationDurationTime(time.Now(), ops.Exists, "ImageComponentEdge")
-
-	row := s.db.QueryRow(ctx, existsStmt, id, imageId, imageComponentId)
-	var exists bool
-	if err := row.Scan(&exists); err != nil {
-		return false, pgutils.ErrNilIfNoRows(err)
-	}
-	return exists, nil
+func metricsSetPostgresOperationDurationTime(start time.Time, op ops.Op) {
+	metrics.SetPostgresOperationDurationTime(start, op, storeName)
 }
 
-// Get returns the object, if it exists from the store
-func (s *storeImpl) Get(ctx context.Context, id string, imageId string, imageComponentId string) (*storage.ImageComponentEdge, bool, error) {
-	defer metrics.SetPostgresOperationDurationTime(time.Now(), ops.Get, "ImageComponentEdge")
-
-	conn, release, err := s.acquireConn(ctx, ops.Get, "ImageComponentEdge")
-	if err != nil {
-		return nil, false, err
-	}
-	defer release()
-
-	row := conn.QueryRow(ctx, getStmt, id, imageId, imageComponentId)
-	var data []byte
-	if err := row.Scan(&data); err != nil {
-		return nil, false, pgutils.ErrNilIfNoRows(err)
-	}
-
-	var msg storage.ImageComponentEdge
-	if err := proto.Unmarshal(data, &msg); err != nil {
-		return nil, false, err
-	}
-	return &msg, true, nil
+func metricsSetAcquireDBConnDuration(start time.Time, op ops.Op) {
+	metrics.SetAcquireDBConnDuration(start, op, storeName)
 }
 
-func (s *storeImpl) acquireConn(ctx context.Context, op ops.Op, typ string) (*pgxpool.Conn, func(), error) {
-	defer metrics.SetAcquireDBConnDuration(time.Now(), op, typ)
-	conn, err := s.db.Acquire(ctx)
-	if err != nil {
-		return nil, nil, err
-	}
-	return conn, conn.Release, nil
+// endregion Helper functions
+
+// region Used for testing
+
+// CreateTableAndNewStore returns a new Store instance for testing.
+func CreateTableAndNewStore(ctx context.Context, db postgres.DB, gormDB *gorm.DB) Store {
+	pkgSchema.ApplySchemaForTable(ctx, gormDB, baseTable)
+	return New(db)
 }
 
-// GetIDs returns all the IDs for the store
-func (s *storeImpl) GetIDs(ctx context.Context) ([]string, error) {
-	defer metrics.SetPostgresOperationDurationTime(time.Now(), ops.GetAll, "storage.ImageComponentEdgeIDs")
-	var sacQueryFilter *v1.Query
-
-	result, err := postgres.RunSearchRequestForSchema(schema, sacQueryFilter, s.db)
-	if err != nil {
-		return nil, err
-	}
-
-	ids := make([]string, 0, len(result))
-	for _, entry := range result {
-		ids = append(ids, entry.ID)
-	}
-
-	return ids, nil
+// Destroy drops the tables associated with the target object type.
+func Destroy(ctx context.Context, db postgres.DB) {
+	dropTableImageComponentEdges(ctx, db)
 }
 
-// GetMany returns the objects specified by the IDs or the index in the missing indices slice
-func (s *storeImpl) GetMany(ctx context.Context, ids []string) ([]*storage.ImageComponentEdge, []int, error) {
-	defer metrics.SetPostgresOperationDurationTime(time.Now(), ops.GetMany, "ImageComponentEdge")
-
-	conn, release, err := s.acquireConn(ctx, ops.GetMany, "ImageComponentEdge")
-	if err != nil {
-		return nil, nil, err
-	}
-	defer release()
-
-	rows, err := conn.Query(ctx, getManyStmt, ids)
-	if err != nil {
-		if err == pgx.ErrNoRows {
-			missingIndices := make([]int, 0, len(ids))
-			for i := range ids {
-				missingIndices = append(missingIndices, i)
-			}
-			return nil, missingIndices, nil
-		}
-		return nil, nil, err
-	}
-	defer rows.Close()
-	resultsByID := make(map[string]*storage.ImageComponentEdge)
-	for rows.Next() {
-		var data []byte
-		if err := rows.Scan(&data); err != nil {
-			return nil, nil, err
-		}
-		msg := &storage.ImageComponentEdge{}
-		if err := proto.Unmarshal(data, msg); err != nil {
-			return nil, nil, err
-		}
-		resultsByID[msg.GetId()] = msg
-	}
-	missingIndices := make([]int, 0, len(ids)-len(resultsByID))
-	// It is important that the elems are populated in the same order as the input ids
-	// slice, since some calling code relies on that to maintain order.
-	elems := make([]*storage.ImageComponentEdge, 0, len(resultsByID))
-	for i, id := range ids {
-		if result, ok := resultsByID[id]; !ok {
-			missingIndices = append(missingIndices, i)
-		} else {
-			elems = append(elems, result)
-		}
-	}
-	return elems, missingIndices, nil
-}
-
-// Walk iterates over all of the objects in the store and applies the closure
-func (s *storeImpl) Walk(ctx context.Context, fn func(obj *storage.ImageComponentEdge) error) error {
-	rows, err := s.db.Query(ctx, walkStmt)
-	if err != nil {
-		return pgutils.ErrNilIfNoRows(err)
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var data []byte
-		if err := rows.Scan(&data); err != nil {
-			return err
-		}
-		var msg storage.ImageComponentEdge
-		if err := proto.Unmarshal(data, &msg); err != nil {
-			return err
-		}
-		if err := fn(&msg); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-//// Used for testing
-
-func dropTableImageComponentRelations(ctx context.Context, db *pgxpool.Pool) {
-	_, _ = db.Exec(ctx, "DROP TABLE IF EXISTS image_component_relations CASCADE")
+func dropTableImageComponentEdges(ctx context.Context, db postgres.DB) {
+	_, _ = db.Exec(ctx, "DROP TABLE IF EXISTS image_component_edges CASCADE")
 
 }
 
-func Destroy(ctx context.Context, db *pgxpool.Pool) {
-	dropTableImageComponentRelations(ctx, db)
-}
-
-//// Stubs for satisfying legacy interfaces
-
-// AckKeysIndexed acknowledges the passed keys were indexed
-func (s *storeImpl) AckKeysIndexed(ctx context.Context, keys ...string) error {
-	return nil
-}
-
-// GetKeysToIndex returns the keys that need to be indexed
-func (s *storeImpl) GetKeysToIndex(ctx context.Context) ([]string, error) {
-	return nil, nil
-}
+// endregion Used for testing

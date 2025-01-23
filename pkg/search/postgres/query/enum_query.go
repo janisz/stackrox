@@ -55,6 +55,17 @@ func newEnumQueryWhereClause(columnName string, field *pkgSearch.Field, value st
 	if len(queryModifiers) > 2 {
 		return WhereClause{}, fmt.Errorf("unsupported: more than 2 query modifiers for enum query: %+v", queryModifiers)
 	}
+	if isWildCardOrNullStringQuery(value) {
+		existenceStr := ""
+		if value == pkgSearch.WildcardString {
+			existenceStr = "not"
+		}
+		return WhereClause{
+			Query:  fmt.Sprintf("%s is %s null", columnName, existenceStr),
+			Values: []interface{}{},
+		}, nil
+	}
+
 	var equality bool
 	switch len(queryModifiers) {
 	case 2:
@@ -106,7 +117,7 @@ func newEnumQueryWhereClause(columnName string, field *pkgSearch.Field, value st
 		var values []interface{}
 		var equivalentGoFuncs []func(interface{}) bool
 		for _, s := range enumValues {
-			entry := createNumericQuery(columnName, prefix, float64(s))
+			entry := createNumericPrefixQuery(columnName, prefix, float64(s))
 			queries = append(queries, entry.Query)
 			values = append(values, entry.Values...)
 			equivalentGoFuncs = append(equivalentGoFuncs, entry.equivalentGoFunc)

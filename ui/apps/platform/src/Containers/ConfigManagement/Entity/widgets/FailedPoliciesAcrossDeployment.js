@@ -1,7 +1,6 @@
 import React from 'react';
-import PropTypes from 'prop-types';
 import entityTypes from 'constants/entityTypes';
-import { withRouter } from 'react-router-dom';
+import { useParams } from 'react-router-dom';
 import { defaultHeaderClassName, defaultColumnClassName } from 'Components/Table';
 import { gql } from '@apollo/client';
 import queryService from 'utils/queryService';
@@ -12,8 +11,8 @@ import dateTimeFormat from 'constants/dateTimeFormat';
 import NoResultsMessage from 'Components/NoResultsMessage';
 import Query from 'Components/ThrowingQuery';
 import Loader from 'Components/Loader';
-import SeverityLabel from 'Components/SeverityLabel';
-import LifecycleStageLabel from 'Components/LifecycleStageLabel';
+import PolicySeverityIconText from 'Components/PatternFly/IconText/PolicySeverityIconText';
+import { formatLifecycleStages } from 'Containers/Policies/policies.utils';
 import TableWidget from './TableWidget';
 
 const QUERY = gql`
@@ -44,7 +43,9 @@ const createTableRows = (data) => {
     return failedPolicies;
 };
 
-const FailedPoliciesAcrossDeployment = ({ deploymentID }) => {
+const FailedPoliciesAcrossDeployment = () => {
+    const { deploymentID } = useParams();
+
     return (
         <Query
             query={QUERY}
@@ -87,12 +88,12 @@ const FailedPoliciesAcrossDeployment = ({ deploymentID }) => {
                         accessor: 'name',
                     },
                     {
-                        Header: `Enforced`,
+                        Header: `Enforcing`,
                         headerClassName: `w-1/8 ${defaultHeaderClassName}`,
                         className: `w-1/8 ${defaultColumnClassName}`,
                         Cell: ({ original }) => {
                             const { enforcementActions } = original;
-                            return enforcementActions ? 'Yes' : 'No';
+                            return (enforcementActions ?? []).length > 0 ? 'Yes' : 'No';
                         },
                         accessor: 'enforcementActions',
                     },
@@ -100,9 +101,9 @@ const FailedPoliciesAcrossDeployment = ({ deploymentID }) => {
                         Header: `Severity`,
                         headerClassName: `w-1/8 ${defaultHeaderClassName}`,
                         className: `w-1/8 ${defaultColumnClassName}`,
-                        Cell: ({ original }) => {
+                        Cell: ({ original, pdf }) => {
                             const { severity } = original;
-                            return <SeverityLabel severity={severity} />;
+                            return <PolicySeverityIconText severity={severity} isTextOnly={pdf} />;
                         },
                         accessor: 'severity',
                         sortMethod: sortSeverity,
@@ -123,13 +124,7 @@ const FailedPoliciesAcrossDeployment = ({ deploymentID }) => {
                         className: `w-1/8 ${defaultColumnClassName}`,
                         Cell: ({ original }) => {
                             const { lifecycleStages } = original;
-                            return lifecycleStages.map((lifecycleStage) => (
-                                <LifecycleStageLabel
-                                    key={lifecycleStage}
-                                    className="mr-2"
-                                    lifecycleStage={lifecycleStage}
-                                />
-                            ));
+                            return formatLifecycleStages(lifecycleStages);
                         },
                         accessor: 'lifecycleStages',
                     },
@@ -157,8 +152,4 @@ const FailedPoliciesAcrossDeployment = ({ deploymentID }) => {
     );
 };
 
-FailedPoliciesAcrossDeployment.propTypes = {
-    deploymentID: PropTypes.string.isRequired,
-};
-
-export default withRouter(FailedPoliciesAcrossDeployment);
+export default FailedPoliciesAcrossDeployment;

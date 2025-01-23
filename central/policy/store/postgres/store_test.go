@@ -8,58 +8,44 @@ import (
 	"context"
 	"testing"
 
-	"github.com/jackc/pgx/v4/pgxpool"
 	"github.com/stackrox/rox/generated/storage"
-	"github.com/stackrox/rox/pkg/features"
 	"github.com/stackrox/rox/pkg/postgres/pgtest"
+	"github.com/stackrox/rox/pkg/protoassert"
 	"github.com/stackrox/rox/pkg/sac"
+	"github.com/stackrox/rox/pkg/search"
 	"github.com/stackrox/rox/pkg/testutils"
-	"github.com/stackrox/rox/pkg/testutils/envisolator"
 	"github.com/stretchr/testify/suite"
 )
 
-type PolicyStoreSuite struct {
+type PoliciesStoreSuite struct {
 	suite.Suite
-	envIsolator *envisolator.EnvIsolator
-	store       Store
-	pool        *pgxpool.Pool
+	store  Store
+	testDB *pgtest.TestPostgres
 }
 
-func TestPolicyStore(t *testing.T) {
-	suite.Run(t, new(PolicyStoreSuite))
+func TestPoliciesStore(t *testing.T) {
+	suite.Run(t, new(PoliciesStoreSuite))
 }
 
-func (s *PolicyStoreSuite) SetupTest() {
-	s.envIsolator = envisolator.NewEnvIsolator(s.T())
-	s.envIsolator.Setenv(features.PostgresDatastore.EnvVar(), "true")
+func (s *PoliciesStoreSuite) SetupSuite() {
 
-	if !features.PostgresDatastore.Enabled() {
-		s.T().Skip("Skip postgres store tests")
-		s.T().SkipNow()
-	}
+	s.testDB = pgtest.ForT(s.T())
+	s.store = New(s.testDB.DB)
+}
 
+func (s *PoliciesStoreSuite) SetupTest() {
 	ctx := sac.WithAllAccess(context.Background())
-
-	source := pgtest.GetConnectionString(s.T())
-	config, err := pgxpool.ParseConfig(source)
-	s.Require().NoError(err)
-	pool, err := pgxpool.ConnectConfig(ctx, config)
-	s.Require().NoError(err)
-
-	Destroy(ctx, pool)
-
-	s.pool = pool
-	s.store = New(ctx, pool)
+	tag, err := s.testDB.Exec(ctx, "TRUNCATE policies CASCADE")
+	s.T().Log("policies", tag)
+	s.store = New(s.testDB.DB)
+	s.NoError(err)
 }
 
-func (s *PolicyStoreSuite) TearDownTest() {
-	if s.pool != nil {
-		s.pool.Close()
-	}
-	s.envIsolator.RestoreAll()
+func (s *PoliciesStoreSuite) TearDownSuite() {
+	s.testDB.Teardown(s.T())
 }
 
-func (s *PolicyStoreSuite) TestStore() {
+func (s *PoliciesStoreSuite) TestStore() {
 	ctx := sac.WithAllAccess(context.Background())
 
 	store := s.store
@@ -78,12 +64,12 @@ func (s *PolicyStoreSuite) TestStore() {
 	foundPolicy, exists, err = store.Get(ctx, policy.GetId())
 	s.NoError(err)
 	s.True(exists)
-	s.Equal(policy, foundPolicy)
+	protoassert.Equal(s.T(), policy, foundPolicy)
 
-	policyCount, err := store.Count(ctx)
+	policyCount, err := store.Count(ctx, search.EmptyQuery())
 	s.NoError(err)
 	s.Equal(1, policyCount)
-	policyCount, err = store.Count(withNoAccessCtx)
+	policyCount, err = store.Count(withNoAccessCtx, search.EmptyQuery())
 	s.NoError(err)
 	s.Zero(policyCount)
 
@@ -93,11 +79,6 @@ func (s *PolicyStoreSuite) TestStore() {
 	s.NoError(store.Upsert(ctx, policy))
 	s.ErrorIs(store.Upsert(withNoAccessCtx, policy), sac.ErrResourceAccessDenied)
 
-	foundPolicy, exists, err = store.Get(ctx, policy.GetId())
-	s.NoError(err)
-	s.True(exists)
-	s.Equal(policy, foundPolicy)
-
 	s.NoError(store.Delete(ctx, policy.GetId()))
 	foundPolicy, exists, err = store.Get(ctx, policy.GetId())
 	s.NoError(err)
@@ -106,15 +87,26 @@ func (s *PolicyStoreSuite) TestStore() {
 	s.ErrorIs(store.Delete(withNoAccessCtx, policy.GetId()), sac.ErrResourceAccessDenied)
 
 	var policys []*storage.Policy
+	var policyIDs []string
 	for i := 0; i < 200; i++ {
 		policy := &storage.Policy{}
 		s.NoError(testutils.FullInit(policy, testutils.UniqueInitializer(), testutils.JSONFieldsFilter))
 		policys = append(policys, policy)
+		policyIDs = append(policyIDs, policy.GetId())
 	}
 
 	s.NoError(store.UpsertMany(ctx, policys))
+	allPolicy, err := store.GetAll(ctx)
+	s.NoError(err)
+	protoassert.ElementsMatch(s.T(), policys, allPolicy)
 
-	policyCount, err = store.Count(ctx)
+	policyCount, err = store.Count(ctx, search.EmptyQuery())
 	s.NoError(err)
 	s.Equal(200, policyCount)
+
+	s.NoError(store.DeleteMany(ctx, policyIDs))
+
+	policyCount, err = store.Count(ctx, search.EmptyQuery())
+	s.NoError(err)
+	s.Equal(0, policyCount)
 }

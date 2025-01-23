@@ -2,24 +2,19 @@ package clair
 
 import (
 	"encoding/json"
-	"time"
 
-	timestamp "github.com/gogo/protobuf/types"
 	"github.com/stackrox/rox/generated/storage"
 	"github.com/stackrox/rox/pkg/cvss/cvssv2"
 	"github.com/stackrox/rox/pkg/cvss/cvssv3"
+	"github.com/stackrox/rox/pkg/features"
 	"github.com/stackrox/rox/pkg/logging"
 	"github.com/stackrox/rox/pkg/protoconv"
 	"github.com/stackrox/rox/pkg/scancomponent"
 	"github.com/stackrox/rox/pkg/scans"
 	clairV1 "github.com/stackrox/scanner/api/v1"
+	clairConvert "github.com/stackrox/scanner/api/v1/convert"
 	clientMetadata "github.com/stackrox/scanner/pkg/clairify/client/metadata"
 	"github.com/stackrox/scanner/pkg/component"
-)
-
-const (
-	timeFormat         = "2006-01-02T15:04Z"
-	extendedTimeFormat = "2006-01-02T15:04:03Z"
 )
 
 var (
@@ -52,15 +47,15 @@ type cvss struct {
 // SeverityToStorageSeverity converts the given string representation of a severity into a storage.VulnerabilitySeverity.
 func SeverityToStorageSeverity(severity string) storage.VulnerabilitySeverity {
 	switch severity {
-	case string(clairV1.UnknownSeverity):
+	case string(clairConvert.UnknownSeverity):
 		return storage.VulnerabilitySeverity_UNKNOWN_VULNERABILITY_SEVERITY
-	case string(clairV1.LowSeverity):
+	case string(clairConvert.LowSeverity):
 		return storage.VulnerabilitySeverity_LOW_VULNERABILITY_SEVERITY
-	case string(clairV1.ModerateSeverity):
+	case string(clairConvert.ModerateSeverity):
 		return storage.VulnerabilitySeverity_MODERATE_VULNERABILITY_SEVERITY
-	case string(clairV1.ImportantSeverity):
+	case string(clairConvert.ImportantSeverity):
 		return storage.VulnerabilitySeverity_IMPORTANT_VULNERABILITY_SEVERITY
-	case string(clairV1.CriticalSeverity):
+	case string(clairConvert.CriticalSeverity):
 		return storage.VulnerabilitySeverity_CRITICAL_VULNERABILITY_SEVERITY
 	}
 	return storage.VulnerabilitySeverity_UNKNOWN_VULNERABILITY_SEVERITY
@@ -102,8 +97,8 @@ func ConvertVulnerability(v clairV1.Vulnerability) *storage.EmbeddedVulnerabilit
 	if err := json.Unmarshal(d, &m); err != nil {
 		return vul
 	}
-	vul.PublishedOn = ConvertTime(m.PublishedOn)
-	vul.LastModified = ConvertTime(m.LastModified)
+	vul.PublishedOn = protoconv.ConvertTimeString(m.PublishedOn)
+	vul.LastModified = protoconv.ConvertTimeString(m.LastModified)
 
 	if m.CvssV2 != nil && m.CvssV2.Vectors != "" {
 		if cvssV2, err := cvssv2.ParseCVSSV2(m.CvssV2.Vectors); err == nil {
@@ -138,7 +133,7 @@ func ConvertVulnerability(v clairV1.Vulnerability) *storage.EmbeddedVulnerabilit
 	return vul
 }
 
-func convertFeature(feature clairV1.Feature) *storage.EmbeddedImageScanComponent {
+func convertFeature(feature clairV1.Feature, os string) *storage.EmbeddedImageScanComponent {
 	component := &storage.EmbeddedImageScanComponent{
 		Name:     feature.Name,
 		Version:  feature.Version,
@@ -155,16 +150,18 @@ func convertFeature(feature clairV1.Feature) *storage.EmbeddedImageScanComponent
 			component.Vulns = append(component.Vulns, convertedVuln)
 		}
 	}
-	executables := make([]*storage.EmbeddedImageScanComponent_Executable, 0, len(feature.Executables))
-	for _, executable := range feature.Executables {
-		imageComponentIds := make([]string, 0, len(executable.RequiredFeatures))
-		for _, f := range executable.RequiredFeatures {
-			imageComponentIds = append(imageComponentIds, scancomponent.ComponentID(f.GetName(), f.GetVersion(), ""))
+	if features.ActiveVulnMgmt.Enabled() {
+		executables := make([]*storage.EmbeddedImageScanComponent_Executable, 0, len(feature.Executables))
+		for _, executable := range feature.Executables {
+			imageComponentIds := make([]string, 0, len(executable.RequiredFeatures))
+			for _, f := range executable.RequiredFeatures {
+				imageComponentIds = append(imageComponentIds, scancomponent.ComponentID(f.GetName(), f.GetVersion(), os))
+			}
+			exec := &storage.EmbeddedImageScanComponent_Executable{Path: executable.Path, Dependencies: imageComponentIds}
+			executables = append(executables, exec)
 		}
-		exec := &storage.EmbeddedImageScanComponent_Executable{Path: executable.Path, Dependencies: imageComponentIds}
-		executables = append(executables, exec)
+		component.Executables = executables
 	}
-	component.Executables = executables
 
 	return component
 }
@@ -200,12 +197,12 @@ func BuildSHAToIndexMap(metadata *storage.ImageMetadata) map[string]int32 {
 }
 
 // ConvertFeatures converts clair features to proto components
-func ConvertFeatures(image *storage.Image, features []clairV1.Feature) (components []*storage.EmbeddedImageScanComponent) {
+func ConvertFeatures(image *storage.Image, features []clairV1.Feature, os string) (components []*storage.EmbeddedImageScanComponent) {
 	layerSHAToIndex := BuildSHAToIndexMap(image.GetMetadata())
 
 	components = make([]*storage.EmbeddedImageScanComponent, 0, len(features))
 	for _, feature := range features {
-		convertedComponent := convertFeature(feature)
+		convertedComponent := convertFeature(feature, os)
 		if val, ok := layerSHAToIndex[feature.AddedBy]; ok {
 			convertedComponent.HasLayerIndex = &storage.EmbeddedImageScanComponent_LayerIndex{
 				LayerIndex: val,
@@ -214,17 +211,4 @@ func ConvertFeatures(image *storage.Image, features []clairV1.Feature) (componen
 		components = append(components, convertedComponent)
 	}
 	return
-}
-
-// ConvertTime converts a vulnerability time string into a proto timestamp
-func ConvertTime(str string) *timestamp.Timestamp {
-	if str == "" {
-		return nil
-	}
-	if ts, err := time.Parse(timeFormat, str); err == nil {
-		return protoconv.ConvertTimeToTimestamp(ts)
-	} else if ts, err := time.Parse(extendedTimeFormat, str); err == nil {
-		return protoconv.ConvertTimeToTimestamp(ts)
-	}
-	return nil
 }

@@ -2,21 +2,26 @@ package datastore
 
 import (
 	"context"
+	"testing"
 
-	"github.com/blevesearch/bleve"
-	"github.com/stackrox/rox/central/alert/datastore/internal/index"
 	"github.com/stackrox/rox/central/alert/datastore/internal/search"
 	"github.com/stackrox/rox/central/alert/datastore/internal/store"
-	"github.com/stackrox/rox/central/alert/datastore/internal/store/rocksdb"
-	"github.com/stackrox/rox/central/globaldb"
+	pgStore "github.com/stackrox/rox/central/alert/datastore/internal/store/postgres"
+	platformmatcher "github.com/stackrox/rox/central/platform/matcher"
 	v1 "github.com/stackrox/rox/generated/api/v1"
 	"github.com/stackrox/rox/generated/storage"
 	"github.com/stackrox/rox/pkg/concurrency"
-	rocksdbBase "github.com/stackrox/rox/pkg/rocksdb"
+	"github.com/stackrox/rox/pkg/postgres"
 	searchPkg "github.com/stackrox/rox/pkg/search"
 )
 
+var (
+	// Override the default mutex pool size to allow for better parallelism
+	mutexPoolSize uint32 = 1024
+)
+
 // DataStore is a transaction script with methods that provide the domain logic for CRUD uses cases for Alert objects.
+//
 //go:generate mockgen-wrapper
 type DataStore interface {
 	Search(ctx context.Context, q *v1.Query) ([]searchPkg.Result, error)
@@ -25,44 +30,36 @@ type DataStore interface {
 	SearchRawAlerts(ctx context.Context, q *v1.Query) ([]*storage.Alert, error)
 	SearchListAlerts(ctx context.Context, q *v1.Query) ([]*storage.ListAlert, error)
 
-	ListAlerts(ctx context.Context, request *v1.ListAlertsRequest) ([]*storage.ListAlert, error)
+	GetByQuery(ctx context.Context, q *v1.Query) ([]*storage.Alert, error)
+	WalkByQuery(ctx context.Context, q *v1.Query, db func(d *storage.Alert) error) error
 	WalkAll(ctx context.Context, fn func(alert *storage.ListAlert) error) error
 	GetAlert(ctx context.Context, id string) (*storage.Alert, bool, error)
 	CountAlerts(ctx context.Context) (int, error)
 	UpsertAlert(ctx context.Context, alert *storage.Alert) error
 	UpsertAlerts(ctx context.Context, alerts []*storage.Alert) error
-	MarkAlertStale(ctx context.Context, id string) error
+	// MarkAlertsResolvedBatch marks alerts with specified ids as RESOLVED in batch and returns resolved alerts.
+	MarkAlertsResolvedBatch(ctx context.Context, id ...string) ([]*storage.Alert, error)
 
 	DeleteAlerts(ctx context.Context, ids ...string) error
-
-	AddAlertTags(ctx context.Context, alertID string, tags []string) ([]string, error)
-	RemoveAlertTags(ctx context.Context, alertID string, tags []string) error
+	PruneAlerts(ctx context.Context, ids ...string) error
 }
 
-// New returns a new soleInstance of DataStore using the input store, indexer, and searcher.
-func New(storage store.Store, indexer index.Indexer, searcher search.Searcher) (DataStore, error) {
+// New returns a new soleInstance of DataStore using the input store, and searcher.
+func New(alertStore store.Store, searcher search.Searcher, platformMatcher platformmatcher.PlatformMatcher) (DataStore, error) {
 	ds := &datastoreImpl{
-		storage:    storage,
-		indexer:    indexer,
-		searcher:   searcher,
-		keyedMutex: concurrency.NewKeyedMutex(globaldb.DefaultDataStorePoolSize),
-	}
-	if err := ds.buildIndex(context.TODO()); err != nil {
-		return nil, err
+		storage:         alertStore,
+		searcher:        searcher,
+		keyedMutex:      concurrency.NewKeyedMutex(mutexPoolSize),
+		keyFence:        concurrency.NewKeyFence(),
+		platformMatcher: platformMatcher,
 	}
 	return ds, nil
 }
 
-// NewWithDb returns a new soleInstance of DataStore using the input indexer, and searcher.
-func NewWithDb(db *rocksdbBase.RocksDB, bIndex bleve.Index) DataStore {
-	store := store.NewFullStore(rocksdb.New(db))
-	indexer := index.New(bIndex)
-	searcher := search.New(store, indexer)
+// GetTestPostgresDataStore provides a datastore connected to postgres for testing purposes.
+func GetTestPostgresDataStore(_ testing.TB, pool postgres.DB) (DataStore, error) {
+	alertStore := pgStore.New(pool)
+	searcher := search.New(alertStore)
 
-	return &datastoreImpl{
-		storage:    store,
-		indexer:    indexer,
-		searcher:   searcher,
-		keyedMutex: concurrency.NewKeyedMutex(globaldb.DefaultDataStorePoolSize),
-	}
+	return New(alertStore, searcher, platformmatcher.Singleton())
 }

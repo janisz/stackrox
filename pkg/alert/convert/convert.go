@@ -21,7 +21,6 @@ func AlertToListAlert(alert *storage.Alert) *storage.ListAlert {
 			Description: alert.GetPolicy().GetDescription(),
 			Categories:  alert.GetPolicy().GetCategories(),
 		},
-		Tags:              alert.GetTags(),
 		EnforcementAction: alert.GetEnforcement().GetAction(),
 	}
 	if alert.GetState() == storage.ViolationState_ACTIVE {
@@ -57,13 +56,14 @@ func populateListAlertEntityInfoForResource(listAlert *storage.ListAlert, resour
 func populateListAlertEntityInfoForDeployment(listAlert *storage.ListAlert, deployment *storage.Alert_Deployment) {
 	listAlert.Entity = &storage.ListAlert_Deployment{
 		Deployment: &storage.ListAlertDeployment{
-			Id:          deployment.GetId(),
-			Name:        deployment.GetName(),
-			ClusterName: deployment.GetClusterName(),
-			ClusterId:   deployment.GetClusterId(),
-			Namespace:   deployment.GetNamespace(),
-			NamespaceId: deployment.GetNamespaceId(),
-			Inactive:    deployment.GetInactive(),
+			Id:             deployment.GetId(),
+			Name:           deployment.GetName(),
+			ClusterName:    deployment.GetClusterName(),
+			ClusterId:      deployment.GetClusterId(),
+			Namespace:      deployment.GetNamespace(),
+			NamespaceId:    deployment.GetNamespaceId(),
+			Inactive:       deployment.GetInactive(),
+			DeploymentType: deployment.GetType(),
 		},
 	}
 	listAlert.CommonEntityInfo = &storage.ListAlert_CommonEntityInfo{

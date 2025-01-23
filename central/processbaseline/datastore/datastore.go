@@ -4,7 +4,6 @@ import (
 	"context"
 
 	"github.com/stackrox/rox/central/globaldb"
-	"github.com/stackrox/rox/central/processbaseline/index"
 	"github.com/stackrox/rox/central/processbaseline/search"
 	"github.com/stackrox/rox/central/processbaseline/store"
 	"github.com/stackrox/rox/central/processbaselineresults/datastore"
@@ -15,7 +14,8 @@ import (
 	pkgSearch "github.com/stackrox/rox/pkg/search"
 )
 
-// DataStore wraps storage, indexer, and searcher for ProcessBaselines.
+// DataStore wraps storage, and searcher for ProcessBaselines.
+//
 //go:generate mockgen-wrapper
 type DataStore interface {
 	SearchRawProcessBaselines(ctx context.Context, q *v1.Query) ([]*storage.ProcessBaseline, error)
@@ -38,11 +38,10 @@ type DataStore interface {
 	ClearProcessBaselines(ctx context.Context, ids []string) error
 }
 
-// New returns a new instance of DataStore using the input store, indexer, and searcher.
-func New(storage store.Store, indexer index.Indexer, searcher search.Searcher, processBaselineResults datastore.DataStore, processIndicators processIndicatorDatastore.DataStore) DataStore {
+// New returns a new instance of DataStore using the input store, and searcher.
+func New(storage store.Store, searcher search.Searcher, processBaselineResults datastore.DataStore, processIndicators processIndicatorDatastore.DataStore) DataStore {
 	d := &datastoreImpl{
 		storage:                storage,
-		indexer:                indexer,
 		searcher:               searcher,
 		baselineLock:           concurrency.NewKeyedMutex(globaldb.DefaultDataStorePoolSize),
 		processBaselineResults: processBaselineResults,

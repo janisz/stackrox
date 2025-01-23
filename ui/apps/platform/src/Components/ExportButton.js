@@ -2,16 +2,16 @@ import React, { Component } from 'react';
 import PropTypes from 'prop-types';
 import * as Icon from 'react-feather';
 import onClickOutside from 'react-onclickoutside';
+import { toast } from 'react-toastify';
+import { Button } from '@patternfly/react-core';
 
 import downloadCSV from 'services/CSVDownloadService';
 import WorkflowPDFExportButton from 'Components/WorkflowPDFExportButton';
-import Button from 'Components/Button';
+import ButtonClassic from 'Components/Button';
 import useCaseTypes from 'constants/useCaseTypes';
 import entityTypes from 'constants/entityTypes';
 import { addBrandedTimestampToString } from 'utils/dateUtils';
 
-const btnClassName =
-    'btn border-primary-600 bg-primary-600 text-base-100 w-48 hover:bg-primary-700 hover:border-primary-700';
 const queryParamMap = {
     [entityTypes.CLUSTER]: 'clusterId',
     [entityTypes.STANDARD]: 'standardId',
@@ -21,7 +21,13 @@ const queryParamMap = {
 const complianceDownloadUrl = '/api/compliance/export/csv';
 
 function checkVulnMgmtSupport(page, type) {
-    return page === useCaseTypes.VULN_MANAGEMENT && type === entityTypes.CVE;
+    return (
+        page === useCaseTypes.VULN_MANAGEMENT &&
+        (type === entityTypes.CVE ||
+            type === entityTypes.IMAGE_CVE ||
+            type === entityTypes.NODE_CVE ||
+            type === entityTypes.CLUSTER_CVE)
+    );
 }
 
 function checkComplianceSupport(page, type) {
@@ -39,6 +45,8 @@ class ExportButton extends Component {
         customCsvExportHandler: PropTypes.func,
         page: PropTypes.string,
         disabled: PropTypes.bool,
+        isExporting: PropTypes.bool.isRequired,
+        setIsExporting: PropTypes.func.isRequired,
     };
 
     static defaultProps = {
@@ -75,9 +83,13 @@ class ExportButton extends Component {
             }
 
             this.setState({ csvIsDownloading: true });
-            customCsvExportHandler(csvName).finally(() => {
-                this.setState({ toggleWidget: false, csvIsDownloading: false });
-            });
+            customCsvExportHandler(csvName)
+                .catch((err) => {
+                    toast(`An error occurred while trying to export: ${err}`);
+                })
+                .finally(() => {
+                    this.setState({ toggleWidget: false, csvIsDownloading: false });
+                });
         } else {
             // otherwise, use legacy compliance CSV export
             let queryStr = '';
@@ -118,31 +130,41 @@ class ExportButton extends Component {
 
         const fileName = addBrandedTimestampToString(headerText);
 
-        return (
-            <div className="absolute right-0 z-20 uppercase flex flex-col text-base-600 min-w-64">
+        const wrapperClass = !!this.props.pdfId && !this.isCsvSupported() ? 'min-w-64' : '';
+
+        return !!this.props.pdfId || this.isCsvSupported() ? (
+            <div className={`absolute right-0 z-20 flex flex-col text-base-600 ${wrapperClass}`}>
                 <div className="arrow-up self-end mr-5" />
-                <ul className=" bg-base-100 border-2 border-primary-600 rounded">
-                    <li className="p-4 border-b border-base-400">
-                        <div className="flex uppercase">
-                            <WorkflowPDFExportButton
-                                id={this.props.pdfId}
-                                className={`${btnClassName}  ${
-                                    this.isCsvSupported() ? 'mr-2' : 'w-full'
-                                }`}
-                                tableOptions={this.props.tableOptions}
-                                fileName={fileName}
-                                pdfTitle={headerText}
-                            />
+                <ul
+                    className="bg-base-100 rounded"
+                    style={{
+                        borderColor: 'var(--pf-v5-global--primary-color--100)',
+                        borderWidth: 2,
+                    }}
+                >
+                    <li className="p-4 border-b">
+                        <div className="flex">
+                            {!!this.props.pdfId && (
+                                <WorkflowPDFExportButton
+                                    id={this.props.pdfId}
+                                    className={`min-w-48 ${
+                                        this.isCsvSupported() ? 'mr-2' : 'w-full'
+                                    }`}
+                                    tableOptions={this.props.tableOptions}
+                                    fileName={fileName}
+                                    pdfTitle={headerText}
+                                    isExporting={this.props.isExporting}
+                                    setIsExporting={this.props.setIsExporting}
+                                />
+                            )}
                             {this.isCsvSupported() && (
                                 <Button
-                                    data-testid="download-csv-button"
-                                    className={btnClassName}
-                                    type="button"
+                                    variant="primary"
                                     onClick={this.downloadCSVFile}
-                                    text={csvButtonText}
                                     isLoading={csvIsDownloading}
-                                    loaderSize={14}
-                                />
+                                >
+                                    {csvButtonText}
+                                </Button>
                             )}
                         </div>
                     </li>
@@ -152,24 +174,24 @@ class ExportButton extends Component {
                     </li>
                 </ul>
             </div>
-        );
+        ) : null;
     };
 
-    openWidget = () => {
-        this.setState({ toggleWidget: true });
+    toggleWidget = () => {
+        this.setState(({ toggleWidget }) => ({ toggleWidget: !toggleWidget }));
     };
 
     render() {
         return (
             <div className="relative pl-2">
-                <Button
+                <ButtonClassic
                     className={this.props.className}
                     disabled={this.props.disabled}
                     text="Export"
                     textCondensed="Export"
                     textClass={this.props.textClass}
                     icon={<Icon.FileText size="14" className="mx-1 lg:ml-1 lg:mr-3" />}
-                    onClick={this.openWidget}
+                    onClick={this.toggleWidget}
                 />
                 {this.renderContent()}
             </div>

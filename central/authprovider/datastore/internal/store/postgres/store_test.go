@@ -8,58 +8,44 @@ import (
 	"context"
 	"testing"
 
-	"github.com/jackc/pgx/v4/pgxpool"
 	"github.com/stackrox/rox/generated/storage"
-	"github.com/stackrox/rox/pkg/features"
 	"github.com/stackrox/rox/pkg/postgres/pgtest"
+	"github.com/stackrox/rox/pkg/protoassert"
 	"github.com/stackrox/rox/pkg/sac"
+	"github.com/stackrox/rox/pkg/search"
 	"github.com/stackrox/rox/pkg/testutils"
-	"github.com/stackrox/rox/pkg/testutils/envisolator"
 	"github.com/stretchr/testify/suite"
 )
 
-type AuthprovidersStoreSuite struct {
+type AuthProvidersStoreSuite struct {
 	suite.Suite
-	envIsolator *envisolator.EnvIsolator
-	store       Store
-	pool        *pgxpool.Pool
+	store  Store
+	testDB *pgtest.TestPostgres
 }
 
-func TestAuthprovidersStore(t *testing.T) {
-	suite.Run(t, new(AuthprovidersStoreSuite))
+func TestAuthProvidersStore(t *testing.T) {
+	suite.Run(t, new(AuthProvidersStoreSuite))
 }
 
-func (s *AuthprovidersStoreSuite) SetupTest() {
-	s.envIsolator = envisolator.NewEnvIsolator(s.T())
-	s.envIsolator.Setenv(features.PostgresDatastore.EnvVar(), "true")
+func (s *AuthProvidersStoreSuite) SetupSuite() {
 
-	if !features.PostgresDatastore.Enabled() {
-		s.T().Skip("Skip postgres store tests")
-		s.T().SkipNow()
-	}
+	s.testDB = pgtest.ForT(s.T())
+	s.store = New(s.testDB.DB)
+}
 
+func (s *AuthProvidersStoreSuite) SetupTest() {
 	ctx := sac.WithAllAccess(context.Background())
-
-	source := pgtest.GetConnectionString(s.T())
-	config, err := pgxpool.ParseConfig(source)
-	s.Require().NoError(err)
-	pool, err := pgxpool.ConnectConfig(ctx, config)
-	s.Require().NoError(err)
-
-	Destroy(ctx, pool)
-
-	s.pool = pool
-	s.store = New(ctx, pool)
+	tag, err := s.testDB.Exec(ctx, "TRUNCATE auth_providers CASCADE")
+	s.T().Log("auth_providers", tag)
+	s.store = New(s.testDB.DB)
+	s.NoError(err)
 }
 
-func (s *AuthprovidersStoreSuite) TearDownTest() {
-	if s.pool != nil {
-		s.pool.Close()
-	}
-	s.envIsolator.RestoreAll()
+func (s *AuthProvidersStoreSuite) TearDownSuite() {
+	s.testDB.Teardown(s.T())
 }
 
-func (s *AuthprovidersStoreSuite) TestStore() {
+func (s *AuthProvidersStoreSuite) TestStore() {
 	ctx := sac.WithAllAccess(context.Background())
 
 	store := s.store
@@ -78,12 +64,12 @@ func (s *AuthprovidersStoreSuite) TestStore() {
 	foundAuthProvider, exists, err = store.Get(ctx, authProvider.GetId())
 	s.NoError(err)
 	s.True(exists)
-	s.Equal(authProvider, foundAuthProvider)
+	protoassert.Equal(s.T(), authProvider, foundAuthProvider)
 
-	authProviderCount, err := store.Count(ctx)
+	authProviderCount, err := store.Count(ctx, search.EmptyQuery())
 	s.NoError(err)
 	s.Equal(1, authProviderCount)
-	authProviderCount, err = store.Count(withNoAccessCtx)
+	authProviderCount, err = store.Count(withNoAccessCtx, search.EmptyQuery())
 	s.NoError(err)
 	s.Zero(authProviderCount)
 
@@ -93,11 +79,6 @@ func (s *AuthprovidersStoreSuite) TestStore() {
 	s.NoError(store.Upsert(ctx, authProvider))
 	s.ErrorIs(store.Upsert(withNoAccessCtx, authProvider), sac.ErrResourceAccessDenied)
 
-	foundAuthProvider, exists, err = store.Get(ctx, authProvider.GetId())
-	s.NoError(err)
-	s.True(exists)
-	s.Equal(authProvider, foundAuthProvider)
-
 	s.NoError(store.Delete(ctx, authProvider.GetId()))
 	foundAuthProvider, exists, err = store.Get(ctx, authProvider.GetId())
 	s.NoError(err)
@@ -106,18 +87,26 @@ func (s *AuthprovidersStoreSuite) TestStore() {
 	s.ErrorIs(store.Delete(withNoAccessCtx, authProvider.GetId()), sac.ErrResourceAccessDenied)
 
 	var authProviders []*storage.AuthProvider
+	var authProviderIDs []string
 	for i := 0; i < 200; i++ {
 		authProvider := &storage.AuthProvider{}
 		s.NoError(testutils.FullInit(authProvider, testutils.UniqueInitializer(), testutils.JSONFieldsFilter))
 		authProviders = append(authProviders, authProvider)
+		authProviderIDs = append(authProviderIDs, authProvider.GetId())
 	}
 
 	s.NoError(store.UpsertMany(ctx, authProviders))
 	allAuthProvider, err := store.GetAll(ctx)
 	s.NoError(err)
-	s.ElementsMatch(authProviders, allAuthProvider)
+	protoassert.ElementsMatch(s.T(), authProviders, allAuthProvider)
 
-	authProviderCount, err = store.Count(ctx)
+	authProviderCount, err = store.Count(ctx, search.EmptyQuery())
 	s.NoError(err)
 	s.Equal(200, authProviderCount)
+
+	s.NoError(store.DeleteMany(ctx, authProviderIDs))
+
+	authProviderCount, err = store.Count(ctx, search.EmptyQuery())
+	s.NoError(err)
+	s.Equal(0, authProviderCount)
 }

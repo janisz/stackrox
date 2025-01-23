@@ -1,6 +1,6 @@
 package orchestratormanager
 
-import io.fabric8.kubernetes.api.model.EnvVar
+import io.fabric8.kubernetes.api.model.ObjectMeta
 import io.fabric8.kubernetes.api.model.Pod
 import io.fabric8.kubernetes.api.model.admissionregistration.v1.ValidatingWebhookConfiguration
 import objects.ConfigMap
@@ -18,7 +18,6 @@ import objects.Service
 
 interface OrchestratorMain {
     def setup()
-    def cleanup()
 
     // Pods
     List<Pod> getPods(String ns, String appName)
@@ -26,14 +25,14 @@ interface OrchestratorMain {
     Boolean deletePod(String ns, String podName, Long gracePeriodSecs)
     Boolean deletePodAndWait(String ns, String podName, int retries, int intervalSeconds)
     def deleteAllPods(String ns, Map<String, String> labels)
-    void deleteAllPodsAndWait(String ns, Map<String, String> labels)
-    Boolean restartPodByLabelWithExecKill(String ns, Map<String, String> labels)
     def restartPodByLabels(String ns, Map<String, String> labels, int retries, int intervalSecond)
     def waitForAllPodsToBeRemoved(String ns, Map<String, String>labels, int iterations, int intervalSeconds)
     def waitForPodsReady(String ns, Map<String, String> labels, int minReady, int iterations, int intervalSeconds)
     def waitForPodRestart(String ns, String name, int prevRestartCount, int retries, int intervalSeconds)
     String getPodLog(String ns, String name)
     def copyFileToPod(String fromPath, String ns, String podName, String toPath)
+    boolean podReady(Pod pod)
+    def addPodAnnotationByApp(String ns, String appName, String key, String value)
 
     //Deployments
     io.fabric8.kubernetes.api.model.apps.Deployment getOrchestratorDeployment(String ns, String name)
@@ -50,23 +49,27 @@ interface OrchestratorMain {
     def getDeploymentReplicaCount(Deployment deployment)
     def getDeploymentUnavailableReplicaCount(Deployment deployment)
     def getDeploymentNodeSelectors(Deployment deployment)
+    def getDeploymentCount()
     def getDeploymentCount(String ns)
     Set<String> getDeploymentSecrets(Deployment deployment)
     def createPortForward(int port, Deployment deployment)
-    def updateDeploymentEnv(String ns, String name, String key, String value)
-    EnvVar getDeploymentEnv(String ns, String name, String key)
     def scaleDeployment(String ns, String name, Integer replicas)
     List<String> getDeployments(String ns)
+    boolean deploymentReady(String ns, String name)
 
     //DaemonSets
     def createDaemonSet(DaemonSet daemonSet)
     def deleteDaemonSet(DaemonSet daemonSet)
+    boolean containsDaemonSetContainer(String ns, String name, String containerName)
+    def updateDaemonSetEnv(String ns, String name, String containerName, String key, String value)
     def getDaemonSetReplicaCount(DaemonSet daemonSet)
     def getDaemonSetNodeSelectors(DaemonSet daemonSet)
     def getDaemonSetUnavailableReplicaCount(DaemonSet daemonSet)
+    def getDaemonSetCount()
     def getDaemonSetCount(String ns)
+    boolean daemonSetReady(String ns, String name)
+    boolean daemonSetEnvVarUpdated(String ns, String name, String containerName, String envVarName, String envVarValue)
     def waitForDaemonSetDeletion(String name)
-    def waitForDaemonSetReady(String ns, String name, int retires, int intervalSeconds)
     String getDaemonSetId(DaemonSet daemonSet)
 
     // StatefulSets
@@ -75,9 +78,9 @@ interface OrchestratorMain {
     //Containers
     def deleteContainer(String containerName, String namespace)
     def wasContainerKilled(String containerName, String namespace)
-    def isKubeProxyPresent()
     def isKubeDashboardRunning()
     String getContainerlogs(String ns, String podName, String containerName)
+    def getStaticPodCount()
     def getStaticPodCount(String ns)
 
     //Services
@@ -98,7 +101,8 @@ interface OrchestratorMain {
     def createImagePullSecret(String name, String username, String password, String namespace, String server)
     def createImagePullSecret(Secret secret)
     def deleteSecret(String name, String namespace)
-    def getSecretCount(String ns)
+    int getSecretCount(String ns)
+    int getSecretCount()
     io.fabric8.kubernetes.api.model.Secret getSecret(String name, String namespace)
     def updateSecret(io.fabric8.kubernetes.api.model.Secret secret)
 
@@ -110,7 +114,8 @@ interface OrchestratorMain {
     def addNamespaceAnnotation(String ns, String key, String value)
     def removeNamespaceAnnotation(String ns, String key)
     def getAllNetworkPoliciesNamesByNamespace(Boolean ignoreUndoneStackroxGenerated)
-    List<Namespace> getNamespaceDetails()
+    Namespace getNamespaceDetailsByName(String name)
+    boolean ownerIsTracked(ObjectMeta obj)
     List<String> getNamespaces()
 
     //NetworkPolicies
@@ -163,7 +168,7 @@ interface OrchestratorMain {
 
     //Misc
     def execInContainer(Deployment deployment, String cmd)
-    def execInContainerByPodName(String name, String namespace, String cmd, int retries)
+    boolean execInContainerByPodName(String name, String namespace, String cmd, int retries)
     String generateYaml(Object orchestratorObject)
     String getNameSpace()
     String getSensorContainerName()

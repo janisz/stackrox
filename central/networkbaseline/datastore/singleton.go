@@ -1,13 +1,8 @@
 package datastore
 
 import (
-	"context"
-
 	"github.com/stackrox/rox/central/globaldb"
-	"github.com/stackrox/rox/central/networkbaseline/store"
-	"github.com/stackrox/rox/central/networkbaseline/store/postgres"
-	"github.com/stackrox/rox/central/networkbaseline/store/rocksdb"
-	"github.com/stackrox/rox/pkg/features"
+	pgStore "github.com/stackrox/rox/central/networkbaseline/store/postgres"
 	"github.com/stackrox/rox/pkg/sync"
 )
 
@@ -19,12 +14,7 @@ var (
 // Singleton provides the instance of NetworkBaselineDataStore to use.
 func Singleton() DataStore {
 	once.Do(func() {
-		var storage store.Store
-		if features.PostgresDatastore.Enabled() {
-			storage = postgres.New(context.TODO(), globaldb.GetPostgres())
-		} else {
-			storage = rocksdb.New(globaldb.GetRocksDB())
-		}
+		storage := pgStore.New(globaldb.GetPostgres())
 		ds = newNetworkBaselineDataStore(storage)
 	})
 	return ds

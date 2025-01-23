@@ -1,7 +1,7 @@
 package graph
 
 import (
-	"sort"
+	"slices"
 
 	"github.com/pkg/errors"
 	v1 "github.com/stackrox/rox/generated/api/v1"
@@ -14,7 +14,7 @@ func getAdjacentNodeIDs(adjacencies map[string]*v1.NetworkEdgePropertiesBundle) 
 	for id := range adjacencies {
 		ids = append(ids, id)
 	}
-	sort.Strings(ids)
+	slices.Sort(ids)
 	return ids
 }
 
@@ -27,8 +27,8 @@ func adjacentNodeIDsToMap(adjacencies []string) map[string]*v1.NetworkEdgeProper
 }
 
 func getPolicyIDs(node *v1.NetworkNode) []string {
-	result := sliceutils.StringClone(node.GetPolicyIds())
-	sort.Strings(result)
+	result := slices.Clone(node.GetPolicyIds())
+	slices.Sort(result)
 	return result
 }
 
@@ -37,7 +37,7 @@ func computeNodeDiff(oldG, newG *networkGraphWrapper, id string) (oldNodeDiff, n
 	newNode := newG.getNode(id)
 	oldNodePolicies := getPolicyIDs(oldNode)
 	newNodePolicies := getPolicyIDs(newNode)
-	oldPolicyIDs, newPolicyIDs := sliceutils.StringDiff(oldNodePolicies, newNodePolicies, func(a, b string) bool { return a < b })
+	oldPolicyIDs, newPolicyIDs := sliceutils.Diff(oldNodePolicies, newNodePolicies, func(a, b string) bool { return a < b })
 	if len(oldPolicyIDs) > 0 {
 		oldNodeDiff = &v1.NetworkNodeDiff{
 			PolicyIds: oldPolicyIDs,
@@ -51,7 +51,7 @@ func computeNodeDiff(oldG, newG *networkGraphWrapper, id string) (oldNodeDiff, n
 
 	oldAdjacencies := getAdjacentNodeIDs(oldG.getNodeOutEdges(id))
 	newAdjacencies := getAdjacentNodeIDs(newG.getNodeOutEdges(id))
-	removedAdjacencies, addedAdjacencies := sliceutils.StringDiff(oldAdjacencies, newAdjacencies, func(a, b string) bool { return a < b })
+	removedAdjacencies, addedAdjacencies := sliceutils.Diff(oldAdjacencies, newAdjacencies, func(a, b string) bool { return a < b })
 	if len(removedAdjacencies) > 0 {
 		if oldNodeDiff == nil {
 			oldNodeDiff = &v1.NetworkNodeDiff{}

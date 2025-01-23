@@ -6,10 +6,10 @@ import (
 	"time"
 
 	"github.com/stackrox/rox/generated/internalapi/central"
-	"github.com/stackrox/rox/generated/internalapi/sensor"
 	"github.com/stackrox/rox/generated/storage"
 	"github.com/stackrox/rox/pkg/concurrency"
 	"github.com/stackrox/rox/pkg/net"
+	"github.com/stackrox/rox/pkg/protoassert"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -53,7 +53,7 @@ func TestExternalSrcsHandler(t *testing.T) {
 	require.True(t, concurrency.WaitWithTimeout(vs, 100*time.Millisecond))
 	vs = vs.TryNext()
 	require.NotNil(t, vs)
-	assert.Len(t, vs.Value().(*sensor.IPNetworkList).GetIpv4Networks(), 5)
+	assert.Len(t, vs.Value().GetIpv4Networks(), 5)
 
 	assert.False(t, concurrency.WaitWithTimeout(vs, 100*time.Millisecond))
 	assert.Nil(t, vs.TryNext())
@@ -95,7 +95,7 @@ func TestExternalSrcsHandler(t *testing.T) {
 	require.True(t, concurrency.WaitWithTimeout(vs, 100*time.Millisecond))
 	vs = vs.TryNext()
 	require.NotNil(t, vs)
-	assert.Len(t, vs.Value().(*sensor.IPNetworkList).GetIpv4Networks(), 10)
+	assert.Len(t, vs.Value().GetIpv4Networks(), 10)
 
 	assert.False(t, concurrency.WaitWithTimeout(vs, 100*time.Millisecond))
 	assert.Nil(t, vs.TryNext())
@@ -174,8 +174,8 @@ func TestExternalSrcsHandler(t *testing.T) {
 	assert.True(t, concurrency.WaitWithTimeout(vs, 100*time.Millisecond))
 	vs = vs.TryNext()
 	require.NotNil(t, vs)
-	assert.Len(t, vs.Value().(*sensor.IPNetworkList).GetIpv4Networks(), 5)
-	assert.Len(t, vs.Value().(*sensor.IPNetworkList).GetIpv6Networks(), 17)
+	assert.Len(t, vs.Value().GetIpv4Networks(), 5)
+	assert.Len(t, vs.Value().GetIpv6Networks(), 17)
 
 	assert.False(t, concurrency.WaitWithTimeout(vs, 100*time.Millisecond))
 	assert.Nil(t, vs.TryNext())
@@ -265,8 +265,8 @@ func TestExternalSourcesLookup(t *testing.T) {
 	require.True(t, concurrency.WaitWithTimeout(vs, 100*time.Millisecond))
 
 	expected := req.GetPushNetworkEntitiesRequest().GetEntities()[1]
-	assert.Equal(t, expected, handler.LookupByNetwork(net.IPNetworkFromCIDRBytes([]byte{192, 10, 0, 0, 16})))
+	protoassert.Equal(t, expected, handler.LookupByNetwork(net.IPNetworkFromCIDRBytes([]byte{192, 10, 0, 0, 16})))
 
 	expected = req.GetPushNetworkEntitiesRequest().GetEntities()[3]
-	assert.Equal(t, expected, handler.LookupByNetwork(net.IPNetworkFromCIDRBytes([]byte{0, 0, 0, 0, 0})))
+	protoassert.Equal(t, expected, handler.LookupByNetwork(net.IPNetworkFromCIDRBytes([]byte{0, 0, 0, 0, 0})))
 }

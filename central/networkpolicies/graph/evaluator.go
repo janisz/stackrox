@@ -3,12 +3,12 @@ package graph
 import (
 	"context"
 
-	"github.com/stackrox/rox/central/role/resources"
 	v1 "github.com/stackrox/rox/generated/api/v1"
 	"github.com/stackrox/rox/generated/storage"
 	"github.com/stackrox/rox/pkg/logging"
 	"github.com/stackrox/rox/pkg/networkgraph/tree"
 	"github.com/stackrox/rox/pkg/sac"
+	"github.com/stackrox/rox/pkg/sac/resources"
 	"github.com/stackrox/rox/pkg/set"
 	"github.com/stackrox/rox/pkg/sync"
 )
@@ -25,17 +25,19 @@ var (
 )
 
 // Evaluator implements the interface for the network graph generator
+//
 //go:generate mockgen-wrapper
 type Evaluator interface {
 	// GetGraph returns the network policy graph. If `queryDeploymentIDs` is nil, it is assumed that all deployments are queried/relevant.
 	GetGraph(clusterID string, queryDeploymentIDs set.StringSet, clusterDeployments []*storage.Deployment, networkTree tree.ReadOnlyNetworkTree, networkPolicies []*storage.NetworkPolicy, includePorts bool) *v1.NetworkGraph
 	GetAppliedPolicies(deployments []*storage.Deployment, networkTree tree.ReadOnlyNetworkTree, networkPolicies []*storage.NetworkPolicy) []*storage.NetworkPolicy
+	GetApplyingPoliciesPerDeployment(deployments []*storage.Deployment, networkTree tree.ReadOnlyNetworkTree, networkPolicies []*storage.NetworkPolicy) map[string][]*storage.NetworkPolicy
 	IncrementEpoch(clusterID string)
 	Epoch(clusterID string) uint32
 }
 
 type namespaceProvider interface {
-	GetNamespaces(ctx context.Context) ([]*storage.NamespaceMetadata, error)
+	GetAllNamespaces(ctx context.Context) ([]*storage.NamespaceMetadata, error)
 }
 
 // evaluatorImpl handles all of the graph calculations
@@ -89,6 +91,11 @@ func (g *evaluatorImpl) GetGraph(clusterID string, queryDeploymentIDs set.String
 	}
 }
 
+// GetApplyingPoliciesPerDeployment creates a map of deployment IDs to the applying network policies
+func (g *evaluatorImpl) GetApplyingPoliciesPerDeployment(deployments []*storage.Deployment, networkTree tree.ReadOnlyNetworkTree, networkPolicies []*storage.NetworkPolicy) map[string][]*storage.NetworkPolicy {
+	return newGraphBuilder(nil, deployments, networkTree, g.getNamespacesByID()).GetApplyingPoliciesPerDeployment(networkPolicies)
+}
+
 // GetAppliedPolicies creates a filtered list of policies from the input network policies, composed of only the policies
 // that apply to one or more of the input deployments.
 func (g *evaluatorImpl) GetAppliedPolicies(deployments []*storage.Deployment, networkTree tree.ReadOnlyNetworkTree, networkPolicies []*storage.NetworkPolicy) []*storage.NetworkPolicy {
@@ -96,7 +103,7 @@ func (g *evaluatorImpl) GetAppliedPolicies(deployments []*storage.Deployment, ne
 }
 
 func (g *evaluatorImpl) getNamespacesByID() map[string]*storage.NamespaceMetadata {
-	namespaces, err := g.namespaceStore.GetNamespaces(allNamespaceReadAccess)
+	namespaces, err := g.namespaceStore.GetAllNamespaces(allNamespaceReadAccess)
 	if err != nil {
 		log.Errorf("unable to read namespaces: %v", err)
 		return nil

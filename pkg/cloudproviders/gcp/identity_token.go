@@ -7,11 +7,11 @@ import (
 	"io"
 	"net/http"
 
+	"github.com/go-jose/go-jose/v3/jwt"
 	"github.com/pkg/errors"
 	"github.com/stackrox/rox/pkg/cryptoutils"
 	"github.com/stackrox/rox/pkg/httputil"
 	"github.com/stackrox/rox/pkg/utils"
-	"gopkg.in/square/go-jose.v2/jwt"
 )
 
 const (
@@ -35,7 +35,7 @@ type identityTokenClaims struct {
 func getIdentityToken(ctx context.Context, audience string) (string, error) {
 	req, err := http.NewRequest(http.MethodGet, baseIdentityURL, nil)
 	if err != nil {
-		return "", utils.Should(err)
+		return "", utils.ShouldErr(err)
 	}
 	req = req.WithContext(ctx)
 	q := req.URL.Query()

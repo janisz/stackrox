@@ -4,6 +4,8 @@ import CollapsibleCard from 'Components/CollapsibleCard';
 import NoResultsMessage from 'Components/NoResultsMessage';
 
 const Factor = ({ message, url }) => {
+    // TODO is the link external or internal?
+    /* eslint-disable generic/ExternalLink-anchor */
     const renderedMessage = url ? (
         <a href={url} target="_blank" rel="noopener noreferrer">
             {message}
@@ -11,10 +13,11 @@ const Factor = ({ message, url }) => {
     ) : (
         message
     );
+    /* eslint-enable generic/ExternalLink-anchor */
 
     return (
         <div className="px-3">
-            <div className="py-3 pb-2 leading-normal tracking-normal border-b border-base-300">
+            <div className="py-3 pb-2 leading-normal border-b border-base-300">
                 {renderedMessage}
             </div>
         </div>
@@ -39,10 +42,7 @@ const RiskDetails = ({ risk }) => {
 
     return risk.results.map((result) => (
         <div className="px-3 pt-5" key={result.name}>
-            <div
-                className="alert-preview bg-base-100 text-primary-600 tracking-wide"
-                key={result.name}
-            >
+            <div className="alert-preview bg-base-100 text-primary-600">
                 <CollapsibleCard title={result.name}>
                     {result.factors.map((factor, index) => (
                         // eslint-disable-next-line react/no-array-index-key

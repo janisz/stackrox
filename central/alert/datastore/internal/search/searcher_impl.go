@@ -5,39 +5,20 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/stackrox/rox/central/alert/datastore/internal/index"
 	"github.com/stackrox/rox/central/alert/datastore/internal/store"
-	"github.com/stackrox/rox/central/alert/mappings"
-	"github.com/stackrox/rox/central/role/resources"
 	v1 "github.com/stackrox/rox/generated/api/v1"
 	"github.com/stackrox/rox/generated/storage"
-	"github.com/stackrox/rox/pkg/logging"
-	"github.com/stackrox/rox/pkg/sac"
+	"github.com/stackrox/rox/pkg/alert/convert"
 	"github.com/stackrox/rox/pkg/search"
-	"github.com/stackrox/rox/pkg/search/blevesearch"
-	"github.com/stackrox/rox/pkg/search/paginated"
-	"github.com/stackrox/rox/pkg/search/sortfields"
-)
-
-var (
-	log = logging.LoggerForModule()
-
-	defaultSortOption = &v1.QuerySortOption{
-		Field:    search.ViolationTime.String(),
-		Reversed: true,
-	}
-
-	alertSearchHelper = sac.ForResource(resources.Alert).MustCreateSearchHelper(mappings.OptionsMap)
 )
 
 // searcherImpl provides an intermediary implementation layer for AlertStorage.
 type searcherImpl struct {
 	storage           store.Store
-	indexer           index.Indexer
 	formattedSearcher search.Searcher
 }
 
-// SearchAlerts retrieves SearchResults from the indexer and storage
+// SearchAlerts retrieves SearchResults from the storage
 func (ds *searcherImpl) SearchAlerts(ctx context.Context, q *v1.Query) ([]*v1.SearchResult, error) {
 	alerts, results, err := ds.searchListAlerts(ctx, q)
 	if err != nil {
@@ -50,13 +31,22 @@ func (ds *searcherImpl) SearchAlerts(ctx context.Context, q *v1.Query) ([]*v1.Se
 	return protoResults, nil
 }
 
-// SearchRawAlerts retrieves Alerts from the indexer and storage
+// SearchListAlerts retrieves list alerts from the storage
 func (ds *searcherImpl) SearchListAlerts(ctx context.Context, q *v1.Query) ([]*storage.ListAlert, error) {
-	alerts, _, err := ds.searchListAlerts(ctx, q)
-	return alerts, err
+	q = applyDefaultState(q)
+	alerts, err := ds.storage.GetByQuery(ctx, q)
+	if err != nil {
+		return nil, err
+	}
+	listAlerts := make([]*storage.ListAlert, 0, len(alerts))
+	for _, alert := range alerts {
+		listAlerts = append(listAlerts, convert.AlertToListAlert(alert))
+	}
+	return listAlerts, nil
+
 }
 
-// SearchRawAlerts retrieves Alerts from the indexer and storage
+// SearchRawAlerts retrieves Alerts from the storage
 func (ds *searcherImpl) SearchRawAlerts(ctx context.Context, q *v1.Query) ([]*storage.Alert, error) {
 	alerts, err := ds.searchAlerts(ctx, q)
 	return alerts, err
@@ -67,24 +57,21 @@ func (ds *searcherImpl) searchListAlerts(ctx context.Context, q *v1.Query) ([]*s
 	if err != nil {
 		return nil, nil, err
 	}
-	alerts, missingIndices, err := ds.storage.GetListAlerts(ctx, search.ResultsToIDs(results))
+	alerts, missingIndices, err := ds.storage.GetMany(ctx, search.ResultsToIDs(results))
 	if err != nil {
 		return nil, nil, err
 	}
+	listAlerts := make([]*storage.ListAlert, 0, len(alerts))
+	for _, alert := range alerts {
+		listAlerts = append(listAlerts, convert.AlertToListAlert(alert))
+	}
 	results = search.RemoveMissingResults(results, missingIndices)
-	return alerts, results, nil
+	return listAlerts, results, nil
 }
 
 func (ds *searcherImpl) searchAlerts(ctx context.Context, q *v1.Query) ([]*storage.Alert, error) {
-	results, err := ds.Search(ctx, q)
-	if err != nil {
-		return nil, err
-	}
-	alerts, _, err := ds.storage.GetMany(ctx, search.ResultsToIDs(results))
-	if err != nil {
-		return nil, err
-	}
-	return alerts, nil
+	q = applyDefaultState(q)
+	return ds.storage.GetByQuery(ctx, q)
 }
 
 // Search takes a SearchRequest and finds any matches
@@ -129,13 +116,33 @@ func convertAlert(alert *storage.ListAlert, result search.Result) *v1.SearchResu
 // Helper functions which format our searching.
 ///////////////////////////////////////////////
 
-func formatSearcher(unsafeSearcher blevesearch.UnsafeSearcher) search.Searcher {
-	filteredSearcher := alertSearchHelper.FilteredSearcher(unsafeSearcher) // Make the UnsafeSearcher safe.
-	transformedSortFieldSearcher := sortfields.TransformSortFields(filteredSearcher, mappings.OptionsMap)
-	paginatedSearcher := paginated.Paginated(transformedSortFieldSearcher)
-	defaultSortedSearcher := paginated.WithDefaultSortOption(paginatedSearcher, defaultSortOption)
-	withDefaultViolationState := withDefaultActiveViolations(defaultSortedSearcher)
+func formatSearcher(searcher search.Searcher) search.Searcher {
+	withDefaultViolationState := withDefaultActiveViolations(searcher)
 	return withDefaultViolationState
+}
+
+func applyDefaultState(q *v1.Query) *v1.Query {
+	var querySpecifiesStateField bool
+	search.ApplyFnToAllBaseQueries(q, func(bq *v1.BaseQuery) {
+		matchFieldQuery, ok := bq.GetQuery().(*v1.BaseQuery_MatchFieldQuery)
+		if !ok {
+			return
+		}
+		if matchFieldQuery.MatchFieldQuery.GetField() == search.ViolationState.String() {
+			querySpecifiesStateField = true
+		}
+	})
+
+	// By default, set stale to false.
+	if !querySpecifiesStateField {
+		cq := search.ConjunctionQuery(q, search.NewQueryBuilder().AddExactMatches(
+			search.ViolationState,
+			storage.ViolationState_ACTIVE.String(),
+			storage.ViolationState_ATTEMPTED.String()).ProtoQuery())
+		cq.Pagination = q.GetPagination()
+		return cq
+	}
+	return q
 }
 
 // If no active violation field is set, add one by default.
@@ -150,48 +157,11 @@ type defaultViolationStateSearcher struct {
 }
 
 func (ds *defaultViolationStateSearcher) Search(ctx context.Context, q *v1.Query) ([]search.Result, error) {
-	var querySpecifiesStateField bool
-	search.ApplyFnToAllBaseQueries(q, func(bq *v1.BaseQuery) {
-		matchFieldQuery, ok := bq.GetQuery().(*v1.BaseQuery_MatchFieldQuery)
-		if !ok {
-			return
-		}
-		if matchFieldQuery.MatchFieldQuery.GetField() == search.ViolationState.String() {
-			querySpecifiesStateField = true
-		}
-	})
-
-	// By default, set stale to false.
-	if !querySpecifiesStateField {
-		cq := search.ConjunctionQuery(q, search.NewQueryBuilder().AddStrings(
-			search.ViolationState,
-			storage.ViolationState_ACTIVE.String(),
-			storage.ViolationState_ATTEMPTED.String()).ProtoQuery())
-		cq.Pagination = q.GetPagination()
-		q = cq
-	}
-
+	q = applyDefaultState(q)
 	return ds.searcher.Search(ctx, q)
 }
 
 func (ds *defaultViolationStateSearcher) Count(ctx context.Context, q *v1.Query) (int, error) {
-	var querySpecifiesStateField bool
-	search.ApplyFnToAllBaseQueries(q, func(bq *v1.BaseQuery) {
-		matchFieldQuery, ok := bq.GetQuery().(*v1.BaseQuery_MatchFieldQuery)
-		if !ok {
-			return
-		}
-		if matchFieldQuery.MatchFieldQuery.GetField() == search.ViolationState.String() {
-			querySpecifiesStateField = true
-		}
-	})
-
-	// By default, set stale to false.
-	if !querySpecifiesStateField {
-		cq := search.ConjunctionQuery(q, search.NewQueryBuilder().AddStrings(search.ViolationState, storage.ViolationState_ACTIVE.String()).ProtoQuery())
-		cq.Pagination = q.GetPagination()
-		q = cq
-	}
-
+	q = applyDefaultState(q)
 	return ds.searcher.Count(ctx, q)
 }

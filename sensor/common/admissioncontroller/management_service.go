@@ -4,14 +4,14 @@ import (
 	"context"
 	"io"
 
-	"github.com/gogo/protobuf/types"
-	"github.com/grpc-ecosystem/grpc-gateway/runtime"
+	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
 	"github.com/pkg/errors"
 	"github.com/stackrox/rox/generated/internalapi/sensor"
 	"github.com/stackrox/rox/pkg/concurrency"
 	pkgGRPC "github.com/stackrox/rox/pkg/grpc"
 	"github.com/stackrox/rox/pkg/grpc/authz/idcheck"
 	"github.com/stackrox/rox/pkg/logging"
+	"github.com/stackrox/rox/pkg/protocompat"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/metadata"
 )
@@ -23,8 +23,10 @@ var (
 )
 
 type managementService struct {
-	settingsStream     concurrency.ReadOnlyValueStream
-	sensorEventsStream concurrency.ReadOnlyValueStream
+	sensor.UnimplementedAdmissionControlManagementServiceServer
+
+	settingsStream     concurrency.ReadOnlyValueStream[*sensor.AdmissionControlSettings]
+	sensorEventsStream concurrency.ReadOnlyValueStream[*sensor.AdmCtrlUpdateResourceRequest]
 
 	alertHandler AlertHandler
 	admCtrlMgr   SettingsManager
@@ -46,7 +48,7 @@ func (s *managementService) RegisterServiceServer(srv *grpc.Server) {
 	sensor.RegisterAdmissionControlManagementServiceServer(srv, s)
 }
 
-func (s *managementService) RegisterServiceHandler(ctx context.Context, mux *runtime.ServeMux, cc *grpc.ClientConn) error {
+func (s *managementService) RegisterServiceHandler(_ context.Context, _ *runtime.ServeMux, _ *grpc.ClientConn) error {
 	return nil
 }
 
@@ -73,8 +75,8 @@ func (s *managementService) runRecv(
 	}
 }
 
-func (s *managementService) sendCurrentSettings(stream sensor.AdmissionControlManagementService_CommunicateServer, settingsIt concurrency.ValueStreamIter) error {
-	settings, _ := settingsIt.Value().(*sensor.AdmissionControlSettings)
+func (s *managementService) sendCurrentSettings(stream sensor.AdmissionControlManagementService_CommunicateServer, settingsIt concurrency.ValueStreamIter[*sensor.AdmissionControlSettings]) error {
+	settings := settingsIt.Value()
 	if settings == nil {
 		return nil
 	}
@@ -136,13 +138,13 @@ func (s *managementService) Communicate(stream sensor.AdmissionControlManagement
 	}
 }
 
-func (s *managementService) PolicyAlerts(_ context.Context, alerts *sensor.AdmissionControlAlerts) (*types.Empty, error) {
-	go s.alertHandler.ProcessAlerts(alerts)
-	return &types.Empty{}, nil
+func (s *managementService) PolicyAlerts(_ context.Context, alerts *sensor.AdmissionControlAlerts) (*protocompat.Empty, error) {
+	err := s.alertHandler.ProcessAlerts(alerts)
+	return protocompat.ProtoEmpty(), err
 }
 
-func (s *managementService) sendSensorEvent(stream sensor.AdmissionControlManagementService_CommunicateServer, iter concurrency.ValueStreamIter) error {
-	obj, _ := iter.Value().(*sensor.AdmCtrlUpdateResourceRequest)
+func (s *managementService) sendSensorEvent(stream sensor.AdmissionControlManagementService_CommunicateServer, iter concurrency.ValueStreamIter[*sensor.AdmCtrlUpdateResourceRequest]) error {
+	obj := iter.Value()
 	if obj == nil {
 		return nil
 	}

@@ -1,11 +1,14 @@
-import { normalize } from 'normalizr';
 import qs from 'qs';
 
 import searchOptionsToQuery, { RestSearchOption } from 'services/searchOptionsToQuery';
 import { saveFile } from 'services/DownloadService';
-import { ClusterDefaultsResponse } from 'types/clusterService.proto';
+import {
+    ClusterDefaultsResponse,
+    ClusterResponse,
+    ClustersResponse,
+} from 'types/clusterService.proto';
 import axios from './instance';
-import { cluster as clusterSchema } from './schemas';
+import { Empty } from './types';
 
 const clustersUrl = '/v1/clusters';
 const clusterDefaultsUrl = '/v1/cluster-defaults';
@@ -21,24 +24,10 @@ export type Cluster = {
     name: string;
 };
 
-// @TODO, We may not need this API function after we migrate to a standalone Clusters page
-//        Check to see if fetchClusters and fletchClustersByArray can be collapsed
-//        into one function
 /**
  * Fetches list of registered clusters.
  */
-// TODO specify return type after we rewrite without normalize
-// eslint-disable-next-line @typescript-eslint/explicit-module-boundary-types
-export function fetchClusters() {
-    return axios.get<{ clusters: Cluster[] }>(clustersUrl).then((response) => ({
-        response: normalize(response.data, { clusters: [clusterSchema] }),
-    }));
-}
-
-/**
- * Fetches list of registered clusters.
- */
-export function fetchClustersAsArray(options?: RestSearchOption[]): Promise<Cluster[]> {
+export function fetchClusters(options?: RestSearchOption[]): Promise<Cluster[]> {
     let queryString = '';
     if (options && options.length !== 0) {
         const query = searchOptionsToQuery(options);
@@ -58,18 +47,51 @@ export function fetchClustersAsArray(options?: RestSearchOption[]): Promise<Clus
     });
 }
 
-/**
- * Fetches unwrapped cluster object by ID.
+/*
+ * Fetch secured clusters and retention information.
  */
-export function getClusterById(id: string): Promise<Cluster | null> {
-    return axios.get<{ cluster: Cluster }>(`${clustersUrl}/${id}`).then((response) => {
-        return response?.data?.cluster ?? null;
+export function fetchClustersWithRetentionInfo(
+    options?: RestSearchOption[]
+): Promise<ClustersResponse> {
+    let queryString = '';
+    if (options && options.length !== 0) {
+        const query = searchOptionsToQuery(options);
+        queryString = qs.stringify(
+            {
+                query,
+            },
+            {
+                addQueryPrefix: true,
+                arrayFormat: 'repeat',
+                allowDots: true,
+            }
+        );
+    }
+    return axios.get<ClustersResponse>(`${clustersUrl}${queryString}`).then((response) => {
+        return response.data;
+    });
+}
+
+/*
+ * Fetch secured cluster and its retention information.
+ */
+export function fetchClusterWithRetentionInformation(id: string): Promise<ClusterResponse> {
+    return axios.get<ClusterResponse>(`${clustersUrl}/${id}`).then((response) => {
+        return response.data;
     });
 }
 
 export type AutoUpgradeConfig = {
-    enableAutoUpgrade?: boolean;
+    enableAutoUpgrade: boolean;
+    autoUpgradeFeature: 'SUPPORTED' | 'NOT_SUPPORTED';
 };
+
+/**
+ * Checks is auto upgrade is supported
+ */
+export function isAutoUpgradeSupported(autoUpgradeConfig: AutoUpgradeConfig) {
+    return autoUpgradeConfig.autoUpgradeFeature === 'SUPPORTED';
+}
 
 /**
  * Gets the cluster autoupgrade config.
@@ -83,69 +105,56 @@ export function getAutoUpgradeConfig(): Promise<AutoUpgradeConfig> {
 /**
  * Saves the cluster autoupgrade config.
  */
-export function saveAutoUpgradeConfig(config: AutoUpgradeConfig): Promise<AutoUpgradeConfig> {
-    const wrappedObject = { config };
-    return axios.post(autoUpgradeConfigUrl, wrappedObject);
+export function saveAutoUpgradeConfig(config: AutoUpgradeConfig): Promise<Empty> {
+    const wrappedObject = { config: { enableAutoUpgrade: config.enableAutoUpgrade } };
+    return axios.post<Empty>(autoUpgradeConfigUrl, wrappedObject).then((response) => response.data);
 }
 
 /**
  * Manually start a sensor upgrade given the cluster ID.
  */
-export function upgradeCluster(id: string): Promise<Record<string, never>> {
+export function upgradeCluster(id: string): Promise<Empty> {
     return axios.post(`${manualUpgradeUrl}/${id}`);
 }
 
 /**
  * Start a cluster cert rotation.
  */
-export function rotateClusterCerts(id: string): Promise<Record<string, never>> {
+export function rotateClusterCerts(id: string): Promise<Empty> {
     return axios.post(`${upgradesUrl}/rotateclustercerts/${id}`);
 }
 
 /**
  * Manually start a sensor upgrade for an array of clusters.
  */
-export function upgradeClusters(ids = []): Promise<Record<string, never>[]> {
+export function upgradeClusters(ids: string[] = []): Promise<Empty[]> {
     return Promise.all(ids.map((id) => upgradeCluster(id)));
-}
-
-/**
- * Fetches cluster by its ID.
- */
-// TODO specify return type after we rewrite without normalize
-// eslint-disable-next-line @typescript-eslint/explicit-module-boundary-types
-export function fetchCluster(id: string) {
-    return axios.get(`${clustersUrl}/${id}`).then((response) => ({
-        response: normalize(response.data, { cluster: clusterSchema }),
-    }));
 }
 
 /**
  * Deletes cluster given the cluster ID. Returns an empty object.
  */
-export function deleteCluster(id: string): Promise<Record<string, never>> {
+export function deleteCluster(id: string): Promise<Empty> {
     return axios.delete(`${clustersUrl}/${id}`);
 }
 
 /**
  * Deletes clusters given a list of cluster IDs.
  */
-export function deleteClusters(ids: string[] = []): Promise<Record<string, never>[]> {
+export function deleteClusters(ids: string[] = []): Promise<Empty[]> {
     return Promise.all(ids.map((id) => deleteCluster(id)));
 }
 
 /**
  * Creates or updates a cluster given the cluster fields.
  */
-// TODO specify return type after we rewrite without normalize
-// eslint-disable-next-line @typescript-eslint/explicit-module-boundary-types
 export function saveCluster(cluster: Cluster) {
-    const promise = cluster.id
-        ? axios.put(`${clustersUrl}/${cluster.id}`, cluster)
-        : axios.post(clustersUrl, cluster);
-    return promise.then((response) => ({
-        response: normalize(response.data, { cluster: clusterSchema }),
-    }));
+    if (cluster.id) {
+        return axios
+            .put<ClusterResponse>(`${clustersUrl}/${cluster.id}`, cluster)
+            .then((response) => response.data);
+    }
+    return axios.post<ClusterResponse>(clustersUrl, cluster).then((response) => response.data);
 }
 
 /**
@@ -221,14 +230,21 @@ export function fetchClusterInitBundles(): Promise<{ response: { items: ClusterI
         });
 }
 
+export type GenerateClusterInitBundleResponse = {
+    meta?: ClusterInitBundle;
+    helmValuesBundle?: string; // bytes
+    kubectlBundle?: string; // bytes
+};
+
 export function generateClusterInitBundle(data: { name: string }): Promise<{
-    response: { meta?: ClusterInitBundle; helmValuesBundle?: string; kubectlBundle?: string };
+    response: GenerateClusterInitBundleResponse;
 }> {
     return axios
-        .post<{ meta: ClusterInitBundle; helmValuesBundle: string; kubectlBundle: string }>(
-            `${clusterInitUrl}/init-bundles`,
-            data
-        )
+        .post<{
+            meta: ClusterInitBundle;
+            helmValuesBundle: string;
+            kubectlBundle: string;
+        }>(`${clusterInitUrl}/init-bundles`, data)
         .then((response) => {
             return {
                 response: response.data || {},

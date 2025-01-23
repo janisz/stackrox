@@ -1,11 +1,17 @@
+import static util.Helpers.withRetry
+
 import com.google.common.base.CaseFormat
+import io.fabric8.openshift.api.model.PolicyRule
+import org.javers.core.Javers
+import org.javers.core.JaversBuilder
+import org.javers.core.diff.Diff
+import org.javers.core.diff.ListCompareAlgorithm
 
 import io.stackrox.proto.api.v1.RbacServiceOuterClass
 import io.stackrox.proto.api.v1.ServiceAccountServiceOuterClass
 import io.stackrox.proto.storage.Rbac
 
 import common.Constants
-import groups.BAT
 import objects.Deployment
 import objects.K8sPolicyRule
 import objects.K8sRole
@@ -14,13 +20,13 @@ import objects.K8sServiceAccount
 import objects.K8sSubject
 import services.RbacService
 import services.ServiceAccountService
+import util.Helpers
 
-import org.junit.experimental.categories.Category
-import spock.lang.IgnoreIf
 import spock.lang.Stepwise
-import util.Env
+import spock.lang.Tag
 
 @Stepwise
+@Tag("PZ")
 class K8sRbacTest extends BaseSpecification {
     private static final String SERVICE_ACCOUNT_NAME = "test-service-account"
     private static final String ROLE_NAME = "test-role"
@@ -52,8 +58,8 @@ class K8sRbacTest extends BaseSpecification {
         orchestrator.deleteClusterRole(NEW_CLUSTER_ROLE)
     }
 
-    @Category(BAT)
-    @IgnoreIf({ Env.CI_JOBNAME.contains("postgres") })
+    @Tag("BAT")
+    @Tag("COMPATIBILITY")
     def "Verify scraped service accounts"() {
         given:
         List<K8sServiceAccount> orchestratorSAs = null
@@ -62,15 +68,15 @@ class K8sRbacTest extends BaseSpecification {
         expect:
         "SR should have the same service accounts"
         // Make sure the qa namespace SA exists before running the test. That SA should be the most recent added.
-        // This will ensure scrapping is complete if this test spec is run first
-        withRetry(15, 2) {
+        // This will ensure scraping is complete if this test spec is run first
+        withRetry(60, 3) {  // allow 3 minutes
             stackroxSAs = ServiceAccountService.getServiceAccounts()
             // list of service accounts from the orchestrator
             orchestratorSAs = orchestrator.getServiceAccounts()
             assert stackroxSAs.find { it.serviceAccount.getNamespace() == Constants.ORCHESTRATOR_NAMESPACE }
+            stackroxSAs.size() == orchestratorSAs.size()
         }
 
-        stackroxSAs.size() == orchestratorSAs.size()
         for (ServiceAccountServiceOuterClass.ServiceAccountAndRoles s : stackroxSAs) {
             def sa = s.serviceAccount
 
@@ -79,14 +85,14 @@ class K8sRbacTest extends BaseSpecification {
             }
 
             if (!k8sMatch) {
-                println "SR serviceaccount ${sa.name} has no k8s match"
-                println "SR serviceaccount: " + sa
+                log.info "SR serviceaccount ${sa.name} has no k8s match"
+                log.info "SR serviceaccount: " + sa
                 K8sServiceAccount nameOnlyMatch = orchestratorSAs.find {
                     it.name == sa.name &&
                             it.namespace == sa.namespace
                 }
                 if (nameOnlyMatch) {
-                    println "K8S serviceaccount: " + nameOnlyMatch.dump()
+                    log.info "K8S serviceaccount: " + nameOnlyMatch.dump()
                 }
             }
 
@@ -95,7 +101,8 @@ class K8sRbacTest extends BaseSpecification {
         }
     }
 
-    @Category(BAT)
+    @Tag("BAT")
+    @Tag("COMPATIBILITY")
     def "Add Service Account and verify it gets scraped"() {
         given:
         "create a new service account"
@@ -106,14 +113,14 @@ class K8sRbacTest extends BaseSpecification {
         ServiceAccountService.waitForServiceAccount(NEW_SA)
     }
 
-    @Category(BAT)
+    @Tag("BAT")
     def "Create deployment with service account and verify relationships"() {
         given:
         Deployment deployment = new Deployment()
                 .setName(DEPLOYMENT_NAME)
                 .setNamespace(Constants.ORCHESTRATOR_NAMESPACE)
                 .setServiceAccountName(SERVICE_ACCOUNT_NAME)
-                .setImage("quay.io/rhacs-eng/qa:nginx-1-15-4-alpine")
+                .setImage("quay.io/rhacs-eng/qa-multi-arch:nginx-1-15-4-alpine")
                 .setSkipReplicaWait(true)
         orchestrator.createDeployment(deployment)
         assert Services.waitForDeployment(deployment)
@@ -126,8 +133,9 @@ class K8sRbacTest extends BaseSpecification {
 
         expect:
         "SR should have the service account and its relationship to the deployment"
+        def query = ServiceAccountService.getServiceAccountQuery(NEW_SA)
         withRetry(45, 2) {
-            def stackroxSAs = ServiceAccountService.getServiceAccounts()
+            def stackroxSAs = ServiceAccountService.getServiceAccounts(query)
             for (ServiceAccountServiceOuterClass.ServiceAccountAndRoles s : stackroxSAs) {
                 def sa = s.serviceAccount
                 if (sa.name == NEW_SA.name && sa.namespace == NEW_SA.namespace) {
@@ -143,7 +151,7 @@ class K8sRbacTest extends BaseSpecification {
         orchestrator.deleteAndWaitForDeploymentDeletion(deployment)
     }
 
-    @Category(BAT)
+    @Tag("BAT")
     def "Remove Service Account and verify it is removed"() {
         given:
         "delete the created service account"
@@ -154,8 +162,7 @@ class K8sRbacTest extends BaseSpecification {
         ServiceAccountService.waitForServiceAccountRemoved(NEW_SA)
     }
 
-    @Category(BAT)
-    @IgnoreIf({ Env.CI_JOBNAME.contains("postgres") })
+    @Tag("BAT")
     def "Verify scraped roles"() {
         expect:
         "SR should have the same roles"
@@ -166,7 +173,7 @@ class K8sRbacTest extends BaseSpecification {
 
             assert stackroxRoles.size() == orchestratorRoles.size()
             for (Rbac.K8sRole stackroxRole : stackroxRoles) {
-                println "Looking for SR Role: ${stackroxRole.name} (${stackroxRole.namespace})"
+                log.info "Looking for SR Role: ${stackroxRole.name} (${stackroxRole.namespace})"
                 K8sRole role = orchestratorRoles.find {
                     it.name == stackroxRole.name &&
                             it.clusterRole == stackroxRole.clusterRole &&
@@ -175,22 +182,23 @@ class K8sRbacTest extends BaseSpecification {
                 assert role
                 assert role.labels == stackroxRole.labelsMap
                 role.annotations.remove("kubectl.kubernetes.io/last-applied-configuration")
-                assert role.annotations == stackroxRole.annotationsMap
-                for (int i = 0; i < role.rules.size(); i++) {
-                    K8sPolicyRule oRule = role.rules[i]
-                    Rbac.PolicyRule sRule = stackroxRole.rulesList[i]
-                    assert oRule.verbs == sRule.verbsList
-                    assert oRule.apiGroups == sRule.apiGroupsList
-                    assert oRule.resources == sRule.resourcesList
-                    assert oRule.nonResourceUrls == sRule.nonResourceUrlsList
-                    assert oRule.resourceNames == sRule.resourceNamesList
+                // compareAnnotations() - asserts on difference
+                Helpers.compareAnnotations(role.annotations, stackroxRole.annotationsMap)
+                assert role.rules.every { K8sPolicyRule oRule ->
+                    stackroxRole.rulesList.any { Rbac.PolicyRule sRule ->
+                        oRule.verbs == sRule.verbsList &&
+                        oRule.apiGroups == sRule.apiGroupsList &&
+                        oRule.resources == sRule.resourcesList &&
+                        oRule.nonResourceUrls == sRule.nonResourceUrlsList &&
+                        oRule.resourceNames == sRule.resourceNamesList
+                    }
                 }
                 assert RbacService.getRole(stackroxRole.id) == stackroxRole
             }
         }
     }
 
-    @Category(BAT)
+    @Tag("BAT")
     def "Add Role and verify it gets scraped"() {
         given:
         "create a new role"
@@ -201,7 +209,7 @@ class K8sRbacTest extends BaseSpecification {
         RbacService.waitForRole(NEW_ROLE)
     }
 
-    @Category(BAT)
+    @Tag("BAT")
     def "Remove Role and verify it is removed"() {
         given:
         "delete the created role"
@@ -212,7 +220,7 @@ class K8sRbacTest extends BaseSpecification {
         RbacService.waitForRoleRemoved(NEW_ROLE)
     }
 
-    @Category(BAT)
+    @Tag("BAT")
     def "Add Cluster Role and verify it gets scraped"() {
         given:
         "create a new cluster role"
@@ -223,7 +231,7 @@ class K8sRbacTest extends BaseSpecification {
         RbacService.waitForRole(NEW_CLUSTER_ROLE)
     }
 
-    @Category(BAT)
+    @Tag("BAT")
     def "Remove Cluster Role and verify it is removed"() {
         given:
         "delete the created cluster role"
@@ -234,16 +242,25 @@ class K8sRbacTest extends BaseSpecification {
         RbacService.waitForRoleRemoved(NEW_CLUSTER_ROLE)
     }
 
-    @Category(BAT)
+    @Tag("BAT")
     def "Verify scraped bindings"() {
+        given:
+        Javers javers = JaversBuilder.javers()
+                .withListCompareAlgorithm(ListCompareAlgorithm.AS_SET)
+                .build()
         expect:
         "SR should have the same bindings"
-        withRetry(45, 2) {
+        withRetry(5, 30) {
             def stackroxBindings = RbacService.getRoleBindings()
             def orchestratorBindings = orchestrator.getRoleBindings() + orchestrator.getClusterRoleBindings()
-            assert stackroxBindings.size() == orchestratorBindings.size()
 
-            for (Rbac.K8sRoleBinding b : stackroxBindings) {
+            def stackroxBindingsSet = stackroxBindings.collect { "${it.namespace}/${it.name}" }
+            def orchestratorBindingsSet = orchestratorBindings.collect { "${it.namespace}/${it.name}" }
+
+            Diff diff = javers.compareCollections(stackroxBindingsSet, orchestratorBindingsSet, String)
+            assert diff.changes.empty, diff.prettyPrint()
+
+            stackroxBindings.each { Rbac.K8sRoleBinding b ->
                 K8sRoleBinding binding = orchestratorBindings.find {
                     it.name == b.name && it.namespace == b.namespace
                 }
@@ -251,7 +268,8 @@ class K8sRbacTest extends BaseSpecification {
 
                 binding.annotations.remove("kubectl.kubernetes.io/last-applied-configuration")
                 assert b.labelsMap == binding.labels
-                assert b.annotationsMap == binding.annotations
+                // compareAnnotations() - asserts on difference
+                Helpers.compareAnnotations(binding.annotations, b.annotationsMap)
                 assert b.roleId == binding.roleRef.uid
                 assert b.subjectsCount == binding.subjects.size()
 
@@ -263,13 +281,11 @@ class K8sRbacTest extends BaseSpecification {
                     assert CaseFormat.UPPER_UNDERSCORE.to(CaseFormat.UPPER_CAMEL, sSubject.kind.toString()) ==
                             oSubject.kind
                 }
-
-                assert RbacService.getRoleBinding(b.id) == b
             }
         }
     }
 
-    @Category(BAT)
+    @Tag("BAT")
     def "Verify returned subject list is complete"() {
         given:
         List<K8sSubject> orchestratorSubjects = null
@@ -288,15 +304,14 @@ class K8sRbacTest extends BaseSpecification {
         assert stackroxSubjects.size() == orchestratorSubjects.size()
         for (Rbac.Subject sub : stackroxSubjects) {
             K8sSubject subject = orchestratorSubjects.find {
-                it.name == sub.name &&
-                        it.namespace == sub.namespace &&
-                        it.kind.toLowerCase() == sub.kind.toString().toLowerCase()
+                // orchestratorSubjects contains only User and Group kind where namespace is not relevant.
+                it.name == sub.name && it.kind.toLowerCase() == sub.kind.toString().toLowerCase()
             }
             assert subject
         }
     }
 
-    @Category(BAT)
+    @Tag("BAT")
     def "Add Binding with role ref and verify it gets scraped"() {
         given:
         "create a new role binding"
@@ -323,7 +338,7 @@ class K8sRbacTest extends BaseSpecification {
         orchestrator.deleteRole(NEW_ROLE)
     }
 
-    @Category(BAT)
+    @Tag("BAT")
     def "Add Binding with cluster role ref and verify it gets scraped"() {
         given:
         "create a new role binding"
@@ -337,7 +352,7 @@ class K8sRbacTest extends BaseSpecification {
         RbacService.waitForRoleBinding(NEW_ROLE_BINDING_CLUSTER_ROLE_REF)
     }
 
-    @Category(BAT)
+    @Tag("BAT")
     def "Remove Binding with cluster role ref and verify it is removed"() {
         given:
         "delete the created role binding"
@@ -352,7 +367,7 @@ class K8sRbacTest extends BaseSpecification {
         orchestrator.deleteClusterRole(NEW_CLUSTER_ROLE)
     }
 
-    @Category(BAT)
+    @Tag("BAT")
     def "Add cluster Binding and verify it gets scraped"() {
         given:
         "create a new cluster role binding"
@@ -365,7 +380,7 @@ class K8sRbacTest extends BaseSpecification {
         RbacService.waitForRoleBinding(NEW_CLUSTER_ROLE_BINDING)
     }
 
-    @Category(BAT)
+    @Tag("BAT")
     def "Remove cluster Binding and verify it is removed"() {
         given:
         "delete the created cluster role binding"

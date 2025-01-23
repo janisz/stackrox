@@ -8,6 +8,7 @@ import (
 	"github.com/stackrox/rox/pkg/grpc/authn"
 	"github.com/stackrox/rox/pkg/grpc/requestinfo"
 	"github.com/stackrox/rox/pkg/logging"
+	"github.com/stackrox/rox/pkg/mtls"
 	"github.com/stackrox/rox/pkg/sac"
 )
 
@@ -32,7 +33,11 @@ type extractor struct {
 	manager ProviderContainer
 }
 
-func (i extractor) IdentityForRequest(ctx context.Context, ri requestinfo.RequestInfo) (authn.Identity, error) {
+func getExtractorError(msg string, err error) *authn.ExtractorError {
+	return authn.NewExtractorError("userpki", msg, err)
+}
+
+func (i extractor) IdentityForRequest(ctx context.Context, ri requestinfo.RequestInfo) (authn.Identity, *authn.ExtractorError) {
 	// this auth identity provider is only relevant for API usage outside of the browser app. Inside the browser app,
 	// tokens are used (with validation to ensure continuity of access). So we ignore certs if the authorization
 	// header is set.
@@ -72,7 +77,7 @@ func (i extractor) IdentityForRequest(ctx context.Context, ri requestinfo.Reques
 			}
 			resolvedRoles, err := provider.RoleMapper().FromUserDescriptor(ctx, ud)
 			if err != nil {
-				return nil, err
+				return nil, getExtractorError("failed to resolve user roles", err)
 			}
 			identity.resolvedRoles = resolvedRoles
 			return identity, nil
@@ -92,7 +97,7 @@ func (a attributes) add(key string, values ...string) {
 }
 
 // ExtractAttributes converts a subset of CertInfo into an attribute map for authorization
-func ExtractAttributes(userCerts ...requestinfo.CertInfo) map[string][]string {
+func ExtractAttributes(userCerts ...mtls.CertInfo) map[string][]string {
 	output := make(attributes)
 
 	for _, userCert := range userCerts {

@@ -19,13 +19,29 @@ test_data="$BATS_TEST_DIRNAME/../test-data"
 
 any_version='[0-9]+\.[0-9]+\.'
 
+delete-outdated-binaries() {
+    local roxctl_ver="${1}"
+    current_tag="$(git describe --tags --abbrev=10 --dirty --long --exclude '*-nightly-*')"
+    echo "Roxctl version='${roxctl_ver}'" >&3
+    echo "Current tag   ='${current_tag}'" >&3
+    if [[ "${current_tag}" != "${roxctl_ver}" ]]; then
+        echo "Roxctl version does not match current tag" >&3
+        if [[ -n "$NO_BATS_ROXCTL_REBUILD" ]]; then
+                echo "Doing nothing as NO_BATS_ROXCTL_REBUILD is set" >&3
+        else
+            echo "Deleting all roxctl binaries" >&3
+            rm -f "${tmp_roxctl}"/roxctl*
+        fi
+    fi
+}
+
 # roxctl-development-cmd prints the path to roxctl built with GOTAGS=''. It builds the binary if needed
 roxctl-development-cmd() {
   if [[ ! -x "${tmp_roxctl}/roxctl-dev" ]]; then
     _uname="$(luname)"
     mkdir -p "$tmp_roxctl"
     make -s "cli-${_uname}" GOTAGS='' 2>&3
-    mv "bin/${_uname}/roxctl" "${tmp_roxctl}/roxctl-dev"
+    mv "bin/${_uname}_amd64/roxctl" "${tmp_roxctl}/roxctl-dev"
   fi
   echo "${tmp_roxctl}/roxctl-dev"
 }
@@ -35,13 +51,13 @@ roxctl-development() {
    "$(roxctl-development-cmd)" "$@"
 }
 
-# roxctl-development-cmd prints the path to roxctl built with GOTAGS='release'. It builds the binary if needed
+# roxctl-release-cmd prints the path to roxctl built with GOTAGS='release'. It builds the binary if needed
 roxctl-release-cmd() {
   if [[ ! -x "${tmp_roxctl}/roxctl-release" ]]; then
     _uname="$(luname)"
     mkdir -p "$tmp_roxctl"
     make -s "cli-${_uname}" GOTAGS='release' 2>&3
-    mv "bin/${_uname}/roxctl" "${tmp_roxctl}/roxctl-release"
+    mv "bin/${_uname}_amd64/roxctl" "${tmp_roxctl}/roxctl-release"
   fi
   echo "${tmp_roxctl}/roxctl-release"
 }
@@ -110,6 +126,7 @@ helm_template_secured_cluster() {
     "${extra_helm_args[@]}"
   )
 
+  rm -rf "$out_dir"
   run helm_template "$in_dir" "$out_dir" "${helm_args[@]}"
   assert_success
   assert_file_exist "$out_dir/stackrox-secured-cluster-services/templates/collector.yaml"
@@ -226,16 +243,12 @@ image_reference_regex() {
   local component="$2"
   local version="${3:-$any_version}"
 
-  case $registry_slug in
-    docker.io)
-      echo "docker\.io/stackrox/$component:$version"
+  case "$registry_slug" in
+    quay.io/rhacs-eng)
+      echo "quay\.io/rhacs-eng/$component:$version"
       ;;
-    stackrox.io)
-      if [[ "$component" == "collector" ]]; then
-        echo "collector.stackrox\.io/$component:$version"
-      else
-        echo "stackrox\.io/$component:$version"
-      fi
+    quay.io/stackrox-io)
+      echo "quay\.io/stackrox-io/$component:$version"
       ;;
     registry.redhat.io)
       echo "registry\.redhat\.io/advanced-cluster-security/rhacs-$component-rhel8:$version"
@@ -274,11 +287,7 @@ run_image_defaults_registry_test() {
   assert_success
   assert_components_registry "$out_dir/central" "$expected_main_registry" "$any_version" 'main'
   assert_components_registry "$out_dir/scanner" "$expected_scanner_registry" "$any_version" 'scanner' 'scanner-db'
-  if [[ "$ROX_POSTGRES_DATASTORE" =~ "true" ]]; then
-    assert_components_registry "$out_dir/central" "$expected_main_registry" "$any_version" 'central-db'
-  else
-    assert_file_not_exist "$out_dir/central/01-central-12-central-db.yaml"
-  fi
+  assert_components_registry "$out_dir/central" "$expected_main_registry" "$any_version" 'central-db'
 }
 
 # run_no_rhacs_flag_test asserts that 'roxctl central generate' fails when presented with `--rhacs` parameter
@@ -329,22 +338,12 @@ has_deprecation_warning() {
   assert_line --regexp "WARN:[[:space:]]+'--rhacs' is deprecated, please use '--image-defaults=rhacs' instead"
 }
 
-flavor_warning_regexp="WARN:[[:space:]]+Default image registries have changed. Images will be taken from 'registry.redhat.io'. Specify '--image-defaults=stackrox.io' command line argument to use images from 'stackrox.io' registries."
-
-has_default_flavor_warning() {
-  assert_line --regexp "$flavor_warning_regexp"
-}
-
-has_no_default_flavor_warning() {
-  refute_line --regexp "$flavor_warning_regexp"
-}
-
 has_flag_collision_warning() {
   assert_line --partial "flag '--rhacs' is deprecated and must not be used together with '--image-defaults'. Remove '--rhacs' flag and specify only '--image-defaults'"
 }
 
 roxctl_authenticated() {
-  roxctl-development --insecure-skip-tls-verify -e "$API_ENDPOINT" -p "$ROX_PASSWORD" "$@"
+  roxctl-development --insecure-skip-tls-verify -e "$API_ENDPOINT" "$@"
 }
 
 yaml_valid() {
@@ -364,6 +363,6 @@ generate_bundle() {
 
 delete_cluster() {
   local name="$1";shift
-  run roxctl_authenticated cluster delete --name "$name"
+  run roxctl_authenticated cluster delete --name "$name" --timeout=1m
   assert_success
 }

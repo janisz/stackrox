@@ -1,10 +1,10 @@
 package printer
 
 import (
-	"github.com/gogo/protobuf/types"
 	"github.com/stackrox/rox/generated/storage"
 	"github.com/stackrox/rox/pkg/booleanpolicy/augmentedobjs"
 	"github.com/stackrox/rox/pkg/booleanpolicy/fieldnames"
+	"github.com/stackrox/rox/pkg/protocompat"
 )
 
 const (
@@ -18,10 +18,6 @@ const (
 	// PolicyName is used as key in storage.Alert_Violation_KeyValueAttrs_KeyValueAttr to denote a policy name.
 	PolicyName = "Policy name"
 )
-
-// TODO(ROX-9760): Implement these functions according to UX decision on how to display violations for missing network policies.
-// This is implemented with place-holder messages for now just to unblock further developments on the evaluation of
-// this policy.
 
 func hasIngressNetworkPolicyPrinter(fieldMap map[string][]string) ([]string, error) {
 	type resultFields struct {
@@ -68,7 +64,7 @@ func EnhanceNetworkPolicyViolations(violations []*storage.Alert_Violation, np *a
 		kvAttrs = append(kvAttrs, attrs...)
 	}
 	for _, violation := range violations {
-		violation.Time = types.TimestampNow()
+		violation.Time = protocompat.TimestampNow()
 		if len(kvAttrs) > 0 {
 			violation.MessageAttributes = &storage.Alert_Violation_KeyValueAttrs_{
 				KeyValueAttrs: &storage.Alert_Violation_KeyValueAttrs{

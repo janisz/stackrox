@@ -9,7 +9,7 @@ import (
 	"github.com/pkg/errors"
 	"github.com/stackrox/rox/pkg/clientconn"
 	"github.com/stackrox/rox/pkg/concurrency"
-	"github.com/stackrox/rox/pkg/grpc/authn/basic"
+	"github.com/stackrox/rox/pkg/grpc/client/authn/basic"
 	"github.com/stackrox/rox/pkg/logging"
 	"github.com/stackrox/rox/pkg/mtls"
 	"github.com/stackrox/rox/pkg/netutil"
@@ -69,7 +69,7 @@ func getHTTPClient() *http.Client {
 func getEnvVars() *testEnvVars {
 	once.Do(func() {
 		envVars = &testEnvVars{}
-		envVars.password = os.Getenv("ROX_PASSWORD")
+		envVars.password = os.Getenv("ROX_ADMIN_PASSWORD")
 		envVars.endpoint = fmt.Sprintf("%s:%s", os.Getenv("API_HOSTNAME"), os.Getenv("API_PORT"))
 	})
 	return envVars

@@ -1,3 +1,5 @@
+//go:build test_e2e || test_compatibility
+
 package tests
 
 import (
@@ -8,6 +10,7 @@ import (
 
 	"github.com/stackrox/rox/pkg/sliceutils"
 	"github.com/stackrox/rox/pkg/testutils"
+	"github.com/stackrox/rox/pkg/testutils/centralgrpc"
 	"github.com/stackrox/rox/pkg/utils"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -21,7 +24,7 @@ func verifyRiskEventTimelineCSV(t testutils.T, deploymentID string, eventNamesEx
 	escapedURL := fmt.Sprintf("%s?%s", baseURL, params.Encode())
 
 	// Get an HTTP client and query for csv content response
-	client := testutils.HTTPClientForCentral(t)
+	client := centralgrpc.HTTPClientForCentral(t)
 	resp, err := client.Get(escapedURL)
 	require.NoError(t, err)
 	require.Equal(t, http.StatusOK, resp.StatusCode)
@@ -63,7 +66,7 @@ func verifyRiskEventTimelineCSV(t testutils.T, deploymentID string, eventNamesEx
 
 	// Check event names match
 	// Index 0 of a row is the timestamp and 2 is the event name
-	eventNamesInCSV := sliceutils.Map(rows, func(row []string) string { return row[2] }).([]string)
+	eventNamesInCSV := sliceutils.Map(rows, func(row []string) string { return row[2] })
 	assert.ElementsMatch(t, eventNamesExpected, eventNamesInCSV)
 
 	// All the records should be ordered by their event timestamp in a reverse order (latest first)

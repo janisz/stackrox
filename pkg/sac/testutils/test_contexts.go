@@ -29,37 +29,47 @@ const (
 	Cluster2NamespacesACReadWriteCtx = "Cluster2NamespacesACReadWriteCtx"
 	Cluster2NamespacesBCReadWriteCtx = "Cluster2NamespacesBCReadWriteCtx"
 	Cluster3ReadWriteCtx             = "Cluster3ReadWriteCtx"
+	Cluster3NamespaceAReadWriteCtx   = "Cluster3NamespaceAReadWriteCtx"
+	Cluster3NamespaceBReadWriteCtx   = "Cluster3NamespaceBReadWriteCtx"
+	Cluster3NamespaceCReadWriteCtx   = "Cluster3NamespaceCReadWriteCtx"
+	Cluster3NamespacesABReadWriteCtx = "Cluster3NamespacesABReadWriteCtx"
+	Cluster3NamespacesACReadWriteCtx = "Cluster3NamespacesACReadWriteCtx"
+	Cluster3NamespacesBCReadWriteCtx = "Cluster3NamespacesBCReadWriteCtx"
 	MixedClusterAndNamespaceReadCtx  = "MixedClusterAndNamespaceReadCtx"
 )
 
 // GetNamespaceScopedTestContexts provides a set of pre-defined scoped contexts for use in scoped access control tests
-func GetNamespaceScopedTestContexts(ctx context.Context, t *testing.T, resource permissions.Resource) map[string]context.Context {
+func GetNamespaceScopedTestContexts(ctx context.Context, t *testing.T, resources ...permissions.ResourceMetadata) map[string]context.Context {
 	contextMap := make(map[string]context.Context, 0)
+	resourceHandles := make([]permissions.ResourceHandle, 0, len(resources))
+	for _, r := range resources {
+		resourceHandles = append(resourceHandles, r)
+	}
 
 	contextMap[UnrestrictedReadCtx] =
 		sac.WithGlobalAccessScopeChecker(ctx,
 			sac.AllowFixedScopes(
 				sac.AccessModeScopeKeys(storage.Access_READ_ACCESS),
-				sac.ResourceScopeKeys(resource)))
+				sac.ResourceScopeKeys(resourceHandles...)))
 
 	contextMap[UnrestrictedReadWriteCtx] =
 		sac.WithGlobalAccessScopeChecker(ctx,
 			sac.AllowFixedScopes(
 				sac.AccessModeScopeKeys(storage.Access_READ_ACCESS, storage.Access_READ_WRITE_ACCESS),
-				sac.ResourceScopeKeys(resource)))
+				sac.ResourceScopeKeys(resourceHandles...)))
 
 	contextMap[Cluster1ReadWriteCtx] =
 		sac.WithGlobalAccessScopeChecker(ctx,
 			sac.AllowFixedScopes(
 				sac.AccessModeScopeKeys(storage.Access_READ_ACCESS, storage.Access_READ_WRITE_ACCESS),
-				sac.ResourceScopeKeys(resource),
+				sac.ResourceScopeKeys(resourceHandles...),
 				sac.ClusterScopeKeys(testconsts.Cluster1)))
 
 	contextMap[Cluster1NamespaceAReadWriteCtx] =
 		sac.WithGlobalAccessScopeChecker(ctx,
 			sac.AllowFixedScopes(
 				sac.AccessModeScopeKeys(storage.Access_READ_ACCESS, storage.Access_READ_WRITE_ACCESS),
-				sac.ResourceScopeKeys(resource),
+				sac.ResourceScopeKeys(resourceHandles...),
 				sac.ClusterScopeKeys(testconsts.Cluster1),
 				sac.NamespaceScopeKeys(testconsts.NamespaceA)))
 
@@ -67,7 +77,7 @@ func GetNamespaceScopedTestContexts(ctx context.Context, t *testing.T, resource 
 		sac.WithGlobalAccessScopeChecker(ctx,
 			sac.AllowFixedScopes(
 				sac.AccessModeScopeKeys(storage.Access_READ_ACCESS, storage.Access_READ_WRITE_ACCESS),
-				sac.ResourceScopeKeys(resource),
+				sac.ResourceScopeKeys(resourceHandles...),
 				sac.ClusterScopeKeys(testconsts.Cluster1),
 				sac.NamespaceScopeKeys(testconsts.NamespaceB)))
 
@@ -75,7 +85,7 @@ func GetNamespaceScopedTestContexts(ctx context.Context, t *testing.T, resource 
 		sac.WithGlobalAccessScopeChecker(ctx,
 			sac.AllowFixedScopes(
 				sac.AccessModeScopeKeys(storage.Access_READ_ACCESS, storage.Access_READ_WRITE_ACCESS),
-				sac.ResourceScopeKeys(resource),
+				sac.ResourceScopeKeys(resourceHandles...),
 				sac.ClusterScopeKeys(testconsts.Cluster1),
 				sac.NamespaceScopeKeys(testconsts.NamespaceC)))
 
@@ -83,7 +93,7 @@ func GetNamespaceScopedTestContexts(ctx context.Context, t *testing.T, resource 
 		sac.WithGlobalAccessScopeChecker(ctx,
 			sac.AllowFixedScopes(
 				sac.AccessModeScopeKeys(storage.Access_READ_ACCESS, storage.Access_READ_WRITE_ACCESS),
-				sac.ResourceScopeKeys(resource),
+				sac.ResourceScopeKeys(resourceHandles...),
 				sac.ClusterScopeKeys(testconsts.Cluster1),
 				sac.NamespaceScopeKeys(testconsts.NamespaceA, testconsts.NamespaceB)))
 
@@ -91,7 +101,7 @@ func GetNamespaceScopedTestContexts(ctx context.Context, t *testing.T, resource 
 		sac.WithGlobalAccessScopeChecker(ctx,
 			sac.AllowFixedScopes(
 				sac.AccessModeScopeKeys(storage.Access_READ_ACCESS, storage.Access_READ_WRITE_ACCESS),
-				sac.ResourceScopeKeys(resource),
+				sac.ResourceScopeKeys(resourceHandles...),
 				sac.ClusterScopeKeys(testconsts.Cluster1),
 				sac.NamespaceScopeKeys(testconsts.NamespaceA, testconsts.NamespaceC)))
 
@@ -99,7 +109,7 @@ func GetNamespaceScopedTestContexts(ctx context.Context, t *testing.T, resource 
 		sac.WithGlobalAccessScopeChecker(ctx,
 			sac.AllowFixedScopes(
 				sac.AccessModeScopeKeys(storage.Access_READ_ACCESS, storage.Access_READ_WRITE_ACCESS),
-				sac.ResourceScopeKeys(resource),
+				sac.ResourceScopeKeys(resourceHandles...),
 				sac.ClusterScopeKeys(testconsts.Cluster1),
 				sac.NamespaceScopeKeys(testconsts.NamespaceB, testconsts.NamespaceC)))
 
@@ -107,14 +117,14 @@ func GetNamespaceScopedTestContexts(ctx context.Context, t *testing.T, resource 
 		sac.WithGlobalAccessScopeChecker(ctx,
 			sac.AllowFixedScopes(
 				sac.AccessModeScopeKeys(storage.Access_READ_ACCESS, storage.Access_READ_WRITE_ACCESS),
-				sac.ResourceScopeKeys(resource),
+				sac.ResourceScopeKeys(resourceHandles...),
 				sac.ClusterScopeKeys(testconsts.Cluster2)))
 
 	contextMap[Cluster2NamespaceAReadWriteCtx] =
 		sac.WithGlobalAccessScopeChecker(ctx,
 			sac.AllowFixedScopes(
 				sac.AccessModeScopeKeys(storage.Access_READ_ACCESS, storage.Access_READ_WRITE_ACCESS),
-				sac.ResourceScopeKeys(resource),
+				sac.ResourceScopeKeys(resourceHandles...),
 				sac.ClusterScopeKeys(testconsts.Cluster2),
 				sac.NamespaceScopeKeys(testconsts.NamespaceA)))
 
@@ -122,7 +132,7 @@ func GetNamespaceScopedTestContexts(ctx context.Context, t *testing.T, resource 
 		sac.WithGlobalAccessScopeChecker(ctx,
 			sac.AllowFixedScopes(
 				sac.AccessModeScopeKeys(storage.Access_READ_ACCESS, storage.Access_READ_WRITE_ACCESS),
-				sac.ResourceScopeKeys(resource),
+				sac.ResourceScopeKeys(resourceHandles...),
 				sac.ClusterScopeKeys(testconsts.Cluster2),
 				sac.NamespaceScopeKeys(testconsts.NamespaceB)))
 
@@ -130,7 +140,7 @@ func GetNamespaceScopedTestContexts(ctx context.Context, t *testing.T, resource 
 		sac.WithGlobalAccessScopeChecker(ctx,
 			sac.AllowFixedScopes(
 				sac.AccessModeScopeKeys(storage.Access_READ_ACCESS, storage.Access_READ_WRITE_ACCESS),
-				sac.ResourceScopeKeys(resource),
+				sac.ResourceScopeKeys(resourceHandles...),
 				sac.ClusterScopeKeys(testconsts.Cluster2),
 				sac.NamespaceScopeKeys(testconsts.NamespaceC)))
 
@@ -138,7 +148,7 @@ func GetNamespaceScopedTestContexts(ctx context.Context, t *testing.T, resource 
 		sac.WithGlobalAccessScopeChecker(ctx,
 			sac.AllowFixedScopes(
 				sac.AccessModeScopeKeys(storage.Access_READ_ACCESS, storage.Access_READ_WRITE_ACCESS),
-				sac.ResourceScopeKeys(resource),
+				sac.ResourceScopeKeys(resourceHandles...),
 				sac.ClusterScopeKeys(testconsts.Cluster2),
 				sac.NamespaceScopeKeys(testconsts.NamespaceA, testconsts.NamespaceB)))
 
@@ -146,7 +156,7 @@ func GetNamespaceScopedTestContexts(ctx context.Context, t *testing.T, resource 
 		sac.WithGlobalAccessScopeChecker(ctx,
 			sac.AllowFixedScopes(
 				sac.AccessModeScopeKeys(storage.Access_READ_ACCESS, storage.Access_READ_WRITE_ACCESS),
-				sac.ResourceScopeKeys(resource),
+				sac.ResourceScopeKeys(resourceHandles...),
 				sac.ClusterScopeKeys(testconsts.Cluster2),
 				sac.NamespaceScopeKeys(testconsts.NamespaceA, testconsts.NamespaceC)))
 
@@ -154,7 +164,7 @@ func GetNamespaceScopedTestContexts(ctx context.Context, t *testing.T, resource 
 		sac.WithGlobalAccessScopeChecker(ctx,
 			sac.AllowFixedScopes(
 				sac.AccessModeScopeKeys(storage.Access_READ_ACCESS, storage.Access_READ_WRITE_ACCESS),
-				sac.ResourceScopeKeys(resource),
+				sac.ResourceScopeKeys(resourceHandles...),
 				sac.ClusterScopeKeys(testconsts.Cluster2),
 				sac.NamespaceScopeKeys(testconsts.NamespaceB, testconsts.NamespaceC)))
 
@@ -162,22 +172,76 @@ func GetNamespaceScopedTestContexts(ctx context.Context, t *testing.T, resource 
 		sac.WithGlobalAccessScopeChecker(ctx,
 			sac.AllowFixedScopes(
 				sac.AccessModeScopeKeys(storage.Access_READ_ACCESS, storage.Access_READ_WRITE_ACCESS),
-				sac.ResourceScopeKeys(resource),
+				sac.ResourceScopeKeys(resourceHandles...),
 				sac.ClusterScopeKeys(testconsts.Cluster3)))
 
+	contextMap[Cluster3NamespaceAReadWriteCtx] =
+		sac.WithGlobalAccessScopeChecker(ctx,
+			sac.AllowFixedScopes(
+				sac.AccessModeScopeKeys(storage.Access_READ_ACCESS, storage.Access_READ_WRITE_ACCESS),
+				sac.ResourceScopeKeys(resourceHandles...),
+				sac.ClusterScopeKeys(testconsts.Cluster3),
+				sac.NamespaceScopeKeys(testconsts.NamespaceA)))
+
+	contextMap[Cluster3NamespaceBReadWriteCtx] =
+		sac.WithGlobalAccessScopeChecker(ctx,
+			sac.AllowFixedScopes(
+				sac.AccessModeScopeKeys(storage.Access_READ_ACCESS, storage.Access_READ_WRITE_ACCESS),
+				sac.ResourceScopeKeys(resourceHandles...),
+				sac.ClusterScopeKeys(testconsts.Cluster3),
+				sac.NamespaceScopeKeys(testconsts.NamespaceB)))
+
+	contextMap[Cluster3NamespaceCReadWriteCtx] =
+		sac.WithGlobalAccessScopeChecker(ctx,
+			sac.AllowFixedScopes(
+				sac.AccessModeScopeKeys(storage.Access_READ_ACCESS, storage.Access_READ_WRITE_ACCESS),
+				sac.ResourceScopeKeys(resourceHandles...),
+				sac.ClusterScopeKeys(testconsts.Cluster3),
+				sac.NamespaceScopeKeys(testconsts.NamespaceC)))
+
+	contextMap[Cluster3NamespacesABReadWriteCtx] =
+		sac.WithGlobalAccessScopeChecker(ctx,
+			sac.AllowFixedScopes(
+				sac.AccessModeScopeKeys(storage.Access_READ_ACCESS, storage.Access_READ_WRITE_ACCESS),
+				sac.ResourceScopeKeys(resourceHandles...),
+				sac.ClusterScopeKeys(testconsts.Cluster3),
+				sac.NamespaceScopeKeys(testconsts.NamespaceA, testconsts.NamespaceB)))
+
+	contextMap[Cluster3NamespacesACReadWriteCtx] =
+		sac.WithGlobalAccessScopeChecker(ctx,
+			sac.AllowFixedScopes(
+				sac.AccessModeScopeKeys(storage.Access_READ_ACCESS, storage.Access_READ_WRITE_ACCESS),
+				sac.ResourceScopeKeys(resourceHandles...),
+				sac.ClusterScopeKeys(testconsts.Cluster3),
+				sac.NamespaceScopeKeys(testconsts.NamespaceA, testconsts.NamespaceC)))
+
+	contextMap[Cluster3NamespacesBCReadWriteCtx] =
+		sac.WithGlobalAccessScopeChecker(ctx,
+			sac.AllowFixedScopes(
+				sac.AccessModeScopeKeys(storage.Access_READ_ACCESS, storage.Access_READ_WRITE_ACCESS),
+				sac.ResourceScopeKeys(resourceHandles...),
+				sac.ClusterScopeKeys(testconsts.Cluster3),
+				sac.NamespaceScopeKeys(testconsts.NamespaceB, testconsts.NamespaceC)))
+
+	mixedResourceScope := &sac.TestResourceScope{
+		Clusters: map[string]*sac.TestClusterScope{
+			testconsts.Cluster1: {Namespaces: []string{testconsts.NamespaceA}},
+			testconsts.Cluster2: {Included: true},
+			testconsts.Cluster3: {Namespaces: []string{testconsts.NamespaceC}},
+		},
+	}
+	mixedAccessScope := map[permissions.Resource]*sac.TestResourceScope{}
+	for _, r := range resources {
+		mixedAccessScope[r.GetResource()] = mixedResourceScope
+		if r.GetReplacingResource() != nil {
+			mixedAccessScope[*r.GetReplacingResource()] = mixedResourceScope
+		}
+	}
 	contextMap[MixedClusterAndNamespaceReadCtx] =
 		sac.WithGlobalAccessScopeChecker(ctx,
 			sac.TestScopeCheckerCoreFromFullScopeMap(t,
 				sac.TestScopeMap{
-					storage.Access_READ_ACCESS: {
-						resource: &sac.TestResourceScope{
-							Clusters: map[string]*sac.TestClusterScope{
-								testconsts.Cluster1: {Namespaces: []string{testconsts.NamespaceA}},
-								testconsts.Cluster2: {Included: true},
-								testconsts.Cluster3: {Namespaces: []string{testconsts.NamespaceC}},
-							},
-						},
-					},
+					storage.Access_READ_ACCESS: mixedAccessScope,
 				}))
 
 	return contextMap

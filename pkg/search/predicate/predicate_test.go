@@ -5,10 +5,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gogo/protobuf/types"
 	v1 "github.com/stackrox/rox/generated/api/v1"
 	"github.com/stackrox/rox/generated/storage"
 	"github.com/stackrox/rox/pkg/fixtures"
+	"github.com/stackrox/rox/pkg/protocompat"
 	"github.com/stackrox/rox/pkg/protoconv"
 	"github.com/stackrox/rox/pkg/search"
 	"github.com/stretchr/testify/assert"
@@ -60,7 +60,7 @@ func TestSearchPredicate(t *testing.T) {
 	assert.NoError(t, err)
 
 	// Pass the predicate
-	ts, err := types.TimestampProto(baseTime.Add(time.Hour))
+	ts, err := protocompat.ConvertTimeToTimestampOrError(baseTime.Add(time.Hour))
 	assert.NoError(t, err)
 	passingImage := &storage.Image{
 		Id: "sha",
@@ -352,7 +352,7 @@ func TestSearchPredicate(t *testing.T) {
 		{
 			name: "map query returns false for an empty map",
 			query: search.NewQueryBuilder().
-				AddMapQuery(search.Label, search.ExactMatchString("key"), search.ExactMatchString("value")).
+				AddMapQuery(search.DeploymentLabel, search.ExactMatchString("key"), search.ExactMatchString("value")).
 				ProtoQuery(),
 			factory:     deploymentFactory,
 			object:      deployment,

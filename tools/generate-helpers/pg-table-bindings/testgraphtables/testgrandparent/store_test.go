@@ -8,58 +8,44 @@ import (
 	"context"
 	"testing"
 
-	"github.com/jackc/pgx/v4/pgxpool"
 	"github.com/stackrox/rox/generated/storage"
-	"github.com/stackrox/rox/pkg/features"
 	"github.com/stackrox/rox/pkg/postgres/pgtest"
+	"github.com/stackrox/rox/pkg/protoassert"
 	"github.com/stackrox/rox/pkg/sac"
+	"github.com/stackrox/rox/pkg/search"
 	"github.com/stackrox/rox/pkg/testutils"
-	"github.com/stackrox/rox/pkg/testutils/envisolator"
 	"github.com/stretchr/testify/suite"
 )
 
-type TestgrandparentStoreSuite struct {
+type TestGrandparentsStoreSuite struct {
 	suite.Suite
-	envIsolator *envisolator.EnvIsolator
-	store       Store
-	pool        *pgxpool.Pool
+	store  Store
+	testDB *pgtest.TestPostgres
 }
 
-func TestTestgrandparentStore(t *testing.T) {
-	suite.Run(t, new(TestgrandparentStoreSuite))
+func TestTestGrandparentsStore(t *testing.T) {
+	suite.Run(t, new(TestGrandparentsStoreSuite))
 }
 
-func (s *TestgrandparentStoreSuite) SetupTest() {
-	s.envIsolator = envisolator.NewEnvIsolator(s.T())
-	s.envIsolator.Setenv(features.PostgresDatastore.EnvVar(), "true")
+func (s *TestGrandparentsStoreSuite) SetupSuite() {
 
-	if !features.PostgresDatastore.Enabled() {
-		s.T().Skip("Skip postgres store tests")
-		s.T().SkipNow()
-	}
+	s.testDB = pgtest.ForT(s.T())
+	s.store = New(s.testDB.DB)
+}
 
+func (s *TestGrandparentsStoreSuite) SetupTest() {
 	ctx := sac.WithAllAccess(context.Background())
-
-	source := pgtest.GetConnectionString(s.T())
-	config, err := pgxpool.ParseConfig(source)
-	s.Require().NoError(err)
-	pool, err := pgxpool.ConnectConfig(ctx, config)
-	s.Require().NoError(err)
-
-	Destroy(ctx, pool)
-
-	s.pool = pool
-	s.store = New(ctx, pool)
+	tag, err := s.testDB.Exec(ctx, "TRUNCATE test_grandparents CASCADE")
+	s.T().Log("test_grandparents", tag)
+	s.store = New(s.testDB.DB)
+	s.NoError(err)
 }
 
-func (s *TestgrandparentStoreSuite) TearDownTest() {
-	if s.pool != nil {
-		s.pool.Close()
-	}
-	s.envIsolator.RestoreAll()
+func (s *TestGrandparentsStoreSuite) TearDownSuite() {
+	s.testDB.Teardown(s.T())
 }
 
-func (s *TestgrandparentStoreSuite) TestStore() {
+func (s *TestGrandparentsStoreSuite) TestStore() {
 	ctx := sac.WithAllAccess(context.Background())
 
 	store := s.store
@@ -72,42 +58,52 @@ func (s *TestgrandparentStoreSuite) TestStore() {
 	s.False(exists)
 	s.Nil(foundTestGrandparent)
 
+	withNoAccessCtx := sac.WithNoAccess(ctx)
+
 	s.NoError(store.Upsert(ctx, testGrandparent))
 	foundTestGrandparent, exists, err = store.Get(ctx, testGrandparent.GetId())
 	s.NoError(err)
 	s.True(exists)
-	s.Equal(testGrandparent, foundTestGrandparent)
+	protoassert.Equal(s.T(), testGrandparent, foundTestGrandparent)
 
-	testGrandparentCount, err := store.Count(ctx)
+	testGrandparentCount, err := store.Count(ctx, search.EmptyQuery())
 	s.NoError(err)
 	s.Equal(1, testGrandparentCount)
+	testGrandparentCount, err = store.Count(withNoAccessCtx, search.EmptyQuery())
+	s.NoError(err)
+	s.Zero(testGrandparentCount)
 
 	testGrandparentExists, err := store.Exists(ctx, testGrandparent.GetId())
 	s.NoError(err)
 	s.True(testGrandparentExists)
 	s.NoError(store.Upsert(ctx, testGrandparent))
-
-	foundTestGrandparent, exists, err = store.Get(ctx, testGrandparent.GetId())
-	s.NoError(err)
-	s.True(exists)
-	s.Equal(testGrandparent, foundTestGrandparent)
+	s.ErrorIs(store.Upsert(withNoAccessCtx, testGrandparent), sac.ErrResourceAccessDenied)
 
 	s.NoError(store.Delete(ctx, testGrandparent.GetId()))
 	foundTestGrandparent, exists, err = store.Get(ctx, testGrandparent.GetId())
 	s.NoError(err)
 	s.False(exists)
 	s.Nil(foundTestGrandparent)
+	s.NoError(store.Delete(withNoAccessCtx, testGrandparent.GetId()))
 
 	var testGrandparents []*storage.TestGrandparent
+	var testGrandparentIDs []string
 	for i := 0; i < 200; i++ {
 		testGrandparent := &storage.TestGrandparent{}
 		s.NoError(testutils.FullInit(testGrandparent, testutils.UniqueInitializer(), testutils.JSONFieldsFilter))
 		testGrandparents = append(testGrandparents, testGrandparent)
+		testGrandparentIDs = append(testGrandparentIDs, testGrandparent.GetId())
 	}
 
 	s.NoError(store.UpsertMany(ctx, testGrandparents))
 
-	testGrandparentCount, err = store.Count(ctx)
+	testGrandparentCount, err = store.Count(ctx, search.EmptyQuery())
 	s.NoError(err)
 	s.Equal(200, testGrandparentCount)
+
+	s.NoError(store.DeleteMany(ctx, testGrandparentIDs))
+
+	testGrandparentCount, err = store.Count(ctx, search.EmptyQuery())
+	s.NoError(err)
+	s.Equal(0, testGrandparentCount)
 }

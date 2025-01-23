@@ -16,24 +16,32 @@ func _() {
 	_ = x[Get-5]
 	_ = x[GetAll-6]
 	_ = x[GetMany-7]
-	_ = x[GetGrouped-8]
-	_ = x[List-9]
-	_ = x[Prune-10]
-	_ = x[Reset-11]
-	_ = x[Rename-12]
-	_ = x[Remove-13]
-	_ = x[RemoveMany-14]
-	_ = x[RemoveFlowsByDeployment-15]
-	_ = x[Search-16]
-	_ = x[Update-17]
-	_ = x[UpdateMany-18]
-	_ = x[Upsert-19]
-	_ = x[UpsertAll-20]
+	_ = x[GetExternalFlowsForDeployment-8]
+	_ = x[GetFlowsForDeployment-9]
+	_ = x[GetByQuery-10]
+	_ = x[GetGrouped-11]
+	_ = x[GetProcessListeningOnPort-12]
+	_ = x[List-13]
+	_ = x[Prune-14]
+	_ = x[Reset-15]
+	_ = x[Rename-16]
+	_ = x[Remove-17]
+	_ = x[RemoveMany-18]
+	_ = x[RemoveFlowsByDeployment-19]
+	_ = x[Search-20]
+	_ = x[Sync-21]
+	_ = x[Update-22]
+	_ = x[UpdateMany-23]
+	_ = x[Upsert-24]
+	_ = x[UpsertAll-25]
+	_ = x[Walk-26]
+	_ = x[WalkByQuery-27]
+	_ = x[Unset-28]
 }
 
-const _Op_name = "AddAddManyCountDedupeExistsGetGetAllGetManyGetGroupedListPruneResetRenameRemoveRemoveManyRemoveFlowsByDeploymentSearchUpdateUpdateManyUpsertUpsertAll"
+const _Op_name = "AddAddManyCountDedupeExistsGetGetAllGetManyGetExternalFlowsForDeploymentGetFlowsForDeploymentGetByQueryGetGroupedGetProcessListeningOnPortListPruneResetRenameRemoveRemoveManyRemoveFlowsByDeploymentSearchSyncUpdateUpdateManyUpsertUpsertAllWalkWalkByQueryUnset"
 
-var _Op_index = [...]uint8{0, 3, 10, 15, 21, 27, 30, 36, 43, 53, 57, 62, 67, 73, 79, 89, 112, 118, 124, 134, 140, 149}
+var _Op_index = [...]uint16{0, 3, 10, 15, 21, 27, 30, 36, 43, 72, 93, 103, 113, 138, 142, 147, 152, 158, 164, 174, 197, 203, 207, 213, 223, 229, 238, 242, 253, 258}
 
 func (i Op) String() string {
 	if i < 0 || i >= Op(len(_Op_index)-1) {

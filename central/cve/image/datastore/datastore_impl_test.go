@@ -5,15 +5,17 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gogo/protobuf/types"
-	"github.com/golang/mock/gomock"
-	searchMocks "github.com/stackrox/rox/central/cve/image/datastore/internal/search/mocks"
-	storeMocks "github.com/stackrox/rox/central/cve/image/datastore/internal/store/mocks"
-	indexMocks "github.com/stackrox/rox/central/cve/index/mocks"
+	"github.com/stackrox/rox/central/cve/common"
+	searchMocks "github.com/stackrox/rox/central/cve/image/datastore/search/mocks"
+	storeMocks "github.com/stackrox/rox/central/cve/image/datastore/store/mocks"
 	"github.com/stackrox/rox/generated/storage"
+	"github.com/stackrox/rox/pkg/concurrency"
+	"github.com/stackrox/rox/pkg/protocompat"
 	"github.com/stackrox/rox/pkg/sac"
 	searchPkg "github.com/stackrox/rox/pkg/search"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/suite"
+	"go.uber.org/mock/gomock"
 )
 
 var (
@@ -22,36 +24,33 @@ var (
 	testAllAccessContext = sac.WithAllAccess(context.Background())
 )
 
-func TestCVEDataStore(t *testing.T) {
-	suite.Run(t, new(CVEDataStoreSuite))
+func TestImageCVEDataStore(t *testing.T) {
+	suite.Run(t, new(ImageCVEDataStoreSuite))
 }
 
-type CVEDataStoreSuite struct {
+type ImageCVEDataStoreSuite struct {
 	suite.Suite
 
 	mockCtrl *gomock.Controller
 
-	indexer   *indexMocks.MockIndexer
 	storage   *storeMocks.MockStore
 	searcher  *searchMocks.MockSearcher
 	datastore *datastoreImpl
 }
 
-func (suite *CVEDataStoreSuite) SetupSuite() {
+func (suite *ImageCVEDataStoreSuite) SetupSuite() {
 	suite.mockCtrl = gomock.NewController(suite.T())
 
-	suite.indexer = indexMocks.NewMockIndexer(suite.mockCtrl)
 	suite.storage = storeMocks.NewMockStore(suite.mockCtrl)
 	suite.searcher = searchMocks.NewMockSearcher(suite.mockCtrl)
 
-	suite.searcher.EXPECT().SearchRawCVEs(accessAllCtx, testSuppressionQuery).Return([]*storage.CVE{}, nil)
+	suite.searcher.EXPECT().SearchRawImageCVEs(accessAllCtx, testSuppressionQuery).Return([]*storage.ImageCVE{}, nil)
 
-	ds, err := New(suite.storage, suite.indexer, suite.searcher)
-	suite.Require().NoError(err)
+	ds := New(suite.storage, suite.searcher, concurrency.NewKeyFence())
 	suite.datastore = ds.(*datastoreImpl)
 }
 
-func (suite *CVEDataStoreSuite) TearDownSuite() {
+func (suite *ImageCVEDataStoreSuite) TearDownSuite() {
 	suite.mockCtrl.Finish()
 }
 
@@ -73,7 +72,7 @@ func getImageWithCVEs(cves ...string) *storage.Image {
 	}
 }
 
-func (suite *CVEDataStoreSuite) verifySuppressionStateImage(image *storage.Image, suppressedCVEs, unsuppressedCVEs []string) {
+func (suite *ImageCVEDataStoreSuite) verifySuppressionStateImage(image *storage.Image, suppressedCVEs, unsuppressedCVEs []string) {
 	cveMap := make(map[string]bool)
 	for _, comp := range image.GetScan().GetComponents() {
 		for _, vuln := range comp.GetVulns() {
@@ -83,7 +82,7 @@ func (suite *CVEDataStoreSuite) verifySuppressionStateImage(image *storage.Image
 	suite.verifySuppressionState(cveMap, suppressedCVEs, unsuppressedCVEs)
 }
 
-func (suite *CVEDataStoreSuite) verifySuppressionState(cveMap map[string]bool, suppressedCVEs, unsuppressedCVEs []string) {
+func (suite *ImageCVEDataStoreSuite) verifySuppressionState(cveMap map[string]bool, suppressedCVEs, unsuppressedCVEs []string) {
 	for _, cve := range suppressedCVEs {
 		val, ok := cveMap[cve]
 		suite.True(ok)
@@ -96,26 +95,28 @@ func (suite *CVEDataStoreSuite) verifySuppressionState(cveMap map[string]bool, s
 	}
 }
 
-func (suite *CVEDataStoreSuite) TestSuppressionCacheImages() {
+func (suite *ImageCVEDataStoreSuite) TestSuppressionCacheImages() {
 	// Add some results
-	suite.searcher.EXPECT().SearchRawCVEs(accessAllCtx, testSuppressionQuery).Return([]*storage.CVE{
+	suite.searcher.EXPECT().SearchRawImageCVEs(accessAllCtx, testSuppressionQuery).Return([]*storage.ImageCVE{
 		{
-			Id:         "CVE-ABC",
-			Suppressed: true,
+			Id: "CVE-ABC",
+			CveBaseInfo: &storage.CVEInfo{
+				Cve: "CVE-ABC",
+			},
+			Snoozed: true,
 		},
 		{
-			Id:         "CVE-DEF",
-			Suppressed: true,
+			Id: "CVE-DEF",
+			CveBaseInfo: &storage.CVEInfo{
+				Cve: "CVE-DEF",
+			},
+			Snoozed: true,
 		},
 	}, nil)
-	suite.NoError(suite.datastore.buildSuppressedCache())
-	expectedCache := map[string]suppressionCacheEntry{
-		"CVE-ABC": {
-			Suppressed: true,
-		},
-		"CVE-DEF": {
-			Suppressed: true,
-		},
+	suite.datastore.buildSuppressedCache()
+	expectedCache := common.CVESuppressionCache{
+		"CVE-ABC": {},
+		"CVE-DEF": {},
 	}
 	suite.Equal(expectedCache, suite.datastore.cveSuppressionCache)
 
@@ -124,34 +125,106 @@ func (suite *CVEDataStoreSuite) TestSuppressionCacheImages() {
 	suite.datastore.EnrichImageWithSuppressedCVEs(img)
 	suite.verifySuppressionStateImage(img, []string{"CVE-ABC", "CVE-DEF"}, []string{"CVE-GHI"})
 
-	start := types.TimestampNow()
-	duration := types.DurationProto(10 * time.Minute)
+	start := time.Now()
+	duration := 10 * time.Minute
 
-	expiry, err := getSuppressExpiry(start, duration)
+	expiry, err := getSuppressExpiry(&start, &duration)
 	suite.NoError(err)
 
-	suite.storage.EXPECT().GetMany(testAllAccessContext, []string{"CVE-GHI"}).Return([]*storage.CVE{{Id: "CVE-GHI"}}, nil, nil)
-	storedCVE := &storage.CVE{
-		Id:                 "CVE-GHI",
-		Suppressed:         true,
-		SuppressActivation: start,
-		SuppressExpiry:     expiry,
+	suite.searcher.EXPECT().SearchRawImageCVEs(testAllAccessContext, gomock.Any()).Return([]*storage.ImageCVE{{CveBaseInfo: &storage.CVEInfo{Cve: "CVE-GHI"}}}, nil)
+	storedCVE := &storage.ImageCVE{
+		CveBaseInfo: &storage.CVEInfo{
+			Cve: "CVE-GHI",
+		},
+		Snoozed:      true,
+		SnoozeStart:  protocompat.ConvertTimeToTimestampOrNil(&start),
+		SnoozeExpiry: protocompat.ConvertTimeToTimestampOrNil(expiry),
 	}
-	suite.storage.EXPECT().UpsertMany(testAllAccessContext, []*storage.CVE{storedCVE}).Return(nil)
+	suite.storage.EXPECT().UpsertMany(testAllAccessContext, []*storage.ImageCVE{storedCVE}).Return(nil)
 
 	// Clear image before suppressing
 	img = getImageWithCVEs("CVE-ABC", "CVE-DEF", "CVE-GHI")
-	err = suite.datastore.Suppress(testAllAccessContext, start, duration, "CVE-GHI")
+	err = suite.datastore.Suppress(testAllAccessContext, &start, &duration, "CVE-GHI")
 	suite.NoError(err)
 	suite.datastore.EnrichImageWithSuppressedCVEs(img)
 	suite.verifySuppressionStateImage(img, []string{"CVE-ABC", "CVE-DEF", "CVE-GHI"}, nil)
 
 	// Clear image before unsupressing
 	img = getImageWithCVEs("CVE-ABC", "CVE-DEF", "CVE-GHI")
-	suite.storage.EXPECT().GetMany(testAllAccessContext, []string{"CVE-GHI"}).Return([]*storage.CVE{storedCVE}, nil, nil)
-	suite.storage.EXPECT().UpsertMany(testAllAccessContext, []*storage.CVE{{Id: "CVE-GHI"}}).Return(nil)
+	suite.searcher.EXPECT().SearchRawImageCVEs(testAllAccessContext, gomock.Any()).Return([]*storage.ImageCVE{storedCVE}, nil)
+	suite.storage.EXPECT().UpsertMany(testAllAccessContext, []*storage.ImageCVE{{CveBaseInfo: &storage.CVEInfo{Cve: "CVE-GHI"}}}).Return(nil)
 	err = suite.datastore.Unsuppress(testAllAccessContext, "CVE-GHI")
 	suite.NoError(err)
 	suite.datastore.EnrichImageWithSuppressedCVEs(img)
 	suite.verifySuppressionStateImage(img, []string{"CVE-ABC", "CVE-DEF"}, []string{"CVE-GHI"})
+}
+
+func TestGetSuppressExpiry(t *testing.T) {
+	startTime := time.Now().UTC()
+	duration := 10 * time.Minute
+
+	expiry1, err := getSuppressExpiry(nil, nil)
+	assert.ErrorIs(t, err, errNilSuppressionStart)
+	assert.Nil(t, expiry1)
+
+	expiry2, err := getSuppressExpiry(nil, &duration)
+	assert.ErrorIs(t, err, errNilSuppressionStart)
+	assert.Nil(t, expiry2)
+
+	expiry3, err := getSuppressExpiry(&startTime, nil)
+	assert.ErrorIs(t, err, errNilSuppressionDuration)
+	assert.Nil(t, expiry3)
+
+	expiry4, err := getSuppressExpiry(&startTime, &duration)
+	assert.NoError(t, err)
+	truncatedStart := startTime.Truncate(time.Second)
+	truncatedDuration := duration.Truncate(time.Second)
+	expectedExpiry4 := truncatedStart.Add(truncatedDuration)
+	assert.Equal(t, &expectedExpiry4, expiry4)
+}
+
+func TestGetSuppressionCacheEntry(t *testing.T) {
+	startTime := time.Now().UTC()
+	duration := 10 * time.Minute
+	activation := startTime.Truncate(time.Nanosecond)
+	expiration := startTime.Add(duration)
+
+	protoStart, err := protocompat.ConvertTimeToTimestampOrError(startTime)
+	assert.NoError(t, err)
+	protoExpiration, err := protocompat.ConvertTimeToTimestampOrError(expiration)
+	assert.NoError(t, err)
+
+	cve1 := &storage.ImageCVE{}
+	expectedEntry1 := common.SuppressionCacheEntry{}
+	entry1 := getSuppressionCacheEntry(cve1)
+	assert.Equal(t, expectedEntry1, entry1)
+
+	cve2 := &storage.ImageCVE{
+		SnoozeStart: protoStart,
+	}
+	expectedEntry2 := common.SuppressionCacheEntry{
+		SuppressActivation: &activation,
+	}
+	entry2 := getSuppressionCacheEntry(cve2)
+	assert.Equal(t, expectedEntry2, entry2)
+
+	cve3 := &storage.ImageCVE{
+		SnoozeExpiry: protoExpiration,
+	}
+	expectedEntry3 := common.SuppressionCacheEntry{
+		SuppressExpiry: &expiration,
+	}
+	entry3 := getSuppressionCacheEntry(cve3)
+	assert.Equal(t, expectedEntry3, entry3)
+
+	cve4 := &storage.ImageCVE{
+		SnoozeStart:  protoStart,
+		SnoozeExpiry: protoExpiration,
+	}
+	expectedEntry4 := common.SuppressionCacheEntry{
+		SuppressActivation: &activation,
+		SuppressExpiry:     &expiration,
+	}
+	entry4 := getSuppressionCacheEntry(cve4)
+	assert.Equal(t, expectedEntry4, entry4)
 }

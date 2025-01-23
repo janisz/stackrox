@@ -3,9 +3,10 @@ package service
 import (
 	"context"
 	"math"
-	"sort"
+	"slices"
+	"time"
 
-	"github.com/grpc-ecosystem/grpc-gateway/runtime"
+	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
 	"github.com/pkg/errors"
 	"github.com/stackrox/rox/central/deployment/datastore"
 	processBaselineStore "github.com/stackrox/rox/central/processbaseline/datastore"
@@ -13,7 +14,6 @@ import (
 	processIndicatorStore "github.com/stackrox/rox/central/processindicator/datastore"
 	riskDataStore "github.com/stackrox/rox/central/risk/datastore"
 	"github.com/stackrox/rox/central/risk/manager"
-	"github.com/stackrox/rox/central/role/resources"
 	v1 "github.com/stackrox/rox/generated/api/v1"
 	"github.com/stackrox/rox/generated/storage"
 	"github.com/stackrox/rox/pkg/auth/permissions"
@@ -21,10 +21,11 @@ import (
 	"github.com/stackrox/rox/pkg/grpc/authz"
 	"github.com/stackrox/rox/pkg/grpc/authz/perrpc"
 	"github.com/stackrox/rox/pkg/grpc/authz/user"
+	"github.com/stackrox/rox/pkg/sac/resources"
 	"github.com/stackrox/rox/pkg/search"
-	"github.com/stackrox/rox/pkg/search/blevesearch"
 	"github.com/stackrox/rox/pkg/search/options/deployments"
 	"github.com/stackrox/rox/pkg/search/paginated"
+	pgsearch "github.com/stackrox/rox/pkg/search/postgres/query"
 	"github.com/stackrox/rox/pkg/set"
 	"github.com/stackrox/rox/pkg/utils"
 	"google.golang.org/grpc"
@@ -43,19 +44,41 @@ var (
 			"/v1.DeploymentService/ListDeployments",
 			"/v1.DeploymentService/GetLabels",
 			"/v1.DeploymentService/ListDeploymentsWithProcessInfo",
+			"/v1.DeploymentService/ExportDeployments",
 		},
 	})
-	baselineAndIndicatorAuth = user.With(permissions.View(resources.ProcessWhitelist), permissions.View(resources.Indicator))
+	deploymentExtensionAuth = user.With(permissions.View(resources.DeploymentExtension))
 )
 
 // serviceImpl provides APIs for deployments.
 type serviceImpl struct {
+	v1.UnimplementedDeploymentServiceServer
+
 	datastore              datastore.DataStore
 	processBaselines       processBaselineStore.DataStore
 	processIndicators      processIndicatorStore.DataStore
 	processBaselineResults processBaselineResultsStore.DataStore
 	risks                  riskDataStore.DataStore
 	manager                manager.Manager
+}
+
+func (s *serviceImpl) ExportDeployments(req *v1.ExportDeploymentRequest, srv v1.DeploymentService_ExportDeploymentsServer) error {
+	parsedQuery, err := search.ParseQuery(req.GetQuery(), search.MatchAllIfEmpty())
+	if err != nil {
+		return errors.Wrap(errox.InvalidArgs, err.Error())
+	}
+	ctx := srv.Context()
+	if timeout := req.GetTimeout(); timeout != 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(srv.Context(), time.Duration(timeout)*time.Second)
+		defer cancel()
+	}
+	return s.datastore.WalkByQuery(ctx, parsedQuery, func(d *storage.Deployment) error {
+		if err := srv.Send(&v1.ExportDeploymentResponse{Deployment: d}); err != nil {
+			return err
+		}
+		return nil
+	})
 }
 
 func (s *serviceImpl) baselineResultsForDeployment(ctx context.Context, deployment *storage.ListDeployment) (*storage.ProcessBaselineResults, error) {
@@ -67,15 +90,13 @@ func (s *serviceImpl) baselineResultsForDeployment(ctx context.Context, deployme
 }
 
 func (s *serviceImpl) fillBaselineResults(ctx context.Context, resp *v1.ListDeploymentsWithProcessInfoResponse) error {
-	if err := baselineAndIndicatorAuth.Authorized(ctx, ""); err == nil {
+	if err := deploymentExtensionAuth.Authorized(ctx, ""); err == nil {
 		for _, depWithProc := range resp.Deployments {
 			baselineResults, err := s.baselineResultsForDeployment(ctx, depWithProc.GetDeployment())
 			if err != nil {
 				return err
 			}
 			depWithProc.BaselineStatuses = baselineResults.GetBaselineStatuses()
-			// TODO(ROX-6194): Remove after the deprecation cycle started with the 55.0 release.
-			depWithProc.WhitelistStatuses = depWithProc.BaselineStatuses
 		}
 	}
 	return nil
@@ -173,7 +194,7 @@ func (s *serviceImpl) ListDeployments(ctx context.Context, request *v1.RawQuery)
 	}
 
 	// Fill in pagination.
-	paginated.FillPagination(parsedQuery, request.Pagination, maxDeploymentsReturned)
+	paginated.FillPagination(parsedQuery, request.GetPagination(), maxDeploymentsReturned)
 
 	deployments, err := s.datastore.SearchListDeployments(ctx, parsedQuery)
 	if err != nil {
@@ -186,7 +207,7 @@ func (s *serviceImpl) ListDeployments(ctx context.Context, request *v1.RawQuery)
 }
 
 func queryForLabels() *v1.Query {
-	q := search.NewQueryBuilder().AddStringsHighlighted(search.Label, search.WildcardString).ProtoQuery()
+	q := search.NewQueryBuilder().AddStringsHighlighted(search.DeploymentLabel, search.WildcardString).ProtoQuery()
 	q.Pagination = &v1.QueryPagination{
 		Limit: math.MaxInt32,
 	}
@@ -210,33 +231,34 @@ func (s *serviceImpl) GetLabels(ctx context.Context, _ *v1.Empty) (*v1.Deploymen
 }
 
 func labelsMapFromSearchResults(results []search.Result) (map[string]*v1.DeploymentLabelsResponse_LabelValues, []string) {
-	labelField, ok := deployments.OptionsMap.Get(search.Label.String())
+	labelField, ok := deployments.OptionsMap.Get(search.DeploymentLabel.String())
 	if !ok {
-		utils.Should(errors.Errorf("could not find label %q in options map", search.Label.String()))
+		utils.Should(errors.Errorf("could not find label %q in options map", search.DeploymentLabel.String()))
 		return nil, nil
 	}
 	labelFieldPath := labelField.GetFieldPath()
-	keyFieldPath := blevesearch.ToMapKeyPath(labelFieldPath)
-	valueFieldPath := blevesearch.ToMapValuePath(labelFieldPath)
-
 	tempSet := make(map[string]set.StringSet)
 	globalValueSet := set.NewStringSet()
 
-	for _, r := range results {
-		keyMatches, valueMatches := r.Matches[keyFieldPath], r.Matches[valueFieldPath]
-		if len(keyMatches) != len(valueMatches) {
-			utils.Should(errors.Errorf("mismatch between key and value matches: %d != %d", len(keyMatches), len(valueMatches)))
-			continue
+	setUpdater := func(key, value string) {
+		valSet, ok := tempSet[key]
+		if !ok {
+			valSet = set.NewStringSet()
+			tempSet[key] = valSet
 		}
-		for i, keyMatch := range keyMatches {
-			valueMatch := valueMatches[i]
-			valSet, ok := tempSet[keyMatch]
-			if !ok {
-				valSet = set.NewStringSet()
-				tempSet[keyMatch] = valSet
+		valSet.Add(value)
+		globalValueSet.Add(value)
+	}
+
+	for _, r := range results {
+		// In postgres, map key and values are returned as one `k=v`.
+		for _, match := range r.Matches[labelFieldPath] {
+			key, value, hasEquals := pgsearch.ParseMapQuery(match)
+			if !hasEquals {
+				utils.Should(errors.Errorf("cannot handle label %s", match))
+				continue
 			}
-			valSet.Add(valueMatch)
-			globalValueSet.Add(valueMatch)
+			setUpdater(key, value)
 		}
 	}
 
@@ -246,10 +268,10 @@ func labelsMapFromSearchResults(results []search.Result) (map[string]*v1.Deploym
 		keyValuesMap[k] = &v1.DeploymentLabelsResponse_LabelValues{
 			Values: valSet.AsSlice(),
 		}
-		sort.Strings(keyValuesMap[k].Values)
+		slices.Sort(keyValuesMap[k].Values)
 	}
 	values = globalValueSet.AsSlice()
-	sort.Strings(values)
+	slices.Sort(values)
 
 	return keyValuesMap, values
 }

@@ -6,6 +6,9 @@ import (
 	"net/http"
 
 	"github.com/stackrox/rox/central/logimbue/store"
+	"github.com/stackrox/rox/generated/storage"
+	"github.com/stackrox/rox/pkg/protocompat"
+	"github.com/stackrox/rox/pkg/uuid"
 )
 
 type handlerImpl struct {
@@ -49,7 +52,12 @@ func (l handlerImpl) post(resp http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	if err := l.storage.AddLog(buff.String()); err != nil {
+	log := &storage.LogImbue{
+		Id:        uuid.NewV4().String(),
+		Timestamp: protocompat.TimestampNow(),
+		Log:       buff.Bytes(),
+	}
+	if err := l.storage.Upsert(req.Context(), log); err != nil {
 		resp.WriteHeader(http.StatusInternalServerError)
 		return
 	}

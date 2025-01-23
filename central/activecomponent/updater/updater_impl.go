@@ -10,11 +10,11 @@ import (
 	deploymentStore "github.com/stackrox/rox/central/deployment/datastore"
 	imageStore "github.com/stackrox/rox/central/image/datastore"
 	processIndicatorStore "github.com/stackrox/rox/central/processindicator/datastore"
-	"github.com/stackrox/rox/central/role/resources"
 	"github.com/stackrox/rox/generated/storage"
 	"github.com/stackrox/rox/pkg/features"
 	"github.com/stackrox/rox/pkg/logging"
 	"github.com/stackrox/rox/pkg/sac"
+	"github.com/stackrox/rox/pkg/sac/resources"
 	"github.com/stackrox/rox/pkg/search"
 	"github.com/stackrox/rox/pkg/set"
 	"github.com/stackrox/rox/pkg/simplecache"
@@ -26,7 +26,7 @@ var (
 
 	updaterCtx = sac.WithGlobalAccessScopeChecker(context.Background(),
 		sac.AllowFixedScopes(sac.AccessModeScopeKeys(storage.Access_READ_ACCESS, storage.Access_READ_WRITE_ACCESS),
-			sac.ResourceScopeKeys(resources.Deployment, resources.Image, resources.Indicator)))
+			sac.ResourceScopeKeys(resources.Deployment, resources.Image, resources.DeploymentExtension)))
 )
 
 type updaterImpl struct {
@@ -37,8 +37,6 @@ type updaterImpl struct {
 
 	aggregator      aggregator.ProcessAggregator // Aggregator for incoming process indicators
 	executableCache simplecache.Cache            // Cache for image scan result
-
-	deploymentToUpdates map[string][]*aggregator.ProcessUpdate
 }
 
 type imageExecutable struct {
@@ -46,10 +44,16 @@ type imageExecutable struct {
 	scannerVersion   string
 }
 
+func clearExecutables(image *storage.Image) {
+	for _, component := range image.GetScan().GetComponents() {
+		component.Executables = nil
+	}
+}
+
 // PopulateExecutableCache extracts executables from image scan and stores them in the executable cache.
 // Image executables are cleared on successful return.
-func (u *updaterImpl) PopulateExecutableCache(ctx context.Context, image *storage.Image) error {
-	if !features.ActiveVulnManagement.Enabled() {
+func (u *updaterImpl) PopulateExecutableCache(_ context.Context, image *storage.Image) error {
+	if !features.ActiveVulnMgmt.Enabled() {
 		return nil
 	}
 	imageID := image.GetId()
@@ -58,12 +62,13 @@ func (u *updaterImpl) PopulateExecutableCache(ctx context.Context, image *storag
 		log.Debugf("no valid scan, skip populating executable cache %s: %s", imageID, image.GetName())
 		return nil
 	}
-
 	scannerVersion := scan.GetScannerVersion()
 
 	// Check if we should update executable cache
 	currRecord, ok := u.executableCache.Get(imageID)
 	if ok && currRecord.(*imageExecutable).scannerVersion == scannerVersion {
+		// Still clear executables even if cache has been pre-populated as it may be a re-scan
+		clearExecutables(image)
 		log.Debugf("Skip scan at scan version %s, current scan version (%s) has been populated for image %s: %s", scannerVersion, currRecord.(*imageExecutable).scannerVersion, imageID, image.GetName())
 		return nil
 	}
@@ -96,22 +101,18 @@ func (u *updaterImpl) getExecToComponentsMap(imageScan *storage.ImageScan) map[s
 
 // Update detects active components with most recent process run.
 func (u *updaterImpl) Update() {
-	if !features.ActiveVulnManagement.Enabled() {
+	if !features.ActiveVulnMgmt.Enabled() {
 		return
 	}
-	if len(u.deploymentToUpdates) == 0 {
-		ids, err := u.deploymentStore.GetDeploymentIDs(context.TODO())
-		if err != nil {
-			log.Errorf("failed to fetch deployment ids: %v", err)
-			return
-		}
-		u.deploymentToUpdates = u.aggregator.GetAndPrune(u.imageScanned, set.NewStringSet(ids...))
+	ctx := sac.WithAllAccess(context.Background())
+	ids, err := u.deploymentStore.GetDeploymentIDs(ctx)
+	if err != nil {
+		log.Errorf("failed to fetch deployment ids: %v", err)
+		return
 	}
-
-	if err := u.updateActiveComponents(u.deploymentToUpdates); err != nil {
+	deploymentToUpdates := u.aggregator.GetAndPrune(u.imageScanned, set.NewStringSet(ids...))
+	if err := u.updateActiveComponents(deploymentToUpdates); err != nil {
 		log.Errorf("failed to update active components: %v", err)
-	} else {
-		u.deploymentToUpdates = nil
 	}
 
 	if err := u.pruneExecutableCache(); err != nil {
@@ -200,7 +201,7 @@ func (u *updaterImpl) createActiveComponentsAndUpdateDb(ctx context.Context, dep
 	}
 
 	var acToRemove []string
-	var activeComponents []*converter.CompleteActiveComponent
+	var activeComponents []*storage.ActiveComponent
 	for _, ac := range existingAcs {
 		updateAc, shouldRemove := merge(ac, contextsToRemove, acToContexts[ac.GetId()])
 		if updateAc != nil {
@@ -217,22 +218,19 @@ func (u *updaterImpl) createActiveComponentsAndUpdateDb(ctx context.Context, dep
 			utils.Should(err)
 			continue
 		}
-		newAc := &converter.CompleteActiveComponent{
-			DeploymentID: deploymentID,
-			ComponentID:  componentID,
-			ActiveComponent: &storage.ActiveComponent{
-				Id:             id,
-				ActiveContexts: make(map[string]*storage.ActiveComponent_ActiveContext),
-			},
+		newAc := &storage.ActiveComponent{
+			Id:                  id,
+			DeploymentId:        deploymentID,
+			ComponentId:         componentID,
+			ActiveContextsSlice: converter.ConvertActiveContextsMapToSlice(activeContexts),
 		}
-		newAc.ActiveComponent.ActiveContexts = activeContexts
 		activeComponents = append(activeComponents, newAc)
 	}
 	log.Debugf("Upserting %d active components and deleting %d for deployment %s", len(activeComponents), len(acToRemove), deploymentID)
 	if len(activeComponents) > 0 {
 		err = u.acStore.UpsertBatch(ctx, activeComponents)
 		if err != nil {
-			return errors.Wrapf(err, "failed to upsert %d activeComponents, %v ...", len(activeComponents), activeComponents[:2])
+			return errors.Wrapf(err, "failed to upsert %d activeComponents", len(activeComponents))
 		}
 	}
 	if len(acToRemove) > 0 {
@@ -242,7 +240,7 @@ func (u *updaterImpl) createActiveComponentsAndUpdateDb(ctx context.Context, dep
 }
 
 // merge existing active component with new contexts, addend could be nil
-func merge(base *storage.ActiveComponent, subtrahend set.StringSet, addend map[string]*storage.ActiveComponent_ActiveContext) (*converter.CompleteActiveComponent, bool) {
+func merge(base *storage.ActiveComponent, subtrahend set.StringSet, addend map[string]*storage.ActiveComponent_ActiveContext) (*storage.ActiveComponent, bool) {
 	// Only remove the containers that won't be added back.
 	toRemove := set.NewStringSet()
 	for sub := range subtrahend {
@@ -250,37 +248,36 @@ func merge(base *storage.ActiveComponent, subtrahend set.StringSet, addend map[s
 			toRemove.Add(sub)
 		}
 	}
+
+	contexts := make(map[string]*storage.ActiveComponent_ActiveContext)
+	for _, activeContext := range base.GetActiveContextsSlice() {
+		contexts[activeContext.ContainerName] = activeContext
+	}
+
 	var changed bool
-	for activeContext := range base.ActiveContexts {
+	for activeContext := range contexts {
 		if toRemove.Contains(activeContext) {
-			delete(base.ActiveContexts, activeContext)
+			delete(contexts, activeContext)
 			changed = true
 		}
 	}
+
 	for containerName, activeContext := range addend {
-		if baseContext, ok := base.ActiveContexts[containerName]; !ok || baseContext.ImageId != activeContext.ImageId {
-			base.ActiveContexts[containerName] = activeContext
+		if baseContext, ok := contexts[containerName]; !ok || baseContext.ImageId != activeContext.ImageId {
+			contexts[containerName] = activeContext
 			changed = true
 		}
 	}
-	if len(base.ActiveContexts) == 0 {
+
+	base.ActiveContextsSlice = converter.ConvertActiveContextsMapToSlice(contexts)
+
+	if len(contexts) == 0 {
 		return nil, true
 	}
 	if !changed {
 		return nil, false
 	}
-
-	deploymentID, componentID, err := converter.DecomposeID(base.GetId())
-	if err != nil {
-		utils.Should(err)
-		return nil, true
-	}
-
-	return &converter.CompleteActiveComponent{
-		DeploymentID:    deploymentID,
-		ComponentID:     componentID,
-		ActiveComponent: base,
-	}, false
+	return base, false
 }
 
 func (u *updaterImpl) getActiveExecPath(deploymentID string, update *aggregator.ProcessUpdate) (set.StringSet, error) {

@@ -13,8 +13,10 @@ import (
 	"github.com/stackrox/rox/pkg/apiparams"
 	"github.com/stackrox/rox/pkg/errox"
 	"github.com/stackrox/rox/pkg/istioutils"
+	"github.com/stackrox/rox/roxctl/common"
 	"github.com/stackrox/rox/roxctl/common/environment"
 	"github.com/stackrox/rox/roxctl/common/flags"
+	"github.com/stackrox/rox/roxctl/common/logger"
 	"github.com/stackrox/rox/roxctl/common/zipdownload"
 	"github.com/stackrox/rox/roxctl/scanner/clustertype"
 )
@@ -30,6 +32,8 @@ type scannerGenerateCommand struct {
 	outputDir string
 	apiParams apiparams.Scanner
 	timeout   time.Duration
+
+	enablePodSecurityPolicies bool
 
 	// Properties that are injected or constructed.
 	env environment.Environment
@@ -57,8 +61,12 @@ func (cmd *scannerGenerateCommand) validate() error {
 	return nil
 }
 
-func (cmd *scannerGenerateCommand) generate() error {
+func (cmd *scannerGenerateCommand) generate(logger logger.Logger) error {
+	common.LogInfoPsp(logger, cmd.enablePodSecurityPolicies)
+
 	cmd.apiParams.ClusterType = clustertype.Get().String()
+	cmd.apiParams.DisablePodSecurityPolicies = !cmd.enablePodSecurityPolicies
+
 	body, err := json.Marshal(cmd.apiParams)
 	if err != nil {
 		return errors.Wrap(err, "could not marshal scanner params")
@@ -72,7 +80,7 @@ func (cmd *scannerGenerateCommand) generate() error {
 		BundleType: "scanner",
 		ExpandZip:  true,
 		OutputDir:  cmd.outputDir,
-	})
+	}, cmd.env)
 
 	return errors.Wrap(err, "could not get scanner bundle")
 }
@@ -82,8 +90,9 @@ func Command(cliEnvironment environment.Environment) *cobra.Command {
 	scannerGenerateCmd := &scannerGenerateCommand{env: cliEnvironment}
 
 	c := &cobra.Command{
-		Use:  "generate",
-		Args: cobra.NoArgs,
+		Use:   "generate",
+		Short: "Generate the required YAML configuration files to deploy StackRox Scanner and Scanner V4",
+		Args:  cobra.NoArgs,
 		RunE: func(c *cobra.Command, args []string) error {
 			scannerGenerateCmd.construct(c)
 
@@ -91,20 +100,24 @@ func Command(cliEnvironment environment.Environment) *cobra.Command {
 				return err
 			}
 
-			return scannerGenerateCmd.generate()
+			return scannerGenerateCmd.generate(cliEnvironment.Logger())
 		},
 	}
 
 	c.PersistentFlags().Var(clustertype.Value(storage.ClusterType_KUBERNETES_CLUSTER), "cluster-type", "Type of cluster the scanner will run on (k8s, openshift)")
 
 	c.Flags().StringVar(&scannerGenerateCmd.outputDir, "output-dir", "", "Output directory for scanner bundle (leave blank for default)")
-	c.Flags().BoolVar(&scannerGenerateCmd.apiParams.OfflineMode, "offline-mode", false, "Whether to run the scanner in offline mode (so "+
-		"it doesn't reach out to the internet for updates)")
 	c.Flags().StringVar(&scannerGenerateCmd.apiParams.ScannerImage, flags.FlagNameScannerImage, "", "Scanner image to use (leave blank to use server default)")
+	c.Flags().StringVar(&scannerGenerateCmd.apiParams.ScannerV4Image, flags.FlagNameScannerV4Image, "", "Scanner V4 image to use (leave blank to use server default)")
+	c.Flags().StringVar(&scannerGenerateCmd.apiParams.ScannerV4DBImage, flags.FlagNameScannerV4DBImage, "", "Scanner V4 DB image to use (leave blank to use server default)")
 	c.Flags().StringVar(&scannerGenerateCmd.apiParams.IstioVersion, istioSupportArg, "",
 		fmt.Sprintf(
 			"Generate deployment files supporting the given Istio version. Valid versions: %s",
 			strings.Join(istioutils.ListKnownIstioVersions(), ", ")))
+	c.PersistentFlags().BoolVar(&scannerGenerateCmd.enablePodSecurityPolicies, "enable-pod-security-policies", false, "Create PodSecurityPolicy resources (for pre-v1.25 Kubernetes)")
+
+	flags.AddTimeout(c)
+	flags.AddRetryTimeout(c)
 
 	return c
 }

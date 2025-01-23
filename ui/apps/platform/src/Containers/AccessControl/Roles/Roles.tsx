@@ -4,7 +4,6 @@ import { useHistory, useLocation, useParams } from 'react-router-dom';
 import {
     Alert,
     AlertActionCloseButton,
-    AlertVariant,
     Bullseye,
     Button,
     PageSection,
@@ -13,7 +12,6 @@ import {
 } from '@patternfly/react-core';
 
 import NotFoundMessage from 'Components/NotFoundMessage';
-import { getIsDefaultRoleName } from 'constants/accessControl';
 import {
     AccessScope,
     fetchAccessScopes,
@@ -40,18 +38,14 @@ import RolesList from './RolesList';
 import AccessControlBreadcrumbs from '../AccessControlBreadcrumbs';
 import AccessControlHeaderActionBar from '../AccessControlHeaderActionBar';
 import AccessControlHeading from '../AccessControlHeading';
+import usePermissions from '../../../hooks/usePermissions';
+import { isUserResource } from '../traits';
 
 const entityType = 'ROLE';
 
-const roleNew: Role = {
-    name: '',
-    resourceToAccess: {},
-    description: '',
-    permissionSetId: '',
-    accessScopeId: defaultAccessScopeIds.Unrestricted,
-};
-
 function Roles(): ReactElement {
+    const { hasReadWriteAccess } = usePermissions();
+    const hasWriteAccessForPage = hasReadWriteAccess('Access');
     const history = useHistory();
     const { search } = useLocation();
     const queryObject = getQueryObject(search);
@@ -72,6 +66,18 @@ function Roles(): ReactElement {
     const [accessScopes, setAccessScopes] = useState<AccessScope[]>([]);
     const [alertAccessScopes, setAlertAccessScopes] = useState<ReactElement | null>(null);
 
+    function getDefaultAccessScopeID() {
+        return defaultAccessScopeIds.Unrestricted;
+    }
+
+    const roleNew: Role = {
+        name: '',
+        resourceToAccess: {},
+        description: '',
+        permissionSetId: '',
+        accessScopeId: getDefaultAccessScopeID(),
+    };
+
     useEffect(() => {
         // The primary request has unclosable alert.
         setCounterFetching((counterPrev) => counterPrev + 1);
@@ -82,7 +88,7 @@ function Roles(): ReactElement {
             })
             .catch((error) => {
                 setAlertRoles(
-                    <Alert title="Fetch roles failed" variant={AlertVariant.danger} isInline>
+                    <Alert title="Fetch roles failed" component="p" variant="danger" isInline>
                         {error.message}
                     </Alert>
                 );
@@ -119,7 +125,8 @@ function Roles(): ReactElement {
                 setAlertGroups(
                     <Alert
                         title="Fetch auth providers or groups failed"
-                        variant={AlertVariant.warning}
+                        component="p"
+                        variant="warning"
                         isInline
                         actionClose={actionClose}
                     >
@@ -142,7 +149,8 @@ function Roles(): ReactElement {
                 setAlertPermissionSets(
                     <Alert
                         title="Fetch permission sets failed"
-                        variant={AlertVariant.warning}
+                        component="p"
+                        variant="warning"
                         isInline
                         actionClose={actionClose}
                     >
@@ -165,7 +173,8 @@ function Roles(): ReactElement {
                 setAlertAccessScopes(
                     <Alert
                         title="Fetch access scopes failed"
-                        variant={AlertVariant.warning}
+                        component="p"
+                        variant="warning"
                         isInline
                         actionClose={actionClose}
                     >
@@ -233,13 +242,17 @@ function Roles(): ReactElement {
                     <AccessControlHeaderActionBar
                         displayComponent={
                             <AccessControlDescription>
-                                Add user roles by selecting the permission sets and access scopes
+                                Create user roles by selecting the permission sets and access scopes
                                 required for user&apos;s jobs
                             </AccessControlDescription>
                         }
                         actionComponent={
-                            <Button variant="primary" onClick={handleCreate}>
-                                Add role
+                            <Button
+                                isDisabled={!hasWriteAccessForPage}
+                                variant="primary"
+                                onClick={handleCreate}
+                            >
+                                Create role
                             </Button>
                         }
                     />
@@ -247,9 +260,7 @@ function Roles(): ReactElement {
             ) : (
                 <AccessControlBreadcrumbs
                     entityType={entityType}
-                    entityName={action === 'create' ? 'Add role' : role?.name}
-                    isDisabled={hasAction}
-                    isList={isList}
+                    entityName={action === 'create' ? 'Create role' : role?.name}
                 />
             )}
             <PageSection variant={isList ? PageSectionVariants.default : PageSectionVariants.light}>
@@ -259,7 +270,7 @@ function Roles(): ReactElement {
                 {alertGroups}
                 {counterFetching !== 0 ? (
                     <Bullseye>
-                        <Spinner isSVG />
+                        <Spinner />
                     </Bullseye>
                 ) : isList ? (
                     <RolesList
@@ -279,7 +290,7 @@ function Roles(): ReactElement {
                     />
                 ) : (
                     <RoleForm
-                        isActionable={!role || !getIsDefaultRoleName(role.name)}
+                        isActionable={!role || isUserResource(role.traits)}
                         action={action}
                         role={role ?? roleNew}
                         roles={roles}

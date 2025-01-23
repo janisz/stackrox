@@ -8,106 +8,102 @@ import (
 	"context"
 	"testing"
 
-	"github.com/jackc/pgx/v4/pgxpool"
 	"github.com/stackrox/rox/generated/storage"
-	"github.com/stackrox/rox/pkg/features"
 	"github.com/stackrox/rox/pkg/postgres/pgtest"
+	"github.com/stackrox/rox/pkg/protoassert"
 	"github.com/stackrox/rox/pkg/sac"
+	"github.com/stackrox/rox/pkg/search"
 	"github.com/stackrox/rox/pkg/testutils"
-	"github.com/stackrox/rox/pkg/testutils/envisolator"
 	"github.com/stretchr/testify/suite"
 )
 
-type MultikeyStoreSuite struct {
+type TestStructsStoreSuite struct {
 	suite.Suite
-	envIsolator *envisolator.EnvIsolator
-	store       Store
-	pool        *pgxpool.Pool
+	store  Store
+	testDB *pgtest.TestPostgres
 }
 
-func TestMultikeyStore(t *testing.T) {
-	suite.Run(t, new(MultikeyStoreSuite))
+func TestTestStructsStore(t *testing.T) {
+	suite.Run(t, new(TestStructsStoreSuite))
 }
 
-func (s *MultikeyStoreSuite) SetupTest() {
-	s.envIsolator = envisolator.NewEnvIsolator(s.T())
-	s.envIsolator.Setenv(features.PostgresDatastore.EnvVar(), "true")
+func (s *TestStructsStoreSuite) SetupSuite() {
 
-	if !features.PostgresDatastore.Enabled() {
-		s.T().Skip("Skip postgres store tests")
-		s.T().SkipNow()
-	}
+	s.testDB = pgtest.ForT(s.T())
+	s.store = New(s.testDB.DB)
+}
 
+func (s *TestStructsStoreSuite) SetupTest() {
 	ctx := sac.WithAllAccess(context.Background())
-
-	source := pgtest.GetConnectionString(s.T())
-	config, err := pgxpool.ParseConfig(source)
-	s.Require().NoError(err)
-	pool, err := pgxpool.ConnectConfig(ctx, config)
-	s.Require().NoError(err)
-
-	Destroy(ctx, pool)
-
-	s.pool = pool
-	s.store = New(ctx, pool)
+	tag, err := s.testDB.Exec(ctx, "TRUNCATE test_structs CASCADE")
+	s.T().Log("test_structs", tag)
+	s.store = New(s.testDB.DB)
+	s.NoError(err)
 }
 
-func (s *MultikeyStoreSuite) TearDownTest() {
-	if s.pool != nil {
-		s.pool.Close()
-	}
-	s.envIsolator.RestoreAll()
+func (s *TestStructsStoreSuite) TearDownSuite() {
+	s.testDB.Teardown(s.T())
 }
 
-func (s *MultikeyStoreSuite) TestStore() {
+func (s *TestStructsStoreSuite) TestStore() {
 	ctx := sac.WithAllAccess(context.Background())
 
 	store := s.store
 
-	testMultiKeyStruct := &storage.TestMultiKeyStruct{}
-	s.NoError(testutils.FullInit(testMultiKeyStruct, testutils.SimpleInitializer(), testutils.JSONFieldsFilter))
+	testStruct := &storage.TestStruct{}
+	s.NoError(testutils.FullInit(testStruct, testutils.SimpleInitializer(), testutils.JSONFieldsFilter))
 
-	foundTestMultiKeyStruct, exists, err := store.Get(ctx, testMultiKeyStruct.GetKey1(), testMultiKeyStruct.GetKey2())
+	foundTestStruct, exists, err := store.Get(ctx, testStruct.GetKey1())
 	s.NoError(err)
 	s.False(exists)
-	s.Nil(foundTestMultiKeyStruct)
+	s.Nil(foundTestStruct)
 
-	s.NoError(store.Upsert(ctx, testMultiKeyStruct))
-	foundTestMultiKeyStruct, exists, err = store.Get(ctx, testMultiKeyStruct.GetKey1(), testMultiKeyStruct.GetKey2())
+	withNoAccessCtx := sac.WithNoAccess(ctx)
+
+	s.NoError(store.Upsert(ctx, testStruct))
+	foundTestStruct, exists, err = store.Get(ctx, testStruct.GetKey1())
 	s.NoError(err)
 	s.True(exists)
-	s.Equal(testMultiKeyStruct, foundTestMultiKeyStruct)
+	protoassert.Equal(s.T(), testStruct, foundTestStruct)
 
-	testMultiKeyStructCount, err := store.Count(ctx)
+	testStructCount, err := store.Count(ctx, search.EmptyQuery())
 	s.NoError(err)
-	s.Equal(1, testMultiKeyStructCount)
-
-	testMultiKeyStructExists, err := store.Exists(ctx, testMultiKeyStruct.GetKey1(), testMultiKeyStruct.GetKey2())
+	s.Equal(1, testStructCount)
+	testStructCount, err = store.Count(withNoAccessCtx, search.EmptyQuery())
 	s.NoError(err)
-	s.True(testMultiKeyStructExists)
-	s.NoError(store.Upsert(ctx, testMultiKeyStruct))
+	s.Zero(testStructCount)
 
-	foundTestMultiKeyStruct, exists, err = store.Get(ctx, testMultiKeyStruct.GetKey1(), testMultiKeyStruct.GetKey2())
+	testStructExists, err := store.Exists(ctx, testStruct.GetKey1())
 	s.NoError(err)
-	s.True(exists)
-	s.Equal(testMultiKeyStruct, foundTestMultiKeyStruct)
+	s.True(testStructExists)
+	s.NoError(store.Upsert(ctx, testStruct))
+	s.ErrorIs(store.Upsert(withNoAccessCtx, testStruct), sac.ErrResourceAccessDenied)
 
-	s.NoError(store.Delete(ctx, testMultiKeyStruct.GetKey1(), testMultiKeyStruct.GetKey2()))
-	foundTestMultiKeyStruct, exists, err = store.Get(ctx, testMultiKeyStruct.GetKey1(), testMultiKeyStruct.GetKey2())
+	s.NoError(store.Delete(ctx, testStruct.GetKey1()))
+	foundTestStruct, exists, err = store.Get(ctx, testStruct.GetKey1())
 	s.NoError(err)
 	s.False(exists)
-	s.Nil(foundTestMultiKeyStruct)
+	s.Nil(foundTestStruct)
+	s.NoError(store.Delete(withNoAccessCtx, testStruct.GetKey1()))
 
-	var testMultiKeyStructs []*storage.TestMultiKeyStruct
+	var testStructs []*storage.TestStruct
+	var testStructIDs []string
 	for i := 0; i < 200; i++ {
-		testMultiKeyStruct := &storage.TestMultiKeyStruct{}
-		s.NoError(testutils.FullInit(testMultiKeyStruct, testutils.UniqueInitializer(), testutils.JSONFieldsFilter))
-		testMultiKeyStructs = append(testMultiKeyStructs, testMultiKeyStruct)
+		testStruct := &storage.TestStruct{}
+		s.NoError(testutils.FullInit(testStruct, testutils.UniqueInitializer(), testutils.JSONFieldsFilter))
+		testStructs = append(testStructs, testStruct)
+		testStructIDs = append(testStructIDs, testStruct.GetKey1())
 	}
 
-	s.NoError(store.UpsertMany(ctx, testMultiKeyStructs))
+	s.NoError(store.UpsertMany(ctx, testStructs))
 
-	testMultiKeyStructCount, err = store.Count(ctx)
+	testStructCount, err = store.Count(ctx, search.EmptyQuery())
 	s.NoError(err)
-	s.Equal(200, testMultiKeyStructCount)
+	s.Equal(200, testStructCount)
+
+	s.NoError(store.DeleteMany(ctx, testStructIDs))
+
+	testStructCount, err = store.Count(ctx, search.EmptyQuery())
+	s.NoError(err)
+	s.Equal(0, testStructCount)
 }

@@ -16,13 +16,14 @@ import (
 )
 
 var (
-	log = logging.LoggerForModule()
+	log          = logging.LoggerForModule()
+	_   Registry = (*registryImpl)(nil)
 )
 
 // NewStoreBackedRegistry creates a new auth provider registry that is backed by a store. It also can handle HTTP requests,
 // where every incoming HTTP request URL is expected to refer to a path under `urlPathPrefix`. The redirect URL for
 // clients upon successful/failed authentication is `clientRedirectURL`.
-func NewStoreBackedRegistry(urlPathPrefix string, redirectURL string, store Store, tokenIssuerFactory tokens.IssuerFactory, roleMapperFactory permissions.RoleMapperFactory) (Registry, error) {
+func NewStoreBackedRegistry(urlPathPrefix string, redirectURL string, store Store, tokenIssuerFactory tokens.IssuerFactory, roleMapperFactory permissions.RoleMapperFactory) Registry {
 	urlPathPrefix = strings.TrimRight(urlPathPrefix, "/") + "/"
 	registry := &registryImpl{
 		ServeMux:      http.NewServeMux(),
@@ -37,7 +38,7 @@ func NewStoreBackedRegistry(urlPathPrefix string, redirectURL string, store Stor
 		roleMapperFactory: roleMapperFactory,
 	}
 
-	return registry, nil
+	return registry
 }
 
 type registryImpl struct {
@@ -67,6 +68,7 @@ func (r *registryImpl) Init() error {
 		// Construct the options for the provider, using the stored definition, and the defaults for previously stored objects.
 		options := []ProviderOption{
 			WithStorageView(storedValue),
+			WithAttributeVerifier(storedValue),
 		}
 		options = append(options, DefaultOptionsForStoredProvider(r.backendFactories, r.issuerFactory, r.roleMapperFactory, r.loginURL)...)
 
@@ -163,6 +165,7 @@ func (r *registryImpl) ValidateProvider(ctx context.Context, options ...Provider
 	if err != nil {
 		return err
 	}
+
 	return nil
 }
 
@@ -199,11 +202,11 @@ func (r *registryImpl) UpdateProvider(ctx context.Context, id string, options ..
 	return provider, nil
 }
 
-func (r *registryImpl) DeleteProvider(ctx context.Context, id string, ignoreActive bool) error {
+func (r *registryImpl) DeleteProvider(ctx context.Context, providerID string, force bool, ignoreActive bool) error {
 	r.mutex.Lock()
 	defer r.mutex.Unlock()
 
-	provider := r.providers[id]
+	provider := r.providers[providerID]
 	if provider == nil {
 		return nil
 	}
@@ -212,10 +215,10 @@ func (r *registryImpl) DeleteProvider(ctx context.Context, id string, ignoreActi
 		return errors.New("cannot update an auth provider once it has been used. Please delete and then re-add to modify")
 	}
 
-	if err := provider.ApplyOptions(DeleteFromStore(ctx, r.store), UnregisterSource(r.issuerFactory)); err != nil {
+	if err := provider.ApplyOptions(DeleteFromStore(ctx, r.store, providerID, force), UnregisterSource(r.issuerFactory)); err != nil {
 		return err
 	}
-	delete(r.providers, id)
+	delete(r.providers, providerID)
 	r.deletedNoLock(provider)
 	return nil
 }
@@ -261,6 +264,17 @@ func (r *registryImpl) GetExternalUserClaim(ctx context.Context, externalToken, 
 	if err != nil {
 		return nil, clientState, err
 	}
+
+	if authResp == nil || authResp.Claims == nil {
+		return nil, clientState, errox.NoCredentials.CausedBy("authentication response is empty")
+	}
+
+	if provider.AttributeVerifier() != nil {
+		if err := provider.AttributeVerifier().Verify(authResp.Claims.Attributes); err != nil {
+			return nil, clientState, errox.NoCredentials.CausedBy(err)
+		}
+	}
+
 	return authResp, clientState, nil
 }
 
@@ -352,7 +366,7 @@ func (r *registryImpl) issueTokenForResponse(ctx context.Context, provider Provi
 			log.Errorf("failed to encode refresh token cookie data: %v", err)
 		} else {
 			refreshCookie = &http.Cookie{
-				Name:     refreshTokenCookieName,
+				Name:     RefreshTokenCookieName,
 				Value:    encodedData,
 				Path:     r.sessionURLPrefix(),
 				HttpOnly: true,

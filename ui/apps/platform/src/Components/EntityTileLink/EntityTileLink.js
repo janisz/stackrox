@@ -15,12 +15,10 @@ const EntityTileLink = ({
     icon,
     url,
     loading,
-    isError,
     short,
 }) => {
-    const text = `${count} ${
-        count === 1 ? entityType : `${pluralize(resourceLabels[entityType] || '')}`
-    }`;
+    const resourceLabel = resourceLabels[entityType] || '';
+    const text = `${count} ${count === 1 ? resourceLabel : `${pluralize(resourceLabel)}`}`;
 
     return (
         <TileLink
@@ -32,7 +30,6 @@ const EntityTileLink = ({
             url={url}
             short={short}
             loading={loading}
-            isError={isError}
         />
     );
 };
@@ -45,7 +42,6 @@ EntityTileLink.propTypes = {
     icon: PropTypes.element,
     url: PropTypes.string.isRequired,
     loading: PropTypes.bool,
-    isError: PropTypes.bool,
     position: PropTypes.oneOf(Object.values(POSITION)),
     short: PropTypes.bool,
 };

@@ -4,6 +4,7 @@ import { createStructuredSelector } from 'reselect';
 import { selectors } from 'reducers';
 import { Access } from 'types/role.proto';
 import { ResourceName } from 'types/roleResources';
+import { replacedResourceMapping } from 'constants/accessControl';
 
 export type HasNoAccess = (resourceName: ResourceName) => boolean;
 export type HasReadAccess = (resourceName: ResourceName) => boolean;
@@ -29,17 +30,53 @@ const usePermissions = (): UsePermissionsResponse => {
 
     function hasNoAccess(resourceName: ResourceName) {
         const access = userRolePermissions?.resourceToAccess[resourceName];
-        return access === 'NO_ACCESS';
+        if (access === 'NO_ACCESS') {
+            return true;
+        }
+
+        if (replacedResourceMapping.has(resourceName)) {
+            const replacedResourceAccess =
+                userRolePermissions?.resourceToAccess[
+                    replacedResourceMapping.get(resourceName) as ResourceName
+                ];
+            return replacedResourceAccess === 'NO_ACCESS';
+        }
+        return false;
     }
 
     function hasReadAccess(resourceName: ResourceName) {
         const access = userRolePermissions?.resourceToAccess[resourceName];
-        return access === 'READ_ACCESS' || access === 'READ_WRITE_ACCESS';
+        if (access === 'READ_ACCESS' || access === 'READ_WRITE_ACCESS') {
+            return true;
+        }
+
+        if (replacedResourceMapping.has(resourceName)) {
+            const replacedResourceAccess =
+                userRolePermissions?.resourceToAccess[
+                    replacedResourceMapping.get(resourceName) as ResourceName
+                ];
+            return (
+                replacedResourceAccess === 'READ_ACCESS' ||
+                replacedResourceAccess === 'READ_WRITE_ACCESS'
+            );
+        }
+        return false;
     }
 
     function hasReadWriteAccess(resourceName: ResourceName) {
         const access = userRolePermissions?.resourceToAccess[resourceName];
-        return access === 'READ_WRITE_ACCESS';
+        if (access === 'READ_WRITE_ACCESS') {
+            return true;
+        }
+
+        if (replacedResourceMapping.has(resourceName)) {
+            const replacedResourceAccess =
+                userRolePermissions?.resourceToAccess[
+                    replacedResourceMapping.get(resourceName) as ResourceName
+                ];
+            return replacedResourceAccess === 'READ_WRITE_ACCESS';
+        }
+        return false;
     }
 
     return { hasNoAccess, hasReadAccess, hasReadWriteAccess, isLoadingPermissions };

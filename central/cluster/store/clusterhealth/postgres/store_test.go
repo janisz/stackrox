@@ -8,58 +8,44 @@ import (
 	"context"
 	"testing"
 
-	"github.com/jackc/pgx/v4/pgxpool"
 	"github.com/stackrox/rox/generated/storage"
-	"github.com/stackrox/rox/pkg/features"
 	"github.com/stackrox/rox/pkg/postgres/pgtest"
+	"github.com/stackrox/rox/pkg/protoassert"
 	"github.com/stackrox/rox/pkg/sac"
+	"github.com/stackrox/rox/pkg/search"
 	"github.com/stackrox/rox/pkg/testutils"
-	"github.com/stackrox/rox/pkg/testutils/envisolator"
 	"github.com/stretchr/testify/suite"
 )
 
-type ClusterHealthStatusStoreSuite struct {
+type ClusterHealthStatusesStoreSuite struct {
 	suite.Suite
-	envIsolator *envisolator.EnvIsolator
-	store       Store
-	pool        *pgxpool.Pool
+	store  Store
+	testDB *pgtest.TestPostgres
 }
 
-func TestClusterHealthStatusStore(t *testing.T) {
-	suite.Run(t, new(ClusterHealthStatusStoreSuite))
+func TestClusterHealthStatusesStore(t *testing.T) {
+	suite.Run(t, new(ClusterHealthStatusesStoreSuite))
 }
 
-func (s *ClusterHealthStatusStoreSuite) SetupTest() {
-	s.envIsolator = envisolator.NewEnvIsolator(s.T())
-	s.envIsolator.Setenv(features.PostgresDatastore.EnvVar(), "true")
+func (s *ClusterHealthStatusesStoreSuite) SetupSuite() {
 
-	if !features.PostgresDatastore.Enabled() {
-		s.T().Skip("Skip postgres store tests")
-		s.T().SkipNow()
-	}
+	s.testDB = pgtest.ForT(s.T())
+	s.store = New(s.testDB.DB)
+}
 
+func (s *ClusterHealthStatusesStoreSuite) SetupTest() {
 	ctx := sac.WithAllAccess(context.Background())
-
-	source := pgtest.GetConnectionString(s.T())
-	config, err := pgxpool.ParseConfig(source)
-	s.Require().NoError(err)
-	pool, err := pgxpool.ConnectConfig(ctx, config)
-	s.Require().NoError(err)
-
-	Destroy(ctx, pool)
-
-	s.pool = pool
-	s.store = New(ctx, pool)
+	tag, err := s.testDB.Exec(ctx, "TRUNCATE cluster_health_statuses CASCADE")
+	s.T().Log("cluster_health_statuses", tag)
+	s.store = New(s.testDB.DB)
+	s.NoError(err)
 }
 
-func (s *ClusterHealthStatusStoreSuite) TearDownTest() {
-	if s.pool != nil {
-		s.pool.Close()
-	}
-	s.envIsolator.RestoreAll()
+func (s *ClusterHealthStatusesStoreSuite) TearDownSuite() {
+	s.testDB.Teardown(s.T())
 }
 
-func (s *ClusterHealthStatusStoreSuite) TestStore() {
+func (s *ClusterHealthStatusesStoreSuite) TestStore() {
 	ctx := sac.WithAllAccess(context.Background())
 
 	store := s.store
@@ -72,42 +58,52 @@ func (s *ClusterHealthStatusStoreSuite) TestStore() {
 	s.False(exists)
 	s.Nil(foundClusterHealthStatus)
 
+	withNoAccessCtx := sac.WithNoAccess(ctx)
+
 	s.NoError(store.Upsert(ctx, clusterHealthStatus))
 	foundClusterHealthStatus, exists, err = store.Get(ctx, clusterHealthStatus.GetId())
 	s.NoError(err)
 	s.True(exists)
-	s.Equal(clusterHealthStatus, foundClusterHealthStatus)
+	protoassert.Equal(s.T(), clusterHealthStatus, foundClusterHealthStatus)
 
-	clusterHealthStatusCount, err := store.Count(ctx)
+	clusterHealthStatusCount, err := store.Count(ctx, search.EmptyQuery())
 	s.NoError(err)
 	s.Equal(1, clusterHealthStatusCount)
+	clusterHealthStatusCount, err = store.Count(withNoAccessCtx, search.EmptyQuery())
+	s.NoError(err)
+	s.Zero(clusterHealthStatusCount)
 
 	clusterHealthStatusExists, err := store.Exists(ctx, clusterHealthStatus.GetId())
 	s.NoError(err)
 	s.True(clusterHealthStatusExists)
 	s.NoError(store.Upsert(ctx, clusterHealthStatus))
-
-	foundClusterHealthStatus, exists, err = store.Get(ctx, clusterHealthStatus.GetId())
-	s.NoError(err)
-	s.True(exists)
-	s.Equal(clusterHealthStatus, foundClusterHealthStatus)
+	s.ErrorIs(store.Upsert(withNoAccessCtx, clusterHealthStatus), sac.ErrResourceAccessDenied)
 
 	s.NoError(store.Delete(ctx, clusterHealthStatus.GetId()))
 	foundClusterHealthStatus, exists, err = store.Get(ctx, clusterHealthStatus.GetId())
 	s.NoError(err)
 	s.False(exists)
 	s.Nil(foundClusterHealthStatus)
+	s.NoError(store.Delete(withNoAccessCtx, clusterHealthStatus.GetId()))
 
 	var clusterHealthStatuss []*storage.ClusterHealthStatus
+	var clusterHealthStatusIDs []string
 	for i := 0; i < 200; i++ {
 		clusterHealthStatus := &storage.ClusterHealthStatus{}
 		s.NoError(testutils.FullInit(clusterHealthStatus, testutils.UniqueInitializer(), testutils.JSONFieldsFilter))
 		clusterHealthStatuss = append(clusterHealthStatuss, clusterHealthStatus)
+		clusterHealthStatusIDs = append(clusterHealthStatusIDs, clusterHealthStatus.GetId())
 	}
 
 	s.NoError(store.UpsertMany(ctx, clusterHealthStatuss))
 
-	clusterHealthStatusCount, err = store.Count(ctx)
+	clusterHealthStatusCount, err = store.Count(ctx, search.EmptyQuery())
 	s.NoError(err)
 	s.Equal(200, clusterHealthStatusCount)
+
+	s.NoError(store.DeleteMany(ctx, clusterHealthStatusIDs))
+
+	clusterHealthStatusCount, err = store.Count(ctx, search.EmptyQuery())
+	s.NoError(err)
+	s.Equal(0, clusterHealthStatusCount)
 }

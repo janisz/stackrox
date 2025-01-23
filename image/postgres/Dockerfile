@@ -1,49 +1,55 @@
-ARG BASE_REGISTRY=registry.access.redhat.com
-ARG BASE_IMAGE=ubi8/ubi
-ARG BASE_TAG=8.5
+FROM quay.io/sclorg/postgresql-13-c8s:latest AS final
 
-FROM ${BASE_REGISTRY}/${BASE_IMAGE}:${BASE_TAG} AS extracted_bundle
-#WORKDIR /bundle
-ADD bundle.tar.gz /bundle
+USER root
 
-FROM ${BASE_REGISTRY}/${BASE_IMAGE}:${BASE_TAG}
+ARG MAIN_IMAGE_TAG
 
-LABEL name="central-db" \
-      vendor="StackRox" \
-      maintainer="support@stackrox.com" \
-      summary="Stackrox Central Database for the StackRox Kubernetes Security Platform" \
-      description="This image provides Database services to Stackrox Central in the StackRox Kubernetes Security Platform."
+LABEL \
+    com.redhat.component="rhacs-central-db-container" \
+    description="Central Database Image for Red Hat Advanced Cluster Security for Kubernetes" \
+    io.k8s.description="Central Database Image for Red Hat Advanced Cluster Security for Kubernetes" \
+    io.k8s.display-name="central-db" \
+    io.openshift.tags="rhacs,central-db,stackrox" \
+    maintainer="Red Hat, Inc." \
+    name="rhacs-central-db-rhel8" \
+    source-location="https://github.com/stackrox/stackrox" \
+    summary="Central DB for Red Hat Advanced Cluster Security for Kubernetes" \
+    # We must set version label to prevent inheriting value set in the base stage.
+    version="${MAIN_IMAGE_TAG}" \
+    # Release label is required by EC although has no practical semantics.
+    # We also set it to not inherit one from a base stage in case it's RHEL or UBI.
+    release="1"
 
-ARG ROX_IMAGE_FLAVOR
-ENV ROX_IMAGE_FLAVOR=${ROX_IMAGE_FLAVOR}
-
-ENV PG_MAJOR=14
-ENV PATH="$PATH:/usr/pgsql-$PG_MAJOR/bin/"
-
-COPY signatures/RPM-GPG-KEY-PGDG-14 /
-COPY scripts/docker-entrypoint.sh /usr/local/bin/
-COPY --from=extracted_bundle /bundle/postgres.rpm /bundle/postgres-libs.rpm /bundle/postgres-server.rpm /bundle/postgres-contrib.rpm /tmp/
-COPY --from=extracted_bundle /bundle/etc/postgresql.conf /bundle/etc/pg_hba.conf /etc/
-
-RUN groupadd -g 70 postgres && \
-    adduser postgres -u 70 -g 70 -d /var/lib/postgresql -s /bin/sh && \
-    rpm --import RPM-GPG-KEY-PGDG-14 && \
-    dnf upgrade -y --nobest && \
-    dnf install -y \
-        ca-certificates libicu systemd-sysv \
-        glibc-locale-source glibc-langpack-en \
-        /tmp/postgres-libs.rpm /tmp/postgres-server.rpm /tmp/postgres.rpm /tmp/postgres-contrib.rpm && \
-    dnf clean all && \
-    rpm -e --nodeps $(rpm -qa curl '*rpm*' '*dnf*' '*libsolv*' '*hawkey*' 'yum*') && \
-    rm -rf /var/cache/dnf /var/cache/yum && \
+RUN dnf upgrade -y --nobest && \
     localedef -f UTF-8 -i en_US en_US.UTF-8 && \
-    chown postgres:postgres /usr/local/bin/docker-entrypoint.sh && \
-    chmod +x /usr/local/bin/docker-entrypoint.sh && \
+    mkdir -p /var/lib/postgresql && \
+    groupmod -g 70 postgres && \
+    usermod -u 70 postgres -d /var/lib/postgresql && \
+    chown -R postgres:postgres /var/lib/postgresql && \
+    chown -R postgres:postgres /var/run/postgresql && \
+    # Change ownership of directories that are owned by the original postgres uid.
+    # Detect these with `find / -uid 26` in the original container.
+    chown -R postgres /var/lib/pgsql && chown -R postgres /opt/app-root && \
+    # Cleanup
+    dnf clean all && \
+    rpm --verbose -e --nodeps $(rpm -qa curl '*rpm*' '*dnf*' '*libsolv*' '*hawkey*' 'yum*') && \
+    rm -rf /var/cache/dnf /var/cache/yum && \
     mkdir /docker-entrypoint-initdb.d
 
-USER postgres:postgres
+COPY scripts \
+    /usr/local/bin/
+
+ENV LANG="en_US.utf8"
+
+# Use SIGINT to bring down with Fast Shutdown mode
+STOPSIGNAL SIGINT
 
 ENTRYPOINT ["docker-entrypoint.sh"]
 
 EXPOSE 5432
-CMD ["postgres", "-c", "config_file=/etc/postgresql.conf"]
+# Note that postgresql.conf should be mounted from ConfigMap
+CMD ["postgres", "-c", "config_file=/etc/stackrox.d/config/postgresql.conf"]
+
+HEALTHCHECK --interval=10s --timeout=5s CMD pg_isready
+
+USER 70:70

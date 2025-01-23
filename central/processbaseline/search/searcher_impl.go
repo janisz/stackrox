@@ -3,61 +3,19 @@ package search
 import (
 	"context"
 
-	"github.com/stackrox/rox/central/processbaseline/index"
-	"github.com/stackrox/rox/central/processbaseline/index/mappings"
 	"github.com/stackrox/rox/central/processbaseline/store"
-	"github.com/stackrox/rox/central/role/resources"
 	v1 "github.com/stackrox/rox/generated/api/v1"
 	"github.com/stackrox/rox/generated/storage"
-	"github.com/stackrox/rox/pkg/debug"
-	"github.com/stackrox/rox/pkg/sac"
 	"github.com/stackrox/rox/pkg/search"
-	"github.com/stackrox/rox/pkg/search/blevesearch"
-	"github.com/stackrox/rox/pkg/search/paginated"
-)
-
-const (
-	baselineBatchLimit = 10000
-)
-
-var (
-	processBaselineSACSearchHelper = sac.ForResource(resources.ProcessWhitelist).MustCreateSearchHelper(mappings.OptionsMap)
 )
 
 type searcherImpl struct {
 	storage           store.Store
-	indexer           index.Indexer
 	formattedSearcher search.Searcher
 }
 
-func (s *searcherImpl) buildIndex(ctx context.Context) error {
-	defer debug.FreeOSMemory()
-	log.Info("[STARTUP] Indexing process baselines")
-	baselines := make([]*storage.ProcessBaseline, 0, baselineBatchLimit)
-	if err := s.storage.Walk(ctx, func(baseline *storage.ProcessBaseline) error {
-		baselines = append(baselines, baseline)
-		if len(baselines) == baselineBatchLimit {
-			if err := s.indexer.AddProcessBaselines(baselines); err != nil {
-				return err
-			}
-
-			baselines = baselines[:0]
-		}
-
-		return nil
-	}); err != nil {
-		return err
-	}
-
-	if len(baselines) > 0 {
-		return s.indexer.AddProcessBaselines(baselines)
-	}
-	log.Info("[STARTUP] Successfully indexed process baselines")
-	return nil
-}
-
 func (s *searcherImpl) SearchRawProcessBaselines(ctx context.Context, q *v1.Query) ([]*storage.ProcessBaseline, error) {
-	results, err := processBaselineSACSearchHelper.Apply(s.indexer.Search)(ctx, q)
+	results, err := s.formattedSearcher.Search(ctx, q)
 	if err != nil || len(results) == 0 {
 		return nil, err
 	}
@@ -81,8 +39,7 @@ func (s *searcherImpl) Count(ctx context.Context, q *v1.Query) (int, error) {
 // Helper functions which format our searching.
 ///////////////////////////////////////////////
 
-func formatSearcher(unsafeSearcher blevesearch.UnsafeSearcher) search.Searcher {
-	filteredSearcher := processBaselineSACSearchHelper.FilteredSearcher(unsafeSearcher) // Make the UnsafeSearcher safe.
-	paginatedSearcher := paginated.Paginated(filteredSearcher)
-	return paginatedSearcher
+func formatSearcher(searcher search.Searcher) search.Searcher {
+	filteredSearcher := searcher
+	return filteredSearcher
 }

@@ -1,36 +1,37 @@
 import React, { useContext } from 'react';
-import { withRouter } from 'react-router-dom';
-import ReactRouterPropTypes from 'react-router-prop-types';
+import { useHistory } from 'react-router-dom';
 
+import usePermissions from 'hooks/usePermissions';
 import entityTypes from 'constants/entityTypes';
 import { createOptions } from 'utils/workflowUtils';
 import DashboardLayout from 'Components/DashboardLayout';
-import ExportButton from 'Components/ExportButton';
 import PageTitle from 'Components/PageTitle';
 import RadioButtonGroup from 'Components/RadioButtonGroup';
 import workflowStateContext from 'Containers/workflowStateContext';
+import ScannerV4IntegrationBanner from 'Components/ScannerV4IntegrationBanner';
 import { DASHBOARD_LIMIT } from 'constants/workflowPages.constants';
 import DashboardMenu from 'Components/DashboardMenu';
-import PoliciesCountTile from '../Components/PoliciesCountTile';
-import CvesCountTile from '../Components/CvesCountTile';
 import ImagesCountTile from '../Components/ImagesCountTile';
 import NodesCountTile from '../Components/NodesCountTile';
 import TopRiskyEntitiesByVulnerabilities from '../widgets/TopRiskyEntitiesByVulnerabilities';
 import TopRiskiestEntities from '../widgets/TopRiskiestEntities';
-import FrequentlyViolatedPolicies from '../widgets/FrequentlyViolatedPolicies';
-import RecentlyDetectedVulnerabilities from '../widgets/RecentlyDetectedVulnerabilities';
+import RecentlyDetectedImageVulnerabilities from '../widgets/RecentlyDetectedImageVulnerabilities';
 import MostCommonVulnerabilities from '../widgets/MostCommonVulnerabilities';
-import DeploymentsWithMostSeverePolicyViolations from '../widgets/DeploymentsWithMostSeverePolicyViolations';
-import ClustersWithMostOrchestratorIstioVulnerabilities from '../widgets/ClustersWithMostOrchestratorIstioVulnerabilities';
+import ClustersWithMostClusterVulnerabilities from '../widgets/ClustersWithMostClusterVulnerabilities';
+import CvesMenu from './CvesMenu';
 
 const entityMenuTypes = [
     entityTypes.CLUSTER,
     entityTypes.NAMESPACE,
     entityTypes.DEPLOYMENT,
-    entityTypes.COMPONENT,
+    entityTypes.NODE_COMPONENT,
+    entityTypes.IMAGE_COMPONENT,
 ];
 
-const VulnDashboardPage = ({ history }) => {
+const VulnDashboardPage = () => {
+    const history = useHistory();
+    const { hasReadAccess } = usePermissions();
+    const hasReadAccessForIntegration = hasReadAccess('Integration');
     const workflowState = useContext(workflowStateContext);
     const searchState = workflowState.getCurrentSearchState();
 
@@ -71,8 +72,14 @@ const VulnDashboardPage = ({ history }) => {
             <PageTitle title="Vulnerability Management - Dashboard" />
             <div className="flex items-center">
                 <div className="flex h-full mr-3 pr-3 border-r-2 border-base-400">
-                    <PoliciesCountTile />
-                    <CvesCountTile />
+                    <div
+                        className="flex mr-2"
+                        style={{
+                            backgroundColor: 'var(--pf-v5-global--palette--red-50)',
+                        }}
+                    >
+                        <CvesMenu />
+                    </div>
                     <NodesCountTile />
                     <ImagesCountTile />
                     <div className="flex w-32">
@@ -88,46 +95,40 @@ const VulnDashboardPage = ({ history }) => {
                     onClick={handleCveFilterToggle}
                     selected={cveFilter}
                 />
-                <ExportButton
-                    fileName="Vulnerability Management Dashboard Report"
-                    page={workflowState.useCase}
-                    pdfId="capture-dashboard"
-                />
             </div>
         </>
     );
     return (
-        <DashboardLayout headerText="Vulnerability Management" headerComponents={headerComponents}>
-            <div className="s-2 md:sx-4 xxxl:sx-4 ">
-                <TopRiskyEntitiesByVulnerabilities
-                    defaultSelection={entityTypes.DEPLOYMENT}
-                    cveFilter={cveFilter}
-                />
-            </div>
-            <div className="s-2 xxxl:sx-2">
-                <TopRiskiestEntities limit={DASHBOARD_LIMIT} />
-            </div>
-            <div className="s-2 xxxl:sx-2">
-                <FrequentlyViolatedPolicies />
-            </div>
-            <div className="s-2 xxxl:sx-2">
-                <RecentlyDetectedVulnerabilities search={searchState} limit={DASHBOARD_LIMIT} />
-            </div>
-            <div className="s-2 md:sy-2 md:sx-2 lg:sy-4 xxxl:sx-2">
-                <MostCommonVulnerabilities search={searchState} />
-            </div>
-            <div className="s-2 xxxl:sx-2">
-                <DeploymentsWithMostSeverePolicyViolations limit={DASHBOARD_LIMIT} />
-            </div>
-            <div className="s-2 xxxl:sx-2">
-                <ClustersWithMostOrchestratorIstioVulnerabilities />
-            </div>
-        </DashboardLayout>
+        <>
+            <DashboardLayout
+                banner={hasReadAccessForIntegration && <ScannerV4IntegrationBanner />}
+                headerText="Vulnerability Management"
+                headerComponents={headerComponents}
+            >
+                <div className="s-2 md:sx-4 xxxl:sx-4 ">
+                    <TopRiskyEntitiesByVulnerabilities
+                        defaultSelection={entityTypes.DEPLOYMENT}
+                        cveFilter={cveFilter}
+                    />
+                </div>
+                <div className="s-2 xxxl:sx-2">
+                    <TopRiskiestEntities search={searchState} limit={DASHBOARD_LIMIT} />
+                </div>
+                <div className="s-2 xxxl:sx-2">
+                    <RecentlyDetectedImageVulnerabilities
+                        search={searchState}
+                        limit={DASHBOARD_LIMIT}
+                    />
+                </div>
+                <div className="s-2 md:sy-2 md:sx-2 lg:sy-4 xxxl:sx-2">
+                    <MostCommonVulnerabilities search={searchState} />
+                </div>
+                <div className="s-2 xxxl:sx-2">
+                    <ClustersWithMostClusterVulnerabilities />
+                </div>
+            </DashboardLayout>
+        </>
     );
 };
 
-VulnDashboardPage.propTypes = {
-    history: ReactRouterPropTypes.history.isRequired,
-};
-
-export default withRouter(VulnDashboardPage);
+export default VulnDashboardPage;

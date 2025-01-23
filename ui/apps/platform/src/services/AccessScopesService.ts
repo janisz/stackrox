@@ -1,14 +1,22 @@
 import axios from './instance';
+import { Empty } from './types';
+import { Traits } from '../types/traits.proto';
 
 const accessScopessUrl = '/v1/simpleaccessscopes';
 
 export const defaultAccessScopeIds = {
-    Unrestricted: 'io.stackrox.authz.accessscope.unrestricted',
-    DenyAll: 'io.stackrox.authz.accessscope.denyall',
+    Unrestricted: 'ffffffff-ffff-fff4-f5ff-ffffffffffff',
+    DenyAll: 'ffffffff-ffff-fff4-f5ff-fffffffffffe',
 };
 
+// The only remaining usage of this function is in ResourceScopeSelection.tsx file,
+// which will be deleted when Collections supersede Access Scopes in Vulnerability Reporting.
 export function getIsDefaultAccessScopeId(id: string): boolean {
     return Object.values(defaultAccessScopeIds).includes(id);
+}
+
+export function getIsUnrestrictedAccessScopeId(id: string): boolean {
+    return id === defaultAccessScopeIds.Unrestricted;
 }
 
 export type SimpleAccessScopeNamespace = {
@@ -47,6 +55,7 @@ export type AccessScope = {
     name: string;
     description: string;
     rules: SimpleAccessScopeRules;
+    traits?: Traits;
 };
 
 export const accessScopeNew: AccessScope = {
@@ -80,7 +89,7 @@ export function createAccessScope(entity: AccessScope): Promise<AccessScope> {
 /*
  * Update entity and return empty object.
  */
-export function updateAccessScope(entity: AccessScope): Promise<Record<string, never>> {
+export function updateAccessScope(entity: AccessScope): Promise<Empty> {
     const { id } = entity;
     return axios.put(`${accessScopessUrl}/${id}`, entity);
 }
@@ -88,7 +97,7 @@ export function updateAccessScope(entity: AccessScope): Promise<Record<string, n
 /*
  * Delete entity which has id and return empty object.
  */
-export function deleteAccessScope(id: string): Promise<Record<string, never>> {
+export function deleteAccessScope(id: string): Promise<Empty> {
     return axios.delete(`${accessScopessUrl}/${id}`);
 }
 

@@ -4,12 +4,6 @@ import * as Icon from 'react-feather';
 import Truncate from 'react-truncate';
 import { Link } from 'react-router-dom';
 
-import HorizontalBarChart from 'Components/visuals/HorizontalBarChart';
-
-function formatAsPercent(x) {
-    return `${x}%`;
-}
-
 class SunburstDetailSection extends Component {
     static propTypes = {
         rootData: PropTypes.arrayOf(
@@ -28,7 +22,6 @@ class SunburstDetailSection extends Component {
             name: PropTypes.string,
         }),
         clicked: PropTypes.bool.isRequired,
-        units: PropTypes.string,
     };
 
     static defaultProps = {
@@ -48,7 +41,7 @@ class SunburstDetailSection extends Component {
     };
 
     getContent = () => {
-        const { rootData, selectedDatum, units } = this.props;
+        const { rootData, selectedDatum } = this.props;
         const parentDatum = this.getParentData();
 
         let bullets = [];
@@ -67,34 +60,25 @@ class SunburstDetailSection extends Component {
         return (
             <div className="py-2 px-3 lc:border-none lc:mb-0 lc:pb-0">
                 {bullets.map(
-                    (
-                        {
-                            text,
-                            link,
-                            className,
-                            value,
-                            color: graphColor,
-                            textColor,
-                            labelValue,
-                            labelColor,
-                        },
-                        idx
-                    ) => {
-                        const color = textColor || graphColor;
+                    ({
+                        text,
+                        link,
+                        // Render links and text with PatternFly colors.
+                        // className,
+                        // color: graphColor,
+                        // textColor,
+                        // labelValue,
+                        // labelColor,
+                    }) => {
                         return (
                             <div
                                 key={text}
-                                className={`widget-detail-bullet border-b border-base-300 pb-3 mb-1 font-600 ${
-                                    parentDatum && parentDatum.name && idx === 0
-                                        ? 'text-base-500'
-                                        : ''
-                                }`}
+                                className="widget-detail-bullet border-b border-base-300 pb-3 mb-1"
                             >
                                 {link && (
                                     <Link
                                         title={text}
-                                        className={`underline leading-normal flex w-full word-break ${className}`}
-                                        style={color ? { color } : null}
+                                        className="leading-normal flex w-full word-break"
                                         to={link}
                                     >
                                         <Truncate lines={6} ellipsis={<>...</>}>
@@ -102,24 +86,11 @@ class SunburstDetailSection extends Component {
                                         </Truncate>
                                     </Link>
                                 )}
-                                <span
-                                    className="flex w-full word-break leading-tight"
-                                    style={color ? { color } : null}
-                                >
+                                <span className="flex w-full word-break leading-tight">
                                     <Truncate lines={4} ellipsis={<>...</>}>
                                         {!link && text}
                                     </Truncate>
                                 </span>
-                                {selectedDatum && units !== 'percentage' && (
-                                    <span style={{ color: labelColor }}>{labelValue}</span>
-                                )}
-                                {selectedDatum && units === 'percentage' && !labelValue && (
-                                    <HorizontalBarChart
-                                        data={[{ y: '', x: value }]}
-                                        valueFormat={formatAsPercent}
-                                        minimal
-                                    />
-                                )}
                             </div>
                         );
                     }
@@ -131,8 +102,8 @@ class SunburstDetailSection extends Component {
     getLockHint = () => {
         const { clicked } = this.props;
         return (
-            <div className="border-t border-base-300 border-dashed flex justify-end px-2 h-7 text-base-500 text-sm">
-                <div className="flex items-center font-condensed opacity-75">
+            <div className="border-t border-base-300 border-dashed flex justify-end px-2 h-7 text-sm">
+                <div className="flex items-center">
                     <Icon.Info size="16" className="pr-1" />
                     {`click to ${clicked ? 'un' : ''}lock selection`}
                 </div>

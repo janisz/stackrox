@@ -13,15 +13,12 @@ import (
 	"github.com/stackrox/rox/pkg/clientconn"
 	"github.com/stackrox/rox/pkg/mtls"
 	"github.com/stackrox/rox/pkg/namespaces"
-	"github.com/stackrox/rox/pkg/netutil/pipeconn"
 	"github.com/stackrox/rox/pkg/testutils"
-	"github.com/stackrox/rox/pkg/testutils/envisolator"
 	"github.com/stretchr/testify/suite"
 )
 
 type managerTestSuite struct {
 	suite.Suite
-	*envisolator.EnvIsolator
 }
 
 func TestManager(t *testing.T) {
@@ -29,7 +26,6 @@ func TestManager(t *testing.T) {
 }
 
 func (s *managerTestSuite) SetupSuite() {
-	s.EnvIsolator = envisolator.NewEnvIsolator(s.T())
 
 	ca, err := certgen.GenerateCA()
 	s.Require().NoError(err)
@@ -49,10 +45,10 @@ func (s *managerTestSuite) SetupSuite() {
 	keyFile := filepath.Join(testCertDir, "key.pem")
 	s.Require().NoError(os.WriteFile(keyFile, centralCert.KeyPEM, 0600))
 
-	s.Setenv(mtls.CAFileEnvName, caFile)
-	s.Setenv(mtls.CAKeyFileEnvName, caKeyFile)
-	s.Setenv(mtls.CertFilePathEnvName, certFile)
-	s.Setenv(mtls.KeyFileEnvName, keyFile)
+	s.T().Setenv(mtls.CAFileEnvName, caFile)
+	s.T().Setenv(mtls.CAKeyFileEnvName, caKeyFile)
+	s.T().Setenv(mtls.CertFilePathEnvName, certFile)
+	s.T().Setenv(mtls.KeyFileEnvName, keyFile)
 }
 
 func (s *managerTestSuite) TestNoExtraCertIssuedInStackRoxNamespace() {
@@ -60,7 +56,7 @@ func (s *managerTestSuite) TestNoExtraCertIssuedInStackRoxNamespace() {
 	s.Require().NoError(err)
 
 	defaultCert := testutils.IssueSelfSignedCert(s.T(), "my-central.example.org")
-	mgr.UpdateDefaultCert(&defaultCert)
+	mgr.UpdateDefaultTLSCertificate(&defaultCert)
 
 	s.Len(mgr.internalCerts, 1)
 	s.testConnectionWithManager(mgr, []string{"", "central.stackrox", "central.stackrox.svc"}, []string{"not-central.stackrox.svc", "central.alt-ns.svc"})
@@ -71,7 +67,7 @@ func (s *managerTestSuite) TestExtraCertIssuedInStackRoxNamespace() {
 	s.Require().NoError(err)
 
 	defaultCert := testutils.IssueSelfSignedCert(s.T(), "my-central.example.org")
-	mgr.UpdateDefaultCert(&defaultCert)
+	mgr.UpdateDefaultTLSCertificate(&defaultCert)
 
 	s.Len(mgr.internalCerts, 2)
 	s.testConnectionWithManager(mgr, []string{"", "central.stackrox", "central.stackrox.svc", "central.alt-ns", "central.alt-ns.svc"}, []string{"not-central.stackrox.svc", "not-central.alt-ns"})
@@ -86,7 +82,8 @@ func (s *managerTestSuite) testConnectionWithManager(mgr *managerImpl, acceptedS
 	serverTLSConf, err := configurer.TLSConfig()
 	s.Require().NoError(err)
 
-	lis, dialContext := pipeconn.NewPipeListener()
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	s.Require().NoError(err)
 	server := tls.NewListener(lis, serverTLSConf)
 
 	serverErrC := make(chan error, 1)
@@ -108,7 +105,7 @@ func (s *managerTestSuite) testConnectionWithManager(mgr *managerImpl, acceptedS
 		if !s.NoError(err) {
 			continue
 		}
-		conn, err := dialContext(serverCtx)
+		conn, err := (&net.Dialer{}).DialContext(serverCtx, lis.Addr().Network(), lis.Addr().String())
 		if !s.NoError(err) {
 			continue
 		}
@@ -124,7 +121,7 @@ func (s *managerTestSuite) testConnectionWithManager(mgr *managerImpl, acceptedS
 		if !s.NoError(err) {
 			continue
 		}
-		conn, err := dialContext(serverCtx)
+		conn, err := (&net.Dialer{}).DialContext(serverCtx, lis.Addr().Network(), lis.Addr().String())
 		if !s.NoError(err) {
 			continue
 		}
@@ -135,9 +132,5 @@ func (s *managerTestSuite) testConnectionWithManager(mgr *managerImpl, acceptedS
 
 	s.Require().NoError(server.Close())
 	err = <-serverErrC
-	s.ErrorIs(err, pipeconn.ErrClosed)
-}
-
-func (s *managerTestSuite) TearDownSuite() {
-	s.RestoreAll()
+	s.ErrorIs(err, net.ErrClosed)
 }

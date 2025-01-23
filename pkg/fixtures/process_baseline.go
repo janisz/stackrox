@@ -3,8 +3,8 @@ package fixtures
 import (
 	"time"
 
-	ptypes "github.com/gogo/protobuf/types"
 	"github.com/stackrox/rox/generated/storage"
+	"github.com/stackrox/rox/pkg/protocompat"
 	"github.com/stackrox/rox/pkg/uuid"
 )
 
@@ -13,7 +13,7 @@ import (
 // GetProcessBaseline returns an empty process baseline
 // with a random container name and deployment ID.
 func GetProcessBaseline() *storage.ProcessBaseline {
-	createStamp, _ := ptypes.TimestampProto(time.Now())
+	createStamp, _ := protocompat.ConvertTimeToTimestampOrError(time.Now())
 	processName := uuid.NewV4().String()
 	process := &storage.BaselineElement{
 		Element: &storage.BaselineItem{
@@ -26,6 +26,19 @@ func GetProcessBaseline() *storage.ProcessBaseline {
 	return &storage.ProcessBaseline{
 		Elements: []*storage.BaselineElement{process},
 		Created:  createStamp,
+	}
+}
+
+// GetScopedProcessBaseline returns a mock ProcessBaseline belonging to the input scope.
+func GetScopedProcessBaseline(id string, clusterID string, namespace string) *storage.ProcessBaseline {
+	return &storage.ProcessBaseline{
+		Id: id,
+		Key: &storage.ProcessBaselineKey{
+			DeploymentId:  id,
+			ClusterId:     clusterID,
+			Namespace:     namespace,
+			ContainerName: id,
+		},
 	}
 }
 

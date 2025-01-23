@@ -37,7 +37,7 @@ MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEWi3tSxvBH7S/WUmv408nKPxNSJx6
 )
 
 func TestVerifyAgainstSignatureIntegration(t *testing.T) {
-	testImg, err := generateImageWithCosignSignature(imgString, b64Signature, b64SignaturePayload)
+	testImg, err := generateImageWithCosignSignature(imgString, b64Signature, b64SignaturePayload, nil, nil)
 	require.NoError(t, err, "creating test image")
 
 	successfulCosignConfig := &storage.CosignPublicKeyVerification{
@@ -57,19 +57,19 @@ func TestVerifyAgainstSignatureIntegration(t *testing.T) {
 	}
 
 	cases := map[string]struct {
-		integration *storage.SignatureIntegration
-		results     []storage.ImageSignatureVerificationResult
+		integration        *storage.SignatureIntegration
+		result             *storage.ImageSignatureVerificationResult
+		verifiedReferences []string
 	}{
 		"successful verification": {
 			integration: &storage.SignatureIntegration{
 				Id:     "successful",
 				Cosign: successfulCosignConfig,
 			},
-			results: []storage.ImageSignatureVerificationResult{
-				{
-					VerifierId: "successful",
-					Status:     storage.ImageSignatureVerificationResult_VERIFIED,
-				},
+			result: &storage.ImageSignatureVerificationResult{
+				VerifierId:              "successful",
+				Status:                  storage.ImageSignatureVerificationResult_VERIFIED,
+				VerifiedImageReferences: []string{imgString},
 			},
 		},
 		"failing verification": {
@@ -77,32 +77,28 @@ func TestVerifyAgainstSignatureIntegration(t *testing.T) {
 				Id:     "failure",
 				Cosign: failingCosignConfig,
 			},
-			results: []storage.ImageSignatureVerificationResult{
-				{
-					VerifierId:  "failure",
-					Status:      storage.ImageSignatureVerificationResult_FAILED_VERIFICATION,
-					Description: "1 error occurred:\n\t* failed to verify signature\n\n",
-				},
+			result: &storage.ImageSignatureVerificationResult{
+				VerifierId:  "failure",
+				Status:      storage.ImageSignatureVerificationResult_FAILED_VERIFICATION,
+				Description: "1 error occurred:",
 			},
 		},
 	}
 
 	for name, c := range cases {
 		t.Run(name, func(t *testing.T) {
-			results := VerifyAgainstSignatureIntegration(context.Background(), c.integration, testImg)
-			require.Len(t, results, len(c.results))
-			for i, res := range c.results {
-				assert.Equal(t, res.VerifierId, results[i].VerifierId)
-				assert.Equal(t, res.Status, results[i].Status)
-				assert.Equal(t, res.Description, results[i].Description)
-			}
+			result := VerifyAgainstSignatureIntegration(context.Background(), c.integration, testImg)
+			assert.Equal(t, c.result.VerifierId, result.VerifierId)
+			assert.Equal(t, c.result.Status, result.Status)
+			assert.Contains(t, result.Description, c.result.Description)
+			assert.ElementsMatch(t, c.result.VerifiedImageReferences, result.VerifiedImageReferences)
 		})
 	}
 }
 
 func BenchmarkVerifyAgainstSignatureIntegrations_1Integration(b *testing.B) {
 	integrations := createSignatureIntegration(1)
-	img, err := generateImageWithCosignSignature(imgString, b64Signature, b64SignaturePayload)
+	img, err := generateImageWithCosignSignature(imgString, b64Signature, b64SignaturePayload, nil, nil)
 	require.NoError(b, err)
 
 	b.ResetTimer()
@@ -111,7 +107,7 @@ func BenchmarkVerifyAgainstSignatureIntegrations_1Integration(b *testing.B) {
 
 func BenchmarkVerifyAgainstSignatureIntegrations_10Integrations(b *testing.B) {
 	integrations := createSignatureIntegration(10)
-	img, err := generateImageWithCosignSignature(imgString, b64Signature, b64SignaturePayload)
+	img, err := generateImageWithCosignSignature(imgString, b64Signature, b64SignaturePayload, nil, nil)
 	require.NoError(b, err)
 
 	b.ResetTimer()
@@ -120,7 +116,7 @@ func BenchmarkVerifyAgainstSignatureIntegrations_10Integrations(b *testing.B) {
 
 func BenchmarkVerifyAgainstSignatureIntegrations_100Integrations(b *testing.B) {
 	integrations := createSignatureIntegration(100)
-	img, err := generateImageWithCosignSignature(imgString, b64Signature, b64SignaturePayload)
+	img, err := generateImageWithCosignSignature(imgString, b64Signature, b64SignaturePayload, nil, nil)
 	require.NoError(b, err)
 
 	b.ResetTimer()
@@ -129,7 +125,7 @@ func BenchmarkVerifyAgainstSignatureIntegrations_100Integrations(b *testing.B) {
 
 func BenchmarkVerifyAgainstSignatureIntegrations_200Integrations(b *testing.B) {
 	integrations := createSignatureIntegration(200)
-	img, err := generateImageWithCosignSignature(imgString, b64Signature, b64SignaturePayload)
+	img, err := generateImageWithCosignSignature(imgString, b64Signature, b64SignaturePayload, nil, nil)
 	require.NoError(b, err)
 
 	b.ResetTimer()

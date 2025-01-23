@@ -13,7 +13,7 @@ import (
 	"github.com/stackrox/rox/pkg/protoconv"
 )
 
-// CreateRoleBasedIdentity builds v1.AuthStatus containing identity and its role information from auth response
+// CreateRoleBasedIdentity builds v1.AuthStatus containing identity and its role information from auth response.
 func CreateRoleBasedIdentity(ctx context.Context, provider Provider, authResp *AuthResponse) (*v1.AuthStatus, error) {
 	if authResp == nil || authResp.Claims == nil {
 		return nil, errors.New("authentication response is empty")
@@ -30,12 +30,13 @@ func CreateRoleBasedIdentity(ctx context.Context, provider Provider, authResp *A
 	ud := &permissions.UserDescriptor{
 		UserID:     authResp.Claims.UserID,
 		Attributes: authResp.Claims.Attributes,
+		IdpToken:   authResp.IdpToken,
 	}
 
 	// config might contain semi-sensitive values, so strip it
 	var authProvider *storage.AuthProvider
 	if provider.StorageView() != nil {
-		authProvider = provider.StorageView().Clone()
+		authProvider = provider.StorageView().CloneVT()
 		authProvider.Config = nil
 	}
 

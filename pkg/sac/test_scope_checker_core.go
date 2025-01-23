@@ -1,12 +1,12 @@
 package sac
 
 import (
-	"context"
 	"testing"
 
 	"github.com/stackrox/rox/generated/storage"
 	"github.com/stackrox/rox/pkg/auth/permissions"
 	"github.com/stackrox/rox/pkg/sac/effectiveaccessscope"
+	"github.com/stackrox/rox/pkg/sac/resources"
 )
 
 // TestClusterScope contains cluster-level scope information (cluster included or list of included namespaces
@@ -64,7 +64,13 @@ func (c *testScopeCheckerCore) EffectiveAccessScope(resource permissions.Resourc
 		return effectiveaccessscope.DenyAllEffectiveAccessScope(), nil
 	}
 	resourceCore := resourceMap[resource.Resource.GetResource()]
-	if resourceCore == nil || !resourceCore.Included || len(resourceCore.Clusters) == 0 {
+	if resourceCore == nil {
+		return effectiveaccessscope.DenyAllEffectiveAccessScope(), nil
+	}
+	if resources.GetScopeForResource(resource.Resource.GetResource()) == permissions.GlobalScope {
+		return effectiveaccessscope.UnrestrictedEffectiveAccessScope(), nil
+	}
+	if !resourceCore.Included && len(resourceCore.Clusters) == 0 {
 		return effectiveaccessscope.DenyAllEffectiveAccessScope(), nil
 	}
 	if resourceCore.Included {
@@ -89,10 +95,6 @@ func (c *testScopeCheckerCore) EffectiveAccessScope(resource permissions.Resourc
 	return effectiveaccessscope.FromClustersAndNamespacesMap(includedClusters, includedClusterNamespacePairs), nil
 }
 
-func (c *testScopeCheckerCore) PerformChecks(_ context.Context) error {
-	return nil
-}
-
 func (c *testScopeCheckerCore) SubScopeChecker(key ScopeKey) ScopeCheckerCore {
 	return &testScopeCheckerCore{
 		scope: c.scope,
@@ -100,51 +102,60 @@ func (c *testScopeCheckerCore) SubScopeChecker(key ScopeKey) ScopeCheckerCore {
 	}
 }
 
-func (c *testScopeCheckerCore) TryAllowed() TryAllowedResult {
+func (c *testScopeCheckerCore) Allowed() bool {
 	// Global access is denied, need to drill down.
 	if len(c.path) == 0 {
-		return Deny
+		return false
 	}
 	// Drill down to access level.
 	access := c.path[0]
 	accessKey, accessOK := access.(AccessModeScopeKey)
 	if !accessOK {
-		return Deny
+		return false
 	}
 	accessMode := storage.Access(accessKey)
 	if _, accessAllowed := c.scope[accessMode]; !accessAllowed {
-		return Deny
+		return false
 	}
 	if len(c.path) == 1 {
-		return Deny
+		return false
 	}
 	// Drill down to resource level.
 	resource := c.path[1]
 	resourceKey, resourceOK := resource.(ResourceScopeKey)
 	if !resourceOK {
-		return Deny
+		return false
 	}
-	resourceScope := c.scope[accessMode][permissions.Resource(resourceKey.String())]
+	targetResource := permissions.Resource(resourceKey.String())
+	resourceScope := c.scope[accessMode][targetResource]
 	if resourceScope == nil {
-		return Deny
+		return false
+	}
+	if resources.GetScopeForResource(targetResource) == permissions.GlobalScope {
+		return true
 	}
 	if resourceScope.Included {
-		return Allow
+		return true
 	}
 	if len(c.path) == 2 {
-		return Deny
+		return false
 	}
 	// Drill down to cluster level.
 	clusterID := c.path[2].String()
 	clusterScope := resourceScope.Clusters[clusterID]
 	if clusterScope == nil {
-		return Deny
+		return false
 	}
 	if clusterScope.Included {
-		return Allow
+		return true
+	}
+	// For cluster-scoped resources, allow access if partial cluster access is allowed.
+	targetResourceScope := resources.GetScopeForResource(targetResource)
+	if targetResourceScope == permissions.ClusterScope && len(clusterScope.Namespaces) > 0 {
+		return true
 	}
 	if len(c.path) == 3 {
-		return Deny
+		return false
 	}
 	// Drill down to namespace level.
 	namespace := c.path[3].String()
@@ -155,8 +166,5 @@ func (c *testScopeCheckerCore) TryAllowed() TryAllowedResult {
 			break
 		}
 	}
-	if namespaceAllowed {
-		return Allow
-	}
-	return Deny
+	return namespaceAllowed
 }

@@ -1,7 +1,6 @@
 import React, { useState, useContext } from 'react';
 import PropTypes from 'prop-types';
-import { withRouter } from 'react-router-dom';
-import ReactRouterPropTypes from 'react-router-prop-types';
+import { useRouteMatch, useLocation, useHistory } from 'react-router-dom'; // Updated imports
 import pluralize from 'pluralize';
 import resolvePath from 'object-resolve-path';
 
@@ -41,10 +40,10 @@ const List = ({
     totalResults,
     autoFocusSearchInput,
     noDataText,
-    match,
-    location,
-    history,
 }) => {
+    const match = useRouteMatch();
+    const location = useLocation();
+    const history = useHistory();
     const workflowState = useContext(workflowStateContext);
     const configMgmtPagination = useContext(configMgmtPaginationContext);
     const page = workflowState.paging[configMgmtPagination.pageParam];
@@ -60,6 +59,7 @@ const List = ({
     }
 
     const categories = [searchCategoryTypes[entityType]];
+    const placeholder = `Filter ${pluralize(entityLabels[entityType])}`;
 
     function getRenderComponents(headerComponents, tableRows, totalCount) {
         const header = `${totalCount} ${pluralize(
@@ -70,7 +70,7 @@ const List = ({
         return (
             <PanelNew testid="panel">
                 <PanelHead>
-                    <PanelTitle isUpperCase testid="panel-header" text={header} />
+                    <PanelTitle testid="panel-header" text={header} />
                     <PanelHeadEnd>{headerComponents}</PanelHeadEnd>
                 </PanelHead>
                 <PanelBody>
@@ -124,6 +124,7 @@ const List = ({
                                     : [];
                             return (
                                 <URLSearchInput
+                                    placeholder={placeholder}
                                     className="w-full"
                                     categoryOptions={searchOptions}
                                     categories={categories}
@@ -199,9 +200,6 @@ List.propTypes = {
     totalResults: PropTypes.number,
     autoFocusSearchInput: PropTypes.bool,
     noDataText: PropTypes.string,
-    match: ReactRouterPropTypes.match.isRequired,
-    location: ReactRouterPropTypes.location.isRequired,
-    history: ReactRouterPropTypes.history.isRequired,
 };
 
 List.defaultProps = {
@@ -216,4 +214,4 @@ List.defaultProps = {
     noDataText: 'No results found. Please refine your search.',
 };
 
-export default withRouter(List);
+export default List;

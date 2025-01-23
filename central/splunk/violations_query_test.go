@@ -7,46 +7,57 @@ import (
 	"fmt"
 	"sort"
 	"testing"
+	"time"
 
-	"github.com/blevesearch/bleve"
 	"github.com/stackrox/rox/central/alert/datastore"
-	"github.com/stackrox/rox/central/globalindex"
 	"github.com/stackrox/rox/generated/storage"
-	"github.com/stackrox/rox/pkg/rocksdb"
-	"github.com/stackrox/rox/pkg/testutils/rocksdbtest"
+	"github.com/stackrox/rox/pkg/postgres/pgtest"
+	"github.com/stackrox/rox/pkg/sac"
+	"github.com/stackrox/rox/pkg/utils"
 	"github.com/stackrox/rox/pkg/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/stretchr/testify/suite"
 )
+
+// Test suite to test everything to do with splunk violations. Actual test is split across multiple files.
+// Moved here since some helpers in this file references it and for non-postgres tests, it won't be able to read it
+// if the definition is another file
+type violationsTestSuite struct {
+	suite.Suite
+	deployAlert, processAlert, k8sAlert, networkAlert, resourceAlert *storage.Alert
+	allowCtx                                                         context.Context
+}
+
+func mustParseTime(timeStr string) time.Time {
+	ts, err := time.Parse(time.RFC3339Nano, timeStr)
+	utils.CrashOnError(err)
+	return ts
+}
 
 // testDataStore contains all things that need to be created and disposed in order to use Alerts datastore.DataStore in
 // tests.
 type testDataStore struct {
-	rocksDB  *rocksdb.RocksDB
-	index    bleve.Index
+	testDB   *pgtest.TestPostgres
 	alertsDS datastore.DataStore
 }
 
 // makeDS creates a new temp datastore with only provided alerts for use in tests.
 func makeDS(t *testing.T, alerts []*storage.Alert) testDataStore {
-	rocksDB := rocksdbtest.RocksDBForT(t)
-
-	bleveIndex, err := globalindex.MemOnlyIndex()
+	testDB := pgtest.ForT(t)
+	assert.NotNil(t, testDB)
+	alertsDS, err := datastore.GetTestPostgresDataStore(t, testDB.DB)
 	require.NoError(t, err)
 
-	alertsDS := datastore.NewWithDb(rocksDB, bleveIndex)
-
-	err = alertsDS.UpsertAlerts(context.Background(), alerts)
+	err = alertsDS.UpsertAlerts(sac.WithAllAccess(context.Background()), alerts)
 	require.NoError(t, err)
 
-	return testDataStore{rocksDB: rocksDB, index: bleveIndex, alertsDS: alertsDS}
+	return testDataStore{testDB: testDB, alertsDS: alertsDS}
 }
 
 // teardown cleans up test datastore.
 func (d *testDataStore) teardown(t *testing.T) {
-	d.rocksDB.Close()
-	err := d.index.Close()
-	assert.NoError(t, err)
+	d.testDB.Teardown(t)
 }
 
 // these simply converts varargs to slice for slightly less typing (pun intended).
@@ -62,21 +73,18 @@ func (s *violationsTestSuite) withAlerts(alerts []*storage.Alert, action func(al
 }
 
 func (s *violationsTestSuite) TestQueryReturnsAlertsWithAllStates() {
-	a1 := s.processAlert.Clone()
-	a1.State = storage.ViolationState_SNOOZED
-	a2 := s.k8sAlert.Clone()
+	a2 := s.k8sAlert.CloneVT()
 	a2.State = storage.ViolationState_RESOLVED
-	a3 := s.deployAlert.Clone()
+	a3 := s.deployAlert.CloneVT()
 	a3.State = storage.ViolationState_ATTEMPTED
 
 	var alertIDs []string
 
-	s.withAlerts(these(a1, a2, a3), func(alertsDS datastore.DataStore) {
+	s.withAlerts(these(a2, a3), func(alertsDS datastore.DataStore) {
 		alertIDs = s.queryAlertsWithCheckpoint(alertsDS, "2000-01-01T00:00:00Z", defaultPaginationSettings.maxAlertsFromQuery)
 	})
 
-	s.Len(alertIDs, 3)
-	s.Contains(alertIDs, s.processAlert.Id)
+	s.Len(alertIDs, 2)
 	s.Contains(alertIDs, s.k8sAlert.Id)
 	s.Contains(alertIDs, s.deployAlert.Id)
 }
@@ -114,7 +122,7 @@ func (s *violationsTestSuite) TestQueryAlertsWithTimestamp() {
 		},
 	}
 
-	s.withAlerts(these(&s.processAlert, &s.k8sAlert, &s.deployAlert), func(alertsDS datastore.DataStore) {
+	s.withAlerts(these(s.processAlert, s.k8sAlert, s.deployAlert), func(alertsDS datastore.DataStore) {
 		for _, c := range cases {
 			s.Run(c.name, func() {
 				alerts := s.queryAlertsWithCheckpoint(alertsDS, c.timestamp, defaultPaginationSettings.maxAlertsFromQuery)
@@ -128,7 +136,7 @@ func (s *violationsTestSuite) TestQueryAlertsWithTimestamp() {
 }
 
 func (s *violationsTestSuite) TestQueryAlertsAreSortedByAlertID() {
-	alerts := []*storage.Alert{&s.processAlert, &s.k8sAlert, &s.deployAlert, &s.networkAlert}
+	alerts := []*storage.Alert{s.processAlert, s.k8sAlert, s.deployAlert, s.networkAlert}
 	sortedIDs := make([]string, 0, len(alerts))
 	// Generate new random UUIDs for Alerts. This will make it highly likely that default ordering of alerts by
 	// decreasing timestamp does not match ordering by ID. Therefore we'll be able to validate that our requested
@@ -187,7 +195,7 @@ func (s *violationsTestSuite) TestQueryAlertsFromAlertIDAndWithLimit() {
 		{fromAlertID: "", limit: defaultPaginationSettings.maxAlertsFromQuery, result: ids},
 	}
 
-	s.withAlerts(these(&s.processAlert, &s.k8sAlert, &s.deployAlert, &s.networkAlert), func(alertsDS datastore.DataStore) {
+	s.withAlerts(these(s.processAlert, s.k8sAlert, s.deployAlert, s.networkAlert), func(alertsDS datastore.DataStore) {
 		for _, c := range cases {
 			s.Run(fmt.Sprintf("from:%q, limit:%d", c.fromAlertID, c.limit), func() {
 				result := s.queryAlertsWithCheckpoint(alertsDS, "2000-01-01T00:00:00Z__2021-03-26T17:36:00Z__"+c.fromAlertID, c.limit)

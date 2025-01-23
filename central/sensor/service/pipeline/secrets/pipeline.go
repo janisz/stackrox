@@ -13,6 +13,7 @@ import (
 	"github.com/stackrox/rox/central/sensor/service/pipeline/reconciliation"
 	"github.com/stackrox/rox/generated/internalapi/central"
 	"github.com/stackrox/rox/generated/storage"
+	"github.com/stackrox/rox/pkg/centralsensor"
 	"github.com/stackrox/rox/pkg/logging"
 	"github.com/stackrox/rox/pkg/metrics"
 	"github.com/stackrox/rox/pkg/search"
@@ -20,6 +21,8 @@ import (
 
 var (
 	log = logging.LoggerForModule()
+
+	_ pipeline.Fragment = (*pipelineImpl)(nil)
 )
 
 // Template design pattern. We define control flow here and defer logic to subclasses.
@@ -41,6 +44,10 @@ func NewPipeline(clusters clusterDataStore.DataStore, secrets datastore.DataStor
 type pipelineImpl struct {
 	clusters clusterDataStore.DataStore
 	secrets  datastore.DataStore
+}
+
+func (s *pipelineImpl) Capabilities() []centralsensor.CentralCapability {
+	return nil
 }
 
 func (s *pipelineImpl) Reconcile(ctx context.Context, clusterID string, storeMap *reconciliation.StoreMap) error {
@@ -133,7 +140,7 @@ func (s *pipelineImpl) enrichCluster(ctx context.Context, secret *storage.Secret
 
 func (s *pipelineImpl) persistSecret(ctx context.Context, action central.ResourceAction, secret *storage.Secret) error {
 	switch action {
-	case central.ResourceAction_CREATE_RESOURCE, central.ResourceAction_UPDATE_RESOURCE:
+	case central.ResourceAction_CREATE_RESOURCE, central.ResourceAction_UPDATE_RESOURCE, central.ResourceAction_SYNC_RESOURCE:
 		return s.secrets.UpsertSecret(ctx, secret)
 	case central.ResourceAction_REMOVE_RESOURCE:
 		return s.secrets.RemoveSecret(ctx, secret.GetId())
@@ -142,4 +149,4 @@ func (s *pipelineImpl) persistSecret(ctx context.Context, action central.Resourc
 	}
 }
 
-func (s *pipelineImpl) OnFinish(clusterID string) {}
+func (s *pipelineImpl) OnFinish(_ string) {}

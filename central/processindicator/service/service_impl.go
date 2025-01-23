@@ -4,13 +4,12 @@ import (
 	"context"
 	"sort"
 
-	"github.com/grpc-ecosystem/grpc-gateway/runtime"
+	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
 	"github.com/pkg/errors"
 	deploymentStore "github.com/stackrox/rox/central/deployment/datastore"
 	"github.com/stackrox/rox/central/processbaseline"
 	baselineStore "github.com/stackrox/rox/central/processbaseline/datastore"
 	processIndicatorStore "github.com/stackrox/rox/central/processindicator/datastore"
-	"github.com/stackrox/rox/central/role/resources"
 	v1 "github.com/stackrox/rox/generated/api/v1"
 	"github.com/stackrox/rox/generated/storage"
 	"github.com/stackrox/rox/pkg/auth/permissions"
@@ -19,6 +18,8 @@ import (
 	"github.com/stackrox/rox/pkg/grpc/authz/perrpc"
 	"github.com/stackrox/rox/pkg/grpc/authz/user"
 	processBaselinePkg "github.com/stackrox/rox/pkg/processbaseline"
+	"github.com/stackrox/rox/pkg/protocompat"
+	"github.com/stackrox/rox/pkg/sac/resources"
 	"github.com/stackrox/rox/pkg/search"
 	"github.com/stackrox/rox/pkg/set"
 	"google.golang.org/grpc"
@@ -26,17 +27,18 @@ import (
 
 var (
 	authorizer = perrpc.FromMap(map[authz.Authorizer][]string{
-		user.With(permissions.View(resources.Indicator)): {
+		user.With(permissions.View(resources.DeploymentExtension)): {
+			"/v1.ProcessService/CountProcesses",
 			"/v1.ProcessService/GetProcessesByDeployment",
 			"/v1.ProcessService/GetGroupedProcessByDeployment",
-		},
-		user.With(permissions.View(resources.Indicator), permissions.View(resources.ProcessWhitelist)): {
 			"/v1.ProcessService/GetGroupedProcessByDeploymentAndContainer",
 		},
 	})
 )
 
 type serviceImpl struct {
+	v1.UnimplementedProcessServiceServer
+
 	processIndicators processIndicatorStore.DataStore
 	deployments       deploymentStore.DataStore
 	baselines         baselineStore.DataStore
@@ -55,6 +57,21 @@ func (s *serviceImpl) RegisterServiceHandler(ctx context.Context, mux *runtime.S
 // AuthFuncOverride specifies the auth criteria for this API.
 func (s *serviceImpl) AuthFuncOverride(ctx context.Context, fullMethodName string) (context.Context, error) {
 	return ctx, authorizer.Authorized(ctx, fullMethodName)
+}
+
+// CountProcesses counts the number of processes that match the input query.
+func (s *serviceImpl) CountProcesses(ctx context.Context, request *v1.RawQuery) (*v1.CountProcessesResponse, error) {
+	// Fill in Query.
+	parsedQuery, err := search.ParseQuery(request.GetQuery(), search.MatchAllIfEmpty())
+	if err != nil {
+		return nil, errors.Wrap(errox.InvalidArgs, err.Error())
+	}
+
+	numProcesses, err := s.processIndicators.Count(ctx, parsedQuery)
+	if err != nil {
+		return nil, err
+	}
+	return &v1.CountProcessesResponse{Count: int32(numProcesses)}, nil
 }
 
 // GetDeployment returns the deployment with given id.
@@ -84,7 +101,7 @@ func (s *serviceImpl) GetProcessesByDeployment(ctx context.Context, req *v1.GetP
 
 func sortIndicators(indicators []*storage.ProcessIndicator) {
 	sort.SliceStable(indicators, func(i, j int) bool {
-		return indicators[i].GetSignal().GetTime().Compare(indicators[j].GetSignal().GetTime()) == -1
+		return protocompat.CompareTimestamps(indicators[i].GetSignal().GetTime(), indicators[j].GetSignal().GetTime()) == -1
 	})
 }
 

@@ -6,11 +6,14 @@ import queryString from 'qs';
 
 import { Role } from 'services/RolesService';
 
+import { Empty } from 'services/types';
 import AccessTokenManager from './AccessTokenManager';
 import addTokenRefreshInterceptors, {
     doNotStallRequestConfig,
 } from './addTokenRefreshInterceptors';
 import { authProviderLabels } from '../../constants/accessControl';
+import { Traits } from '../../types/traits.proto';
+import { isUserResource } from '../../Containers/AccessControl/traits';
 
 const authProvidersUrl = '/v1/authProviders';
 const authLoginProvidersUrl = '/v1/login/authproviders';
@@ -25,7 +28,7 @@ const requestedLocationKey = 'requested_location';
  */
 export class AuthHttpError extends Error {
     code: number;
-    cause: Error; // eslint-disable-line @typescript-eslint/lines-between-class-members
+    cause: Error;
 
     constructor(message: string, code: number, cause: Error) {
         super(message);
@@ -56,6 +59,8 @@ export type Group = {
         authProviderId: string;
         key?: string;
         value?: string;
+        id?: string;
+        traits?: Traits | null;
     };
 };
 
@@ -71,6 +76,10 @@ export type AuthProvider = {
     active?: boolean;
     groups?: Group[];
     defaultRole?: string;
+    requiredAttributes: AuthProviderRequiredAttribute[];
+    traits?: Traits;
+    claimMappings: Record<string, string> | [string, string][];
+    lastUpdated: string;
 };
 
 export type AuthProviderInfo = {
@@ -78,13 +87,19 @@ export type AuthProviderInfo = {
     value: AuthProviderType;
 };
 
+export type AuthProviderRequiredAttribute = {
+    attributeKey: string;
+    attributeValue: string;
+};
+
 /**
  * Fetch authentication providers.
  */
 export function fetchAuthProviders(): Promise<{ response: AuthProvider[] }> {
-    return axios.get(`${authProvidersUrl}`).then((response) => ({
-        response: response?.data?.authProviders ?? [],
-    }));
+    return axios.get(`${authProvidersUrl}`).then((response) => {
+        const authProviders = response?.data?.authProviders ?? [];
+        return { response: authProviders.map((ap) => convertAuthProviderClaimMappingsToArray(ap)) };
+    });
 }
 
 export type AuthProviderLogin = {
@@ -116,36 +131,24 @@ export function fetchAvailableProviderTypes(): Promise<{ response: AuthProviderI
     }));
 }
 
-/*
- * Create entity and return object with id assigned by backend.
- */
-export function createAuthProvider(authProvider: AuthProvider): Promise<AuthProvider> {
-    return axios.post<AuthProvider>(authProvidersUrl, authProvider).then((response) => {
-        return response.data;
-    });
-}
-
-/*
- * Update entity and return object.
- */
-export function updateAuthProvider(authProvider: AuthProvider): Promise<AuthProvider> {
-    return axios
-        .put<AuthProvider>(`${authProvidersUrl}/${authProvider.id}`, authProvider)
-        .then((response) => {
-            return response.data;
-        });
-}
-
 /**
  * Saves auth provider either by creating a new one (in case ID is missed) or by updating existing one by ID.
  */
 export function saveAuthProvider(authProvider: AuthProvider): string | Promise<AuthProvider> {
-    if (authProvider.active) {
+    if (authProvider.active || getIsAuthProviderImmutable(authProvider)) {
         return authProvider.id;
     }
+
     return authProvider.id
-        ? axios.put(`${authProvidersUrl}/${authProvider.id}`, authProvider)
-        : axios.post(authProvidersUrl, authProvider);
+        ? axios
+              .put<AuthProvider>(
+                  `${authProvidersUrl}/${authProvider.id}`,
+                  convertAuthProviderClaimMappingsToObject(authProvider)
+              )
+              .then((response) => {
+                  return convertAuthProviderClaimMappingsToArray(response.data);
+              })
+        : axios.post(authProvidersUrl, convertAuthProviderClaimMappingsToObject(authProvider));
 }
 
 /**
@@ -153,7 +156,7 @@ export function saveAuthProvider(authProvider: AuthProvider): string | Promise<A
  *
  * @returns {Promise} promise which is fullfilled when the request is complete TODO verify return empty object
  */
-export function deleteAuthProvider(authProviderId: string): Promise<Record<string, never>> {
+export function deleteAuthProvider(authProviderId: string): Promise<Empty> {
     if (!authProviderId) {
         throw new Error('Auth provider ID must be defined');
     }
@@ -167,6 +170,27 @@ export function deleteAuthProvider(authProviderId: string): Promise<Record<strin
  */
 export function deleteAuthProviders(authProviderIds) {
     return Promise.all(authProviderIds.map((id) => deleteAuthProvider(id)));
+}
+
+function convertAuthProviderClaimMappingsToArray(provider: AuthProvider): AuthProvider {
+    if (!provider.claimMappings) {
+        return provider;
+    }
+    const mappingAsArray = Object.entries(provider.claimMappings).sort((a, b) =>
+        a[0].localeCompare(b[0])
+    );
+    const newProvider = { ...provider };
+    newProvider.claimMappings = mappingAsArray;
+    return newProvider;
+}
+
+function convertAuthProviderClaimMappingsToObject(authProvider: AuthProvider): AuthProvider {
+    if (!Array.isArray(authProvider.claimMappings)) {
+        return authProvider;
+    }
+    const newProvider = { ...authProvider };
+    newProvider.claimMappings = Object.fromEntries(authProvider.claimMappings);
+    return newProvider;
 }
 
 /*
@@ -221,7 +245,10 @@ export type UserAuthStatus = {
  */
 export function getAuthStatus(): Promise<UserAuthStatus> {
     return axios.get<AuthStatus>('/v1/auth/status').then(({ data }) => {
+        // disable because unused refreshUrl might be specified for rest spread idiom.
+        /* eslint-disable @typescript-eslint/no-unused-vars */
         const { expires, refreshUrl, ...userAuthData } = data;
+        /* eslint-enable @typescript-eslint/no-unused-vars */
         // while it's a side effect, it's the best place to do it
         // @ts-ignore 2345
         accessTokenManager.updateTokenInfo({ expiry: expires });
@@ -260,7 +287,7 @@ export function exchangeAuthToken(
 export async function logout() {
     try {
         await axios.post(logoutUrl);
-    } catch (e) {
+    } catch {
         // regardless of the result proceed with token deletion
     }
     accessTokenManager.clearToken();
@@ -297,9 +324,12 @@ export function loginWithBasicAuth(
 const BEARER_TOKEN_PREFIX = `Bearer `;
 
 function setAuthHeader(config, token: string) {
+    // disable because unused Authorization might be specified for rest spread idiom.
+    /* eslint-disable @typescript-eslint/no-unused-vars */
     const {
         headers: { Authorization, ...notAuthHeaders },
     } = config;
+    /* eslint-enable @typescript-eslint/no-unused-vars */
     // make sure new config doesn't have unnecessary auth header
     const newConfig = {
         ...config,
@@ -390,4 +420,22 @@ export function addAuthInterceptors(authHttpErrorHandler): void {
     });
 
     interceptorsAdded = true;
+}
+
+/**
+ * Verifies whether the auth provider is immutable based on the traits property is set.
+ * An auth provider is immutable if traits is undefined or is set to anything other than 'ALLOW_MUTATE'.
+ *
+ * @param {AuthProvider} authProvider auth provider to check.
+ * @return {boolean} indicating whether the auth provider is immutable.
+ */
+export function getIsAuthProviderImmutable(authProvider: AuthProvider): boolean {
+    return (
+        ('traits' in authProvider &&
+            authProvider.traits != null &&
+            authProvider.traits?.mutabilityMode !== 'ALLOW_MUTATE') ||
+        // Having both these conditions checked allows for seamless transition period
+        // between using mutabilityMode and origin in ACSCS auth provider.
+        !isUserResource(authProvider.traits)
+    );
 }

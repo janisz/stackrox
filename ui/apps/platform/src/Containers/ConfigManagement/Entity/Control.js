@@ -1,4 +1,5 @@
 import React, { useContext } from 'react';
+import { useLocation, useRouteMatch } from 'react-router-dom';
 import { gql } from '@apollo/client';
 import entityTypes from 'constants/entityTypes';
 import useCases from 'constants/useCaseTypes';
@@ -17,7 +18,7 @@ import NodesWithFailedControls from './widgets/NodesWithFailedControls';
 import Nodes from '../List/Nodes';
 
 const QUERY = gql`
-    query controlById($id: ID!, $where: String) {
+    query getControl($id: ID!, $where: String) {
         results: complianceControl(id: $id) {
             interpretationText
             description
@@ -42,7 +43,9 @@ const QUERY = gql`
     }
 `;
 
-const Control = ({ id, entityListType, query, match, location, entityContext }) => {
+const Control = ({ id, entityListType, query, entityContext }) => {
+    const location = useLocation();
+    const match = useRouteMatch();
     const searchParam = useContext(searchContext);
 
     const variables = {

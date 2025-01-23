@@ -29,6 +29,9 @@ spec:
       annotations:
         traffic.sidecar.istio.io/excludeInboundPorts: "8080,8443"
         {{- include "srox.podAnnotations" (list . "deployment" "scanner") | nindent 8 }}
+        {{- if eq ._rox.env.openshift 4 }}
+        openshift.io/required-scc: nonroot-v2
+        {{- end }}
     spec:
       {{- if ._rox.scanner._nodeSelector }}
       nodeSelector:
@@ -38,52 +41,34 @@ spec:
       tolerations:
         {{- toYaml ._rox.scanner.tolerations | nindent 8 }}
       {{- end }}
+      {{- if ._rox.scanner.hostAliases }}
+      hostAliases: {{ toYaml ._rox.scanner.hostAliases | nindent 8 }}
+      {{- end }}
       affinity:
-        podAntiAffinity:
-          preferredDuringSchedulingIgnoredDuringExecution:
-          - weight: 100
-            podAffinityTerm:
-              labelSelector:
-                matchLabels:
-                  app: scanner
-              topologyKey: kubernetes.io/hostname
-        {{- if ._rox.env.openshift }}
-        nodeAffinity:
-          preferredDuringSchedulingIgnoredDuringExecution:
-            - weight: 50
-              preference:
-                matchExpressions:
-                  - key: node-role.kubernetes.io/infra
-                    operator: In
-                    values:
-                    - "true"
-            - weight: 25
-              preference:
-                matchExpressions:
-                  - key: node-role.kubernetes.io/compute
-                    operator: In
-                    values:
-                    - "true"
-            - weight: 100
-              preference:
-                matchExpressions:
-                  - key: node-role.kubernetes.io/master
-                    operator: NotIn
-                    values:
-                    - "true"
+        {{- toYaml ._rox.scanner.affinity | nindent 8 }}
+      {{- if ._rox.scanner.priorityClassName }}
+      priorityClassName: {{ ._rox.scanner.priorityClassName }}
+      {{- end }}
+      initContainers:
+      {{- if ._rox._securedClusterCertRefresh }}
+      - {{ include "srox.tlsCertsInitContainer" (list .  ._rox.scanner._resources) | indent 8 | trim }}
       {{- end }}
       containers:
       - name: scanner
-        [< if .FeatureFlags.ROX_LOCAL_IMAGE_SCANNING ->]
         {{ if eq ._rox.scanner.mode "slim" -}}
         image: {{ ._rox.scanner.slimImage.fullRef | quote }}
         {{ else }}
         image: {{ ._rox.scanner.image.fullRef | quote }}
         {{ end -}}
-        [< else ->]
-        image: {{ ._rox.scanner.image.fullRef | quote }}
-        [< end ->]
         env:
+        - name: ROX_MEMLIMIT
+          valueFrom:
+            resourceFieldRef:
+              resource: limits.memory
+        - name: GOMAXPROCS
+          valueFrom:
+            resourceFieldRef:
+              resource: limits.cpu
         - name: POD_NAME
           valueFrom:
             fieldRef:
@@ -106,6 +91,10 @@ spec:
           containerPort: 8080
         - name: grpc
           containerPort: 8443
+        {{ if ._rox.scanner.exposeMonitoring -}}
+        - name: monitoring
+          containerPort: 9090
+        {{- end}}
         securityContext:
           capabilities:
             drop: ["NET_RAW"]
@@ -120,17 +109,17 @@ spec:
           failureThreshold: 6
           successThreshold: 1
         volumeMounts:
-        - mountPath: /etc/ssl
-          name: scanner-etc-ssl-volume
-        - mountPath: /etc/pki/ca-trust
-          name: scanner-etc-pki-volume
-        - mountPath: /usr/local/share/ca-certificates/
-          name: additional-ca-volume
+        - name: scanner-etc-ssl-volume
+          mountPath: /etc/ssl
+        - name: scanner-etc-pki-volume
+          mountPath: /etc/pki/ca-trust
+        - name: additional-ca-volume
+          mountPath: /usr/local/share/ca-certificates/
           readOnly: true
         - name: scanner-config-volume
           mountPath: /etc/scanner
           readOnly: true
-        - name: scanner-tls-volume
+        - name: certs
           mountPath: /run/secrets/stackrox.io/certs/
           readOnly: true
         - name: vuln-temp-db
@@ -140,24 +129,36 @@ spec:
           readOnly: true
         - name: scanner-db-password
           mountPath: /run/secrets/stackrox.io/secrets
+          readOnly: true
         {{- include "srox.injectedCABundleVolumeMount" . | nindent 8 }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
       serviceAccountName: scanner
       volumes:
       - name: additional-ca-volume
         secret:
           defaultMode: 420
           optional: true
+          {{- if eq ._rox.scanner.mode "slim" }}
+          secretName: additional-ca-sensor
+          {{- else }}
           secretName: additional-ca
-      - emptyDir: {}
-        name: scanner-etc-ssl-volume
-      - emptyDir: {}
-        name: scanner-etc-pki-volume
+          {{- end }}
+      - name: scanner-etc-ssl-volume
+        emptyDir: {}
+      - name: scanner-etc-pki-volume
+        emptyDir: {}
       - name: scanner-config-volume
         configMap:
           name: scanner-config
-      - name: scanner-tls-volume
+      {{- if ._rox._securedClusterCertRefresh }}
+      {{- include "srox.tlsCertsInitContainerVolumes" (list "scanner") | indent 6 }}
+      {{- else }}
+      - name: certs
         secret:
           secretName: scanner-tls
+      {{- end }}
       - name: vuln-temp-db
         emptyDir: {}
       - name: proxy-config-volume
@@ -197,10 +198,16 @@ spec:
       annotations:
         traffic.sidecar.istio.io/excludeInboundPorts: "5432"
         {{- include "srox.podAnnotations" (list . "deployment" "scanner-db") | nindent 8 }}
+        {{- if eq ._rox.env.openshift 4 }}
+        openshift.io/required-scc: nonroot-v2
+        {{- end }}
     spec:
       {{- if ._rox.scanner._dbNodeSelector }}
       nodeSelector:
         {{- ._rox.scanner._dbNodeSelector | nindent 8 }}
+      {{- end }}
+      {{- if ._rox.scanner.dbHostAliases }}
+      hostAliases: {{ toYaml ._rox.scanner.dbHostAliases | nindent 8 }}
       {{- end }}
       {{- if ._rox.scanner.dbTolerations }}
       tolerations:
@@ -217,92 +224,115 @@ spec:
                     operator: NotIn
                     values:
                     - "true"
-            {{ if ._rox.env.openshift }}
             - weight: 50
               preference:
                 matchExpressions:
                   - key: node-role.kubernetes.io/infra
-                    operator: In
-                    values:
-                    - "true"
+                    operator: Exists
             - weight: 25
               preference:
                 matchExpressions:
                   - key: node-role.kubernetes.io/compute
-                    operator: In
-                    values:
-                    - "true"
+                    operator: Exists
+            # From v1.20 node-role.kubernetes.io/control-plane replaces node-role.kubernetes.io/master (removed in
+            # v1.25). We apply both because our goal is not to run pods on control plane nodes for any version of k8s.
             - weight: 100
               preference:
                 matchExpressions:
                   - key: node-role.kubernetes.io/master
-                    operator: NotIn
-                    values:
-                    - "true"
-            {{- end }}
+                    operator: DoesNotExist
+            - weight: 100
+              preference:
+                matchExpressions:
+                  - key: node-role.kubernetes.io/control-plane
+                    operator: DoesNotExist
+      {{- if ._rox.scanner.dbPriorityClassName }}
+      priorityClassName: {{ ._rox.scanner.dbPriorityClassName }}
+      {{- end }}
       initContainers:
-        - name: init-db
-          [< if .FeatureFlags.ROX_LOCAL_IMAGE_SCANNING ->]
-          {{ if eq ._rox.scanner.mode "slim" -}}
-          image: {{ ._rox.scanner.slimDBImage.fullRef | quote }}
-          {{ else -}}
-          image: {{ ._rox.scanner.dbImage.fullRef | quote }}
-          {{ end -}}
-          [< else ->]
-          image: {{ ._rox.scanner.dbImage.fullRef | quote }}
-          [< end ->]
-          command:
-          - /bin/sh
-          - -c
-          - |
-            mkdir -p /var/lib/postgresql/data
-            chmod 700 /var/lib/postgresql/data
-            chown -R postgres:postgres /var/lib/postgresql
-          volumeMounts:
-            - name: db-data
-              mountPath: /var/lib/postgresql/data
-          securityContext:
-            runAsUser: 0
-      containers:
-      - name: db
-        command: ["/usr/local/bin/docker-entrypoint.sh", "postgres", "-c", "config_file=/etc/postgresql.conf"]
-        [< if .FeatureFlags.ROX_LOCAL_IMAGE_SCANNING ->]
+      {{- if ._rox._securedClusterCertRefresh }}
+      - {{ include "srox.tlsCertsInitContainer" (list .  ._rox.scanner._dbResources) | indent 8 | trim }}
+      {{- end }}
+      - name: init-db
         {{ if eq ._rox.scanner.mode "slim" -}}
         image: {{ ._rox.scanner.slimDBImage.fullRef | quote }}
         {{ else -}}
         image: {{ ._rox.scanner.dbImage.fullRef | quote }}
         {{ end -}}
-        [< else ->]
+        env:
+          - name: POSTGRES_PASSWORD_FILE
+            value: "/run/secrets/stackrox.io/secrets/password"
+          - name: ROX_SCANNER_DB_INIT
+            value: "true"
+        resources:
+          {{- ._rox.scanner._dbResources | nindent 12 }}
+        volumeMounts:
+          - name: scanner-db-data
+            mountPath: /var/lib/postgresql/data
+          - name: certs
+            mountPath: /run/secrets/stackrox.io/certs
+            readOnly: true
+          - name: scanner-db-password
+            mountPath: /run/secrets/stackrox.io/secrets
+            readOnly: true
+      containers:
+      - name: db
+        {{ if eq ._rox.scanner.mode "slim" -}}
+        image: {{ ._rox.scanner.slimDBImage.fullRef | quote }}
+        {{ else -}}
         image: {{ ._rox.scanner.dbImage.fullRef | quote }}
-        [< end ->]
+        {{ end -}}
+        env:
+          {{- include "srox.envVars" (list . "deployment" "scanner-db" "db") | nindent 10 }}
         ports:
-        - name: https-db
+        - name: tcp-postgresql
+          protocol: TCP
           containerPort: 5432
         resources:
           {{- ._rox.scanner._dbResources | nindent 10 }}
-        env:
-          {{- include "srox.envVars" (list . "deployment" "scanner-db" "db") | nindent 10 }}
-        securityContext:
-          runAsUser: 70
-          runAsGroup: 70
         volumeMounts:
-          - name: db-data
+          - name: scanner-db-data
             mountPath: /var/lib/postgresql/data
-          - name: scanner-db-tls-volume
+          - name: certs
             mountPath: /run/secrets/stackrox.io/certs
-          - name: scanner-db-password
-            mountPath: /run/secrets/stackrox.io/secrets
+            readOnly: true
       serviceAccountName: scanner
       securityContext:
         fsGroup: 70
+        runAsGroup: 70
+        runAsNonRoot: true
+        runAsUser: 70
       volumes:
       - name: scanner-config-volume
         configMap:
           name: scanner-config
-      - name: scanner-tls-volume
+      {{- if ._rox._securedClusterCertRefresh }}
+      - name: certs
+        emptyDir: {}
+      - name: certs-legacy
         secret:
-          secretName: scanner-tls
-      - name: scanner-db-tls-volume
+          secretName: scanner-db-tls
+          optional: true
+          items:
+          - key: cert.pem
+            path: server.crt
+          - key: key.pem
+            path: server.key
+          - key: ca.pem
+            path: root.crt
+      - name: certs-new
+        secret:
+          secretName: tls-cert-scanner-db
+          optional: true
+          items:
+          - key: cert.pem
+            path: server.crt
+          - key: key.pem
+            path: server.key
+          - key: ca.pem
+            path: root.crt
+      {{- else }}
+      - name: certs
         secret:
           secretName: scanner-db-tls
           defaultMode: 0640
@@ -313,7 +343,8 @@ spec:
             path: server.key
           - key: ca.pem
             path: root.crt
-      - name: db-data
+      {{- end }}
+      - name: scanner-db-data
         emptyDir: {}
       - name: scanner-db-password
         secret:

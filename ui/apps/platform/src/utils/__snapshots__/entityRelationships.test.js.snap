@@ -1,26 +1,26 @@
 // Jest Snapshot v1, https://goo.gl/fbAQLP
 
 exports[`entityRelationshipMap has properties and derived properties 1`] = `
-Object {
-  "CLUSTER": Object {
+{
+  "CLUSTER": {
     "1-children": "NAMESPACE NODE ROLE",
     "2-parents": "",
-    "3-matches        ": "CONTROL",
+    "3-matches        ": "CLUSTER_CVE CONTROL",
     "4-extendedMatches": "",
-    "5-getMatches     ": "CONTROL",
-    "6-getContains        ": "COMPONENT CONTROL CVE DEPLOYMENT IMAGE NAMESPACE NODE POLICY ROLE SECRET SERVICE_ACCOUNT SUBJECT",
-    "7-isContainedInferred": "COMPONENT CONTROL CVE DEPLOYMENT IMAGE POLICY SECRET SERVICE_ACCOUNT SUBJECT",
+    "5-getMatches     ": "CLUSTER_CVE CONTROL",
+    "6-getContains        ": "CONTROL DEPLOYMENT IMAGE IMAGE_COMPONENT IMAGE_CVE NAMESPACE NODE NODE_COMPONENT NODE_CVE POLICY ROLE SECRET SERVICE_ACCOUNT SUBJECT",
+    "7-isContainedInferred": "CONTROL DEPLOYMENT IMAGE IMAGE_COMPONENT IMAGE_CVE NODE_COMPONENT NODE_CVE POLICY SECRET SERVICE_ACCOUNT SUBJECT",
   },
-  "COMPONENT": Object {
+  "CLUSTER_CVE": {
     "1-children": "",
     "2-parents": "",
-    "3-matches        ": "CVE IMAGE NODE",
-    "4-extendedMatches": "DEPLOYMENT",
-    "5-getMatches     ": "CVE DEPLOYMENT IMAGE NODE",
+    "3-matches        ": "",
+    "4-extendedMatches": "CLUSTER",
+    "5-getMatches     ": "CLUSTER",
     "6-getContains        ": "",
     "7-isContainedInferred": "",
   },
-  "CONTROL": Object {
+  "CONTROL": {
     "1-children": "",
     "2-parents": "",
     "3-matches        ": "CLUSTER DEPLOYMENT NODE",
@@ -29,52 +29,79 @@ Object {
     "6-getContains        ": "",
     "7-isContainedInferred": "",
   },
-  "CVE": Object {
-    "1-children": "",
-    "2-parents": "",
-    "3-matches        ": "COMPONENT",
-    "4-extendedMatches": "DEPLOYMENT IMAGE NODE",
-    "5-getMatches     ": "COMPONENT DEPLOYMENT IMAGE NODE",
-    "6-getContains        ": "",
-    "7-isContainedInferred": "",
-  },
-  "DEPLOYMENT": Object {
+  "DEPLOYMENT": {
     "1-children": "IMAGE",
     "2-parents": "CLUSTER NAMESPACE",
     "3-matches        ": "CONTROL POLICY SECRET SERVICE_ACCOUNT",
     "4-extendedMatches": "",
     "5-getMatches     ": "CONTROL POLICY SECRET SERVICE_ACCOUNT",
-    "6-getContains        ": "COMPONENT CVE IMAGE NODE",
-    "7-isContainedInferred": "COMPONENT CVE NODE",
+    "6-getContains        ": "IMAGE IMAGE_COMPONENT IMAGE_CVE",
+    "7-isContainedInferred": "IMAGE_COMPONENT IMAGE_CVE",
   },
-  "IMAGE": Object {
-    "1-children": "COMPONENT",
+  "IMAGE": {
+    "1-children": "IMAGE_COMPONENT",
     "2-parents": "",
     "3-matches        ": "DEPLOYMENT",
     "4-extendedMatches": "",
     "5-getMatches     ": "DEPLOYMENT",
-    "6-getContains        ": "COMPONENT CVE NODE",
-    "7-isContainedInferred": "CVE NODE",
+    "6-getContains        ": "IMAGE_COMPONENT IMAGE_CVE",
+    "7-isContainedInferred": "IMAGE_CVE",
   },
-  "NAMESPACE": Object {
+  "IMAGE_COMPONENT": {
+    "1-children": "",
+    "2-parents": "",
+    "3-matches        ": "IMAGE IMAGE_CVE",
+    "4-extendedMatches": "DEPLOYMENT",
+    "5-getMatches     ": "DEPLOYMENT IMAGE IMAGE_CVE",
+    "6-getContains        ": "",
+    "7-isContainedInferred": "",
+  },
+  "IMAGE_CVE": {
+    "1-children": "",
+    "2-parents": "",
+    "3-matches        ": "IMAGE_COMPONENT",
+    "4-extendedMatches": "DEPLOYMENT IMAGE",
+    "5-getMatches     ": "DEPLOYMENT IMAGE IMAGE_COMPONENT",
+    "6-getContains        ": "",
+    "7-isContainedInferred": "",
+  },
+  "NAMESPACE": {
     "1-children": "DEPLOYMENT SECRET SERVICE_ACCOUNT",
     "2-parents": "CLUSTER",
     "3-matches        ": "",
     "4-extendedMatches": "",
     "5-getMatches     ": "",
-    "6-getContains        ": "COMPONENT CONTROL CVE DEPLOYMENT IMAGE NODE POLICY ROLE SECRET SERVICE_ACCOUNT",
-    "7-isContainedInferred": "COMPONENT CONTROL CVE IMAGE NODE POLICY ROLE",
+    "6-getContains        ": "CONTROL DEPLOYMENT IMAGE IMAGE_COMPONENT IMAGE_CVE POLICY ROLE SECRET SERVICE_ACCOUNT",
+    "7-isContainedInferred": "CONTROL IMAGE IMAGE_COMPONENT IMAGE_CVE POLICY ROLE",
   },
-  "NODE": Object {
-    "1-children": "COMPONENT",
+  "NODE": {
+    "1-children": "NODE_COMPONENT",
     "2-parents": "CLUSTER",
     "3-matches        ": "CONTROL",
     "4-extendedMatches": "",
     "5-getMatches     ": "CONTROL",
-    "6-getContains        ": "COMPONENT CVE IMAGE",
-    "7-isContainedInferred": "CVE IMAGE",
+    "6-getContains        ": "NODE_COMPONENT NODE_CVE",
+    "7-isContainedInferred": "NODE_CVE",
   },
-  "POLICY": Object {
+  "NODE_COMPONENT": {
+    "1-children": "",
+    "2-parents": "",
+    "3-matches        ": "NODE NODE_CVE",
+    "4-extendedMatches": "",
+    "5-getMatches     ": "NODE NODE_CVE",
+    "6-getContains        ": "",
+    "7-isContainedInferred": "",
+  },
+  "NODE_CVE": {
+    "1-children": "",
+    "2-parents": "",
+    "3-matches        ": "NODE_COMPONENT",
+    "4-extendedMatches": "NODE",
+    "5-getMatches     ": "NODE NODE_COMPONENT",
+    "6-getContains        ": "",
+    "7-isContainedInferred": "",
+  },
+  "POLICY": {
     "1-children": "",
     "2-parents": "",
     "3-matches        ": "DEPLOYMENT",
@@ -83,7 +110,7 @@ Object {
     "6-getContains        ": "",
     "7-isContainedInferred": "",
   },
-  "ROLE": Object {
+  "ROLE": {
     "1-children": "",
     "2-parents": "CLUSTER",
     "3-matches        ": "SERVICE_ACCOUNT SUBJECT",
@@ -92,7 +119,7 @@ Object {
     "6-getContains        ": "",
     "7-isContainedInferred": "",
   },
-  "SECRET": Object {
+  "SECRET": {
     "1-children": "",
     "2-parents": "NAMESPACE",
     "3-matches        ": "DEPLOYMENT",
@@ -101,7 +128,7 @@ Object {
     "6-getContains        ": "",
     "7-isContainedInferred": "",
   },
-  "SERVICE_ACCOUNT": Object {
+  "SERVICE_ACCOUNT": {
     "1-children": "",
     "2-parents": "NAMESPACE",
     "3-matches        ": "DEPLOYMENT ROLE",
@@ -110,7 +137,7 @@ Object {
     "6-getContains        ": "",
     "7-isContainedInferred": "",
   },
-  "SUBJECT": Object {
+  "SUBJECT": {
     "1-children": "",
     "2-parents": "",
     "3-matches        ": "ROLE",

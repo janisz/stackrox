@@ -3,19 +3,19 @@ package service
 import (
 	"context"
 
-	"github.com/grpc-ecosystem/grpc-gateway/runtime"
+	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
 	alertDataStore "github.com/stackrox/rox/central/alert/datastore"
 	clusterDataStore "github.com/stackrox/rox/central/cluster/datastore"
 	deploymentDataStore "github.com/stackrox/rox/central/deployment/datastore"
 	imageDataStore "github.com/stackrox/rox/central/image/datastore"
-	nodeDataStore "github.com/stackrox/rox/central/node/globaldatastore"
-	"github.com/stackrox/rox/central/role/resources"
+	nodeDataStore "github.com/stackrox/rox/central/node/datastore"
 	secretDataStore "github.com/stackrox/rox/central/secret/datastore"
 	v1 "github.com/stackrox/rox/generated/api/v1"
 	"github.com/stackrox/rox/pkg/auth/permissions"
 	"github.com/stackrox/rox/pkg/grpc/authz"
 	"github.com/stackrox/rox/pkg/grpc/authz/perrpc"
 	"github.com/stackrox/rox/pkg/grpc/authz/user"
+	"github.com/stackrox/rox/pkg/sac/resources"
 	"google.golang.org/grpc"
 )
 
@@ -38,12 +38,14 @@ var (
 
 // SearchService provides APIs for search.
 type serviceImpl struct {
+	v1.UnimplementedSummaryServiceServer
+
 	alerts      alertDataStore.DataStore
 	clusters    clusterDataStore.DataStore
 	deployments deploymentDataStore.DataStore
 	images      imageDataStore.DataStore
 	secrets     secretDataStore.DataStore
-	nodes       nodeDataStore.GlobalDataStore
+	nodes       nodeDataStore.DataStore
 
 	authorizer authz.Authorizer
 }
@@ -79,6 +81,7 @@ func (s *serviceImpl) AuthFuncOverride(ctx context.Context, fullMethodName strin
 
 // GetSummaryCounts returns the global counts of alerts, clusters, deployments, and images.
 func (s *serviceImpl) GetSummaryCounts(ctx context.Context, _ *v1.Empty) (*v1.SummaryCountsResponse, error) {
+	log.Warn("The `/v1/summary/counts` API has been deprecated in 4.5 and will be removed in the future.")
 	alerts, err := s.alerts.CountAlerts(ctx)
 	if err != nil {
 		log.Error(err)
@@ -91,7 +94,7 @@ func (s *serviceImpl) GetSummaryCounts(ctx context.Context, _ *v1.Empty) (*v1.Su
 		return nil, err
 	}
 
-	numNodes, err := s.nodes.CountAllNodes(ctx)
+	numNodes, err := s.nodes.CountNodes(ctx)
 	if err != nil {
 		log.Error(err)
 		return nil, err

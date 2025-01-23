@@ -4,15 +4,16 @@ import (
 	"crypto"
 	"crypto/tls"
 	"crypto/x509"
+	"slices"
 
 	"github.com/cloudflare/cfssl/helpers"
 	cfsslSigner "github.com/cloudflare/cfssl/signer"
 	"github.com/cloudflare/cfssl/signer/local"
 	"github.com/pkg/errors"
-	"github.com/stackrox/rox/pkg/sliceutils"
 )
 
 // CA represents a StackRox service certificate authority.
+//
 //go:generate mockgen-wrapper
 type CA interface {
 	// CheckProperties checks that the underlying CA certificate is indeed one
@@ -59,8 +60,8 @@ func LoadCAForValidation(certPEM []byte) (CA, error) {
 
 func loadCA(certPEM, keyPEM []byte, forSigning bool) (CA, error) {
 	ca := &ca{
-		certPEM: sliceutils.ByteClone(certPEM),
-		keyPEM:  sliceutils.ByteClone(keyPEM),
+		certPEM: slices.Clone(certPEM),
+		keyPEM:  slices.Clone(keyPEM),
 	}
 
 	if forSigning {
@@ -115,11 +116,11 @@ func (c *ca) PrivateKey() crypto.PrivateKey {
 }
 
 func (c *ca) CertPEM() []byte {
-	return sliceutils.ByteClone(c.certPEM)
+	return slices.Clone(c.certPEM)
 }
 
 func (c *ca) KeyPEM() []byte {
-	return sliceutils.ByteClone(c.keyPEM)
+	return slices.Clone(c.keyPEM)
 }
 
 func (c *ca) CertPool() *x509.CertPool {

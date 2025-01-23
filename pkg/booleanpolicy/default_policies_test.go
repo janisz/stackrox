@@ -8,25 +8,23 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gogo/protobuf/proto"
-	gogoTypes "github.com/gogo/protobuf/types"
 	"github.com/stackrox/rox/generated/storage"
 	"github.com/stackrox/rox/pkg/booleanpolicy/augmentedobjs"
 	"github.com/stackrox/rox/pkg/booleanpolicy/fieldnames"
 	"github.com/stackrox/rox/pkg/booleanpolicy/policyversion"
 	"github.com/stackrox/rox/pkg/booleanpolicy/violationmessages/printer"
 	"github.com/stackrox/rox/pkg/defaults/policies"
-	"github.com/stackrox/rox/pkg/features"
 	"github.com/stackrox/rox/pkg/fixtures"
 	"github.com/stackrox/rox/pkg/images/types"
 	"github.com/stackrox/rox/pkg/kubernetes"
 	policyUtils "github.com/stackrox/rox/pkg/policies"
+	"github.com/stackrox/rox/pkg/protoassert"
+	"github.com/stackrox/rox/pkg/protocompat"
 	"github.com/stackrox/rox/pkg/protoconv"
 	"github.com/stackrox/rox/pkg/protoutils"
 	"github.com/stackrox/rox/pkg/readable"
 	"github.com/stackrox/rox/pkg/set"
 	"github.com/stackrox/rox/pkg/sliceutils"
-	"github.com/stackrox/rox/pkg/testutils/envisolator"
 	"github.com/stackrox/rox/pkg/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -76,8 +74,6 @@ type DefaultPoliciesTestSuite struct {
 	images                  map[string]*storage.Image
 	deploymentsToImages     map[string][]*storage.Image
 	deploymentsToIndicators map[string][]*storage.ProcessIndicator
-
-	envIsolator *envisolator.EnvIsolator
 }
 
 func (suite *DefaultPoliciesTestSuite) SetupSuite() {
@@ -96,10 +92,6 @@ func (suite *DefaultPoliciesTestSuite) SetupSuite() {
 	} {
 		suite.customPolicies[customPolicy.GetName()] = customPolicy
 	}
-
-	suite.envIsolator = envisolator.NewEnvIsolator(suite.T())
-	suite.envIsolator.Setenv(features.ImageSignatureVerification.EnvVar(), "true")
-	suite.envIsolator.Setenv(features.NetworkPolicySystemPolicy.EnvVar(), "true")
 }
 
 func (suite *DefaultPoliciesTestSuite) TearDownSuite() {}
@@ -114,8 +106,107 @@ func (suite *DefaultPoliciesTestSuite) SetupTest() {
 func (suite *DefaultPoliciesTestSuite) imageIDFromDep(deployment *storage.Deployment) string {
 	suite.Require().Len(deployment.GetContainers(), 1, "This function only supports deployments with exactly one container")
 	id := deployment.GetContainers()[0].GetImage().GetId()
-	suite.NotEmpty(id, "Deployment '%s' had no image id", proto.MarshalTextString(deployment))
+	suite.NotEmpty(id, "Deployment '%s' had no image id", protocompat.MarshalTextString(deployment))
 	return id
+}
+
+func (suite *DefaultPoliciesTestSuite) TestNVDCVSSCriteria() {
+	heartbleedDep := &storage.Deployment{
+		Id: "HEARTBLEEDDEPID",
+		Containers: []*storage.Container{
+			{
+				Name:            "nginx",
+				SecurityContext: &storage.SecurityContext{Privileged: true},
+				Image:           &storage.ContainerImage{Id: "HEARTBLEEDDEPSHA"},
+			},
+		},
+	}
+
+	ts := time.Now().AddDate(0, 0, -5)
+	protoTs, err := protocompat.ConvertTimeToTimestampOrError(ts)
+	require.NoError(suite.T(), err)
+
+	suite.addDepAndImages(heartbleedDep, &storage.Image{
+		Id:   "HEARTBLEEDDEPSHA",
+		Name: &storage.ImageName{FullName: "heartbleed"},
+		Scan: &storage.ImageScan{
+			Components: []*storage.EmbeddedImageScanComponent{
+				{Name: "heartbleed", Version: "1.2", Vulns: []*storage.EmbeddedVulnerability{
+					{Cve: "CVE-2014-0160", Link: "https://heartbleed", Cvss: 6, NvdCvss: 8, SetFixedBy: &storage.EmbeddedVulnerability_FixedBy{FixedBy: "v1.2"},
+						FirstImageOccurrence: protoTs},
+				}},
+			},
+		},
+	})
+
+	nvdCvssPolicyGroup := &storage.PolicyGroup{
+		FieldName: fieldnames.NvdCvss,
+		Values: []*storage.PolicyValue{
+			{
+				Value: "> 6",
+			},
+		},
+	}
+
+	policy := policyWithGroups(storage.EventSource_NOT_APPLICABLE, nvdCvssPolicyGroup)
+
+	deployment := suite.deployments["HEARTBLEEDDEPID"]
+	depMatcher, err := BuildDeploymentMatcher(policy)
+	require.NoError(suite.T(), err)
+	violations, err := depMatcher.MatchDeployment(nil, enhancedDeployment(deployment, suite.getImagesForDeployment(deployment)))
+	require.Len(suite.T(), violations.AlertViolations, 1)
+	require.NoError(suite.T(), err)
+	require.Contains(suite.T(), violations.AlertViolations[0].Message, "NVD CVSS")
+
+}
+
+func (suite *DefaultPoliciesTestSuite) TestFixableAndImageFirstOccurenceCriteria() {
+	heartbleedDep := &storage.Deployment{
+		Id: "HEARTBLEEDDEPID",
+		Containers: []*storage.Container{
+			{
+				Name:            "nginx",
+				SecurityContext: &storage.SecurityContext{Privileged: true},
+				Image:           &storage.ContainerImage{Id: "HEARTBLEEDDEPSHA"},
+			},
+		},
+	}
+
+	ts := time.Now().AddDate(0, 0, -5)
+	protoTs, err := protocompat.ConvertTimeToTimestampOrError(ts)
+	require.NoError(suite.T(), err)
+
+	suite.addDepAndImages(heartbleedDep, &storage.Image{
+		Id:   "HEARTBLEEDDEPSHA",
+		Name: &storage.ImageName{FullName: "heartbleed"},
+		Scan: &storage.ImageScan{
+			Components: []*storage.EmbeddedImageScanComponent{
+				{Name: "heartbleed", Version: "1.2", Vulns: []*storage.EmbeddedVulnerability{
+					{Cve: "CVE-2014-0160", Link: "https://heartbleed", Cvss: 6, SetFixedBy: &storage.EmbeddedVulnerability_FixedBy{FixedBy: "v1.2"},
+						FirstImageOccurrence: protoTs},
+				}},
+			},
+		},
+	})
+
+	fixablePolicyGroup := &storage.PolicyGroup{
+		FieldName: fieldnames.Fixable,
+		Values:    []*storage.PolicyValue{{Value: "true"}},
+	}
+	firstImageOccurrenceGroup := &storage.PolicyGroup{
+		FieldName: fieldnames.DaysSinceImageFirstDiscovered,
+		Values:    []*storage.PolicyValue{{Value: "2"}},
+	}
+
+	policy := policyWithGroups(storage.EventSource_NOT_APPLICABLE, fixablePolicyGroup, firstImageOccurrenceGroup)
+
+	deployment := suite.deployments["HEARTBLEEDDEPID"]
+	depMatcher, err := BuildDeploymentMatcher(policy)
+	require.NoError(suite.T(), err)
+	violations, err := depMatcher.MatchDeployment(nil, enhancedDeployment(deployment, suite.getImagesForDeployment(deployment)))
+	require.Len(suite.T(), violations.AlertViolations, 1)
+	require.NoError(suite.T(), err)
+
 }
 
 func (suite *DefaultPoliciesTestSuite) TestNoDuplicatePolicyIDs() {
@@ -230,7 +321,7 @@ func (suite *DefaultPoliciesTestSuite) addIndicator(deploymentID, name, args, pa
 			Name:         name,
 			Args:         args,
 			ExecFilePath: path,
-			Time:         gogoTypes.TimestampNow(),
+			Time:         protocompat.TimestampNow(),
 			LineageInfo:  lineageInfo,
 			Uid:          uid,
 		},
@@ -268,11 +359,11 @@ func getViolationsWithAndWithoutCaching(t *testing.T, matcher func(cache *CacheR
 	var cache CacheReceptacle
 	violationsWithEmptyCache, err := matcher(&cache)
 	require.NoError(t, err)
-	require.Equal(t, violations, violationsWithEmptyCache)
+	assertViolations(t, violations, violationsWithEmptyCache)
 
 	violationsWithNonEmptyCache, err := matcher(&cache)
 	require.NoError(t, err)
-	require.Equal(t, violations, violationsWithNonEmptyCache)
+	assertViolations(t, violations, violationsWithNonEmptyCache)
 
 	return violations
 }
@@ -1122,12 +1213,10 @@ func (suite *DefaultPoliciesTestSuite) TestDefaultPolicies() {
 			},
 		},
 		{
-			policyName: "No resource requests or limits specified",
+			policyName: "No CPU request or memory limit specified",
 			expectedViolations: map[string][]*storage.Alert_Violation{
 				fixtureDep.GetId(): {
-					{Message: "CPU limit set to 0 cores for container 'nginx110container'"},
 					{Message: "Memory limit set to 0 MB for container 'nginx110container'"},
-					{Message: "Memory request set to 0 MB for container 'nginx110container'"},
 				},
 			},
 		},
@@ -1431,7 +1520,7 @@ func (suite *DefaultPoliciesTestSuite) TestDefaultPolicies() {
 				for deploymentID, processes := range c.expectedProcessViolations {
 					expectedProcesses := set.NewStringSet(sliceutils.Map(processes, func(p *storage.ProcessIndicator) string {
 						return p.GetId()
-					}).([]string)...)
+					})...)
 					deployment := suite.deployments[deploymentID]
 
 					for _, process := range suite.deploymentsToIndicators[deploymentID] {
@@ -1472,7 +1561,7 @@ func (suite *DefaultPoliciesTestSuite) TestDefaultPolicies() {
 						if c.policyName == "Images with no scans" {
 							if len(suite.deployments[id].GetContainers()) == 1 {
 								msg := fmt.Sprintf(c.sampleViolationForMatched, suite.deployments[id].GetContainers()[0].GetName())
-								assert.Equal(t, actualViolations[id], []*storage.Alert_Violation{{Message: msg}})
+								protoassert.SlicesEqual(t, actualViolations[id], []*storage.Alert_Violation{{Message: msg}})
 							}
 						}
 					}
@@ -1488,10 +1577,10 @@ func (suite *DefaultPoliciesTestSuite) TestDefaultPolicies() {
 					if c.allowUnvalidatedViolations {
 						assert.NotEmpty(t, violations)
 						for _, violation := range violations {
-							assert.Contains(t, actualViolations[id], violation)
+							protoassert.SliceContains(t, actualViolations[id], violation)
 						}
 					} else {
-						assert.Equal(t, violations, actualViolations[id])
+						protoassert.SlicesEqual(t, violations, actualViolations[id])
 					}
 				} else {
 					assert.NotContains(t, actualViolations, id)
@@ -1740,7 +1829,7 @@ func (suite *DefaultPoliciesTestSuite) TestDefaultPolicies() {
 
 			for id, violations := range c.expectedViolations {
 				assert.Contains(t, actualViolations, id)
-				assert.Equal(t, violations, actualViolations[id])
+				protoassert.SlicesEqual(t, violations, actualViolations[id])
 			}
 			if len(c.shouldNotMatch) > 0 {
 				if c.policyName == "Required Image Label" {
@@ -1759,7 +1848,7 @@ func (suite *DefaultPoliciesTestSuite) TestDefaultPolicies() {
 				for id := range suite.images {
 					if _, shouldNotMatch := c.shouldNotMatch[id]; !shouldNotMatch {
 						assert.Contains(t, actualViolations, id)
-						assert.Equal(t, actualViolations[id], []*storage.Alert_Violation{{Message: c.sampleViolationForMatched}})
+						protoassert.SlicesEqual(t, actualViolations[id], []*storage.Alert_Violation{{Message: c.sampleViolationForMatched}})
 					}
 				}
 			}
@@ -1820,7 +1909,7 @@ func (suite *DefaultPoliciesTestSuite) TestMapPolicyMatchOne() {
 			for _, v := range c.expectedViolations {
 				expectedMessages = append(expectedMessages, &storage.Alert_Violation{Message: v})
 			}
-			suite.Equal(matched.AlertViolations, expectedMessages)
+			protoassert.SlicesEqual(suite.T(), matched.AlertViolations, expectedMessages)
 		})
 	}
 }
@@ -1869,9 +1958,9 @@ func policyWithSingleKeyValue(fieldName, value string, negate bool) *storage.Pol
 }
 
 func policyWithSingleFieldAndValues(fieldName string, values []string, negate bool, op storage.BooleanOperator) *storage.Policy {
-	return policyWithGroups(storage.EventSource_NOT_APPLICABLE, &storage.PolicyGroup{FieldName: fieldName, Values: sliceutils.Map(values, func(val *string) *storage.PolicyValue {
-		return &storage.PolicyValue{Value: *val}
-	}).([]*storage.PolicyValue), Negate: negate, BooleanOperator: op})
+	return policyWithGroups(storage.EventSource_NOT_APPLICABLE, &storage.PolicyGroup{FieldName: fieldName, Values: sliceutils.Map(values, func(val string) *storage.PolicyValue {
+		return &storage.PolicyValue{Value: val}
+	}), Negate: negate, BooleanOperator: op})
 }
 
 func processBaselineMessage(dep *storage.Deployment, baseline bool, privileged bool, processNames ...string) []*storage.Alert_Violation {
@@ -1906,16 +1995,16 @@ func assertNetworkBaselineMessagesEqual(
 	thisWithoutTime := make([]*storage.Alert_Violation, 0, len(this))
 	thatWithoutTime := make([]*storage.Alert_Violation, 0, len(that))
 	for _, violation := range this {
-		cp := violation.Clone()
+		cp := violation.CloneVT()
 		cp.Time = nil
 		thisWithoutTime = append(thisWithoutTime, cp)
 	}
 	for _, violation := range that {
-		cp := violation.Clone()
+		cp := violation.CloneVT()
 		cp.Time = nil
 		thatWithoutTime = append(thatWithoutTime, cp)
 	}
-	suite.ElementsMatch(thisWithoutTime, thatWithoutTime)
+	protoassert.ElementsMatch(suite.T(), thisWithoutTime, thatWithoutTime)
 }
 
 func privilegedMessage(dep *storage.Deployment) []*storage.Alert_Violation {
@@ -1936,7 +2025,7 @@ func rbacPermissionMessage(level string) []*storage.Alert_Violation {
 func (suite *DefaultPoliciesTestSuite) TestK8sRBACField() {
 	deployments := make(map[string]*storage.Deployment)
 	for permissionLevelStr, permissionLevel := range storage.PermissionLevel_value {
-		dep := fixtures.GetDeployment().Clone()
+		dep := fixtures.GetDeployment().CloneVT()
 		dep.ServiceAccountPermissionLevel = storage.PermissionLevel(permissionLevel)
 		deployments[permissionLevelStr] = dep
 	}
@@ -1997,7 +2086,7 @@ func (suite *DefaultPoliciesTestSuite) TestK8sRBACField() {
 				require.NoError(t, err)
 				if len(violations.AlertViolations) > 0 {
 					matched.Add(depRef)
-					assert.Equal(t, violations.AlertViolations, c.expectedViolations[depRef])
+					protoassert.SlicesEqual(t, violations.AlertViolations, c.expectedViolations[depRef])
 				} else {
 					assert.Empty(t, c.expectedViolations[depRef])
 				}
@@ -2010,7 +2099,7 @@ func (suite *DefaultPoliciesTestSuite) TestK8sRBACField() {
 func (suite *DefaultPoliciesTestSuite) TestPortExposure() {
 	deployments := make(map[string]*storage.Deployment)
 	for exposureLevelStr, exposureLevel := range storage.PortConfig_ExposureLevel_value {
-		dep := fixtures.GetDeployment().Clone()
+		dep := fixtures.GetDeployment().CloneVT()
 		dep.Ports = []*storage.PortConfig{{ExposureInfos: []*storage.PortConfig_ExposureInfo{{Level: storage.PortConfig_ExposureLevel(exposureLevel)}}}}
 		deployments[exposureLevelStr] = dep
 	}
@@ -2077,7 +2166,7 @@ func (suite *DefaultPoliciesTestSuite) TestImageOS() {
 		"debian:10",
 	} {
 		img := imageWithOS(imgName)
-		dep := fixtures.GetDeployment().Clone()
+		dep := fixtures.GetDeployment().CloneVT()
 		dep.Containers = []*storage.Container{
 			{
 				Name:  imgName,
@@ -2097,6 +2186,10 @@ func (suite *DefaultPoliciesTestSuite) TestImageOS() {
 		},
 		{
 			value:           "alpine",
+			expectedMatches: []string{},
+		},
+		{
+			value:           "alpine.*",
 			expectedMatches: []string{"alpine:v3.4", "alpine:v3.11"},
 		},
 		{
@@ -2145,11 +2238,6 @@ func (suite *DefaultPoliciesTestSuite) TestImageOS() {
 }
 
 func (suite *DefaultPoliciesTestSuite) TestImageVerified() {
-
-	if !features.ImageSignatureVerification.Enabled() {
-		return
-	}
-
 	const (
 		verifier0  = "io.stackrox.signatureintegration.00000000-0000-0000-0000-000000000001"
 		verifier1  = "io.stackrox.signatureintegration.00000000-0000-0000-0000-000000000002"
@@ -2166,8 +2254,9 @@ func (suite *DefaultPoliciesTestSuite) TestImageVerified() {
 		}}),
 		imageWithSignatureVerificationResults("image_nil_results", nil),
 		imageWithSignatureVerificationResults("verified_by_0", []*storage.ImageSignatureVerificationResult{{
-			VerifierId: verifier0,
-			Status:     storage.ImageSignatureVerificationResult_VERIFIED,
+			VerifierId:              verifier0,
+			Status:                  storage.ImageSignatureVerificationResult_VERIFIED,
+			VerifiedImageReferences: []string{"verified_by_0"},
 		}}),
 		imageWithSignatureVerificationResults("unverified_image", []*storage.ImageSignatureVerificationResult{{
 			VerifierId: unverifier,
@@ -2177,15 +2266,18 @@ func (suite *DefaultPoliciesTestSuite) TestImageVerified() {
 			VerifierId: verifier2,
 			Status:     storage.ImageSignatureVerificationResult_FAILED_VERIFICATION,
 		}, {
-			VerifierId: verifier3,
-			Status:     storage.ImageSignatureVerificationResult_VERIFIED,
+			VerifierId:              verifier3,
+			Status:                  storage.ImageSignatureVerificationResult_VERIFIED,
+			VerifiedImageReferences: []string{"verified_by_3"},
 		}}),
 		imageWithSignatureVerificationResults("verified_by_2_and_3", []*storage.ImageSignatureVerificationResult{{
-			VerifierId: verifier2,
-			Status:     storage.ImageSignatureVerificationResult_VERIFIED,
+			VerifierId:              verifier2,
+			Status:                  storage.ImageSignatureVerificationResult_VERIFIED,
+			VerifiedImageReferences: []string{"verified_by_2_and_3"},
 		}, {
-			VerifierId: verifier3,
-			Status:     storage.ImageSignatureVerificationResult_VERIFIED,
+			VerifierId:              verifier3,
+			Status:                  storage.ImageSignatureVerificationResult_VERIFIED,
+			VerifiedImageReferences: []string{"verified_by_2_and_3"},
 		}}),
 	}
 
@@ -2278,6 +2370,85 @@ func (suite *DefaultPoliciesTestSuite) TestImageVerified() {
 	}
 }
 
+func (suite *DefaultPoliciesTestSuite) TestImageVerified_WithDeployment() {
+	const (
+		verifier1 = "io.stackrox.signatureintegration.00000000-0000-0000-0000-000000000002"
+		verifier2 = "io.stackrox.signatureintegration.00000000-0000-0000-0000-000000000003"
+		verifier3 = "io.stackrox.signatureintegration.00000000-0000-0000-0000-000000000004"
+	)
+
+	imgVerifiedAndMatchingReference := imageWithSignatureVerificationResults("image_verified_by_1",
+		[]*storage.ImageSignatureVerificationResult{
+			{
+				VerifierId:              verifier1,
+				Status:                  storage.ImageSignatureVerificationResult_VERIFIED,
+				VerifiedImageReferences: []string{"image_verified_by_1"},
+			},
+		})
+
+	imgVerifiedAndMatchingMultipleReferences := imageWithSignatureVerificationResults("image_verified_by_2",
+		[]*storage.ImageSignatureVerificationResult{
+			{
+				VerifierId:              verifier3,
+				Status:                  storage.ImageSignatureVerificationResult_VERIFIED,
+				VerifiedImageReferences: []string{"image_with_alternative_verified_reference", "image_verified_by_2"},
+			},
+		})
+
+	imgVerifiedButNotMatchingReference := imageWithSignatureVerificationResults("image_with_alternative_verified_reference",
+		[]*storage.ImageSignatureVerificationResult{
+			{
+				VerifierId:              verifier2,
+				Status:                  storage.ImageSignatureVerificationResult_VERIFIED,
+				VerifiedImageReferences: []string{"image_verified_by_2"},
+			},
+		})
+
+	cases := map[string]struct {
+		deployment       *storage.Deployment
+		image            *storage.Image
+		matchingVerifier string
+		expectViolation  bool
+	}{
+		"deployment with matching verified image reference shouldn't lead in alert message": {
+			deployment:       deploymentWithImage("deployment_with_image_verified_by_1", imgVerifiedAndMatchingReference),
+			image:            imgVerifiedAndMatchingReference,
+			matchingVerifier: verifier1,
+		},
+		"deployment with verified result but no matching verified image reference should lead to alert message": {
+			deployment:       deploymentWithImage("deployment_with_image_alternative_verified_reference", imgVerifiedButNotMatchingReference),
+			image:            imgVerifiedButNotMatchingReference,
+			matchingVerifier: verifier2,
+			expectViolation:  true,
+		},
+		"deployment with verified result and multiple matching verified image references shouldn't lead to alert message": {
+			deployment:       deploymentWithImage("deployment_with_image_verified_by_2", imgVerifiedAndMatchingMultipleReferences),
+			image:            imgVerifiedAndMatchingMultipleReferences,
+			matchingVerifier: verifier3,
+		},
+	}
+
+	for name, c := range cases {
+		suite.Run(name, func() {
+			deploymentMatcher, err := BuildDeploymentMatcher(policyWithSingleFieldAndValues(fieldnames.ImageSignatureVerifiedBy,
+				[]string{c.matchingVerifier}, false, storage.BooleanOperator_OR))
+			suite.Require().NoError(err)
+
+			violations, err := deploymentMatcher.MatchDeployment(nil, EnhancedDeployment{
+				Deployment: c.deployment,
+				Images:     []*storage.Image{c.image},
+			})
+			suite.Require().NoError(err)
+
+			if c.expectViolation {
+				suite.NotEmpty(violations.AlertViolations)
+			} else {
+				suite.Empty(violations.AlertViolations)
+			}
+		})
+	}
+}
+
 func (suite *DefaultPoliciesTestSuite) TestContainerName() {
 	var deps []*storage.Deployment
 	for _, containerName := range []string{
@@ -2287,7 +2458,7 @@ func (suite *DefaultPoliciesTestSuite) TestContainerName() {
 		"container_internal",
 		"external_container",
 	} {
-		dep := fixtures.GetDeployment().Clone()
+		dep := fixtures.GetDeployment().CloneVT()
 		dep.Containers = []*storage.Container{
 			{
 				Name: containerName,
@@ -2366,7 +2537,7 @@ func (suite *DefaultPoliciesTestSuite) TestAllowPrivilegeEscalationPolicyCriteri
 			AllowPrivilegeEscalation: false,
 		},
 	} {
-		dep := fixtures.GetDeployment().Clone()
+		dep := fixtures.GetDeployment().CloneVT()
 		dep.Containers[0].Name = d.ContainerName
 		if d.AllowPrivilegeEscalation {
 			dep.Containers[0].SecurityContext.AllowPrivilegeEscalation = d.AllowPrivilegeEscalation
@@ -2440,7 +2611,7 @@ func (suite *DefaultPoliciesTestSuite) TestAutomountServiceAccountToken() {
 			ServiceAccountName: "custom",
 		},
 	} {
-		dep := fixtures.GetDeployment().Clone()
+		dep := fixtures.GetDeployment().CloneVT()
 		dep.Name = d.DeploymentName
 		dep.ServiceAccount = d.ServiceAccountName
 		dep.AutomountServiceAccountToken = d.AutomountServiceAccountTokens
@@ -2504,7 +2675,7 @@ func (suite *DefaultPoliciesTestSuite) TestAutomountServiceAccountToken() {
 			violations, err := matcher.MatchDeployment(nil, enhancedDeployment(dep, suite.getImagesForDeployment(dep)))
 			suite.NoError(err, "deployment matcher run must succeed")
 			suite.Empty(violations.ProcessViolation)
-			suite.Equal(c.ExpectedAlerts, violations.AlertViolations)
+			protoassert.SlicesEqual(suite.T(), c.ExpectedAlerts, violations.AlertViolations)
 		})
 	}
 }
@@ -2515,7 +2686,7 @@ func (suite *DefaultPoliciesTestSuite) TestRuntimeClass() {
 		"",
 		"blah",
 	} {
-		dep := fixtures.GetDeployment().Clone()
+		dep := fixtures.GetDeployment().CloneVT()
 		dep.RuntimeClass = runtimeClass
 		deps = append(deps, dep)
 	}
@@ -2575,7 +2746,7 @@ func (suite *DefaultPoliciesTestSuite) TestNamespace() {
 		"dep_internal",
 		"external_dep",
 	} {
-		dep := fixtures.GetDeployment().Clone()
+		dep := fixtures.GetDeployment().CloneVT()
 		dep.Namespace = namespace
 		deps = append(deps, dep)
 	}
@@ -2633,11 +2804,11 @@ func (suite *DefaultPoliciesTestSuite) TestNamespace() {
 }
 
 func (suite *DefaultPoliciesTestSuite) TestDropCaps() {
-	testCaps := []string{"SYS_MODULE", "SYS_NICE", "SYS_PTRACE"}
+	testCaps := []string{"SYS_MODULE", "SYS_NICE", "SYS_PTRACE", "ALL"}
 
 	deployments := make(map[string]*storage.Deployment)
-	for _, idxs := range [][]int{{}, {0}, {1}, {2}, {0, 1}, {1, 2}, {0, 1, 2}} {
-		dep := fixtures.GetDeployment().Clone()
+	for _, idxs := range [][]int{{}, {0}, {1}, {2}, {0, 1}, {1, 2}, {0, 1, 2}, {3}} {
+		dep := fixtures.GetDeployment().CloneVT()
 		dep.Containers[0].SecurityContext.DropCapabilities = make([]string, 0, len(idxs))
 		for _, idx := range idxs {
 			dep.Containers[0].SecurityContext.DropCapabilities = append(dep.Containers[0].SecurityContext.DropCapabilities, testCaps[idx])
@@ -2648,6 +2819,7 @@ func (suite *DefaultPoliciesTestSuite) TestDropCaps() {
 	assertMessageMatches := func(t *testing.T, depRef string, violations []*storage.Alert_Violation) {
 		depRefToExpectedMsg := map[string]string{
 			"":                   "no capabilities",
+			"ALL":                "all capabilities",
 			"MODULE":             "SYS_MODULE",
 			"NICE":               "SYS_NICE",
 			"PTRACE":             "SYS_PTRACE",
@@ -2685,6 +2857,11 @@ func (suite *DefaultPoliciesTestSuite) TestDropCaps() {
 			storage.BooleanOperator_AND,
 			[]string{"", "MODULE", "PTRACE", "NICE", "MODULE,NICE"},
 		},
+		{
+			[]string{"ALL"},
+			storage.BooleanOperator_AND,
+			[]string{"", "MODULE", "NICE", "PTRACE", "MODULE,NICE", "NICE,PTRACE", "MODULE,NICE,PTRACE"},
+		},
 	} {
 		c := testCase
 		suite.T().Run(fmt.Sprintf("%+v", c), func(t *testing.T) {
@@ -2704,12 +2881,70 @@ func (suite *DefaultPoliciesTestSuite) TestDropCaps() {
 	}
 }
 
+func (suite *DefaultPoliciesTestSuite) TestAddCaps() {
+	testCaps := []string{"SYS_MODULE", "SYS_NICE", "SYS_PTRACE"}
+
+	deployments := make(map[string]*storage.Deployment)
+	for _, idxs := range [][]int{{}, {0}, {1}, {2}, {0, 1}, {1, 2}, {0, 1, 2}} {
+		dep := fixtures.GetDeployment().CloneVT()
+		dep.Containers[0].SecurityContext.AddCapabilities = make([]string, 0, len(idxs))
+		for _, idx := range idxs {
+			dep.Containers[0].SecurityContext.AddCapabilities = append(dep.Containers[0].SecurityContext.AddCapabilities, testCaps[idx])
+		}
+		deployments[strings.ReplaceAll(strings.Join(dep.Containers[0].SecurityContext.AddCapabilities, ","), "SYS_", "")] = dep
+	}
+
+	for _, testCase := range []struct {
+		values          []string
+		op              storage.BooleanOperator
+		expectedMatches []string
+	}{
+		{
+			// Nothing adds this capability
+			[]string{"SYSLOG"},
+			storage.BooleanOperator_OR,
+			[]string{},
+		},
+		{
+			[]string{"SYS_NICE"},
+			storage.BooleanOperator_OR,
+			[]string{"NICE", "MODULE,NICE", "NICE,PTRACE", "MODULE,NICE,PTRACE"},
+		},
+		{
+			[]string{"SYS_NICE", "SYS_PTRACE"},
+			storage.BooleanOperator_OR,
+			[]string{"NICE", "PTRACE", "MODULE,NICE", "NICE,PTRACE", "MODULE,NICE,PTRACE"},
+		},
+		{
+			[]string{"SYS_NICE", "SYS_PTRACE"},
+			storage.BooleanOperator_AND,
+			[]string{"NICE,PTRACE", "MODULE,NICE,PTRACE"},
+		},
+	} {
+		c := testCase
+		suite.T().Run(fmt.Sprintf("%+v", c), func(t *testing.T) {
+			matcher, err := BuildDeploymentMatcher(policyWithSingleFieldAndValues(fieldnames.AddCaps, c.values, false, c.op))
+			require.NoError(t, err)
+			matched := set.NewStringSet()
+			for depRef, dep := range deployments {
+				violations, err := matcher.MatchDeployment(nil, enhancedDeployment(dep, suite.getImagesForDeployment(dep)))
+				require.NoError(t, err)
+				if len(violations.AlertViolations) > 0 {
+					matched.Add(depRef)
+					require.Len(t, violations.AlertViolations, 1)
+				}
+			}
+			assert.ElementsMatch(t, matched.AsSlice(), c.expectedMatches, "Got %v, expected: %v", matched.AsSlice(), c.expectedMatches)
+		})
+	}
+}
+
 func (suite *DefaultPoliciesTestSuite) TestProcessBaseline() {
-	privilegedDep := fixtures.GetDeployment().Clone()
+	privilegedDep := fixtures.GetDeployment().CloneVT()
 	privilegedDep.Id = "PRIVILEGED"
 	suite.addDepAndImages(privilegedDep)
 
-	nonPrivilegedDep := fixtures.GetDeployment().Clone()
+	nonPrivilegedDep := fixtures.GetDeployment().CloneVT()
 	nonPrivilegedDep.Id = "NOTPRIVILEGED"
 	nonPrivilegedDep.Containers[0].SecurityContext.Privileged = false
 	suite.addDepAndImages(nonPrivilegedDep)
@@ -2843,7 +3078,7 @@ func (suite *DefaultPoliciesTestSuite) TestProcessBaseline() {
 
 			for id, violations := range c.expectedViolations {
 				assert.Contains(t, actualViolations, id)
-				assert.ElementsMatch(t, violations, actualViolations[id])
+				protoassert.ElementsMatch(t, violations, actualViolations[id])
 			}
 		})
 	}
@@ -2917,7 +3152,7 @@ func (suite *DefaultPoliciesTestSuite) TestKubeEventConstraints() {
 			if len(c.expectedViolations) == 0 {
 				assert.Nil(t, actualViolations.AlertViolations)
 			} else {
-				assert.ElementsMatch(t, c.expectedViolations, actualViolations.AlertViolations)
+				protoassert.ElementsMatch(t, c.expectedViolations, actualViolations.AlertViolations)
 			}
 		})
 	}
@@ -2993,14 +3228,14 @@ func (suite *DefaultPoliciesTestSuite) TestKubeEventDefaultPolicies() {
 
 				assert.Nil(t, actualViolations.AlertViolations)
 			} else {
-				assert.ElementsMatch(t, c.expectedViolations, actualViolations.AlertViolations)
+				protoassert.ElementsMatch(t, c.expectedViolations, actualViolations.AlertViolations)
 			}
 		})
 	}
 }
 
 func (suite *DefaultPoliciesTestSuite) TestNetworkBaselinePolicy() {
-	deployment := fixtures.GetDeployment().Clone()
+	deployment := fixtures.GetDeployment().CloneVT()
 	suite.addDepAndImages(deployment)
 
 	// Create a policy for triggering flows that are not in baseline
@@ -3011,8 +3246,6 @@ func (suite *DefaultPoliciesTestSuite) TestNetworkBaselinePolicy() {
 	suite.NoError(err)
 
 	srcName, dstName, port, protocol := "deployment-name", "ext-source-name", 1, storage.L4Protocol_L4_PROTOCOL_TCP
-	timestamp, err := gogoTypes.TimestampProto(time.Now())
-	suite.Nil(err)
 	flow := &augmentedobjs.NetworkFlowDetails{
 		SrcEntityName:        srcName,
 		SrcEntityType:        storage.NetworkEntityInfo_DEPLOYMENT,
@@ -3021,7 +3254,7 @@ func (suite *DefaultPoliciesTestSuite) TestNetworkBaselinePolicy() {
 		DstPort:              uint32(port),
 		L4Protocol:           protocol,
 		NotInNetworkBaseline: true,
-		LastSeenTimestamp:    timestamp,
+		LastSeenTimestamp:    time.Now(),
 	}
 
 	violations, err := m.MatchDeploymentWithNetworkFlowInfo(nil, enhancedDeployment(deployment, suite.getImagesForDeployment(deployment)), flow)
@@ -3097,7 +3330,7 @@ func (suite *DefaultPoliciesTestSuite) TestReplicasPolicyCriteria() {
 		},
 	} {
 		suite.Run(testCase.caseName, func() {
-			deployment := fixtures.GetDeployment().Clone()
+			deployment := fixtures.GetDeployment().CloneVT()
 			deployment.Replicas = testCase.replicas
 			policy := policyWithSingleKeyValue(fieldnames.Replicas, testCase.policyValue, testCase.negate)
 
@@ -3107,7 +3340,7 @@ func (suite *DefaultPoliciesTestSuite) TestReplicasPolicyCriteria() {
 			suite.NoError(err, "deployment matcher run must succeed")
 
 			suite.Empty(violations.ProcessViolation)
-			suite.Equal(violations.AlertViolations, testCase.alerts)
+			protoassert.SlicesEqual(suite.T(), violations.AlertViolations, testCase.alerts)
 		})
 	}
 }
@@ -3180,7 +3413,7 @@ func (suite *DefaultPoliciesTestSuite) TestLivenessProbePolicyCriteria() {
 		},
 	} {
 		suite.Run(testCase.caseName, func() {
-			deployment := fixtures.GetDeployment().Clone()
+			deployment := fixtures.GetDeployment().CloneVT()
 			deployment.Containers = testCase.containers
 			policy := policyWithSingleKeyValue(fieldnames.LivenessProbeDefined, testCase.policyValue, false)
 
@@ -3190,7 +3423,7 @@ func (suite *DefaultPoliciesTestSuite) TestLivenessProbePolicyCriteria() {
 			suite.NoError(err, "deployment matcher run must succeed")
 
 			suite.Empty(violations.ProcessViolation)
-			suite.Equal(violations.AlertViolations, testCase.alerts)
+			protoassert.SlicesEqual(suite.T(), violations.AlertViolations, testCase.alerts)
 		})
 	}
 }
@@ -3205,10 +3438,6 @@ func (suite *DefaultPoliciesTestSuite) getViolations(policy *storage.Policy, dep
 }
 
 func (suite *DefaultPoliciesTestSuite) TestNetworkPolicyFields() {
-	if !features.NetworkPolicySystemPolicy.Enabled() {
-		return
-	}
-
 	testCases := map[string]struct {
 		netpolsApplied *augmentedobjs.NetworkPoliciesApplied
 		alerts         []*storage.Alert_Violation
@@ -3279,7 +3508,7 @@ func (suite *DefaultPoliciesTestSuite) TestNetworkPolicyFields() {
 
 	for name, testCase := range testCases {
 		suite.Run(name, func() {
-			deployment := fixtures.GetDeployment().Clone()
+			deployment := fixtures.GetDeployment().CloneVT()
 			missingIngressPolicy := policyWithSingleKeyValue(fieldnames.HasIngressNetworkPolicy, "false", false)
 			missingEgressPolicy := policyWithSingleKeyValue(fieldnames.HasEgressNetworkPolicy, "false", false)
 
@@ -3296,7 +3525,7 @@ func (suite *DefaultPoliciesTestSuite) TestNetworkPolicyFields() {
 			for i, expected := range testCase.alerts {
 				suite.Equal(expected.GetType(), allAlerts[i].Type)
 				suite.Equal(expected.GetMessage(), allAlerts[i].Message)
-				suite.Equal(expected.GetKeyValueAttrs(), allAlerts[i].GetKeyValueAttrs())
+				protoassert.Equal(suite.T(), expected.GetKeyValueAttrs(), allAlerts[i].GetKeyValueAttrs())
 				// We do not want to compare time, as the violation timestamp uses now()
 				suite.NotNil(allAlerts[i].GetTime())
 			}
@@ -3372,7 +3601,7 @@ func (suite *DefaultPoliciesTestSuite) TestReadinessProbePolicyCriteria() {
 		},
 	} {
 		suite.Run(testCase.caseName, func() {
-			deployment := fixtures.GetDeployment().Clone()
+			deployment := fixtures.GetDeployment().CloneVT()
 			deployment.Containers = testCase.containers
 			policy := policyWithSingleKeyValue(fieldnames.ReadinessProbeDefined, testCase.policyValue, false)
 
@@ -3382,7 +3611,7 @@ func (suite *DefaultPoliciesTestSuite) TestReadinessProbePolicyCriteria() {
 			suite.NoError(err, "deployment matcher run must succeed")
 
 			suite.Empty(violations.ProcessViolation)
-			suite.Equal(violations.AlertViolations, testCase.alerts)
+			protoassert.SlicesEqual(suite.T(), violations.AlertViolations, testCase.alerts)
 		})
 	}
 }
@@ -3400,11 +3629,11 @@ func newIndicator(deployment *storage.Deployment, name, args, execFilePath strin
 }
 
 func BenchmarkProcessPolicies(b *testing.B) {
-	privilegedDep := fixtures.GetDeployment().Clone()
+	privilegedDep := fixtures.GetDeployment().CloneVT()
 	privilegedDep.Id = "PRIVILEGED"
 	images := []*storage.Image{fixtures.GetImage(), fixtures.GetImage()}
 
-	nonPrivilegedDep := fixtures.GetDeployment().Clone()
+	nonPrivilegedDep := fixtures.GetDeployment().CloneVT()
 	nonPrivilegedDep.Id = "NOTPRIVILEGED"
 	nonPrivilegedDep.Containers[0].SecurityContext.Privileged = false
 
@@ -3572,7 +3801,7 @@ func BenchmarkProcessPolicies(b *testing.B) {
 						require.NoError(b, err)
 					}
 				})
-				assert.Equal(b, resNoCaching, resWithCaching)
+				assertViolations(b, resNoCaching, resWithCaching)
 			})
 		}
 	}
@@ -3655,4 +3884,10 @@ func podPortForwardEvent(pod string, port int32) *storage.KubernetesEvent {
 			},
 		},
 	}
+}
+
+func assertViolations(t testing.TB, expected, actual Violations) {
+	t.Helper()
+	protoassert.Equal(t, expected.ProcessViolation, actual.ProcessViolation)
+	protoassert.SlicesEqual(t, expected.AlertViolations, actual.AlertViolations)
 }

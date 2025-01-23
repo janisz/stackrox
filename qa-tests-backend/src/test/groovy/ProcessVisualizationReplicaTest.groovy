@@ -1,12 +1,11 @@
-import services.ProcessService
-
-import groups.BAT
-import groups.RUNTIME
-import spock.lang.Unroll
 import objects.Deployment
-import org.junit.experimental.categories.Category
+import services.ProcessService
 import util.Timer
 
+import spock.lang.Tag
+import spock.lang.Unroll
+
+@Tag("PZ")
 class ProcessVisualizationReplicaTest extends BaseSpecification {
     static final private Integer REPLICACOUNT = 4
 
@@ -18,13 +17,12 @@ class ProcessVisualizationReplicaTest extends BaseSpecification {
             new Deployment()
                 .setName (APACHEDEPLOYMENT)
                 .setReplicas(REPLICACOUNT)
-                .setImage ("quay.io/rhacs-eng/qa:apache-server")
+                .setImage ("quay.io/rhacs-eng/qa-multi-arch:apache-server")
                 .addLabel ("app", "test" ),
             new Deployment()
                 .setName (MONGODEPLOYMENT)
                 .setReplicas(REPLICACOUNT)
-                .setImage ("quay.io/rhacs-eng/qa" +
-                    ":mongo-dec7f10108a87ff660a0d56cb71b0c5ae1f33cba796a33c88b50280fc0707116")
+                .setImage ("quay.io/rhacs-eng/qa-multi-arch:mongodb")
                 .addLabel ("app", "test" ),
      ]
 
@@ -55,7 +53,8 @@ class ProcessVisualizationReplicaTest extends BaseSpecification {
         return counts
     }
 
-    @Category([BAT, RUNTIME])
+    @Tag("BAT")
+    @Tag("RUNTIME")
     @Unroll
     def "Verify process visualization with replicas on #depName"()  {
         when:
@@ -80,13 +79,13 @@ class ProcessVisualizationReplicaTest extends BaseSpecification {
             if (receivedProcessPaths.containsAll(expectedFilePaths) && observedPathOnEachContainer) {
                 break
             }
-            println "Didn't find all the expected processes, retrying..."
+            log.info "Didn't find all the expected processes, retrying..."
         }
-        println "ProcessVisualizationTest: Dep: " + depName + " Processes: " + receivedProcessPaths
+        log.info "ProcessVisualizationTest: Dep: " + depName + " Processes: " + receivedProcessPaths
 
         processContainerMap = ProcessService.getProcessContainerMap(uid, expectedFilePaths)
 
-        println processContainerMap
+        log.info processContainerMap.toString()
 
         processContainerMap.each { k, v ->
             // check that every path has k*REPLICACOUNT containerId's
@@ -105,10 +104,10 @@ class ProcessVisualizationReplicaTest extends BaseSpecification {
         expectedFilePaths | depName
 
         ["/run.sh", "/usr/sbin/apache2",
-          "/bin/chown", "/usr/bin/tail", "/bin/chmod"] as Set | APACHEDEPLOYMENT
+          "/bin/chown", "/usr/bin/tail"] as Set | APACHEDEPLOYMENT
 
-        ["/bin/chown", "/usr/local/bin/docker-entrypoint.sh",
-         "/bin/rm", "/usr/bin/id", "/usr/bin/find",
-         "/usr/local/bin/gosu", "/usr/bin/mongod", "/usr/bin/numactl"] as Set | MONGODEPLOYMENT
+        ["/usr/local/bin/docker-entrypoint.sh",
+         "/usr/bin/id",
+         "/usr/bin/mongod", "/usr/bin/numactl"] as Set | MONGODEPLOYMENT
    }
 }

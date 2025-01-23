@@ -9,27 +9,31 @@ export type ListPolicy = {
     lastUpdated: string | null; // ISO 8601 date string
     eventSource: PolicyEventSource;
     readonly isDefault: boolean; // Indicates the policy is a default policy if true and a custom policy if false.
+    readonly source: 'IMPERATIVE' | 'DECLARATIVE';
 };
 
-// TODO supersedes src/Containers/Violations/PatternFly/types/violationTypes.ts
-export type PolicySeverity =
-    | 'LOW_SEVERITY'
-    | 'MEDIUM_SEVERITY'
-    | 'HIGH_SEVERITY'
-    | 'CRITICAL_SEVERITY';
+export const policySeverities = [
+    'LOW_SEVERITY',
+    'MEDIUM_SEVERITY',
+    'HIGH_SEVERITY',
+    'CRITICAL_SEVERITY',
+] as const;
+export type PolicySeverity = (typeof policySeverities)[number];
 
-// TODO supersedes src/Containers/Violations/PatternFly/types/violationTypes.ts
 export type LifecycleStage = 'DEPLOY' | 'BUILD' | 'RUNTIME';
 
 export type PolicyEventSource = 'NOT_APPLICABLE' | 'DEPLOYMENT_EVENT' | 'AUDIT_LOG_EVENT';
 
-type BasePolicy = {
+export type BasePolicy = {
     rationale: string;
     remediation: string;
     categories: string[];
     exclusions: PolicyExclusion[];
     scope: PolicyScope[];
     enforcementActions: EnforcementAction[];
+    SORTName: string; // For internal use only.
+    SORTLifecycleStage: string; // For internal use only.
+    SORTEnforcement: boolean; // For internal use only.
     policyVersion: string;
     mitreAttackVectors: PolicyMitreAttackVector[];
     readonly criteriaLocked: boolean; // If true, the policy's criteria fields are rendered read-only.
@@ -40,9 +44,6 @@ type BasePolicy = {
 export type ClientPolicy = {
     excludedImageNames: string[]; // For internal use only.
     excludedDeploymentScopes: PolicyExcludedDeployment[]; // For internal use only.
-    SORT_name: string; // For internal use only.
-    SORT_lifecycleStage: string; // For internal use only.
-    SORT_enforcement: boolean; // For internal use only.
     serverPolicySections: PolicySection[]; // For internal use only.
     policySections: ClientPolicySection[]; // value strings converted into objects
 } & BasePolicy;
@@ -53,7 +54,6 @@ export type Policy = {
 
 export type PolicyExclusion = PolicyDeploymentExclusion | PolicyImageExclusion;
 
-// TODO prefer initial values instead of optional properties while adding a new policy?
 export type PolicyDeploymentExclusion = {
     deployment: PolicyExcludedDeployment;
     image: null;
@@ -72,9 +72,10 @@ export type PolicyImageExclusion = {
 } & PolicyBaseExclusion;
 
 // TODO prefer initial values instead of optional properties while adding a new policy?
+// TODO These are undefined at runtime - make optional here?
 export type PolicyBaseExclusion = {
-    name: string;
-    expiration: string | null; // ISO 8601 date string
+    name?: string;
+    expiration?: string | null; // ISO 8601 date string
 };
 
 // TODO prefer initial values instead of optional properties while adding a new policy?
@@ -89,7 +90,6 @@ export type PolicyScopeLabel = {
     value: string;
 };
 
-// TODO supersedes apps/platform/src/Containers/Violations/PatternFly/types/violationTypes.ts
 // FAIL_KUBE_REQUEST_ENFORCEMENT takes effect only if admission control webhook is enabled to listen on exec and port-forward events.
 // FAIL_DEPLOYMENT_CREATE_ENFORCEMENT takes effect only if admission control webhook is configured to enforce on object creates/updates.
 // FAIL_DEPLOYMENT_UPDATE_ENFORCEMENT takes effect only if admission control webhook is configured to enforce on object updates.
@@ -140,12 +140,19 @@ export type ValueObj = {
 };
 
 export type ClientPolicyValue = {
-    value?: ValueObj;
     arrayValue?: string[];
-};
+} & ValueObj;
 
 // TODO supersedes MitreAttackVectorId in src/services/MitreService.ts
 export type PolicyMitreAttackVector = {
     tactic: string; // tactic id
     techniques: string[]; // technique ids
+};
+
+export type PolicyCategory = {
+    id: string;
+    // central/policycategory/service/service_impl.go
+    // policy category must have a name between 5 and 128 characters long with no new lines or dollar signs
+    name: string;
+    isDefault: boolean;
 };

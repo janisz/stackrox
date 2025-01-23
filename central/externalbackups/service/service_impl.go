@@ -3,11 +3,10 @@ package service
 import (
 	"context"
 
-	"github.com/grpc-ecosystem/grpc-gateway/runtime"
+	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
 	"github.com/pkg/errors"
 	"github.com/stackrox/rox/central/externalbackups/datastore"
 	"github.com/stackrox/rox/central/externalbackups/manager"
-	"github.com/stackrox/rox/central/role/resources"
 	v1 "github.com/stackrox/rox/generated/api/v1"
 	"github.com/stackrox/rox/generated/storage"
 	"github.com/stackrox/rox/pkg/auth/permissions"
@@ -19,6 +18,7 @@ import (
 	"github.com/stackrox/rox/pkg/grpc/authz/user"
 	"github.com/stackrox/rox/pkg/integrationhealth"
 	"github.com/stackrox/rox/pkg/protoconv/schedule"
+	"github.com/stackrox/rox/pkg/sac/resources"
 	"github.com/stackrox/rox/pkg/secrets"
 	"github.com/stackrox/rox/pkg/uuid"
 	"google.golang.org/grpc"
@@ -26,11 +26,11 @@ import (
 
 var (
 	authorizer = perrpc.FromMap(map[authz.Authorizer][]string{
-		user.With(permissions.View(resources.BackupPlugins)): {
+		user.With(permissions.View(resources.Integration)): {
 			"/v1.ExternalBackupService/GetExternalBackup",
 			"/v1.ExternalBackupService/GetExternalBackups",
 		},
-		user.With(permissions.Modify(resources.BackupPlugins)): {
+		user.With(permissions.Modify(resources.Integration)): {
 			"/v1.ExternalBackupService/PutExternalBackup",
 			"/v1.ExternalBackupService/PostExternalBackup",
 			"/v1.ExternalBackupService/TestExternalBackup",
@@ -44,6 +44,8 @@ var (
 
 // serviceImpl is the struct that manages the external backups API
 type serviceImpl struct {
+	v1.UnimplementedExternalBackupServiceServer
+
 	manager   manager.Manager
 	reporter  integrationhealth.Reporter
 	dataStore datastore.DataStore
@@ -69,11 +71,11 @@ func (s *serviceImpl) GetExternalBackup(ctx context.Context, request *v1.Resourc
 	if request.GetId() == "" {
 		return nil, errors.Wrap(errox.InvalidArgs, "id must be specified when requesting an external backup")
 	}
-	backup, err := s.dataStore.GetBackup(ctx, request.GetId())
+	backup, exists, err := s.dataStore.GetBackup(ctx, request.GetId())
 	if err != nil {
 		return nil, err
 	}
-	if backup == nil {
+	if !exists {
 		return nil, errors.Wrapf(errox.NotFound, "No external backup with id %q found", request.GetId())
 	}
 	secrets.ScrubSecretsFromStructWithReplacement(backup, secrets.ScrubReplacementStr)
@@ -227,11 +229,11 @@ func (s *serviceImpl) reconcileUpdateExternalBackupRequest(ctx context.Context, 
 	if updateRequest.GetExternalBackup().GetId() == "" {
 		return errors.Wrap(errox.InvalidArgs, "id required for stored credential reconciliation")
 	}
-	existingBackupConfig, err := s.dataStore.GetBackup(ctx, updateRequest.GetExternalBackup().GetId())
+	existingBackupConfig, exists, err := s.dataStore.GetBackup(ctx, updateRequest.GetExternalBackup().GetId())
 	if err != nil {
 		return err
 	}
-	if existingBackupConfig == nil {
+	if !exists {
 		return errors.Wrapf(errox.NotFound, "backup config %s not found", updateRequest.GetExternalBackup().GetId())
 	}
 	if err := reconcileExternalBackupWithExisting(updateRequest.GetExternalBackup(), existingBackupConfig); err != nil {

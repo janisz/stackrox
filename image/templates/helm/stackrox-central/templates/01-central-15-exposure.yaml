@@ -11,6 +11,9 @@ metadata:
   annotations:
     {{- include "srox.annotations" (list . "route" "central") | nindent 4 }}
 spec:
+{{- if ._rox.central.exposure.route.host }}
+  host: {{ ._rox.central.exposure.route.host }}
+{{- end }}
   port:
     targetPort: https
   tls:
@@ -77,6 +80,9 @@ metadata:
     {{- include "srox.annotations" (list . "service" "central-loadbalancer") | nindent 4 }}
 spec:
   type: LoadBalancer
+  # This ensures that the client source IP is retained for audit logging purposes.
+  # Ref: https://kubernetes.io/docs/tasks/access-application-cluster/create-external-load-balancer/#preserving-the-client-source-ip
+  externalTrafficPolicy: Local
   ports:
   - port: {{ ._rox.central.exposure.loadBalancer.port }}
     targetPort: api

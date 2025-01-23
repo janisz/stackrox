@@ -1,5 +1,6 @@
 import { ApolloClient, HttpLink, InMemoryCache, defaultDataIdFromObject } from '@apollo/client';
 import { buildAxiosFetch } from '@lifeomic/axios-fetch';
+import merge from 'lodash/merge';
 
 import axios from 'services/instance';
 import possibleTypes from './possibleTypes.json'; // see `scripts/generate-graphql-possible-types.js` file
@@ -33,18 +34,46 @@ const defaultOptions = {
     },
 };
 
+const cache = new InMemoryCache({
+    possibleTypes,
+    dataIdFromObject: (object) => {
+        if (object.id && object.clusterID) {
+            return `${object.clusterID}/${object.id}`;
+        }
+        return defaultDataIdFromObject(object);
+    },
+    typePolicies: {
+        Image: {
+            fields: {
+                metadata: {
+                    // Recursively merge image->metadata fields. This is required since the
+                    // metadata object does not have a reliable unique ID and subsequent queries to
+                    // the resolver will cause duplicate requests and lost cache data.
+                    merge: (existing, incoming) => merge({}, existing, incoming),
+                },
+                name: {
+                    // Name is an object without a unique ID, so we need to merge it manually.
+                    merge: (existing, incoming) => merge({}, existing, incoming),
+                },
+            },
+        },
+        ImageCVECore: {
+            keyFields: ['cve'],
+        },
+        Cluster: {
+            fields: {
+                status: {
+                    merge: (existing, incoming) => merge({}, existing, incoming),
+                },
+            },
+        },
+    },
+});
+
 export default function configureApolloClient() {
     return new ApolloClient({
         link: httpLink,
         defaultOptions,
-        cache: new InMemoryCache({
-            possibleTypes,
-            dataIdFromObject: (object) => {
-                if (object.id && object.clusterID) {
-                    return `${object.clusterID}/${object.id}`;
-                }
-                return defaultDataIdFromObject(object);
-            },
-        }),
+        cache,
     });
 }

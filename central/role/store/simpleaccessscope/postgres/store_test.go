@@ -8,58 +8,44 @@ import (
 	"context"
 	"testing"
 
-	"github.com/jackc/pgx/v4/pgxpool"
 	"github.com/stackrox/rox/generated/storage"
-	"github.com/stackrox/rox/pkg/features"
 	"github.com/stackrox/rox/pkg/postgres/pgtest"
+	"github.com/stackrox/rox/pkg/protoassert"
 	"github.com/stackrox/rox/pkg/sac"
+	"github.com/stackrox/rox/pkg/search"
 	"github.com/stackrox/rox/pkg/testutils"
-	"github.com/stackrox/rox/pkg/testutils/envisolator"
 	"github.com/stretchr/testify/suite"
 )
 
-type SimpleaccessscopesStoreSuite struct {
+type SimpleAccessScopesStoreSuite struct {
 	suite.Suite
-	envIsolator *envisolator.EnvIsolator
-	store       Store
-	pool        *pgxpool.Pool
+	store  Store
+	testDB *pgtest.TestPostgres
 }
 
-func TestSimpleaccessscopesStore(t *testing.T) {
-	suite.Run(t, new(SimpleaccessscopesStoreSuite))
+func TestSimpleAccessScopesStore(t *testing.T) {
+	suite.Run(t, new(SimpleAccessScopesStoreSuite))
 }
 
-func (s *SimpleaccessscopesStoreSuite) SetupTest() {
-	s.envIsolator = envisolator.NewEnvIsolator(s.T())
-	s.envIsolator.Setenv(features.PostgresDatastore.EnvVar(), "true")
+func (s *SimpleAccessScopesStoreSuite) SetupSuite() {
 
-	if !features.PostgresDatastore.Enabled() {
-		s.T().Skip("Skip postgres store tests")
-		s.T().SkipNow()
-	}
+	s.testDB = pgtest.ForT(s.T())
+	s.store = New(s.testDB.DB)
+}
 
+func (s *SimpleAccessScopesStoreSuite) SetupTest() {
 	ctx := sac.WithAllAccess(context.Background())
-
-	source := pgtest.GetConnectionString(s.T())
-	config, err := pgxpool.ParseConfig(source)
-	s.Require().NoError(err)
-	pool, err := pgxpool.ConnectConfig(ctx, config)
-	s.Require().NoError(err)
-
-	Destroy(ctx, pool)
-
-	s.pool = pool
-	s.store = New(ctx, pool)
+	tag, err := s.testDB.Exec(ctx, "TRUNCATE simple_access_scopes CASCADE")
+	s.T().Log("simple_access_scopes", tag)
+	s.store = New(s.testDB.DB)
+	s.NoError(err)
 }
 
-func (s *SimpleaccessscopesStoreSuite) TearDownTest() {
-	if s.pool != nil {
-		s.pool.Close()
-	}
-	s.envIsolator.RestoreAll()
+func (s *SimpleAccessScopesStoreSuite) TearDownSuite() {
+	s.testDB.Teardown(s.T())
 }
 
-func (s *SimpleaccessscopesStoreSuite) TestStore() {
+func (s *SimpleAccessScopesStoreSuite) TestStore() {
 	ctx := sac.WithAllAccess(context.Background())
 
 	store := s.store
@@ -78,12 +64,12 @@ func (s *SimpleaccessscopesStoreSuite) TestStore() {
 	foundSimpleAccessScope, exists, err = store.Get(ctx, simpleAccessScope.GetId())
 	s.NoError(err)
 	s.True(exists)
-	s.Equal(simpleAccessScope, foundSimpleAccessScope)
+	protoassert.Equal(s.T(), simpleAccessScope, foundSimpleAccessScope)
 
-	simpleAccessScopeCount, err := store.Count(ctx)
+	simpleAccessScopeCount, err := store.Count(ctx, search.EmptyQuery())
 	s.NoError(err)
 	s.Equal(1, simpleAccessScopeCount)
-	simpleAccessScopeCount, err = store.Count(withNoAccessCtx)
+	simpleAccessScopeCount, err = store.Count(withNoAccessCtx, search.EmptyQuery())
 	s.NoError(err)
 	s.Zero(simpleAccessScopeCount)
 
@@ -93,11 +79,6 @@ func (s *SimpleaccessscopesStoreSuite) TestStore() {
 	s.NoError(store.Upsert(ctx, simpleAccessScope))
 	s.ErrorIs(store.Upsert(withNoAccessCtx, simpleAccessScope), sac.ErrResourceAccessDenied)
 
-	foundSimpleAccessScope, exists, err = store.Get(ctx, simpleAccessScope.GetId())
-	s.NoError(err)
-	s.True(exists)
-	s.Equal(simpleAccessScope, foundSimpleAccessScope)
-
 	s.NoError(store.Delete(ctx, simpleAccessScope.GetId()))
 	foundSimpleAccessScope, exists, err = store.Get(ctx, simpleAccessScope.GetId())
 	s.NoError(err)
@@ -106,15 +87,23 @@ func (s *SimpleaccessscopesStoreSuite) TestStore() {
 	s.ErrorIs(store.Delete(withNoAccessCtx, simpleAccessScope.GetId()), sac.ErrResourceAccessDenied)
 
 	var simpleAccessScopes []*storage.SimpleAccessScope
+	var simpleAccessScopeIDs []string
 	for i := 0; i < 200; i++ {
 		simpleAccessScope := &storage.SimpleAccessScope{}
 		s.NoError(testutils.FullInit(simpleAccessScope, testutils.UniqueInitializer(), testutils.JSONFieldsFilter))
 		simpleAccessScopes = append(simpleAccessScopes, simpleAccessScope)
+		simpleAccessScopeIDs = append(simpleAccessScopeIDs, simpleAccessScope.GetId())
 	}
 
 	s.NoError(store.UpsertMany(ctx, simpleAccessScopes))
 
-	simpleAccessScopeCount, err = store.Count(ctx)
+	simpleAccessScopeCount, err = store.Count(ctx, search.EmptyQuery())
 	s.NoError(err)
 	s.Equal(200, simpleAccessScopeCount)
+
+	s.NoError(store.DeleteMany(ctx, simpleAccessScopeIDs))
+
+	simpleAccessScopeCount, err = store.Count(ctx, search.EmptyQuery())
+	s.NoError(err)
+	s.Equal(0, simpleAccessScopeCount)
 }

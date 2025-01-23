@@ -3,7 +3,6 @@ package search
 import (
 	"errors"
 	"sort"
-	"strings"
 
 	v1 "github.com/stackrox/rox/generated/api/v1"
 	"github.com/stackrox/rox/pkg/errox"
@@ -16,37 +15,17 @@ type generalQueryParser struct {
 	ExcludedFieldLabels set.StringSet
 }
 
-func splitQuery(query string) []string {
-	var pairs []string
-	var previousEnd, previousPlusIndex int
-	for i, rune := range query {
-		if rune == ':' && previousPlusIndex != 0 {
-			if previousEnd > previousPlusIndex {
-				continue
-			}
-
-			pairs = append(pairs, query[previousEnd:previousPlusIndex])
-			previousEnd = previousPlusIndex + 1
-			continue
-		}
-		if rune == '+' {
-			previousPlusIndex = i
-		}
-	}
-	pairs = append(pairs, query[previousEnd:])
-	return pairs
-}
-
 func getFieldMap(query string) map[FieldLabel][]string {
 	pairs := splitQuery(query)
 
 	fieldMap := make(map[FieldLabel][]string, len(pairs))
 	for _, pair := range pairs {
 		key, commaSeparatedValues, valid := parsePair(pair, false)
-		if !valid || !FieldLabelSet.Contains(strings.ToLower(key)) {
+		if !valid || !IsValidFieldLabel(key) {
 			continue
 		}
-		values := strings.Split(commaSeparatedValues, ",")
+
+		values := splitCommaSeparatedValues(commaSeparatedValues)
 		fieldMap[FieldLabel(key)] = values
 	}
 	return fieldMap

@@ -1,5 +1,6 @@
 import { KeyValuePair } from './common.proto';
 import { PolicySeverity } from './policy.proto';
+import { Traits } from './traits.proto';
 
 export type NotifierIntegration =
     | AWSSecurityHubNotifierIntegration
@@ -19,6 +20,7 @@ export type BaseNotifierIntegration = {
     uiEndpoint: string;
     labelKey: string;
     labelDefault: string;
+    traits?: Traits;
 };
 
 /*
@@ -41,6 +43,7 @@ export type AWSSecurityHub = {
 export type AWSSecurityHubCredentials = {
     accessKeyId: string; // scrub:always
     secretAccessKey: string; // scrub:always
+    stsEnabled: boolean;
 };
 
 // cscc
@@ -53,6 +56,7 @@ export type CSCCNotifierIntegration = {
 export type CSCC = {
     serviceAccount: string; // scrub:always
     sourceId: string;
+    wifEnabled: boolean;
 };
 
 // email
@@ -71,6 +75,7 @@ export type Email = {
     // DEPRECATED_useStartTLS deprecated
     from: string;
     startTLSAuthMethod: EmailAuthMethod;
+    allowUnauthenticatedSmtp: boolean;
 };
 
 export type EmailAuthMethod = 'DISABLED' | 'PLAIN' | 'LOGIN';
@@ -107,6 +112,7 @@ export type Jira = {
     issueType: string;
     priorityMappings: JiraPriorityMapping[];
     defaultFieldsJson: string;
+    disablePriority: boolean;
 };
 
 export type JiraPriorityMapping = {
@@ -164,8 +170,12 @@ export type SyslogNotifierIntegration = {
 // Eventually this will support TCP, UDP, and local endpoints
 export type Syslog = SyslogTCP;
 
+export type SyslogCEFOptions = 'CEF' | 'LEGACY' | null;
+
 export type SyslogBase = {
-    localFacility: SyslogLocalFacility;
+    messageFormat?: SyslogCEFOptions;
+    localFacility?: SyslogLocalFacility;
+    extraFields: KeyValuePair[];
 };
 
 export type SyslogLocalFacility =

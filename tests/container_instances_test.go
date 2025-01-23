@@ -1,3 +1,5 @@
+//go:build test_e2e
+
 package tests
 
 import (
@@ -21,13 +23,15 @@ type ContainerNameGroup struct {
 func TestContainerInstances(testT *testing.T) {
 	// https://stack-rox.atlassian.net/browse/ROX-6493
 	// - the process events expected in this test are not reliably detected.
+	kPod := getPodFromFile(testT, "yamls/multi-container-pod.yaml")
+	client := createK8sClient(testT)
 	testutils.Retry(testT, 3, 5*time.Second, func(retryT testutils.T) {
 		// Set up testing environment
-		defer teardownDeploymentFromFile(retryT, deploymentName, "yamls/multi-container-pod.yaml")
-		setupDeploymentFromFile(retryT, deploymentName, "yamls/multi-container-pod.yaml")
+		defer teardownPod(testT, client, kPod)
+		createPod(testT, client, kPod)
 
 		// Get the test pod.
-		deploymentID := getDeploymentID(retryT, deploymentName)
+		deploymentID := getDeploymentID(retryT, kPod.GetName())
 		pods := getPods(retryT, deploymentID)
 		require.Len(retryT, pods, 1)
 		pod := pods[0]
@@ -46,12 +50,12 @@ func TestContainerInstances(testT *testing.T) {
 			// Expecting 1 process: nginx
 			require.Len(retryEventsT, groupedContainers[0].Events, 1)
 			firstContainerEvents :=
-				sliceutils.Map(groupedContainers[0].Events, func(event Event) string { return event.Name }).([]string)
+				sliceutils.Map(groupedContainers[0].Events, func(event Event) string { return event.Name })
 			require.ElementsMatch(retryEventsT, firstContainerEvents, []string{"/usr/sbin/nginx"})
 			// Expecting 3 processes: sh, date, sleep
 			require.Len(retryEventsT, groupedContainers[1].Events, 3)
 			secondContainerEvents :=
-				sliceutils.Map(groupedContainers[1].Events, func(event Event) string { return event.Name }).([]string)
+				sliceutils.Map(groupedContainers[1].Events, func(event Event) string { return event.Name })
 			require.ElementsMatch(retryEventsT, secondContainerEvents, []string{"/bin/sh", "/bin/date", "/bin/sleep"})
 
 			// Verify the container group's timestamp is no later than the timestamp of the first event

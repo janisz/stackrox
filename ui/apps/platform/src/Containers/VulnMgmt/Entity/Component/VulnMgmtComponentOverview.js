@@ -7,7 +7,7 @@ import TopCvssLabel from 'Components/TopCvssLabel';
 import RiskScore from 'Components/RiskScore';
 import Metadata from 'Components/Metadata';
 import CvesByCvssScore from 'Containers/VulnMgmt/widgets/CvesByCvssScore';
-import { entityGridContainerClassName } from 'Containers/Workflow/WorkflowEntityPage';
+import { entityGridContainerBaseClassName } from '../WorkflowEntityPage';
 
 import RelatedEntitiesSideList from '../RelatedEntitiesSideList';
 import TableWidgetFixableCves from '../TableWidgetFixableCves';
@@ -27,11 +27,18 @@ const emptyComponent = {
 
 function VulnMgmtComponentOverview({ data, entityContext }) {
     const workflowState = useContext(workflowStateContext);
+    const currentEntityType = workflowState.getCurrentEntityType();
+
+    const vulnType =
+        currentEntityType === entityTypes.NODE_COMPONENT || currentEntityType === entityTypes.NODE
+            ? entityTypes.NODE_CVE
+            : entityTypes.IMAGE_CVE;
 
     // guard against incomplete GraphQL-cached data
     const safeData = { ...emptyComponent, ...data };
 
     const { fixedIn, version, priority, topVuln, id, location, vulnCount, activeState } = safeData;
+    const operatingSystem = safeData?.operatingSystem;
 
     const metadataKeyValuePairs = [
         {
@@ -47,6 +54,13 @@ function VulnMgmtComponentOverview({ data, entityContext }) {
         metadataKeyValuePairs.push({
             key: 'Location',
             value: location || 'N/A',
+        });
+    }
+
+    if (operatingSystem !== undefined) {
+        metadataKeyValuePairs.push({
+            key: 'Operating System',
+            value: operatingSystem,
         });
     }
 
@@ -73,8 +87,10 @@ function VulnMgmtComponentOverview({ data, entityContext }) {
         );
     }
 
-    const currentEntity = { [entityTypes.COMPONENT]: id };
+    const currentEntity = { [currentEntityType]: id };
     const newEntityContext = { ...entityContext, ...currentEntity };
+
+    const entityGridContainerClassName = `${entityGridContainerBaseClassName} grid-columns-1 md:grid-columns-2 lg:grid-columns-2`;
 
     return (
         <div className="flex h-full">
@@ -86,7 +102,7 @@ function VulnMgmtComponentOverview({ data, entityContext }) {
                                 className="h-full min-w-48 bg-base-100 pdf-page"
                                 keyValuePairs={metadataKeyValuePairs}
                                 statTiles={componentStats}
-                                title="Details & Metadata"
+                                title="Details and metadata"
                             />
                         </div>
                         <div className="s-1">
@@ -102,7 +118,8 @@ function VulnMgmtComponentOverview({ data, entityContext }) {
                         <TableWidgetFixableCves
                             workflowState={workflowState}
                             entityContext={entityContext}
-                            entityType={entityTypes.COMPONENT}
+                            entityType={currentEntityType}
+                            vulnType={vulnType}
                             name={safeData?.name}
                             id={safeData?.id}
                         />
@@ -110,7 +127,7 @@ function VulnMgmtComponentOverview({ data, entityContext }) {
                 </CollapsibleSection>
             </div>
             <RelatedEntitiesSideList
-                entityType={entityTypes.COMPONENT}
+                entityType={currentEntityType}
                 entityContext={newEntityContext}
                 data={safeData}
             />

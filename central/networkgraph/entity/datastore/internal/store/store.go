@@ -3,10 +3,12 @@ package store
 import (
 	"context"
 
+	v1 "github.com/stackrox/rox/generated/api/v1"
 	"github.com/stackrox/rox/generated/storage"
 )
 
 // EntityStore stores network graph entities.
+//
 //go:generate mockgen-wrapper
 type EntityStore interface {
 	Exists(ctx context.Context, id string) (bool, error)
@@ -20,4 +22,7 @@ type EntityStore interface {
 	DeleteMany(ctx context.Context, ids []string) error
 
 	Walk(ctx context.Context, fn func(obj *storage.NetworkEntity) error) error
+	WalkByQuery(ctx context.Context, query *v1.Query, fn func(obj *storage.NetworkEntity) error) error
+
+	GetByQuery(ctx context.Context, query *v1.Query) ([]*storage.NetworkEntity, error)
 }

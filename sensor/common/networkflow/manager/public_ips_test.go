@@ -6,7 +6,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/stackrox/rox/generated/internalapi/sensor"
 	"github.com/stackrox/rox/pkg/concurrency"
 	"github.com/stackrox/rox/pkg/net"
 	"github.com/stackrox/rox/sensor/common/clusterentities"
@@ -52,35 +51,43 @@ func TestPublicIPsManager(t *testing.T) {
 	assert.Nil(t, vs.TryNext())
 	assert.False(t, mgr.publicIPsUpdateSig.IsDone())
 
-	mgr.OnAdded(net.ParseIP("4.4.4.4"))
+	concurrency.WithLock(&mgr.mutex, func() {
+		mgr.onAddNoLock(net.ParseIP("4.4.4.4"))
+	})
 
 	require.True(t, concurrency.WaitWithTimeout(vs, 100*time.Millisecond))
 	vs = vs.TryNext()
 	require.NotNil(t, vs)
-	assert.Len(t, vs.Value().(*sensor.IPAddressList).GetIpv4Addresses(), 1)
+	assert.Len(t, vs.Value().GetIpv4Addresses(), 1)
 
 	assert.False(t, concurrency.WaitWithTimeout(vs, 100*time.Millisecond))
 	assert.Nil(t, vs.TryNext())
 	assert.False(t, mgr.publicIPsUpdateSig.IsDone())
 
-	mgr.OnAdded(net.ParseIP("8.8.8.8"))
+	concurrency.WithLock(&mgr.mutex, func() {
+		mgr.onAddNoLock(net.ParseIP("8.8.8.8"))
+	})
 
 	require.True(t, concurrency.WaitWithTimeout(vs, 100*time.Millisecond))
 	vs = vs.TryNext()
 	require.NotNil(t, vs)
-	assert.Len(t, vs.Value().(*sensor.IPAddressList).GetIpv4Addresses(), 2)
+	assert.Len(t, vs.Value().GetIpv4Addresses(), 2)
 
 	assert.False(t, concurrency.WaitWithTimeout(vs, 100*time.Millisecond))
 	assert.Nil(t, vs.TryNext())
 	assert.False(t, mgr.publicIPsUpdateSig.IsDone())
 
-	mgr.OnRemoved(net.ParseIP("4.4.4.4"))
+	concurrency.WithLock(&mgr.mutex, func() {
+		mgr.onRemoveNoLock(net.ParseIP("4.4.4.4"))
+	})
 
 	assert.False(t, concurrency.WaitWithTimeout(vs, 100*time.Millisecond))
 	assert.Nil(t, vs.TryNext())
 	assert.False(t, mgr.publicIPsUpdateSig.IsDone())
 
-	mgr.OnAdded(net.ParseIP("4.4.4.4"))
+	concurrency.WithLock(&mgr.mutex, func() {
+		mgr.onAddNoLock(net.ParseIP("4.4.4.4"))
+	})
 
 	assert.False(t, concurrency.WaitWithTimeout(vs, 100*time.Millisecond))
 	assert.Nil(t, vs.TryNext())

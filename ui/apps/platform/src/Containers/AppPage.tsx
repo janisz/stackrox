@@ -1,7 +1,12 @@
 import React, { ReactElement } from 'react';
 import { Route, Switch } from 'react-router-dom';
 
-import { loginPath, testLoginResultsPath, authResponsePrefix } from 'routePaths';
+import {
+    loginPath,
+    testLoginResultsPath,
+    authResponsePrefix,
+    authorizeRoxctlPath,
+} from 'routePaths';
 import LoadingSection from 'Components/PatternFly/LoadingSection';
 import AuthenticatedRoutes from 'Containers/MainPage/AuthenticatedRoutes';
 import LoginPage from 'Containers/Login/LoginPage';
@@ -15,10 +20,21 @@ function AppPage(): ReactElement {
             <AppPageTitle />
             <AppPageFavicon />
             <Switch>
-                <Route path={loginPath} component={LoginPage} />
-                <Route path={testLoginResultsPath} component={TestLoginResultsPage} />
-                <Route path={authResponsePrefix} component={LoadingSection} />
-                <Route component={AuthenticatedRoutes} />
+                <Route path={loginPath}>
+                    <LoginPage />
+                </Route>
+                <Route path={authorizeRoxctlPath}>
+                    <LoginPage authorizeRoxctlMode />
+                </Route>
+                <Route path={testLoginResultsPath}>
+                    <TestLoginResultsPage />
+                </Route>
+                <Route path={authResponsePrefix}>
+                    <LoadingSection />
+                </Route>
+                <Route>
+                    <AuthenticatedRoutes />
+                </Route>
             </Switch>
         </>
     );

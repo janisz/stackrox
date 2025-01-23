@@ -4,15 +4,14 @@ import * as Icon from 'react-feather';
 
 const CloseButton = ({ className, iconColor, onClose }) => (
     <div
-        className={`close-button relative flex items-end items-center cursor-pointer hover:bg-alert-300  ${className}`}
+        className={`close-button relative flex items-end items-center cursor-pointer hover:bg-base-200  ${className}`}
     >
         <span>
             <button
                 type="button"
                 className={`flex p-3 text-center text-sm items-center ${iconColor}`}
                 onClick={onClose}
-                data-testid="cancel"
-                id="panel-close-button"
+                aria-label="Close"
             >
                 <Icon.X className="h-7 w-7" height={null} width={null} />
             </button>

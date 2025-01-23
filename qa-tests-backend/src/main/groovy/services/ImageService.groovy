@@ -1,25 +1,31 @@
 package services
 
+import static util.Helpers.evaluateWithRetry
+import static util.Helpers.withRetry
+
+import groovy.transform.CompileStatic
 import groovy.util.logging.Slf4j
+
+import io.stackrox.proto.api.v1.EmptyOuterClass
 import io.stackrox.proto.api.v1.ImageServiceGrpc
 import io.stackrox.proto.api.v1.ImageServiceOuterClass
 import io.stackrox.proto.api.v1.SearchServiceOuterClass.RawQuery
 import io.stackrox.proto.storage.ImageOuterClass
 
 @Slf4j
+@CompileStatic
 class ImageService extends BaseService {
-    static getImageClient() {
+    static ImageServiceGrpc.ImageServiceBlockingStub getImageClient() {
         return ImageServiceGrpc.newBlockingStub(getChannel())
     }
 
-    static getImages(RawQuery request = RawQuery.newBuilder().build()) {
+    static List<ImageOuterClass.ListImage> getImages(RawQuery request = RawQuery.newBuilder().build()) {
         return getImageClient().listImages(request).imagesList
     }
 
-    static getImage(String digest, Boolean includeSnoozed = true) {
+    static ImageOuterClass.Image getImage(String digest, Boolean includeSnoozed = true) {
         if (digest == null) {
-            ImageOuterClass.Image nullImage
-            return nullImage
+            return null
         }
         return getImageClient().getImage(
                 ImageServiceOuterClass.GetImageRequest.newBuilder()
@@ -30,17 +36,21 @@ class ImageService extends BaseService {
     }
 
     static clearImageCaches() {
-        getImageClient().invalidateScanAndRegistryCaches()
+        getImageClient().invalidateScanAndRegistryCaches(EmptyOuterClass.Empty.newBuilder().build())
     }
 
-    static scanImage(String image, Boolean includeSnoozed = true) {
-        try {
-            return getImageClient().scanImage(ImageServiceOuterClass.ScanImageRequest.newBuilder()
-                    .setImageName(image)
-                    .setIncludeSnoozed(includeSnoozed)
-                    .build())
-        } catch (Exception e) {
-            log.error("Image failed to scan: ${image}", e)
+    static ImageOuterClass.Image scanImageNoRetry(String image, Boolean includeSnoozed = true, Boolean force = false) {
+        def req = ImageServiceOuterClass.ScanImageRequest.newBuilder()
+            .setImageName(image)
+            .setIncludeSnoozed(includeSnoozed)
+            .setForce(force)
+            .build()
+        return getImageClient().scanImage(req)
+    }
+
+    static ImageOuterClass.Image scanImage(String image, Boolean includeSnoozed = true, Boolean force = false) {
+        return evaluateWithRetry(10, 15) {
+            return scanImageNoRetry(image, includeSnoozed, force)
         }
     }
 

@@ -2,7 +2,6 @@ package fake
 
 import (
 	"context"
-	"fmt"
 	"math/rand"
 	"time"
 
@@ -16,20 +15,9 @@ type networkPolicyToBeManaged struct {
 	networkPolicy *networkingV1.NetworkPolicy
 }
 
-func createMap(entries int) map[string]string {
-	m := make(map[string]string, entries)
-	for i := 0; i < entries; i++ {
-		m[fmt.Sprintf("key-%d", i)] = fmt.Sprintf("value-%d", i)
-	}
-	return m
-}
-
-func (w *WorkloadManager) getNetworkPolicy(workload NetworkPolicyWorkload) *networkPolicyToBeManaged {
-	labels := createMap(workload.NumLabels)
-	namespace, valid := namespacePool.randomElem()
-	if !valid {
-		namespace = "default"
-	}
+func (w *WorkloadManager) getNetworkPolicy(workload NetworkPolicyWorkload, id string) *networkPolicyToBeManaged {
+	namespace := namespacesWithDeploymentsPool.mustGetRandomElem()
+	labels := labelsPool.randomElem(namespace)
 	np := &networkingV1.NetworkPolicy{
 		TypeMeta: metav1.TypeMeta{
 			Kind:       "NetworkPolicy",
@@ -38,7 +26,7 @@ func (w *WorkloadManager) getNetworkPolicy(workload NetworkPolicyWorkload) *netw
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      randString(),
 			Namespace: namespace,
-			UID:       newUUID(),
+			UID:       idOrNewUID(id),
 			CreationTimestamp: metav1.Time{
 				Time: time.Now(),
 			},
@@ -67,10 +55,11 @@ func (w *WorkloadManager) manageNetworkPolicy(ctx context.Context, resources *ne
 	w.manageNetworkPolicyLifecycle(ctx, resources)
 
 	for count := 0; resources.workload.NumLifecycles == 0 || count < resources.workload.NumLifecycles; count++ {
-		np := w.getNetworkPolicy(resources.workload)
-		if _, err := w.client.Kubernetes().NetworkingV1().NetworkPolicies(np.networkPolicy.Namespace).Create(ctx, np.networkPolicy, metav1.CreateOptions{}); err != nil {
+		resources = w.getNetworkPolicy(resources.workload, "")
+		if _, err := w.client.Kubernetes().NetworkingV1().NetworkPolicies(resources.networkPolicy.Namespace).Create(ctx, resources.networkPolicy, metav1.CreateOptions{}); err != nil {
 			log.Errorf("error creating networkPolicy: %v", err)
 		}
+		w.writeID(networkPolicyPrefix, resources.networkPolicy.UID)
 		w.manageNetworkPolicyLifecycle(ctx, resources)
 	}
 }
@@ -92,6 +81,7 @@ func (w *WorkloadManager) manageNetworkPolicyLifecycle(ctx context.Context, reso
 			if err := npClient.Delete(ctx, np.Name, metav1.DeleteOptions{}); err != nil {
 				log.Error(err)
 			}
+			w.deleteID(networkPolicyPrefix, np.UID)
 			return
 		case <-time.After(npNextUpdate):
 			npNextUpdate = calculateDurationWithJitter(resources.workload.UpdateInterval)

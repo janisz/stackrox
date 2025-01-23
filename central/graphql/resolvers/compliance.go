@@ -10,11 +10,11 @@ import (
 	"github.com/pkg/errors"
 	"github.com/stackrox/rox/central/metrics"
 	"github.com/stackrox/rox/central/namespace"
-	"github.com/stackrox/rox/central/node/datastore"
 	v1 "github.com/stackrox/rox/generated/api/v1"
 	"github.com/stackrox/rox/generated/storage"
 	"github.com/stackrox/rox/pkg/logging"
 	pkgMetrics "github.com/stackrox/rox/pkg/metrics"
+	"github.com/stackrox/rox/pkg/sac/resources"
 	"github.com/stackrox/rox/pkg/search"
 	"github.com/stackrox/rox/pkg/set"
 	"github.com/stackrox/rox/pkg/sync"
@@ -54,9 +54,9 @@ func InitCompliance() {
 			schema.AddQuery("executedControlCount(query: String): Int!"),
 			schema.AddExtraResolver("ComplianceStandardMetadata", "controls: [ComplianceControl!]!"),
 			schema.AddExtraResolver("ComplianceStandardMetadata", "groups: [ComplianceControlGroup!]!"),
-			schema.AddUnionType("ComplianceDomainKey", []string{"ComplianceStandardMetadata", "ComplianceControlGroup", "ComplianceControl", "Cluster", "Deployment", "Node", "Namespace"}),
+			schema.AddUnionType("ComplianceDomainKey", []string{"ComplianceStandardMetadata", "ComplianceControlGroup", "ComplianceControl", "ComplianceDomain_Cluster", "ComplianceDomain_Deployment", "ComplianceDomain_Node", "Namespace"}),
 			schema.AddExtraResolver("ComplianceAggregation_Result", "keys: [ComplianceDomainKey!]!"),
-			schema.AddUnionType("Resource", []string{"Deployment", "Cluster", "Node"}),
+			schema.AddUnionType("Resource", []string{"ComplianceDomain_Deployment", "ComplianceDomain_Cluster", "ComplianceDomain_Node"}),
 			schema.AddType("ControlResult", []string{"resource: Resource", "control: ComplianceControl", "value: ComplianceResultValue"}),
 			schema.AddExtraResolver("ComplianceStandardMetadata", "complianceResults(query: String): [ControlResult!]!"),
 			schema.AddExtraResolver("ComplianceControl", "complianceResults(query: String): [ControlResult!]!"),
@@ -67,6 +67,7 @@ func InitCompliance() {
 			schema.AddExtraResolver("ComplianceControl", "complianceControlNodes(query: String): [Node!]!"),
 			schema.AddExtraResolver("ComplianceControl", "complianceControlFailingNodes(query: String): [Node!]!"),
 			schema.AddExtraResolver("ComplianceControl", "complianceControlPassingNodes(query: String): [Node!]!"),
+			schema.AddQuery("complianceClusters(query: String, pagination: Pagination): [ScopeObject!]!"),
 		)
 	})
 }
@@ -91,7 +92,7 @@ func (resolver *Resolver) ComplianceStandards(ctx context.Context, query RawQuer
 		if !ok || err != nil {
 			continue
 		}
-		if !resolver.manager.IsStandardActive(standard.GetMetadata().GetId()) {
+		if !resolver.manager.IsStandardActive(standard.GetMetadata().GetId()) || resolver.manager.IsStandardHidden(ctx, standard.GetMetadata().GetId()) {
 			continue
 		}
 		standards = append(standards, standard.GetMetadata())
@@ -147,6 +148,15 @@ func (resolver *Resolver) ComplianceClusterCount(ctx context.Context, args RawQu
 	}
 	scope := []storage.ComplianceAggregation_Scope{storage.ComplianceAggregation_CLUSTER}
 	return resolver.getComplianceEntityCount(ctx, args, scope)
+}
+
+// ComplianceClusters returns a graphql resolver for the clusters in Compliance scope
+func (resolver *Resolver) ComplianceClusters(ctx context.Context, args PaginatedQuery) ([]*scopeObjectResolver, error) {
+	defer metrics.SetGraphQLOperationDurationTime(time.Now(), pkgMetrics.Root, "ComplianceClusters")
+	if err := readCompliance(ctx); err != nil {
+		return nil, err
+	}
+	return resolver.clustersForReadPermission(ctx, args, resources.Compliance)
 }
 
 // ComplianceDeploymentCount returns count of deployments that have compliance run on them
@@ -338,12 +348,12 @@ func newComplianceDomainKeyResolverWrapped(ctx context.Context, root *Resolver, 
 	switch key.GetScope() {
 	case storage.ComplianceAggregation_CLUSTER:
 		if domain.GetCluster() != nil {
-			return &clusterResolver{ctx, root, domain.GetCluster()}
+			return &complianceDomain_ClusterResolver{ctx, root, domain.GetCluster()}
 		}
 	case storage.ComplianceAggregation_DEPLOYMENT:
 		deployment, found := domain.GetDeployments()[key.GetId()]
 		if found {
-			return &deploymentResolver{ctx, root, deployment, nil}
+			return &complianceDomain_DeploymentResolver{ctx, root, deployment}
 		}
 	case storage.ComplianceAggregation_NAMESPACE:
 		receivedNS, found, err := namespace.ResolveByID(ctx, key.GetId(), root.NamespaceDataStore,
@@ -354,7 +364,7 @@ func newComplianceDomainKeyResolverWrapped(ctx context.Context, root *Resolver, 
 	case storage.ComplianceAggregation_NODE:
 		node, found := domain.GetNodes()[key.GetId()]
 		if found {
-			return &nodeResolver{ctx, root, node}
+			return &complianceDomain_NodeResolver{ctx, root, node}
 		}
 	case storage.ComplianceAggregation_STANDARD:
 		standard, found, err := root.ComplianceStandardStore.StandardMetadata(key.GetId())
@@ -383,13 +393,14 @@ func newComplianceDomainKeyResolverWrapped(ctx context.Context, root *Resolver, 
 	return nil
 }
 
-func (resolver *complianceDomainKeyResolver) ToCluster() (cluster *clusterResolver, found bool) {
-	r, ok := resolver.wrapped.(*clusterResolver)
+//revive:disable:var-naming
+func (resolver *complianceDomainKeyResolver) ToComplianceDomain_Cluster() (cluster *complianceDomain_ClusterResolver, found bool) {
+	r, ok := resolver.wrapped.(*complianceDomain_ClusterResolver)
 	return r, ok
 }
 
-func (resolver *complianceDomainKeyResolver) ToDeployment() (deployment *deploymentResolver, found bool) {
-	r, ok := resolver.wrapped.(*deploymentResolver)
+func (resolver *complianceDomainKeyResolver) ToComplianceDomain_Deployment() (deployment *complianceDomain_DeploymentResolver, found bool) {
+	r, ok := resolver.wrapped.(*complianceDomain_DeploymentResolver)
 	return r, ok
 }
 
@@ -398,10 +409,12 @@ func (resolver *complianceDomainKeyResolver) ToNamespace() (*namespaceResolver, 
 	return r, ok
 }
 
-func (resolver *complianceDomainKeyResolver) ToNode() (node *nodeResolver, found bool) {
-	r, ok := resolver.wrapped.(*nodeResolver)
+func (resolver *complianceDomainKeyResolver) ToComplianceDomain_Node() (node *complianceDomain_NodeResolver, found bool) {
+	r, ok := resolver.wrapped.(*complianceDomain_NodeResolver)
 	return r, ok
 }
+
+//revive:enable:var-naming
 
 func (resolver *complianceDomainKeyResolver) ToComplianceStandardMetadata() (standard *complianceStandardMetadataResolver, found bool) {
 	r, ok := resolver.wrapped.(*complianceStandardMetadataResolver)
@@ -434,21 +447,6 @@ func (resolver *complianceAggregationResultWithDomainResolver) Keys(ctx context.
 	return output, nil
 }
 
-// ComplianceResults returns graphql resolvers for all matching compliance results
-func (resolver *Resolver) ComplianceResults(ctx context.Context, query RawQuery) ([]*complianceControlResultResolver, error) {
-	defer metrics.SetGraphQLOperationDurationTime(time.Now(), pkgMetrics.Compliance, "ComplianceResults")
-
-	if err := readCompliance(ctx); err != nil {
-		return nil, err
-	}
-	q, err := query.AsV1QueryOrEmpty()
-	if err != nil {
-		return nil, err
-	}
-	return resolver.wrapComplianceControlResults(
-		resolver.ComplianceDataStore.QueryControlResults(ctx, q))
-}
-
 func (resolver *complianceStandardMetadataResolver) Controls(ctx context.Context) ([]*complianceControlResolver, error) {
 	if err := readCompliance(ctx); err != nil {
 		return nil, err
@@ -469,9 +467,9 @@ type controlResultResolver struct {
 	root       *Resolver
 	controlID  string
 	value      *storage.ComplianceResultValue
-	deployment *storage.Deployment
-	cluster    *storage.Cluster
-	node       *storage.Node
+	deployment *storage.ComplianceDomain_Deployment
+	cluster    *storage.ComplianceDomain_Cluster
+	node       *storage.ComplianceDomain_Node
 }
 
 type bulkControlResults []*controlResultResolver
@@ -481,7 +479,7 @@ func newBulkControlResults() *bulkControlResults {
 	return &output
 }
 
-func (container *bulkControlResults) addDeploymentData(root *Resolver, results []*storage.ComplianceRunResults, filter func(*storage.Deployment, *v1.ComplianceControl) bool) {
+func (container *bulkControlResults) addDeploymentData(root *Resolver, results []*storage.ComplianceRunResults, filter func(*storage.ComplianceDomain_Deployment, *v1.ComplianceControl) bool) {
 	for _, runResult := range results {
 		for did, res := range runResult.GetDeploymentResults() {
 			deployment := runResult.GetDomain().GetDeployments()[did]
@@ -517,7 +515,7 @@ func (container *bulkControlResults) addClusterData(root *Resolver, results []*s
 	}
 }
 
-func (container *bulkControlResults) addNodeData(root *Resolver, results []*storage.ComplianceRunResults, filter func(node *storage.Node, control *v1.ComplianceControl) bool) {
+func (container *bulkControlResults) addNodeData(root *Resolver, results []*storage.ComplianceRunResults, filter func(node *storage.ComplianceDomain_Node, control *v1.ComplianceControl) bool) {
 	for _, runResult := range results {
 		for nodeID, res := range runResult.GetNodeResults() {
 			node := runResult.GetDomain().GetNodes()[nodeID]
@@ -536,7 +534,7 @@ func (container *bulkControlResults) addNodeData(root *Resolver, results []*stor
 	}
 }
 
-func (resolver *controlResultResolver) Resource(ctx context.Context) *controlResultResolver {
+func (resolver *controlResultResolver) Resource(_ context.Context) *controlResultResolver {
 	return resolver
 }
 
@@ -544,28 +542,31 @@ func (resolver *controlResultResolver) Control(ctx context.Context) (*compliance
 	return resolver.root.ComplianceControl(ctx, struct{ graphql.ID }{graphql.ID(resolver.controlID)})
 }
 
-func (resolver *controlResultResolver) ToDeployment() (*deploymentResolver, bool) {
+//revive:disable:var-naming
+func (resolver *controlResultResolver) ToComplianceDomain_Deployment() (*complianceDomain_DeploymentResolver, bool) {
 	if resolver.deployment == nil {
 		return nil, false
 	}
-	return &deploymentResolver{nil, resolver.root, resolver.deployment, nil}, true
+	return &complianceDomain_DeploymentResolver{nil, resolver.root, resolver.deployment}, true
 }
 
-func (resolver *controlResultResolver) ToCluster() (*clusterResolver, bool) {
+func (resolver *controlResultResolver) ToComplianceDomain_Cluster() (*complianceDomain_ClusterResolver, bool) {
 	if resolver.cluster == nil {
 		return nil, false
 	}
-	return &clusterResolver{root: resolver.root, data: resolver.cluster}, true
+	return &complianceDomain_ClusterResolver{root: resolver.root, data: resolver.cluster}, true
 }
 
-func (resolver *controlResultResolver) ToNode() (*nodeResolver, bool) {
+func (resolver *controlResultResolver) ToComplianceDomain_Node() (*complianceDomain_NodeResolver, bool) {
 	if resolver.node == nil {
 		return nil, false
 	}
-	return &nodeResolver{root: resolver.root, data: resolver.node}, true
+	return &complianceDomain_NodeResolver{root: resolver.root, data: resolver.node}, true
 }
 
-func (resolver *controlResultResolver) Value(ctx context.Context) *complianceResultValueResolver {
+//revive:enable:var-naming
+
+func (resolver *controlResultResolver) Value(_ context.Context) *complianceResultValueResolver {
 	return &complianceResultValueResolver{
 		root: resolver.root,
 		data: resolver.value,
@@ -603,10 +604,10 @@ func (resolver *complianceControlResolver) ComplianceResults(ctx context.Context
 	output.addClusterData(resolver.root, runResults, func(control *v1.ComplianceControl) bool {
 		return control.GetId() == resolver.data.GetId()
 	})
-	output.addDeploymentData(resolver.root, runResults, func(deployment *storage.Deployment, control *v1.ComplianceControl) bool {
+	output.addDeploymentData(resolver.root, runResults, func(deployment *storage.ComplianceDomain_Deployment, control *v1.ComplianceControl) bool {
 		return control.GetId() == resolver.data.GetId()
 	})
-	output.addNodeData(resolver.root, runResults, func(node *storage.Node, control *v1.ComplianceControl) bool {
+	output.addNodeData(resolver.root, runResults, func(node *storage.ComplianceDomain_Node, control *v1.ComplianceControl) bool {
 		return control.GetId() == resolver.data.GetId()
 	})
 
@@ -626,11 +627,8 @@ func (resolver *complianceControlResolver) ComplianceControlEntities(ctx context
 	if err != nil || !hasComplianceSuccessfullyRun {
 		return nil, err
 	}
-	store, err := resolver.root.NodeGlobalDataStore.GetClusterNodeStore(ctx, clusterID, false)
-	if err != nil {
-		return nil, err
-	}
-	return resolver.root.wrapNodes(store.ListNodes())
+
+	return resolver.root.wrapNodes(resolver.root.NodeDataStore.SearchRawNodes(ctx, clusterQuery(clusterID)))
 }
 
 func (resolver *complianceControlResolver) ComplianceControlNodeCount(ctx context.Context, args RawQuery) (*complianceControlNodeCountResolver, error) {
@@ -677,11 +675,7 @@ func (resolver *complianceControlResolver) ComplianceControlNodes(ctx context.Co
 		if !ok || err != nil {
 			return nil, err
 		}
-		ds, err := resolver.root.NodeGlobalDataStore.GetClusterNodeStore(ctx, clusterID, false)
-		if err != nil {
-			return nil, err
-		}
-		resolvers, err := resolver.root.wrapNodes(getResultNodesFromAggregationResults(rs, any, ds))
+		resolvers, err := resolver.root.wrapNodes(resolver.getResultNodesFromAggregationResults(ctx, rs, all))
 		if err != nil {
 			return nil, err
 		}
@@ -708,11 +702,7 @@ func (resolver *complianceControlResolver) ComplianceControlFailingNodes(ctx con
 		if !ok || err != nil {
 			return nil, err
 		}
-		ds, err := resolver.root.NodeGlobalDataStore.GetClusterNodeStore(ctx, clusterID, false)
-		if err != nil {
-			return nil, err
-		}
-		resolvers, err := resolver.root.wrapNodes(getResultNodesFromAggregationResults(rs, failing, ds))
+		resolvers, err := resolver.root.wrapNodes(resolver.getResultNodesFromAggregationResults(ctx, rs, failing))
 		if err != nil {
 			return nil, err
 		}
@@ -739,11 +729,7 @@ func (resolver *complianceControlResolver) ComplianceControlPassingNodes(ctx con
 		if !ok || err != nil {
 			return nil, err
 		}
-		ds, err := resolver.root.NodeGlobalDataStore.GetClusterNodeStore(ctx, clusterID, false)
-		if err != nil {
-			return nil, err
-		}
-		resolvers, err := resolver.root.wrapNodes(getResultNodesFromAggregationResults(rs, passing, ds))
+		resolvers, err := resolver.root.wrapNodes(resolver.getResultNodesFromAggregationResults(ctx, rs, passing))
 		if err != nil {
 			return nil, err
 		}
@@ -772,10 +758,11 @@ func (resolver *complianceControlResolver) getNodeControlAggregationResults(ctx 
 	return rs, true, nil
 }
 
-func getResultNodesFromAggregationResults(results []*storage.ComplianceAggregation_Result, nodeType resultType, ds datastore.DataStore) ([]*storage.Node, error) {
-	if ds == nil {
-		return nil, errors.Wrap(errors.New("empty node datastore encountered"), "argument ds is nil")
-	}
+func (resolver *complianceControlResolver) getResultNodesFromAggregationResults(
+	ctx context.Context,
+	results []*storage.ComplianceAggregation_Result,
+	nodeType resultType,
+) ([]*storage.Node, error) {
 	var nodes []*storage.Node
 	for _, r := range results {
 		if (nodeType == passing && r.GetNumPassing() == 0) || (nodeType == failing && r.GetNumFailing() == 0) {
@@ -785,8 +772,8 @@ func getResultNodesFromAggregationResults(results []*storage.ComplianceAggregati
 		if err != nil {
 			continue
 		}
-		node, err := ds.GetNode(nodeID)
-		if err != nil {
+		node, found, err := resolver.root.NodeDataStore.GetNode(ctx, nodeID)
+		if err != nil || !found {
 			continue
 		}
 		nodes = append(nodes, node)
@@ -799,7 +786,7 @@ type resultType int
 const (
 	failing resultType = iota
 	passing
-	any
+	all
 )
 
 func getScopeIDFromAggregationResult(result *storage.ComplianceAggregation_Result, scope storage.ComplianceAggregation_Scope) (string, error) {
@@ -852,4 +839,8 @@ func (c *ComplianceControlWithControlStatusResolver) ControlStatus() string {
 		return ""
 	}
 	return c.controlStatus
+}
+
+func clusterQuery(clusterID string) *v1.Query {
+	return search.NewQueryBuilder().AddExactMatches(search.ClusterID, clusterID).ProtoQuery()
 }

@@ -1,5 +1,3 @@
-import { ClusterLabels } from 'services/ClustersService';
-
 export type SensorHealthStatus = 'HEALTHY' | 'UNHEALTHY' | 'DEGRADED' | 'UNINITIALIZED';
 
 export type ClusterHealthItemStatus =
@@ -64,10 +62,6 @@ export type DynamicConfig = {
     };
 };
 
-export type HelmConfig = {
-    dynamicConfig: DynamicConfig;
-};
-
 export type CentralEnv = {
     kernelSupportAvailable?: boolean;
     successfullyFetched?: boolean;
@@ -89,32 +83,4 @@ export type ClusterStatus = {
     };
     upgradeStatus: SensorUpgradeStatus;
     certExpiryStatus: CertExpiryStatus;
-};
-
-export type ClusterManagerType =
-    | 'MANAGER_TYPE_UNKNOWN'
-    | 'MANAGER_TYPE_MANUAL'
-    | 'MANAGER_TYPE_HELM_CHART'
-    | 'MANAGER_TYPE_KUBERNETES_OPERATOR';
-
-export type Cluster = {
-    id: string;
-    name: string;
-    type: string;
-    mainImage: string;
-    centralApiEndpoint: string;
-    collectionMethod: string;
-    collectorImage: string;
-    admissionController: boolean;
-    admissionControllerUpdates: boolean;
-    tolerationsConfig: {
-        disabled: boolean;
-    };
-    status: ClusterStatus;
-    dynamicConfig: DynamicConfig;
-    helmConfig?: HelmConfig;
-    slimCollector: boolean;
-    healthStatus: ClusterHealthStatus;
-    labels: ClusterLabels;
-    managedBy: ClusterManagerType;
 };

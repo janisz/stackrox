@@ -1,14 +1,16 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"log"
 	"strings"
 	"text/template"
 	"unicode"
 
-	"github.com/golang/protobuf/proto"
+	"github.com/stackrox/rox/pkg/postgres/pgutils"
 	"github.com/stackrox/rox/pkg/postgres/walker"
+	"github.com/stackrox/rox/pkg/protoutils"
 	"github.com/stackrox/rox/pkg/stringutils"
 )
 
@@ -16,8 +18,15 @@ func parseReferencesAndInjectPeerSchemas(schema *walker.Schema, refs []string) (
 	schemasByObjType := make(map[string]*walker.Schema, len(refs))
 	parsedRefs = make([]parsedReference, 0, len(refs))
 	for _, ref := range refs {
-		refTable, refObjType := stringutils.Split2(ref, ":")
-		refMsgType := proto.MessageType(refObjType)
+		var refTable, refObjType string
+		if strings.Contains(ref, ":") {
+			refTable, refObjType = stringutils.Split2(ref, ":")
+		} else {
+			refObjType = ref
+			refTable = pgutils.NamingStrategy.TableName(stringutils.GetAfter(refObjType, "."))
+		}
+
+		refMsgType := protoutils.MessageType(refObjType)
 		if refMsgType == nil {
 			log.Fatalf("could not find message for type: %s", refObjType)
 		}
@@ -74,7 +83,11 @@ func lowerCamelCase(s string) string {
 		return ""
 	}
 	words[0] = strings.ToLower(words[0])
+	if len(words) == 1 && words[0] == "id" {
+		return "id"
+	}
 	applyPointwise(words[1:], strings.Title)
+	applyPointwise(words, stringutils.UpperCaseAcronyms)
 	return strings.Join(words, "")
 }
 
@@ -84,6 +97,7 @@ func upperCamelCase(s string) string {
 		return ""
 	}
 	applyPointwise(words, strings.Title)
+	applyPointwise(words, stringutils.UpperCaseAcronyms)
 	return strings.Join(words, "")
 }
 
@@ -95,10 +109,44 @@ func valueExpansion(size int) string {
 	return strings.Join(all, ", ")
 }
 
+func concatWith(strs []string, sep string) string {
+	return strings.Join(strs, sep)
+}
+
+func dict(values ...interface{}) (map[string]interface{}, error) {
+	if len(values)%2 != 0 {
+		return nil, errors.New("invalid dict call")
+	}
+	dict := make(map[string]interface{}, len(values)/2)
+	for i := 0; i < len(values); i += 2 {
+		key, ok := values[i].(string)
+		if !ok {
+			return nil, errors.New("dict keys must be strings")
+		}
+		dict[key] = values[i+1]
+	}
+	return dict, nil
+}
+
+func arr(els ...any) []any {
+	return els
+}
+
 var funcMap = template.FuncMap{
-	"lowerCamelCase":    lowerCamelCase,
-	"upperCamelCase":    upperCamelCase,
-	"valueExpansion":    valueExpansion,
-	"lowerCase":         strings.ToLower,
-	"storageToResource": storageToResource,
+	"arr":                          arr,
+	"lowerCamelCase":               lowerCamelCase,
+	"upperCamelCase":               upperCamelCase,
+	"valueExpansion":               valueExpansion,
+	"lowerCase":                    strings.ToLower,
+	"storageToResource":            storageToResource,
+	"concatWith":                   concatWith,
+	"searchFieldNameInOtherSchema": searchFieldNameInOtherSchema,
+	"isSacScoping":                 isSacScoping,
+	"dict":                         dict,
+	"pluralType": func(s string) string {
+		if s[len(s)-1] == 'y' {
+			return fmt.Sprintf("%sies", strings.TrimSuffix(s, "y"))
+		}
+		return fmt.Sprintf("%ss", s)
+	},
 }

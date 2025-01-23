@@ -1,22 +1,22 @@
+import { AuthMachineToMachineConfig } from 'services/MachineAccessService';
+
 export type IntegrationSource =
     | 'authProviders'
     | 'notifiers'
     | 'imageIntegrations'
     | 'backups'
-    | 'authPlugins'
-    | 'signatureIntegrations';
+    | 'signatureIntegrations'
+    | 'cloudSources';
 
 export type IntegrationType =
-    | AuthPluginType
     | AuthProviderType
     | BackupIntegrationType
     | ImageIntegrationType
     | NotifierIntegrationType
-    | SignatureIntegrationType;
+    | SignatureIntegrationType
+    | CloudSourceIntegrationType;
 
-export type AuthPluginType = 'scopedAccess';
-
-export type AuthProviderType = 'apitoken' | 'clusterInitBundle';
+export type AuthProviderType = 'apitoken' | 'clusterInitBundle' | 'machineAccess';
 
 // Investigate why the following occur in tableColumnDescriptor but not in integrationsList:
 /*
@@ -26,28 +26,33 @@ export type AuthProviderType = 'apitoken' | 'clusterInitBundle';
     | 'iap'
 */
 
-export type BackupIntegrationType = 'gcs' | 's3';
+export type BackupIntegrationType = 'gcs' | 's3' | 's3compatible';
 
 export type ImageIntegrationType =
     | 'artifactory'
     | 'artifactregistry'
     | 'azure'
     | 'clair'
+    | 'clairV4'
     | 'clairify'
     | 'docker'
     | 'ecr'
+    | 'ghcr'
     | 'google'
     | 'ibm'
     | 'nexus'
     | 'quay'
-    | 'rhel';
+    | 'rhel'
+    | 'scannerv4';
 
 export type NotifierIntegrationType =
     | 'awsSecurityHub'
+    | 'acscsEmail'
     | 'cscc'
     | 'email'
     | 'generic'
     | 'jira'
+    | 'microsoftSentinel'
     | 'pagerduty'
     | 'slack'
     | 'splunk'
@@ -57,7 +62,11 @@ export type NotifierIntegrationType =
 
 export type SignatureIntegrationType = 'signature';
 
+export type CloudSourceIntegrationType = 'paladinCloud' | 'ocm';
+
 export type BaseIntegration = {
     id: string;
     name: string;
 };
+
+export type AuthProviderIntegration = BaseIntegration | AuthMachineToMachineConfig;

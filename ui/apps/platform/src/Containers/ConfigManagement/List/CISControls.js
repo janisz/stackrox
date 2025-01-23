@@ -1,8 +1,10 @@
 import React, { useContext } from 'react';
 import capitalize from 'lodash/capitalize';
 
-import StatusChip from 'Components/StatusChip';
+import NotApplicableIconText from 'Components/PatternFly/IconText/NotApplicableIconText';
+import PolicyStatusIconText from 'Components/PatternFly/IconText/PolicyStatusIconText';
 import { defaultHeaderClassName, defaultColumnClassName } from 'Components/Table';
+import TableCellLink from 'Components/TableCellLink';
 import searchContext from 'Containers/searchContext';
 import COMPLIANCE_STATES from 'constants/complianceStates';
 import { entityListPropTypes, entityListDefaultprops } from 'constants/entityPageProps';
@@ -12,6 +14,7 @@ import { standardLabels } from 'messages/standards';
 import { LIST_STANDARD_NO_NODES as QUERY } from 'queries/standard';
 import { sortVersion, sortStatus } from 'sorters/sorters';
 import queryService from 'utils/queryService';
+import { getConfigMgmtPathForEntitiesAndId } from '../entities';
 import ListFrontendPaginated from './ListFrontendPaginated';
 
 const tableColumns = [
@@ -31,6 +34,14 @@ const tableColumns = [
         Header: `Control`,
         headerClassName: `w-1/2 ${defaultHeaderClassName}`,
         className: `w-1/2 ${defaultColumnClassName}`,
+        Cell: ({ original, pdf }) => {
+            const url = getConfigMgmtPathForEntitiesAndId('CONTROL', original.id);
+            return (
+                <TableCellLink pdf={pdf} url={url}>
+                    {original.control}
+                </TableCellLink>
+            );
+        },
         accessor: 'control',
         sortMethod: sortVersion,
     },
@@ -40,10 +51,9 @@ const tableColumns = [
         className: `w-1/8 ${defaultColumnClassName} capitalize`,
         Cell: ({ original, pdf }) => {
             if (original.status === COMPLIANCE_STATES['N/A']) {
-                return original.status;
+                return <NotApplicableIconText isTextOnly={pdf} />;
             }
-            const status = original.status.toLowerCase();
-            return <StatusChip status={status} asString={pdf} />;
+            return <PolicyStatusIconText isPass={original.status === 'Pass'} isTextOnly={pdf} />;
         },
         accessor: 'status',
         sortMethod: sortStatus,

@@ -5,9 +5,9 @@ import (
 
 	"github.com/pkg/errors"
 	store "github.com/stackrox/rox/central/complianceoperator/rules/store"
-	"github.com/stackrox/rox/central/role/resources"
 	"github.com/stackrox/rox/generated/storage"
 	"github.com/stackrox/rox/pkg/sac"
+	"github.com/stackrox/rox/pkg/sac/resources"
 	"github.com/stackrox/rox/pkg/sync"
 )
 
@@ -30,7 +30,13 @@ func NewDatastore(store store.Store) (DataStore, error) {
 		store:       store,
 		rulesByName: make(map[string]map[string]*storage.ComplianceOperatorRule),
 	}
-	err := store.Walk(context.TODO(), func(rule *storage.ComplianceOperatorRule) error {
+	ctx := sac.WithGlobalAccessScopeChecker(context.Background(),
+		sac.AllowFixedScopes(
+			sac.AccessModeScopeKeys(storage.Access_READ_ACCESS),
+			sac.ResourceScopeKeys(resources.ComplianceOperator),
+		))
+
+	err := store.Walk(ctx, func(rule *storage.ComplianceOperatorRule) error {
 		ds.addToRulesByNameNoLock(rule)
 		return nil
 	})
@@ -53,6 +59,7 @@ func (d *datastoreImpl) Walk(ctx context.Context, fn func(rule *storage.Complian
 	} else if !ok {
 		return errors.Wrap(sac.ErrResourceAccessDenied, "compliance operator rules read")
 	}
+	// Postgres retry in caller.
 	return d.store.Walk(ctx, fn)
 }
 
@@ -113,7 +120,7 @@ func (d *datastoreImpl) GetRulesByName(ctx context.Context, name string) ([]*sto
 	defer d.ruleLock.RUnlock()
 	rules := make([]*storage.ComplianceOperatorRule, 0, len(d.rulesByName[name]))
 	for _, rule := range d.rulesByName[name] {
-		rules = append(rules, rule.Clone())
+		rules = append(rules, rule.CloneVT())
 	}
 	return rules, nil
 }

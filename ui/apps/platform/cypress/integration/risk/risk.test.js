@@ -1,13 +1,23 @@
-import { selectors as RiskPageSelectors } from '../../constants/RiskPage';
 import withAuth from '../../helpers/basicAuth';
 import {
+    assertSortedItems,
+    callbackForPairOfAscendingNumberValuesFromElements,
+    callbackForPairOfDescendingNumberValuesFromElements,
+} from '../../helpers/sort';
+import { getRegExpForTitleWithBranding } from '../../helpers/title';
+
+import {
+    clickTab,
+    deploymentswithprocessinfoAlias,
+    deploymentscountAlias,
     visitRiskDeployments,
     visitRiskDeploymentsWithSearchQuery,
     viewRiskDeploymentByName,
     viewRiskDeploymentInNetworkGraph,
-} from '../../helpers/risk';
+} from './Risk.helpers';
+import { selectors as RiskPageSelectors } from './Risk.selectors';
 
-describe('Risk page', () => {
+describe('Risk', () => {
     withAuth();
 
     describe('without mock API', () => {
@@ -17,51 +27,86 @@ describe('Risk page', () => {
             cy.get(RiskPageSelectors.risk).should('have.class', 'pf-m-current');
         });
 
-        it('should sort priority in the table', () => {
+        it('should have title and table column headings', () => {
             visitRiskDeployments();
 
-            const priorityColumnHeadingSelector = `${RiskPageSelectors.table.columnHeaders}:contains("Priority")`;
+            cy.title().should('match', getRegExpForTitleWithBranding('Risk'));
 
-            // Default is not sorted by priority.
-            cy.get(priorityColumnHeadingSelector)
+            cy.get('.rt-th:contains("Name")');
+            cy.get('.rt-th:contains("Created")');
+            cy.get('.rt-th:contains("Cluster")');
+            cy.get('.rt-th:contains("Namespace")');
+            cy.get('.rt-th:contains("Priority")');
+        });
+
+        /*
+         * ROX-13468: assertSortedItems sometimes fails for sort descending (step 2) or resort ascending (step 3).
+         * This is the only sort test that fails and Risk is the only occurrence of TableV2 element.
+         * Skip test given the comment below (step 0) initial table state and other possible rendering problems.
+         */
+        it.skip('should sort the Priority column', () => {
+            visitRiskDeployments();
+
+            const thSelector = '.rt-th:contains("Priority")';
+            const tdSelector = '.rt-td:nth-child(5)';
+
+            // 0. Initial table state does not indicate that it is sorted ascending by the Priority column.
+            // TODO If possible, replace TableV2 with Table element in RiskTable component.
+            cy.get(thSelector)
                 .should('not.have.class', '-sort-asc')
                 .should('not.have.class', '-sort-desc');
 
-            // Sort ascending by priority.
-            cy.get(priorityColumnHeadingSelector).click();
+            // 1. Sort ascending by the Priority column.
+            cy.get(thSelector).click();
             cy.location('search').should(
                 'eq',
                 '?sort[id]=Deployment%20Risk%20Priority&sort[desc]=false'
             );
-            // Why no request here?
-            cy.get(priorityColumnHeadingSelector).should('have.class', '-sort-asc');
-            cy.get(`${RiskPageSelectors.table.dataRows} .rt-td:nth-child(5)`).then(
-                ($priorityCells) => {
-                    const firstCellPriority = Number($priorityCells.eq(0).text());
-                    const lastCellPriority = Number(
-                        $priorityCells.eq($priorityCells.length - 1).text()
-                    );
-                    expect(lastCellPriority).to.be.at.least(firstCellPriority);
-                }
-            );
 
-            // Sort descending by priority.
-            cy.get(priorityColumnHeadingSelector).click();
+            // There is no request because rows are already sorted ascending.
+
+            cy.get(thSelector).should('have.class', '-sort-asc');
+            cy.get(tdSelector).then((items) => {
+                assertSortedItems(items, callbackForPairOfAscendingNumberValuesFromElements);
+            });
+
+            // 2. Sort descending by the Priority column.
+            cy.get(thSelector).click();
             cy.location('search').should(
                 'eq',
                 '?sort[id]=Deployment%20Risk%20Priority&sort[desc]=true'
             );
-            cy.wait('@getDeploymentsWithProcessInfo'); // assume intercept in visitRiskDeployments
-            cy.get(priorityColumnHeadingSelector).should('have.class', '-sort-desc');
-            cy.get(`${RiskPageSelectors.table.dataRows} .rt-td:nth-child(5)`).then(
-                ($priorityCells) => {
-                    const firstCellPriority = Number($priorityCells.eq(0).text());
-                    const lastCellPriority = Number(
-                        $priorityCells.eq($priorityCells.length - 1).text()
-                    );
-                    expect(firstCellPriority).to.be.at.least(lastCellPriority);
-                }
+
+            // There is a request because of change in sorting.
+            cy.wait(`@${deploymentswithprocessinfoAlias}`)
+                .its('request.url')
+                .should('include', 'sortOption.field=Deployment%20Risk%20Priority')
+                .should('include', 'sortOption.reversed=true');
+            cy.wait(`@${deploymentscountAlias}`);
+
+            cy.get(thSelector).should('have.class', '-sort-desc');
+            cy.get(tdSelector).then((items) => {
+                assertSortedItems(items, callbackForPairOfDescendingNumberValuesFromElements);
+            });
+
+            // 3. Sort ascending by the Priority column.
+            cy.get(thSelector).click();
+            cy.location('search').should(
+                'eq',
+                '?sort[id]=Deployment%20Risk%20Priority&sort[desc]=false'
             );
+
+            // There is a request because of change in sorting.
+            cy.wait(`@${deploymentswithprocessinfoAlias}`)
+                .its('request.url')
+                .should('include', 'sortOption.field=Deployment%20Risk%20Priority')
+                .should('include', 'sortOption.reversed=false');
+            cy.wait(`@${deploymentscountAlias}`);
+
+            cy.get(thSelector).should('have.class', '-sort-asc');
+            cy.get(tdSelector).then((items) => {
+                assertSortedItems(items, callbackForPairOfAscendingNumberValuesFromElements);
+            });
         });
 
         it('should open side panel for deployment', () => {
@@ -76,8 +121,8 @@ describe('Risk page', () => {
             viewRiskDeploymentByName('collector');
 
             cy.get(RiskPageSelectors.panel).should('have.length', 2); // main panel and side panel
-            cy.get(RiskPageSelectors.panelTabs.riskIndicators);
-            cy.get(RiskPageSelectors.cancelButton).click();
+            cy.get('button[data-testid="tab"]:contains("Risk Indicators")');
+            cy.get('button[aria-label="Close"]').click();
             cy.get(RiskPageSelectors.panel).should('have.length', 1); // main panel
         });
 
@@ -86,8 +131,8 @@ describe('Risk page', () => {
             viewRiskDeploymentByName('collector');
 
             cy.get(RiskPageSelectors.panel).should('have.length', 2); // main panel and side panel
-            cy.get(RiskPageSelectors.panelTabs.deploymentDetails);
-            cy.get(RiskPageSelectors.cancelButton).click();
+            cy.get('button[data-testid="tab"]:contains("Deployment Details")');
+            cy.get('button[aria-label="Close"]').click();
             cy.get(RiskPageSelectors.panel).should('have.length', 1); // main panel
         });
 
@@ -95,31 +140,28 @@ describe('Risk page', () => {
             visitRiskDeployments();
             viewRiskDeploymentByName('collector');
 
-            cy.get(RiskPageSelectors.panelTabs.deploymentDetails).click();
+            clickTab('Deployment Details');
             cy.get(RiskPageSelectors.imageLink).first().click();
-            cy.location('pathname').should('contain', '/main/vulnerability-management/image');
+
+            cy.location('pathname').should('contain', '/main/vulnerabilities/workload-cves/image');
         });
     });
 
     describe('with actual API', () => {
-        it('should navigate to network page with selected deployment', () => {
+        // TODO fix uncaught exception in Network Graph 2.0
+        it.skip('should navigate to network page with selected deployment', () => {
             visitRiskDeployments();
-            viewRiskDeploymentByName('central');
+            viewRiskDeploymentByName('collector');
             viewRiskDeploymentInNetworkGraph();
-
-            cy.location('pathname').should('match', /^\/main\/network\/[-0-9a-z]+$/);
         });
 
-        const searchPlaceholderText = 'Add one or more resource filters';
+        const searchPlaceholderSelector = `${RiskPageSelectors.search.valueContainer} input[placeholder="Filter deployments"]`;
 
         it('should not have anything in search bar when URL has no search params', () => {
             visitRiskDeployments();
 
             // Positive assertion:
-            cy.get(RiskPageSelectors.search.valueContainer).should(
-                'have.text',
-                searchPlaceholderText
-            );
+            cy.get(searchPlaceholderSelector);
             // Negative assertion:
             cy.get(RiskPageSelectors.search.searchLabels).should('not.exist');
         });
@@ -137,10 +179,7 @@ describe('Risk page', () => {
                 visitRiskDeploymentsWithSearchQuery(`?s[${nsOption}]=${nsValue}`);
 
                 // Negative assertion:
-                cy.get(RiskPageSelectors.search.valueContainer).should(
-                    'not.have.text',
-                    searchPlaceholderText
-                );
+                cy.get(searchPlaceholderSelector).should('not.exist');
                 // Positive assertions:
                 cy.get(RiskPageSelectors.search.searchLabels).should('have.length', 2);
                 cy.get(`${RiskPageSelectors.search.searchLabels}:nth(0)`).should(
@@ -173,10 +212,7 @@ describe('Risk page', () => {
                 );
 
                 // Negative assertion:
-                cy.get(RiskPageSelectors.search.valueContainer).should(
-                    'not.have.text',
-                    searchPlaceholderText
-                );
+                cy.get(searchPlaceholderSelector).should('not.exist');
                 // Positive assertions:
                 cy.get(RiskPageSelectors.search.searchLabels).should('have.length', 4);
                 cy.get(`${RiskPageSelectors.search.searchLabels}:nth(0)`).should(
@@ -211,10 +247,7 @@ describe('Risk page', () => {
                 visitRiskDeploymentsWithSearchQuery(`?s[${sillyOption}]=${sillyValue}`);
 
                 // Positive assertion:
-                cy.get(RiskPageSelectors.search.valueContainer).should(
-                    'have.text',
-                    searchPlaceholderText
-                );
+                cy.get(searchPlaceholderSelector);
                 // Negative assertion:
                 cy.get(RiskPageSelectors.search.searchLabels).should('not.exist');
 

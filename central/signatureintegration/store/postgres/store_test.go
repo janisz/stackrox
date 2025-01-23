@@ -8,58 +8,44 @@ import (
 	"context"
 	"testing"
 
-	"github.com/jackc/pgx/v4/pgxpool"
 	"github.com/stackrox/rox/generated/storage"
-	"github.com/stackrox/rox/pkg/features"
 	"github.com/stackrox/rox/pkg/postgres/pgtest"
+	"github.com/stackrox/rox/pkg/protoassert"
 	"github.com/stackrox/rox/pkg/sac"
+	"github.com/stackrox/rox/pkg/search"
 	"github.com/stackrox/rox/pkg/testutils"
-	"github.com/stackrox/rox/pkg/testutils/envisolator"
 	"github.com/stretchr/testify/suite"
 )
 
-type SignatureintegrationsStoreSuite struct {
+type SignatureIntegrationsStoreSuite struct {
 	suite.Suite
-	envIsolator *envisolator.EnvIsolator
-	store       Store
-	pool        *pgxpool.Pool
+	store  Store
+	testDB *pgtest.TestPostgres
 }
 
-func TestSignatureintegrationsStore(t *testing.T) {
-	suite.Run(t, new(SignatureintegrationsStoreSuite))
+func TestSignatureIntegrationsStore(t *testing.T) {
+	suite.Run(t, new(SignatureIntegrationsStoreSuite))
 }
 
-func (s *SignatureintegrationsStoreSuite) SetupTest() {
-	s.envIsolator = envisolator.NewEnvIsolator(s.T())
-	s.envIsolator.Setenv(features.PostgresDatastore.EnvVar(), "true")
+func (s *SignatureIntegrationsStoreSuite) SetupSuite() {
 
-	if !features.PostgresDatastore.Enabled() {
-		s.T().Skip("Skip postgres store tests")
-		s.T().SkipNow()
-	}
+	s.testDB = pgtest.ForT(s.T())
+	s.store = New(s.testDB.DB)
+}
 
+func (s *SignatureIntegrationsStoreSuite) SetupTest() {
 	ctx := sac.WithAllAccess(context.Background())
-
-	source := pgtest.GetConnectionString(s.T())
-	config, err := pgxpool.ParseConfig(source)
-	s.Require().NoError(err)
-	pool, err := pgxpool.ConnectConfig(ctx, config)
-	s.Require().NoError(err)
-
-	Destroy(ctx, pool)
-
-	s.pool = pool
-	s.store = New(ctx, pool)
+	tag, err := s.testDB.Exec(ctx, "TRUNCATE signature_integrations CASCADE")
+	s.T().Log("signature_integrations", tag)
+	s.store = New(s.testDB.DB)
+	s.NoError(err)
 }
 
-func (s *SignatureintegrationsStoreSuite) TearDownTest() {
-	if s.pool != nil {
-		s.pool.Close()
-	}
-	s.envIsolator.RestoreAll()
+func (s *SignatureIntegrationsStoreSuite) TearDownSuite() {
+	s.testDB.Teardown(s.T())
 }
 
-func (s *SignatureintegrationsStoreSuite) TestStore() {
+func (s *SignatureIntegrationsStoreSuite) TestStore() {
 	ctx := sac.WithAllAccess(context.Background())
 
 	store := s.store
@@ -78,12 +64,12 @@ func (s *SignatureintegrationsStoreSuite) TestStore() {
 	foundSignatureIntegration, exists, err = store.Get(ctx, signatureIntegration.GetId())
 	s.NoError(err)
 	s.True(exists)
-	s.Equal(signatureIntegration, foundSignatureIntegration)
+	protoassert.Equal(s.T(), signatureIntegration, foundSignatureIntegration)
 
-	signatureIntegrationCount, err := store.Count(ctx)
+	signatureIntegrationCount, err := store.Count(ctx, search.EmptyQuery())
 	s.NoError(err)
 	s.Equal(1, signatureIntegrationCount)
-	signatureIntegrationCount, err = store.Count(withNoAccessCtx)
+	signatureIntegrationCount, err = store.Count(withNoAccessCtx, search.EmptyQuery())
 	s.NoError(err)
 	s.Zero(signatureIntegrationCount)
 
@@ -93,11 +79,6 @@ func (s *SignatureintegrationsStoreSuite) TestStore() {
 	s.NoError(store.Upsert(ctx, signatureIntegration))
 	s.ErrorIs(store.Upsert(withNoAccessCtx, signatureIntegration), sac.ErrResourceAccessDenied)
 
-	foundSignatureIntegration, exists, err = store.Get(ctx, signatureIntegration.GetId())
-	s.NoError(err)
-	s.True(exists)
-	s.Equal(signatureIntegration, foundSignatureIntegration)
-
 	s.NoError(store.Delete(ctx, signatureIntegration.GetId()))
 	foundSignatureIntegration, exists, err = store.Get(ctx, signatureIntegration.GetId())
 	s.NoError(err)
@@ -106,15 +87,23 @@ func (s *SignatureintegrationsStoreSuite) TestStore() {
 	s.ErrorIs(store.Delete(withNoAccessCtx, signatureIntegration.GetId()), sac.ErrResourceAccessDenied)
 
 	var signatureIntegrations []*storage.SignatureIntegration
+	var signatureIntegrationIDs []string
 	for i := 0; i < 200; i++ {
 		signatureIntegration := &storage.SignatureIntegration{}
 		s.NoError(testutils.FullInit(signatureIntegration, testutils.UniqueInitializer(), testutils.JSONFieldsFilter))
 		signatureIntegrations = append(signatureIntegrations, signatureIntegration)
+		signatureIntegrationIDs = append(signatureIntegrationIDs, signatureIntegration.GetId())
 	}
 
 	s.NoError(store.UpsertMany(ctx, signatureIntegrations))
 
-	signatureIntegrationCount, err = store.Count(ctx)
+	signatureIntegrationCount, err = store.Count(ctx, search.EmptyQuery())
 	s.NoError(err)
 	s.Equal(200, signatureIntegrationCount)
+
+	s.NoError(store.DeleteMany(ctx, signatureIntegrationIDs))
+
+	signatureIntegrationCount, err = store.Count(ctx, search.EmptyQuery())
+	s.NoError(err)
+	s.Equal(0, signatureIntegrationCount)
 }

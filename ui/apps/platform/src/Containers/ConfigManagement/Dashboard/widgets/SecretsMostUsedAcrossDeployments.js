@@ -1,15 +1,14 @@
 import React from 'react';
-import Loader from 'Components/Loader';
-import { Link, withRouter } from 'react-router-dom';
-import { Tooltip, TooltipOverlay } from '@stackrox/ui-components';
-import URLService from 'utils/URLService';
+import { Link, useRouteMatch, useLocation } from 'react-router-dom';
 import { gql } from '@apollo/client';
+import pluralize from 'pluralize';
+import dateFns from 'date-fns';
+
+import Loader from 'Components/Loader';
+import URLService from 'utils/URLService';
 import entityTypes from 'constants/entityTypes';
 import Query from 'Components/ThrowingQuery';
 import Widget from 'Components/Widget';
-import pluralize from 'pluralize';
-import ReactRouterPropTypes from 'react-router-prop-types';
-import dateFns from 'date-fns';
 
 const QUERY = gql`
     query secrets {
@@ -66,7 +65,10 @@ const getCertificateStatus = (files) => {
     return `has ${status} certs`;
 };
 
-const SecretsMostUsedAcrossDeployments = ({ match, location }) => {
+const SecretsMostUsedAcrossDeployments = () => {
+    const match = useRouteMatch();
+    const location = useLocation();
+
     function processData(data) {
         if (!data || !data.secrets) {
             return [];
@@ -77,6 +79,7 @@ const SecretsMostUsedAcrossDeployments = ({ match, location }) => {
             .sort((a, b) => b.deploymentCount - a.deploymentCount)
             .slice(0, 10);
     }
+
     return (
         <Query query={QUERY}>
             {({ loading, data }) => {
@@ -86,10 +89,8 @@ const SecretsMostUsedAcrossDeployments = ({ match, location }) => {
                     .url();
 
                 const viewAllLink = (
-                    <Link to={viewAllURL} className="no-underline">
-                        <button className="btn-sm btn-base" type="button">
-                            View All
-                        </button>
+                    <Link to={viewAllURL} className="no-underline btn-sm btn-base">
+                        View all
                     </Link>
                 );
 
@@ -107,52 +108,31 @@ const SecretsMostUsedAcrossDeployments = ({ match, location }) => {
                                     .push(item.id)
                                     .url();
                                 return (
-                                    <Link
+                                    <li
                                         key={item.id}
-                                        to={linkTo}
-                                        className={`no-underline text-base-600 hover:bg-base-200 inline-block border-base-300 w-full ${
+                                        className={`inline-block flex flex-row border-base-300 w-full ${
                                             index !== 4 || index !== 9 ? 'border-b' : ''
                                         }`}
                                     >
-                                        <li>
-                                            <div className="flex flex-row">
-                                                <div className="self-center text-2xl tracking-widest pl-4 pr-4">
-                                                    {index + 1}
-                                                </div>
-                                                <div className="flex flex-col truncate pr-4 pb-4 pt-4 text-sm">
-                                                    <span className="text-xs pb-1 italic text-base-500">
-                                                        {item.clusterName}/{item.namespace}
-                                                    </span>
-                                                    <span className="pb-2">{item.name}</span>
-                                                    <Tooltip
-                                                        content={
-                                                            <TooltipOverlay>
-                                                                {`${
-                                                                    item.deploymentCount
-                                                                } ${pluralize(
-                                                                    'Deployment',
-                                                                    item.deploymentCount
-                                                                )}, `}
-                                                                {getCertificateStatus(item.files)}
-                                                            </TooltipOverlay>
-                                                        }
-                                                    >
-                                                        {item.deploymentCount > 0 && (
-                                                            <div className="truncate italic">
-                                                                {`${
-                                                                    item.deploymentCount
-                                                                } ${pluralize(
-                                                                    'Deployment',
-                                                                    item.deploymentCount
-                                                                )}, `}
-                                                                {getCertificateStatus(item.files)}
-                                                            </div>
-                                                        )}
-                                                    </Tooltip>
-                                                </div>
-                                            </div>
-                                        </li>
-                                    </Link>
+                                        <div className="self-center text-2xl pl-4 pr-4">
+                                            {index + 1}
+                                        </div>
+                                        <div className="flex flex-col truncate pr-4 pb-4 pt-4">
+                                            <span className="text-sm">
+                                                {item.clusterName}/{item.namespace}
+                                            </span>
+                                            <Link to={linkTo}>{item.name}</Link>
+                                            {item.deploymentCount > 0 && (
+                                                <span className="truncate text-sm">
+                                                    {`${item.deploymentCount} ${pluralize(
+                                                        'deployment',
+                                                        item.deploymentCount
+                                                    )}, `}
+                                                    {getCertificateStatus(item.files)}
+                                                </span>
+                                            )}
+                                        </div>
+                                    </li>
                                 );
                             })}
                         </ul>
@@ -161,7 +141,7 @@ const SecretsMostUsedAcrossDeployments = ({ match, location }) => {
                 return (
                     <Widget
                         className="s-2 overflow-hidden pdf-page"
-                        header="Secrets Most Used Across Deployments"
+                        header="Secrets most used across deployments"
                         headerComponents={viewAllLink}
                     >
                         {contents}
@@ -172,9 +152,4 @@ const SecretsMostUsedAcrossDeployments = ({ match, location }) => {
     );
 };
 
-SecretsMostUsedAcrossDeployments.propTypes = {
-    match: ReactRouterPropTypes.match.isRequired,
-    location: ReactRouterPropTypes.location.isRequired,
-};
-
-export default withRouter(SecretsMostUsedAcrossDeployments);
+export default SecretsMostUsedAcrossDeployments;

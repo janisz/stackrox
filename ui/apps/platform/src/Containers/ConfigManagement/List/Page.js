@@ -1,6 +1,7 @@
-import React, { useContext } from 'react';
-import ReactRouterPropTypes from 'react-router-prop-types';
+import React, { useCallback, useContext, useRef, useState } from 'react';
+import { useHistory, useLocation, useRouteMatch } from 'react-router-dom';
 import pluralize from 'pluralize';
+import upperFirst from 'lodash/upperFirst';
 import startCase from 'lodash/startCase';
 
 import SidePanelAnimatedArea from 'Components/animations/SidePanelAnimatedArea';
@@ -8,25 +9,29 @@ import PageHeader from 'Components/PageHeader';
 import { PageBody } from 'Components/Panel';
 import EntitiesMenu from 'Components/workflow/EntitiesMenu';
 import ExportButton from 'Components/ExportButton';
+import BackdropExporting from 'Components/PatternFly/BackdropExporting';
 import configMgmtPaginationContext, {
     MAIN_PAGINATION_PARAMS,
     SIDEPANEL_PAGINATION_PARAMS,
 } from 'Containers/configMgmtPaginationContext';
 import searchContext from 'Containers/searchContext';
 import { searchParams } from 'constants/searchParams';
-import { useTheme } from 'Containers/ThemeProvider';
 import workflowStateContext from 'Containers/workflowStateContext';
+import useClickOutside from 'hooks/useClickOutside';
 import entityLabels from 'messages/entity';
 import parseURL from 'utils/URLParser';
 import URLService from 'utils/URLService';
-import { getUseCaseEntityMap } from 'utils/entityRelationships';
+import { getConfigurationManagementEntityTypes } from 'utils/entityRelationships';
 import { WorkflowState } from 'utils/WorkflowState';
 import EntityList from './EntityList';
 import SidePanel from '../SidePanel/SidePanel';
 
-const ListPage = ({ match, location, history }) => {
-    const { isDarkMode } = useTheme();
-    const useCaseEntityMap = getUseCaseEntityMap();
+const ListPage = () => {
+    const sidePanelRef = useRef(null);
+    const location = useLocation();
+    const history = useHistory();
+    const match = useRouteMatch();
+    const [isExporting, setIsExporting] = useState(false);
 
     const workflowState = parseURL(location);
     const { useCase, search, sort, paging } = workflowState;
@@ -43,18 +48,24 @@ const ListPage = ({ match, location, history }) => {
         params;
     const searchParam = useContext(searchContext);
 
+    const closeSidePanel = useCallback(() => {
+        history.push(URLService.getURL(match, location).clearSidePanelParams().url());
+    }, [history, match, location]);
+
+    useClickOutside(sidePanelRef, closeSidePanel, !!entityId1);
+
     function onRowClick(entityId) {
         const urlBuilder = URLService.getURL(match, location).push(entityId);
         history.push(urlBuilder.url());
     }
 
-    const header = pluralize(entityLabels[pageEntityListType]);
+    const header = upperFirst(pluralize(entityLabels[pageEntityListType]));
     const exportFilename = `${pluralize(startCase(header))} Report`;
     return (
         <workflowStateContext.Provider value={pageState}>
             <PageHeader
                 header={header}
-                subHeader="Entity List"
+                subHeader="Entity list"
                 classes="pr-0 ignore-react-onclickoutside"
             >
                 <div className="flex flex-1 justify-end h-full">
@@ -64,10 +75,15 @@ const ListPage = ({ match, location, history }) => {
                             type={pageEntityListType}
                             page="configManagement"
                             pdfId="capture-list"
+                            isExporting={isExporting}
+                            setIsExporting={setIsExporting}
                         />
                     </div>
                     <div className="flex items-center pl-2">
-                        <EntitiesMenu text="All Entities" options={useCaseEntityMap[useCase]} />
+                        <EntitiesMenu
+                            text="All Entities"
+                            options={getConfigurationManagementEntityTypes()}
+                        />
                     </div>
                 </div>
             </PageHeader>
@@ -82,27 +98,24 @@ const ListPage = ({ match, location, history }) => {
                 </configMgmtPaginationContext.Provider>
                 <searchContext.Provider value={searchParams.sidePanel}>
                     <configMgmtPaginationContext.Provider value={SIDEPANEL_PAGINATION_PARAMS}>
-                        <SidePanelAnimatedArea isDarkMode={isDarkMode} isOpen={!!entityId1}>
-                            <SidePanel
-                                entityType1={pageEntityListType}
-                                entityId1={entityId1}
-                                entityType2={entityType2}
-                                entityListType2={entityListType2}
-                                entityId2={entityId2}
-                                query={query}
-                            />
+                        <SidePanelAnimatedArea isOpen={!!entityId1}>
+                            <div ref={sidePanelRef}>
+                                <SidePanel
+                                    entityType1={pageEntityListType}
+                                    entityId1={entityId1}
+                                    entityType2={entityType2}
+                                    entityListType2={entityListType2}
+                                    entityId2={entityId2}
+                                    query={query}
+                                />
+                            </div>
                         </SidePanelAnimatedArea>
                     </configMgmtPaginationContext.Provider>
                 </searchContext.Provider>
             </PageBody>
+            {isExporting && <BackdropExporting />}
         </workflowStateContext.Provider>
     );
-};
-
-ListPage.propTypes = {
-    match: ReactRouterPropTypes.match.isRequired,
-    location: ReactRouterPropTypes.location.isRequired,
-    history: ReactRouterPropTypes.history.isRequired,
 };
 
 export default ListPage;

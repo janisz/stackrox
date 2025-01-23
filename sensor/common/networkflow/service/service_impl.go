@@ -5,12 +5,13 @@ import (
 	"io"
 	"strings"
 
-	"github.com/grpc-ecosystem/go-grpc-middleware/util/metautils"
-	"github.com/grpc-ecosystem/grpc-gateway/runtime"
+	metautils "github.com/grpc-ecosystem/go-grpc-middleware/v2/metadata"
+	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
 	"github.com/pkg/errors"
 	"github.com/stackrox/rox/generated/internalapi/sensor"
 	"github.com/stackrox/rox/pkg/concurrency"
 	"github.com/stackrox/rox/pkg/grpc/authz/idcheck"
+	"github.com/stackrox/rox/pkg/logging"
 	"github.com/stackrox/rox/pkg/set"
 	"github.com/stackrox/rox/pkg/timestamp"
 	"github.com/stackrox/rox/sensor/common/metrics"
@@ -25,16 +26,50 @@ const (
 	networkGraphExtSrcsCap = `network-graph-external-srcs`
 )
 
-// NewService creates a new streaming service with the collector. It should only be called once.
-func NewService(networkFlowManager manager.Manager) Service {
-	return &serviceImpl{
-		manager: networkFlowManager,
-	}
+var (
+	log = logging.LoggerForModule()
+)
 
+// Option function for the networkFlow service.
+type Option func(*serviceImpl)
+
+// WithAuthFuncOverride sets the AuthFuncOverride.
+func WithAuthFuncOverride(overrideFn func(context.Context, string) (context.Context, error)) Option {
+	return func(srv *serviceImpl) {
+		srv.authFuncOverride = overrideFn
+	}
+}
+
+// WithTraceWriter sets a trace writer that will write the messages received from collector.
+func WithTraceWriter(writer io.Writer) Option {
+	return func(srv *serviceImpl) {
+		srv.writer = writer
+	}
+}
+
+// NewService creates a new streaming service with the collector. It should only be called once.
+func NewService(networkFlowManager manager.Manager, opts ...Option) Service {
+	srv := &serviceImpl{
+		manager:          networkFlowManager,
+		authFuncOverride: authFuncOverride,
+		writer:           nil,
+	}
+	for _, o := range opts {
+		o(srv)
+	}
+	return srv
+}
+
+func authFuncOverride(ctx context.Context, fullMethodName string) (context.Context, error) {
+	return ctx, idcheck.CollectorOnly().Authorized(ctx, fullMethodName)
 }
 
 type serviceImpl struct {
-	manager manager.Manager
+	sensor.UnimplementedNetworkConnectionInfoServiceServer
+
+	manager          manager.Manager
+	authFuncOverride func(context.Context, string) (context.Context, error)
+	writer           io.Writer
 }
 
 // RegisterServiceServer registers this service with the given gRPC Server.
@@ -42,18 +77,18 @@ func (s *serviceImpl) RegisterServiceServer(grpcServer *grpc.Server) {
 	sensor.RegisterNetworkConnectionInfoServiceServer(grpcServer, s)
 }
 
-// RegisterServiceHandlerFromEndpoint registers this service with the given gRPC Gateway endpoint.
-func (s *serviceImpl) RegisterServiceHandler(ctx context.Context, mux *runtime.ServeMux, conn *grpc.ClientConn) error {
+// RegisterServiceHandler registers this service with the given gRPC Gateway endpoint.
+func (s *serviceImpl) RegisterServiceHandler(_ context.Context, _ *runtime.ServeMux, _ *grpc.ClientConn) error {
 	// There is no grpc gateway handler for network connection info service
 	return nil
 }
 
 // AuthFuncOverride specifies the auth criteria for this API.
 func (s *serviceImpl) AuthFuncOverride(ctx context.Context, fullMethodName string) (context.Context, error) {
-	return ctx, idcheck.CollectorOnly().Authorized(ctx, fullMethodName)
+	return s.authFuncOverride(ctx, fullMethodName)
 }
 
-// PushSignals handles the bidirectional gRPC stream with the collector
+// PushNetworkConnectionInfo handles the bidirectional gRPC stream with the collector
 func (s *serviceImpl) PushNetworkConnectionInfo(stream sensor.NetworkConnectionInfoService_PushNetworkConnectionInfoServer) error {
 	return s.receiveMessages(stream)
 }
@@ -85,14 +120,14 @@ func (s *serviceImpl) receiveMessages(stream sensor.NetworkConnectionInfoService
 
 	go s.runRecv(stream, recvdMsgC, recvErrC)
 
-	var publicIPsIterator concurrency.ValueStreamIter
+	var publicIPsIterator concurrency.ValueStreamIter[*sensor.IPAddressList]
 	if capsSet.Contains(publicIPsUpdateCap) {
 		publicIPsIterator = s.manager.PublicIPsValueStream().Iterator(false)
 		if err := s.sendPublicIPList(stream, publicIPsIterator); err != nil {
 			return err
 		}
 	}
-	var externalSrcsIterator concurrency.ValueStreamIter
+	var externalSrcsIterator concurrency.ValueStreamIter[*sensor.IPNetworkList]
 	if capsSet.Contains(networkGraphExtSrcsCap) {
 		// Non-strict allows us to skip to the most recent element using `TryNext()` and this is fine since each element in the stream
 		// is a full network list that we want to monitor.
@@ -159,6 +194,15 @@ func (s *serviceImpl) runRecv(stream sensor.NetworkConnectionInfoService_PushNet
 			errC <- err
 			return
 		}
+		if s.writer != nil {
+			if data, err := msg.MarshalVT(); err == nil {
+				if _, err := s.writer.Write(data); err != nil {
+					log.Warnf("Error writing msg: %v", err)
+				}
+			} else {
+				log.Warnf("Error marshalling  msg: %v", err)
+			}
+		}
 
 		select {
 		case <-stream.Context().Done():
@@ -168,8 +212,8 @@ func (s *serviceImpl) runRecv(stream sensor.NetworkConnectionInfoService_PushNet
 	}
 }
 
-func (s *serviceImpl) sendPublicIPList(stream sensor.NetworkConnectionInfoService_PushNetworkConnectionInfoServer, iter concurrency.ValueStreamIter) error {
-	listProto, _ := iter.Value().(*sensor.IPAddressList)
+func (s *serviceImpl) sendPublicIPList(stream sensor.NetworkConnectionInfoService_PushNetworkConnectionInfoServer, iter concurrency.ValueStreamIter[*sensor.IPAddressList]) error {
+	listProto := iter.Value()
 	if listProto == nil {
 		return nil
 	}
@@ -184,8 +228,8 @@ func (s *serviceImpl) sendPublicIPList(stream sensor.NetworkConnectionInfoServic
 	return nil
 }
 
-func (s *serviceImpl) sendExternalSrcsList(stream sensor.NetworkConnectionInfoService_PushNetworkConnectionInfoServer, iter concurrency.ValueStreamIter) error {
-	listProto, _ := iter.Value().(*sensor.IPNetworkList)
+func (s *serviceImpl) sendExternalSrcsList(stream sensor.NetworkConnectionInfoService_PushNetworkConnectionInfoServer, iter concurrency.ValueStreamIter[*sensor.IPNetworkList]) error {
+	listProto := iter.Value()
 	if listProto == nil {
 		return nil
 	}

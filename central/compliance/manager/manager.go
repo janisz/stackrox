@@ -11,11 +11,10 @@ import (
 	complianceOperatorCheckDS "github.com/stackrox/rox/central/complianceoperator/checkresults/datastore"
 	complianceOperatorManager "github.com/stackrox/rox/central/complianceoperator/manager"
 	"github.com/stackrox/rox/central/deployment/datastore"
-	nodeDatastore "github.com/stackrox/rox/central/node/globaldatastore"
+	nodeDatastore "github.com/stackrox/rox/central/node/datastore"
 	podDatastore "github.com/stackrox/rox/central/pod/datastore"
 	"github.com/stackrox/rox/central/scrape/factory"
 	v1 "github.com/stackrox/rox/generated/api/v1"
-	"github.com/stackrox/rox/generated/storage"
 )
 
 const (
@@ -26,14 +25,6 @@ const (
 
 // ComplianceManager manages compliance schedules and one-off compliance runs.
 type ComplianceManager interface {
-	Start() error
-	Stop() error
-
-	GetSchedules(ctx context.Context, request *v1.GetComplianceRunSchedulesRequest) ([]*v1.ComplianceRunScheduleInfo, error)
-	AddSchedule(ctx context.Context, spec *storage.ComplianceRunSchedule) (*v1.ComplianceRunScheduleInfo, error)
-	UpdateSchedule(ctx context.Context, spec *storage.ComplianceRunSchedule) (*v1.ComplianceRunScheduleInfo, error)
-	DeleteSchedule(ctx context.Context, id string) error
-
 	GetRecentRuns(ctx context.Context, request *v1.GetRecentComplianceRunsRequest) ([]*v1.ComplianceRun, error)
 	GetRecentRun(ctx context.Context, id string) (*v1.ComplianceRun, error)
 
@@ -44,19 +35,22 @@ type ComplianceManager interface {
 	// GetRunStatuses returns the statuses for the runs with the given IDs. Any runs that could not be located (e.g.,
 	// because they are too old or the ID is invalid) will be returned in the id to error map.
 	GetRunStatuses(ctx context.Context, ids ...string) ([]*v1.ComplianceRun, error)
+
+	// GetLatestRunStatuses returns the statuses for the most recent runs for <cluster, standard> pair. This does not persist
+	// across restarts, but neither do run statuses
+	GetLatestRunStatuses(ctx context.Context) ([]*v1.ComplianceRun, error)
 }
 
 // NewManager creates and returns a new compliance manager.
 func NewManager(standardsRegistry *standards.Registry,
 	complianceOperatorManager complianceOperatorManager.Manager,
 	complianceOperatorResults complianceOperatorCheckDS.DataStore,
-	scheduleStore ScheduleStore,
 	clusterStore clusterDatastore.DataStore,
-	nodeStore nodeDatastore.GlobalDataStore,
+	nodeStore nodeDatastore.DataStore,
 	deploymentStore datastore.DataStore,
 	podStore podDatastore.DataStore,
 	dataRepoFactory data.RepositoryFactory,
 	scrapeFactory factory.ScrapeFactory,
-	resultsStore complianceDS.DataStore) (ComplianceManager, error) {
-	return newManager(standardsRegistry, complianceOperatorManager, complianceOperatorResults, scheduleStore, clusterStore, nodeStore, deploymentStore, podStore, dataRepoFactory, scrapeFactory, resultsStore)
+	resultsStore complianceDS.DataStore) ComplianceManager {
+	return newManager(standardsRegistry, complianceOperatorManager, complianceOperatorResults, clusterStore, nodeStore, deploymentStore, podStore, dataRepoFactory, scrapeFactory, resultsStore)
 }

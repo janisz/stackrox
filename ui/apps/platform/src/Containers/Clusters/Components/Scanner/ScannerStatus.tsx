@@ -1,8 +1,8 @@
 import React from 'react';
+import { Tooltip } from '@patternfly/react-core';
 
-import { DetailedTooltipOverlay, Tooltip } from '@stackrox/ui-components';
+import DetailedTooltipContent from 'Components/DetailedTooltipContent';
 import { getDistanceStrictAsPhrase } from 'utils/dateUtils';
-
 import { ClusterHealthStatus } from '../../clusterTypes';
 import {
     delayedScannerStatusStyle,
@@ -76,7 +76,11 @@ const ScannerStatus = ({ healthStatus, isList = false }: ScannerStatusProps) => 
         return isList ? (
             <Tooltip
                 content={
-                    <DetailedTooltipOverlay title="Scanner Health Information" body={infoElement} />
+                    <DetailedTooltipContent
+                        body={infoElement}
+                        footer="*active scanner only"
+                        title="Scanner Health Information"
+                    />
                 }
             >
                 <div className="inline">{healthStatusElement}</div>

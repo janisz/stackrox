@@ -1,7 +1,9 @@
 import React, { ReactElement } from 'react';
 import pluralize from 'pluralize';
-import { Tooltip, DetailedTooltipOverlay } from '@stackrox/ui-components';
+import { Popover } from '@patternfly/react-core';
 
+import DetailedTooltipContent from 'Components/DetailedTooltipContent';
+import PopoverBodyContent from 'Components/PopoverBodyContent';
 import { eventTypes } from 'constants/timelineTypes';
 import { Event } from '../eventTypes';
 import getTimeRangeTextOfEvents from './getTimeRangeTextOfEvents';
@@ -16,11 +18,13 @@ import TerminationEvent from '../EventMarker/TerminationEvent';
 type ClusteredEventsTooltipProps = {
     events: Event[];
     children: ReactElement;
+    popoverRef: React.RefObject<never>;
 };
 
 const ClusteredEventsTooltip = ({
     events = [],
     children,
+    popoverRef,
 }: ClusteredEventsTooltipProps): ReactElement => {
     const timeRangeTextOfEvents = getTimeRangeTextOfEvents(events);
     const tooltipTitle = `${events.length} ${pluralize(
@@ -75,14 +79,18 @@ const ClusteredEventsTooltip = ({
     const tooltipBody = <ul>{sections}</ul>;
 
     return (
-        <Tooltip
-            trigger="click"
-            interactive
-            appendTo={document.body}
-            content={<DetailedTooltipOverlay title={tooltipTitle} body={tooltipBody} />}
+        <Popover
+            aria-label="Open to see individual processes"
+            bodyContent={
+                <PopoverBodyContent
+                    headerContent="Events in this group"
+                    bodyContent={<DetailedTooltipContent title={tooltipTitle} body={tooltipBody} />}
+                />
+            }
+            triggerRef={popoverRef}
         >
             {children}
-        </Tooltip>
+        </Popover>
     );
 };
 

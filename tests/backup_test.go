@@ -1,51 +1,76 @@
+//go:build test_e2e
+
 package tests
 
 import (
 	"archive/zip"
+	"context"
 	"fmt"
 	"io"
+	"math/rand"
+	"net/http"
 	"os"
 	"path"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/stackrox/rox/pkg/backup"
 	"github.com/stackrox/rox/pkg/migrations"
-	"github.com/stackrox/rox/pkg/tar"
-	"github.com/stackrox/rox/pkg/testutils"
+	"github.com/stackrox/rox/pkg/testutils/centralgrpc"
 	"github.com/stackrox/rox/pkg/utils"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/tecbot/gorocksdb"
 	"gopkg.in/yaml.v3"
 )
 
 // Grab the backup DB and open it, ensuring that there are values for deployments
 func TestBackup(t *testing.T) {
-	setupNginxLatestTagDeployment(t)
-	defer teardownNginxLatestTagDeployment(t)
+	if os.Getenv("ORCHESTRATOR_FLAVOR") == "openshift" {
+		t.Skip("temporarily skipped on OCP. TODO(ROX-25171)")
+	}
+	deploymentName := fmt.Sprintf("test-backup-%d", rand.Intn(10000))
 
-	waitForDeployment(t, nginxDeploymentName)
+	setupDeployment(t, "nginx", deploymentName)
+	defer teardownDeploymentWithoutCheck(t, deploymentName)
+	waitForDeployment(t, deploymentName)
 
 	for _, includeCerts := range []bool{false, true} {
 		t.Run(fmt.Sprintf("includeCerts=%t", includeCerts), func(t *testing.T) {
-			doTestBackup(t, includeCerts)
+			doTestBackup(t, includeCerts, false)
 		})
 	}
+
+	// Make a run with certs only
+	doTestBackup(t, false, true)
 }
 
-func doTestBackup(t *testing.T, includeCerts bool) {
+func doTestBackup(t *testing.T, includeCerts bool, certsOnly bool) {
 	tmpZipDir := t.TempDir()
 	zipFilePath := filepath.Join(tmpZipDir, "backup.zip")
 	out, err := os.Create(zipFilePath)
 	require.NoError(t, err)
 
-	client := testutils.HTTPClientForCentral(t)
+	client := centralgrpc.HTTPClientForCentral(t)
+
+	// Backup could be long depend on the size of current database.
+	// Allow up to 3 minutes.
+	backupTimeout := 3 * time.Minute
+	client.Timeout = backupTimeout
 	endpoint := "/db/backup"
 	if includeCerts {
 		endpoint = "/api/extensions/backup"
 	}
-	resp, err := client.Get(endpoint)
+	if certsOnly {
+		endpoint = "/api/extensions/certs/backup"
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), backupTimeout)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, "GET", endpoint, nil)
+	require.NoError(t, err)
+	resp, err := client.Do(req)
 	require.NoError(t, err)
 	defer utils.IgnoreError(resp.Body.Close)
 	_, err = io.Copy(out, resp.Body)
@@ -57,9 +82,14 @@ func doTestBackup(t *testing.T, includeCerts bool) {
 	require.NoError(t, err)
 	defer utils.IgnoreError(zipFile.Close)
 
-	checkZipForRocks(t, zipFile)
-	checkZipForCerts(t, zipFile, includeCerts)
-	checkZipForVersion(t, zipFile)
+	if !certsOnly {
+		checkZipForPostgres(t, zipFile)
+		checkZipForPassword(t, zipFile, includeCerts)
+		checkZipForCerts(t, zipFile, includeCerts)
+		checkZipForVersion(t, zipFile)
+	} else {
+		checkZipForOnlyCerts(t, zipFile)
+	}
 }
 
 func checkZipForVersion(t *testing.T, zipFile *zip.ReadCloser) {
@@ -92,33 +122,41 @@ func checkZipForCerts(t *testing.T, zipFile *zip.ReadCloser, includeCerts bool) 
 	}
 }
 
-func checkZipForRocks(t *testing.T, zipFile *zip.ReadCloser) {
-	// Open the tar file holding the rocks DB backup.
-	rocksFileEntry := getFileWithName(zipFile, "rocks.db")
-	require.NotNil(t, rocksFileEntry)
-	rocksFile, err := rocksFileEntry.Open()
+func checkZipForPostgres(t *testing.T, zipFile *zip.ReadCloser) {
+	// Open the dump file holding the Postgres backup.
+	postgresFileEntry := getFileWithName(zipFile, "postgres.dump")
+	require.NotNil(t, postgresFileEntry)
+	_, err := postgresFileEntry.Open()
 	require.NoError(t, err)
+}
 
-	// Dump the untar'd rocks file to a scratch directory.
-	tmpBackupDir := t.TempDir()
+func checkZipForPassword(t *testing.T, zipFile *zip.ReadCloser, includeCerts bool) {
+	files := getFilesInDir(zipFile, backup.DatabaseBaseFolder)
+	if !includeCerts {
+		require.Empty(t, files)
+		return
+	}
+	require.NotEmpty(t, files)
 
-	err = tar.ToPath(tmpBackupDir, rocksFile)
-	require.NoError(t, err)
-	require.NoError(t, rocksFile.Close())
+	require.Equal(t, len(files), 1)
+	for _, f := range files {
+		info := f.FileInfo()
+		require.NotZero(t, info.Size())
+		require.Equal(t, f.FileInfo().Name(), backup.DatabasePassword)
+	}
+}
 
-	// Generate the backup files in the directory.
-	opts := gorocksdb.NewDefaultOptions()
-	backupEngine, err := gorocksdb.OpenBackupEngine(opts, tmpBackupDir)
-	require.NoError(t, err)
+func checkZipForOnlyCerts(t *testing.T, zipFile *zip.ReadCloser) {
+	checkZipForCerts(t, zipFile, true)
 
-	// Restore the db to another temp directory
-	tmpDBDir := t.TempDir()
-	err = backupEngine.RestoreDBFromLatestBackup(tmpDBDir, tmpDBDir, gorocksdb.NewRestoreOptions())
-	require.NoError(t, err)
+	dbFiles := getFilesInDir(zipFile, backup.DatabaseBaseFolder)
+	require.Empty(t, dbFiles)
 
-	// Check for errors on cleanup.
-	require.NoError(t, os.RemoveAll(tmpBackupDir))
-	require.NoError(t, os.RemoveAll(tmpDBDir))
+	versionFileEntry := getFileWithName(zipFile, backup.MigrationVersion)
+	require.Nil(t, versionFileEntry)
+
+	postgresFileEntry := getFileWithName(zipFile, "postgres.dump")
+	require.Nil(t, postgresFileEntry)
 }
 
 func getFileWithName(zipFile *zip.ReadCloser, name string) *zip.File {

@@ -7,8 +7,9 @@ import (
 )
 
 // Store provides storage functionality for network graph configuration.
+//
 //go:generate mockgen-wrapper
 type Store interface {
 	Get(ctx context.Context, id string) (*storage.NetworkGraphConfig, bool, error)
-	UpsertWithID(ctx context.Context, id string, cluster *storage.NetworkGraphConfig) error
+	Upsert(ctx context.Context, cluster *storage.NetworkGraphConfig) error
 }

@@ -4,6 +4,8 @@ import (
 	"context"
 	"flag"
 
+	"github.com/stackrox/rox/pkg/clientconn"
+	"github.com/stackrox/rox/pkg/features"
 	"github.com/stackrox/rox/pkg/logging"
 	"github.com/stackrox/rox/pkg/utils"
 	"github.com/stackrox/rox/pkg/version"
@@ -22,6 +24,7 @@ var (
 
 func main() {
 	log.Infof("StackRox Sensor Upgrader, version %s", version.GetMainVersion())
+	features.LogFeatureFlags()
 
 	flag.Parse()
 
@@ -33,6 +36,8 @@ func mainCmd() error {
 	if err != nil {
 		return err
 	}
+
+	clientconn.SetUserAgent(clientconn.Upgrader)
 
 	upgradeCtx, err := upgradectx.Create(context.Background(), upgraderCfg)
 	if err != nil {

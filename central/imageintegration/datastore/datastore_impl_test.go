@@ -1,19 +1,30 @@
+//go:build sql_integration
+
 package datastore
 
 import (
 	"context"
 	"testing"
 
+	"github.com/stackrox/rox/central/imageintegration/search"
+	searchMocks "github.com/stackrox/rox/central/imageintegration/search/mocks"
 	"github.com/stackrox/rox/central/imageintegration/store"
-	"github.com/stackrox/rox/central/role/resources"
+	postgresStore "github.com/stackrox/rox/central/imageintegration/store/postgres"
 	v1 "github.com/stackrox/rox/generated/api/v1"
 	"github.com/stackrox/rox/generated/storage"
-	"github.com/stackrox/rox/pkg/bolthelper"
+	"github.com/stackrox/rox/pkg/postgres/pgtest"
+	"github.com/stackrox/rox/pkg/protoassert"
 	"github.com/stackrox/rox/pkg/sac"
-	"github.com/stackrox/rox/pkg/testutils"
+	"github.com/stackrox/rox/pkg/sac/resources"
+	pkgSearch "github.com/stackrox/rox/pkg/search"
+	"github.com/stackrox/rox/pkg/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/suite"
-	bolt "go.etcd.io/bbolt"
+	"go.uber.org/mock/gomock"
+)
+
+const (
+	clusterID = "12841143-0b39-47be-8eca-5bca52b4a288"
 )
 
 func TestImageIntegrationDataStore(t *testing.T) {
@@ -22,18 +33,18 @@ func TestImageIntegrationDataStore(t *testing.T) {
 
 type ImageIntegrationDataStoreTestSuite struct {
 	suite.Suite
+	mockCtrl *gomock.Controller
 
 	hasNoneCtx  context.Context
 	hasReadCtx  context.Context
 	hasWriteCtx context.Context
 
-	hasReadIntegrationsCtx  context.Context
-	hasWriteIntegrationsCtx context.Context
+	mockSearcher *searchMocks.MockSearcher
 
-	db *bolt.DB
-
-	store     store.Store
 	datastore DataStore
+
+	testDB *pgtest.TestPostgres
+	store  store.Store
 }
 
 func (suite *ImageIntegrationDataStoreTestSuite) SetupTest() {
@@ -41,32 +52,26 @@ func (suite *ImageIntegrationDataStoreTestSuite) SetupTest() {
 	suite.hasReadCtx = sac.WithGlobalAccessScopeChecker(context.Background(),
 		sac.AllowFixedScopes(
 			sac.AccessModeScopeKeys(storage.Access_READ_ACCESS),
-			sac.ResourceScopeKeys(resources.ImageIntegration)))
-	suite.hasReadIntegrationsCtx = sac.WithGlobalAccessScopeChecker(context.Background(),
-		sac.AllowFixedScopes(
-			sac.AccessModeScopeKeys(storage.Access_READ_ACCESS),
 			sac.ResourceScopeKeys(resources.Integration)))
 	suite.hasWriteCtx = sac.WithGlobalAccessScopeChecker(context.Background(),
 		sac.AllowFixedScopes(
 			sac.AccessModeScopeKeys(storage.Access_READ_ACCESS, storage.Access_READ_WRITE_ACCESS),
-			sac.ResourceScopeKeys(resources.ImageIntegration)))
-	suite.hasWriteIntegrationsCtx = sac.WithGlobalAccessScopeChecker(context.Background(),
-		sac.AllowFixedScopes(
-			sac.AccessModeScopeKeys(storage.Access_READ_ACCESS, storage.Access_READ_WRITE_ACCESS),
 			sac.ResourceScopeKeys(resources.Integration)))
 
-	db, err := bolthelper.NewTemp(testutils.DBFileName(suite))
-	if err != nil {
-		suite.FailNow("Failed to make BoltDB", err.Error())
-	}
+	suite.mockCtrl = gomock.NewController(suite.T())
+	suite.mockSearcher = searchMocks.NewMockSearcher(suite.mockCtrl)
 
-	suite.db = db
-	suite.store = store.New(db)
-	suite.datastore = New(suite.store)
+	suite.testDB = pgtest.ForT(suite.T())
+	suite.NotNil(suite.testDB)
+
+	suite.store = postgresStore.New(suite.testDB.DB)
+
+	// test formattedSearcher
+	suite.datastore = NewForTestOnly(suite.store, suite.mockSearcher)
 }
 
 func (suite *ImageIntegrationDataStoreTestSuite) TearDownTest() {
-	testutils.TearDownDB(suite.db)
+	suite.testDB.Teardown(suite.T())
 }
 
 func (suite *ImageIntegrationDataStoreTestSuite) TestIntegrationsPersistence() {
@@ -78,13 +83,9 @@ func (suite *ImageIntegrationDataStoreTestSuite) TestIntegrations() {
 }
 
 func (suite *ImageIntegrationDataStoreTestSuite) TestIntegrationsFiltering() {
-	// Remove the default integrations
-	for _, i := range store.DefaultImageIntegrations {
-		suite.NoError(suite.datastore.RemoveImageIntegration(suite.hasWriteCtx, i.GetId()))
-	}
-
 	integrations := []*storage.ImageIntegration{
 		{
+			Id:   uuid.NewV4().String(),
 			Name: "registry1",
 			IntegrationConfig: &storage.ImageIntegration_Docker{
 				Docker: &storage.DockerConfig{
@@ -93,6 +94,7 @@ func (suite *ImageIntegrationDataStoreTestSuite) TestIntegrationsFiltering() {
 			},
 		},
 		{
+			Id:   uuid.NewV4().String(),
 			Name: "registry2",
 			IntegrationConfig: &storage.ImageIntegration_Docker{
 				Docker: &storage.DockerConfig{
@@ -101,7 +103,6 @@ func (suite *ImageIntegrationDataStoreTestSuite) TestIntegrationsFiltering() {
 			},
 		},
 	}
-
 	// Test Add
 	for _, r := range integrations {
 		id, err := suite.datastore.AddImageIntegration(suite.hasWriteCtx, r)
@@ -111,15 +112,16 @@ func (suite *ImageIntegrationDataStoreTestSuite) TestIntegrationsFiltering() {
 
 	actualIntegrations, err := suite.datastore.GetImageIntegrations(suite.hasWriteCtx, &v1.GetImageIntegrationsRequest{})
 	suite.NoError(err)
-	suite.ElementsMatch(integrations, actualIntegrations)
+	protoassert.ElementsMatch(suite.T(), integrations, actualIntegrations)
 }
 
 func testIntegrations(t *testing.T, insertStorage store.Store, retrievalStorage DataStore) {
 	ctx := sac.WithGlobalAccessScopeChecker(context.Background(), sac.AllowFixedScopes(
 		sac.AccessModeScopeKeys(storage.Access_READ_ACCESS, storage.Access_READ_WRITE_ACCESS),
-		sac.ResourceScopeKeys(resources.ImageIntegration)))
+		sac.ResourceScopeKeys(resources.Integration)))
 	integrations := []*storage.ImageIntegration{
 		{
+			Id:   uuid.NewV4().String(),
 			Name: "registry1",
 			IntegrationConfig: &storage.ImageIntegration_Docker{
 				Docker: &storage.DockerConfig{
@@ -128,6 +130,7 @@ func testIntegrations(t *testing.T, insertStorage store.Store, retrievalStorage 
 			},
 		},
 		{
+			Id:   uuid.NewV4().String(),
 			Name: "registry2",
 			IntegrationConfig: &storage.ImageIntegration_Docker{
 				Docker: &storage.DockerConfig{
@@ -139,15 +142,14 @@ func testIntegrations(t *testing.T, insertStorage store.Store, retrievalStorage 
 
 	// Test Add
 	for _, r := range integrations {
-		id, err := insertStorage.AddImageIntegration(r)
+		err := insertStorage.Upsert(ctx, r)
 		assert.NoError(t, err)
-		assert.NotEmpty(t, id)
 	}
 	for _, r := range integrations {
 		got, exists, err := retrievalStorage.GetImageIntegration(ctx, r.GetId())
 		assert.NoError(t, err)
 		assert.True(t, exists)
-		assert.Equal(t, got, r)
+		protoassert.Equal(t, got, r)
 	}
 
 	// Test Update
@@ -156,19 +158,19 @@ func testIntegrations(t *testing.T, insertStorage store.Store, retrievalStorage 
 	}
 
 	for _, r := range integrations {
-		assert.NoError(t, insertStorage.UpdateImageIntegration(r))
+		assert.NoError(t, insertStorage.Upsert(ctx, r))
 	}
 
 	for _, r := range integrations {
 		got, exists, err := retrievalStorage.GetImageIntegration(ctx, r.GetId())
 		assert.NoError(t, err)
 		assert.True(t, exists)
-		assert.Equal(t, got, r)
+		protoassert.Equal(t, got, r)
 	}
 
 	// Test Remove
 	for _, r := range integrations {
-		assert.NoError(t, insertStorage.RemoveImageIntegration(r.GetId()))
+		assert.NoError(t, insertStorage.Delete(ctx, r.GetId()))
 	}
 
 	for _, r := range integrations {
@@ -180,6 +182,7 @@ func testIntegrations(t *testing.T, insertStorage store.Store, retrievalStorage 
 
 func getIntegration(name string) *storage.ImageIntegration {
 	return &storage.ImageIntegration{
+		Id:   uuid.NewV4().String(),
 		Name: name,
 		IntegrationConfig: &storage.ImageIntegration_Docker{
 			Docker: &storage.DockerConfig{
@@ -191,9 +194,8 @@ func getIntegration(name string) *storage.ImageIntegration {
 
 func (suite *ImageIntegrationDataStoreTestSuite) storeIntegration(name string) *storage.ImageIntegration {
 	integration := getIntegration(name)
-	id, err := suite.store.AddImageIntegration(integration)
+	err := suite.store.Upsert(suite.hasWriteCtx, integration)
 	suite.NoError(err)
-	suite.NotEmpty(id)
 	return integration
 }
 
@@ -209,22 +211,12 @@ func (suite *ImageIntegrationDataStoreTestSuite) TestAllowsGet() {
 
 	gotInt, exists, err := suite.datastore.GetImageIntegration(suite.hasReadCtx, integration.GetId())
 	suite.NoError(err, "expected no error trying to read with permissions")
-	suite.Equal(integration, gotInt)
-	suite.True(exists)
-
-	gotInt, exists, err = suite.datastore.GetImageIntegration(suite.hasReadIntegrationsCtx, integration.GetId())
-	suite.NoError(err, "expected no error trying to read with permissions")
-	suite.Equal(integration, gotInt)
+	protoassert.Equal(suite.T(), integration, gotInt)
 	suite.True(exists)
 
 	gotInt, exists, err = suite.datastore.GetImageIntegration(suite.hasWriteCtx, integration.GetId())
 	suite.NoError(err, "expected no error trying to read with permissions")
-	suite.Equal(integration, gotInt)
-	suite.True(exists)
-
-	gotInt, exists, err = suite.datastore.GetImageIntegration(suite.hasWriteIntegrationsCtx, integration.GetId())
-	suite.NoError(err, "expected no error trying to read with Integration permissions")
-	suite.Equal(integration, gotInt)
+	protoassert.Equal(suite.T(), integration, gotInt)
 	suite.True(exists)
 }
 
@@ -242,19 +234,11 @@ func (suite *ImageIntegrationDataStoreTestSuite) TestAllowsGetBatch() {
 
 	gotImages, err := suite.datastore.GetImageIntegrations(suite.hasReadCtx, getRequest)
 	suite.NoError(err, "expected no error trying to read with permissions")
-	suite.ElementsMatch(integrationList, gotImages)
-
-	gotImages, err = suite.datastore.GetImageIntegrations(suite.hasReadIntegrationsCtx, getRequest)
-	suite.NoError(err, "expected no error trying to read with permissions")
-	suite.ElementsMatch(integrationList, gotImages)
+	protoassert.ElementsMatch(suite.T(), integrationList, gotImages)
 
 	gotImages, err = suite.datastore.GetImageIntegrations(suite.hasWriteCtx, getRequest)
 	suite.NoError(err, "expected no error trying to read with permissions")
-	suite.ElementsMatch(integrationList, gotImages)
-
-	gotImages, err = suite.datastore.GetImageIntegrations(suite.hasWriteIntegrationsCtx, getRequest)
-	suite.NoError(err, "expected no error trying to read with Integration permissions")
-	suite.ElementsMatch(integrationList, gotImages)
+	protoassert.ElementsMatch(suite.T(), integrationList, gotImages)
 }
 
 func (suite *ImageIntegrationDataStoreTestSuite) TestEnforcesAdd() {
@@ -267,18 +251,10 @@ func (suite *ImageIntegrationDataStoreTestSuite) TestEnforcesAdd() {
 	id, err = suite.datastore.AddImageIntegration(suite.hasReadCtx, integrationTwo)
 	suite.Error(err, "expected an error trying to write without permissions")
 	suite.Empty(id)
-
-	id, err = suite.datastore.AddImageIntegration(suite.hasReadIntegrationsCtx, integrationTwo)
-	suite.Error(err, "expected an error trying to write without permissions")
-	suite.Empty(id)
 }
 
 func (suite *ImageIntegrationDataStoreTestSuite) TestAllowsAdd() {
 	id, err := suite.datastore.AddImageIntegration(suite.hasWriteCtx, getIntegration("namenamenamename"))
-	suite.NoError(err, "expected no error trying to write with permissions")
-	suite.NotEmpty(id)
-
-	id, err = suite.datastore.AddImageIntegration(suite.hasWriteIntegrationsCtx, getIntegration("namenamenamename2"))
 	suite.NoError(err, "expected no error trying to write with permissions")
 	suite.NotEmpty(id)
 }
@@ -291,20 +267,12 @@ func (suite *ImageIntegrationDataStoreTestSuite) TestEnforcesUpdate() {
 
 	err = suite.datastore.UpdateImageIntegration(suite.hasReadCtx, integration)
 	suite.Error(err, "expected an error trying to write without permissions")
-
-	err = suite.datastore.UpdateImageIntegration(suite.hasReadIntegrationsCtx, integration)
-	suite.Error(err, "expected an error trying to write without permissions")
 }
 
 func (suite *ImageIntegrationDataStoreTestSuite) TestAllowsUpdate() {
 	integration := suite.storeIntegration("joseph is the best")
 
 	err := suite.datastore.UpdateImageIntegration(suite.hasWriteCtx, integration)
-	suite.NoError(err, "expected no error trying to write with permissions")
-
-	integration = suite.storeIntegration("joseph is the best again")
-
-	err = suite.datastore.UpdateImageIntegration(suite.hasWriteIntegrationsCtx, integration)
 	suite.NoError(err, "expected no error trying to write with permissions")
 }
 
@@ -314,9 +282,6 @@ func (suite *ImageIntegrationDataStoreTestSuite) TestEnforcesRemove() {
 
 	err = suite.datastore.RemoveImageIntegration(suite.hasReadCtx, "hkddsfk")
 	suite.Error(err, "expected an error trying to write without permissions")
-
-	err = suite.datastore.RemoveImageIntegration(suite.hasReadIntegrationsCtx, "hkddsfk2")
-	suite.Error(err, "expected an error trying to write without permissions")
 }
 
 func (suite *ImageIntegrationDataStoreTestSuite) TestAllowsRemove() {
@@ -324,9 +289,46 @@ func (suite *ImageIntegrationDataStoreTestSuite) TestAllowsRemove() {
 
 	err := suite.datastore.RemoveImageIntegration(suite.hasWriteCtx, integration.GetId())
 	suite.NoError(err, "expected no error trying to write with permissions")
+}
 
-	integration = suite.storeIntegration("jdgbfdkjh2")
+func (suite *ImageIntegrationDataStoreTestSuite) TestSearch() {
+	ctx := sac.WithGlobalAccessScopeChecker(context.Background(), sac.AllowAllAccessScopeChecker())
+	suite.mockSearcher.EXPECT().Search(ctx, nil).Return(nil, nil)
+	_, err := suite.datastore.Search(ctx, nil)
+	suite.NoError(err)
+}
 
-	err = suite.datastore.RemoveImageIntegration(suite.hasWriteIntegrationsCtx, integration.GetId())
-	suite.NoError(err, "expected no error trying to write with permissions")
+func (suite *ImageIntegrationDataStoreTestSuite) TestIndexing() {
+	ii := &storage.ImageIntegration{
+		Id:        uuid.NewV4().String(),
+		ClusterId: clusterID,
+		Name:      "imageIntegration1",
+	}
+
+	suite.NoError(suite.store.Upsert(sac.WithAllAccess(context.Background()), ii))
+
+	q := pkgSearch.NewQueryBuilder().AddStrings(pkgSearch.ClusterID, clusterID).ProtoQuery()
+	results, err := suite.store.Search(suite.hasWriteCtx, q)
+	suite.NoError(err)
+	suite.Len(results, 1)
+}
+
+func (suite *ImageIntegrationDataStoreTestSuite) TestDataStoreSearch() {
+	ii := &storage.ImageIntegration{
+		Id:        "id1",
+		ClusterId: clusterID,
+		Name:      "imageIntegration1",
+	}
+
+	// Create a new datastore since the one in suite uses mocks
+	ds := New(suite.store, search.New(suite.store))
+
+	ctx := sac.WithGlobalAccessScopeChecker(context.Background(), sac.AllowAllAccessScopeChecker())
+	_, err := ds.AddImageIntegration(ctx, ii)
+	suite.NoError(err)
+
+	q := pkgSearch.NewQueryBuilder().AddStrings(pkgSearch.ClusterID, clusterID).ProtoQuery()
+	results, err := ds.Search(ctx, q)
+	suite.NoError(err)
+	suite.Len(results, 1)
 }

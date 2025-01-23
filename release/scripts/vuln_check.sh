@@ -7,7 +7,7 @@ DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd)"
 GITROOT="$(git rev-parse --show-toplevel)"
 [[ -n "${GITROOT}" ]] || { echo >&2 "Could not determine git root!"; exit 1; }
 
-[[ -n "${QUAY_RHACS_ENG_BEARER_TOKEN}" ]] || { echo >&2 "Missing env QUAY_BEARER_TOKEN"; exit 1; }
+[[ -n "${QUAY_RHACS_ENG_BEARER_TOKEN}" ]] || { echo >&2 "Missing env QUAY_RHACS_ENG_BEARER_TOKEN"; exit 1; }
 
 # Helper method to call curl command to quay
 function quay_curl {
@@ -53,7 +53,7 @@ function compare_fixable_vulns {
     FAIL_SCRIPT=true
   else
     echo "Trying to get any fixable vulns for ${image_name}"
-    CURRENT_FIXABLE=$(quay_curl "${image_name}/manifest/${CURRENT_IMAGE}/security?vulnerabilities=true" | jq -r '.data.Layer.Features | .[] | select(.Vulnerabilities != null) | .Vulnerabilities | .[] | select(.FixedBy | . != null and . != "") | .Name')
+    CURRENT_FIXABLE=$(quay_curl "${image_name}/manifest/${CURRENT_IMAGE}/security?vulnerabilities=true" | jq -r '.data.Layer.Features | .[] | select(.Vulnerabilities != null) | .Vulnerabilities | .[] | select(.FixedBy | . != null and . != "") | .Name' | sort -u)
 
     # fail the check if fixable vulns are found that are not allowed
     if [[ -n "$CURRENT_FIXABLE" ]]; then
@@ -89,27 +89,26 @@ function compare_fixable_vulns {
 FAIL_SCRIPT=false
 
 # determine all image tags
-RELEASE_TAG=$(make --no-print-directory --quiet -C "${GITROOT}" tag)
-COLLECTOR_TAG=$(make --no-print-directory --quiet -C "${GITROOT}" collector-tag)
-SCANNER_TAG=$(make --no-print-directory --quiet -C "${GITROOT}" scanner-tag)
-DOCS_PRERELEASE_TAG=$(make --no-print-directory --quiet -C "${GITROOT}" docs-tag)
+RELEASE_TAG=$(make --quiet --no-print-directory -C "${GITROOT}" tag)
+COLLECTOR_TAG=$(make --quiet --no-print-directory -C "${GITROOT}" collector-tag)
+SCANNER_TAG=$(make --quiet --no-print-directory -C "${GITROOT}" scanner-tag)
 
 ALLOWED_VULNS=$(jq -c '.[]' "$DIR/allowed_vulns.json")
 
 # check main images
 compare_fixable_vulns "main" "$RELEASE_TAG"
 
-# check docs image - using the pre-release tag (not the release tag)
-compare_fixable_vulns "docs" "$DOCS_PRERELEASE_TAG"
-
 # check collector images
 compare_fixable_vulns "collector" "${COLLECTOR_TAG}-slim"
+compare_fixable_vulns "collector" "${COLLECTOR_TAG}"
 
 # check scanner images
 compare_fixable_vulns "scanner" "$SCANNER_TAG"
+compare_fixable_vulns "scanner-slim" "$SCANNER_TAG"
 
 # check scanner-db images
 compare_fixable_vulns "scanner-db" "$SCANNER_TAG"
+compare_fixable_vulns "scanner-db-slim" "$SCANNER_TAG"
 
 # if fixable vulns found, return 1 so CI can fail the job
 [ "$FAIL_SCRIPT" = true ] && exit 1 || exit 0

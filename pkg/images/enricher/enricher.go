@@ -5,13 +5,15 @@ import (
 	"time"
 
 	"github.com/stackrox/rox/generated/storage"
-	"github.com/stackrox/rox/pkg/expiringcache"
+	"github.com/stackrox/rox/pkg/delegatedregistry"
+	"github.com/stackrox/rox/pkg/images/cache"
 	"github.com/stackrox/rox/pkg/images/integration"
 	"github.com/stackrox/rox/pkg/integrationhealth"
 	"github.com/stackrox/rox/pkg/logging"
 	pkgMetrics "github.com/stackrox/rox/pkg/metrics"
 	registryTypes "github.com/stackrox/rox/pkg/registries/types"
 	scannerTypes "github.com/stackrox/rox/pkg/scanners/types"
+	"github.com/stackrox/rox/pkg/set"
 	"github.com/stackrox/rox/pkg/signatures"
 	scannerV1 "github.com/stackrox/scanner/generated/scanner/api/v1"
 	"golang.org/x/time/rate"
@@ -33,6 +35,7 @@ const (
 	ForceRefetchScansOnly
 	ForceRefetchSignaturesOnly
 	ForceRefetchCachedValuesOnly
+	UseImageNamesRefetchCachedValues
 )
 
 // forceRefetchCachedValues implies whether the cached values within the database should be skipped and refetched.
@@ -40,6 +43,13 @@ const (
 // still needs to check for those specifically.
 func (f FetchOption) forceRefetchCachedValues() bool {
 	return f == ForceRefetch || f == ForceRefetchCachedValuesOnly
+}
+
+// RequestSource describes where the enrichment request is coming from and allows for better scoping of image pull secrets
+type RequestSource struct {
+	ClusterID        string
+	Namespace        string
+	ImagePullSecrets set.StringSet
 }
 
 // EnrichmentContext is used to pass options through the enricher without exploding the number of function arguments
@@ -53,6 +63,22 @@ type EnrichmentContext struct {
 	// Internal is used to indicate when the caller is internal.
 	// This is used to indicate that we do not want to fail upon failing to find integrations.
 	Internal bool
+
+	// Delegable indicates enrichment request can be delegated to a secured cluster.
+	// Set via ad-hoc requests such as "roxctl image scan".
+	Delegable bool
+
+	// ClusterID contains the ID of the cluster to delegate the enrichment request to if the request is Delegable.
+	// Used to override the delegated registry configuration.
+	ClusterID string
+
+	// Namespace contains the name of the namespace used to filter NetworkPolicies for Deployments.
+	Namespace string
+
+	Source *RequestSource
+
+	// ScannerTypeHint will ensure this scanner type is used when a scan is executed, does nothing if a scan is not executed.
+	ScannerTypeHint string
 }
 
 // FetchOnlyIfMetadataEmpty checks the fetch opts and return whether or not we can used a cached or saved
@@ -75,6 +101,7 @@ type EnrichmentResult struct {
 }
 
 // A ScanResult denotes the result of an attempt to scan an image.
+//
 //go:generate stringer -type=ScanResult
 type ScanResult int
 
@@ -89,13 +116,14 @@ const (
 )
 
 // ImageEnricher provides functions for enriching images with integrations.
+//
 //go:generate mockgen-wrapper
 type ImageEnricher interface {
 	// EnrichImage will enrich an image with its metadata, scan results, signatures and signature verification results.
 	EnrichImage(ctx context.Context, enrichCtx EnrichmentContext, image *storage.Image) (EnrichmentResult, error)
 	// EnrichWithVulnerabilities will enrich an image with its components and their associated vulnerabilities only.
 	// This will always force re-enrichment and not take existing values into account.
-	EnrichWithVulnerabilities(image *storage.Image, components *scannerV1.Components, notes []scannerV1.Note) (EnrichmentResult, error)
+	EnrichWithVulnerabilities(image *storage.Image, components *scannerTypes.ScanComponents, notes []scannerV1.Note) (EnrichmentResult, error)
 	// EnrichWithSignatureVerificationData will enrich an image with signature verification results only.
 	// This will always force re-verification and not take existing values into account.
 	EnrichWithSignatureVerificationData(ctx context.Context, image *storage.Image) (EnrichmentResult, error)
@@ -118,16 +146,16 @@ type signatureVerifierForIntegrations func(ctx context.Context, integrations []*
 
 // New returns a new ImageEnricher instance for the given subsystem.
 // (The subsystem is just used for Prometheus metrics.)
-func New(cvesSuppressor CVESuppressor, cvesSuppressorV2 CVESuppressor, is integration.Set, subsystem pkgMetrics.Subsystem, metadataCache expiringcache.Cache,
+func New(cvesSuppressor CVESuppressor, cvesSuppressorV2 CVESuppressor, is integration.Set, subsystem pkgMetrics.Subsystem, metadataCache cache.ImageMetadata,
 	imageGetter ImageGetter, healthReporter integrationhealth.Reporter,
-	signatureIntegrationGetter SignatureIntegrationGetter) ImageEnricher {
+	signatureIntegrationGetter SignatureIntegrationGetter, scanDelegator delegatedregistry.Delegator) ImageEnricher {
 	enricher := &enricherImpl{
 		cvesSuppressor:   cvesSuppressor,
 		cvesSuppressorV2: cvesSuppressorV2,
 		integrations:     is,
 
 		// number of consecutive errors per registry or scanner to ascertain health of the integration
-		errorsPerRegistry:         make(map[registryTypes.ImageRegistry]int32, len(is.RegistrySet().GetAll())),
+		errorsPerRegistry:         make(map[registryTypes.ImageRegistry]int32),
 		errorsPerScanner:          make(map[scannerTypes.ImageScannerWithDataSource]int32, len(is.ScannerSet().GetAll())),
 		integrationHealthReporter: healthReporter,
 
@@ -143,6 +171,8 @@ func New(cvesSuppressor CVESuppressor, cvesSuppressorV2 CVESuppressor, is integr
 		asyncRateLimiter: rate.NewLimiter(rate.Every(1*time.Second), 5),
 
 		metrics: newMetrics(subsystem),
+
+		scanDelegator: scanDelegator,
 	}
 	return enricher
 }

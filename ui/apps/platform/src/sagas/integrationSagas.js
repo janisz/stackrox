@@ -1,19 +1,16 @@
 import { all, take, call, fork, put, takeLatest } from 'redux-saga/effects';
 import Raven from 'raven-js';
 
-import { integrationsPath, networkPath } from 'routePaths';
+import { integrationsPath } from 'routePaths';
 import * as service from 'services/IntegrationsService';
 import * as AuthService from 'services/AuthService';
 import * as BackupIntegrationsService from 'services/BackupIntegrationsService';
 import { actions, types } from 'reducers/integrations';
 import { actions as notificationActions } from 'reducers/notifications';
-import { actions as authActions } from 'reducers/auth';
 import { actions as apiTokenActions } from 'reducers/apitokens';
 import { takeEveryNewlyMatchedLocation } from 'utils/sagaEffects';
 
 const fetchIntegrationsActionMap = {
-    authPlugins: actions.fetchAuthPlugins.request(),
-    authProviders: authActions.fetchAuthProviders.request(),
     backups: actions.fetchBackups.request(),
     imageIntegrations: actions.fetchImageIntegrations.request(),
     signatureIntegrations: actions.fetchSignatureIntegrations.request(),
@@ -30,10 +27,6 @@ function* fetchIntegrationWrapper(source, action) {
     } catch (error) {
         yield put(action.failure(error));
     }
-}
-
-function* getAuthPlugins() {
-    yield call(fetchIntegrationWrapper, 'authPlugins', actions.fetchAuthPlugins);
 }
 
 function* getBackups() {
@@ -57,29 +50,22 @@ function* getSignatureIntegrations() {
 }
 
 function* watchLocation() {
-    const effects = [
-        getImageIntegrations,
-        getSignatureIntegrations,
-        getNotifiers,
-        getBackups,
-        getAuthPlugins,
-    ].map((fetchFunc) => takeEveryNewlyMatchedLocation(integrationsPath, fetchFunc));
-    yield all([...effects, takeEveryNewlyMatchedLocation(networkPath, getNotifiers)]);
+    yield all(
+        [getImageIntegrations, getSignatureIntegrations, getNotifiers, getBackups].map(
+            (fetchFunc) => takeEveryNewlyMatchedLocation(integrationsPath, fetchFunc)
+        )
+    );
 }
 
 function* watchFetchRequest() {
     while (true) {
         const action = yield take([
-            types.FETCH_AUTH_PLUGINS.REQUEST,
             types.FETCH_BACKUPS.REQUEST,
             types.FETCH_IMAGE_INTEGRATIONS.REQUEST,
             types.FETCH_SIGNATURE_INTEGRATIONS.REQUEST,
             types.FETCH_NOTIFIERS.REQUEST,
         ]);
         switch (action.type) {
-            case types.FETCH_AUTH_PLUGINS.REQUEST:
-                yield fork(getAuthPlugins);
-                break;
             case types.FETCH_BACKUPS.REQUEST:
                 yield fork(getBackups);
                 break;

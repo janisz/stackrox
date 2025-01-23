@@ -6,19 +6,17 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/golang/mock/gomock"
 	clusterMocks "github.com/stackrox/rox/central/cluster/datastore/mocks"
 	notifierMocks "github.com/stackrox/rox/central/notifier/datastore/mocks"
 	"github.com/stackrox/rox/generated/storage"
+	"github.com/stackrox/rox/pkg/booleanpolicy"
 	"github.com/stackrox/rox/pkg/booleanpolicy/augmentedobjs"
 	"github.com/stackrox/rox/pkg/booleanpolicy/fieldnames"
 	"github.com/stackrox/rox/pkg/booleanpolicy/policyversion"
-	"github.com/stackrox/rox/pkg/buildinfo"
 	"github.com/stackrox/rox/pkg/defaults/policies"
-	"github.com/stackrox/rox/pkg/features"
-	"github.com/stackrox/rox/pkg/testutils/envisolator"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/suite"
+	"go.uber.org/mock/gomock"
 )
 
 func TestPolicyValidator(t *testing.T) {
@@ -32,8 +30,7 @@ type PolicyValidatorTestSuite struct {
 	nStorage       *notifierMocks.MockDataStore
 	cStorage       *clusterMocks.MockDataStore
 
-	mockCtrl    *gomock.Controller
-	envIsolator *envisolator.EnvIsolator
+	mockCtrl *gomock.Controller
 }
 
 func (s *PolicyValidatorTestSuite) SetupTest() {
@@ -43,14 +40,11 @@ func (s *PolicyValidatorTestSuite) SetupTest() {
 	s.mockCtrl = gomock.NewController(s.T())
 	s.nStorage = notifierMocks.NewMockDataStore(s.mockCtrl)
 	s.cStorage = clusterMocks.NewMockDataStore(s.mockCtrl)
-
-	s.envIsolator = envisolator.NewEnvIsolator(s.T())
 	s.validator = newPolicyValidator(s.nStorage)
 }
 
 func (s *PolicyValidatorTestSuite) TearDownTest() {
 	s.mockCtrl.Finish()
-	s.envIsolator.RestoreAll()
 }
 
 func (s *PolicyValidatorTestSuite) TestValidatesName() {
@@ -95,6 +89,13 @@ func (s *PolicyValidatorTestSuite) TestValidatesName() {
 	}
 	err = s.validator.validateName(policy)
 	s.Error(err, "special characters should not be supported")
+
+	policy = &storage.Policy{
+		Name: "  Boo's policy  ",
+	}
+	err = s.validator.validateName(policy)
+	s.NoError(err, "leading and trailing spaces should be trimmed")
+	s.Equal("Boo's policy", policy.Name)
 }
 
 func (s *PolicyValidatorTestSuite) TestValidateVersion() {
@@ -864,13 +865,57 @@ func (s *PolicyValidatorTestSuite) TestValidateAuditEventSource() {
 	}))
 }
 
-func (s *PolicyValidatorTestSuite) TestValidateEnforcement() {
-	if buildinfo.ReleaseBuild {
-		s.T().Skipf("Skipping this test for release build since the feature flag %s is not enabled", features.NetworkPolicySystemPolicy.EnvVar())
-	}
-	s.envIsolator.Setenv(features.NetworkPolicySystemPolicy.EnvVar(), "true")
-	defer s.envIsolator.RestoreAll()
+func (s *PolicyValidatorTestSuite) TestValidateNoDockerfileLineFrom() {
+	validator := newPolicyValidator(s.nStorage)
 
+	goodPolicy := booleanPolicyWithFields(storage.LifecycleStage_DEPLOY, storage.EventSource_NOT_APPLICABLE, map[string]string{
+		fieldnames.DockerfileLine: "COPY=",
+	})
+	goodPolicy.Name = "GOOD"
+	badPolicy := booleanPolicyWithFields(storage.LifecycleStage_DEPLOY, storage.EventSource_NOT_APPLICABLE, map[string]string{
+		fieldnames.DockerfileLine: "FROM=",
+	})
+	badPolicy.Name = "BAD"
+
+	for _, testCase := range []struct {
+		p             *storage.Policy
+		includeOption bool
+		errExpected   bool
+	}{
+		{
+			p:             goodPolicy,
+			includeOption: false,
+			errExpected:   false,
+		},
+		{
+			p:             badPolicy,
+			includeOption: false,
+			errExpected:   false,
+		},
+		{
+			p:             goodPolicy,
+			includeOption: true,
+			errExpected:   false,
+		},
+		{
+			p:             badPolicy,
+			includeOption: true,
+			errExpected:   true,
+		},
+	} {
+		s.Run(fmt.Sprintf("%s_%v", testCase.p.GetName(), testCase.includeOption), func() {
+			var options []booleanpolicy.ValidateOption
+			if testCase.includeOption {
+				options = append(options, booleanpolicy.ValidateNoFromInDockerfileLine())
+			}
+			err := validator.validateCompilableForLifecycle(testCase.p, options...)
+			s.Equal(testCase.errExpected, err != nil, "Result didn't match expectations (got error: %v)", err)
+		})
+	}
+
+}
+
+func (s *PolicyValidatorTestSuite) TestValidateEnforcement() {
 	validatorWithFlag := newPolicyValidator(s.nStorage)
 
 	cases := map[string]struct {

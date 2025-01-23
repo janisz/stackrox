@@ -6,14 +6,13 @@ import { selectors } from 'reducers';
 import { Integration, IntegrationSource, IntegrationType } from '../utils/integrationUtils';
 
 const selectIntegrations = createStructuredSelector({
-    authPlugins: selectors.getAuthPlugins,
-    authProviders: selectors.getAuthProviders,
     apiTokens: selectors.getAPITokens,
-    clusterInitBundles: selectors.getClusterInitBundles,
+    machineAccessConfigs: selectors.getMachineAccessConfigs,
     notifiers: selectors.getNotifiers,
     imageIntegrations: selectors.getImageIntegrations,
     backups: selectors.getBackups,
     signatureIntegrations: selectors.getSignatureIntegrations,
+    cloudSources: selectors.getCloudSources,
 });
 
 export type UseIntegrations = {
@@ -25,14 +24,13 @@ export type UseIntegrationsResponse = Integration[];
 
 const useIntegrations = ({ source, type }: UseIntegrations): UseIntegrationsResponse => {
     const {
-        authPlugins,
         apiTokens,
-        clusterInitBundles,
-        authProviders,
+        machineAccessConfigs,
         notifiers,
         backups,
         imageIntegrations,
         signatureIntegrations,
+        cloudSources,
     } = useSelector(selectIntegrations);
 
     function findIntegrations() {
@@ -40,17 +38,15 @@ const useIntegrations = ({ source, type }: UseIntegrations): UseIntegrationsResp
             integration.type.toLowerCase() === type.toLowerCase();
 
         switch (source) {
-            case 'authPlugins': {
-                return authPlugins;
-            }
             case 'authProviders': {
+                // Integrations Authentication Tokens differ from Access Control Auth providers.
                 if (type === 'apitoken') {
                     return apiTokens;
                 }
-                if (type === 'clusterInitBundle') {
-                    return clusterInitBundles;
+                if (type === 'machineAccess') {
+                    return machineAccessConfigs;
                 }
-                return authProviders.filter(typeLowerMatches);
+                return [];
             }
             case 'notifiers': {
                 return notifiers.filter(typeLowerMatches);
@@ -63,6 +59,17 @@ const useIntegrations = ({ source, type }: UseIntegrations): UseIntegrationsResp
             }
             case 'signatureIntegrations': {
                 return signatureIntegrations;
+            }
+            case 'cloudSources': {
+                if (type === 'paladinCloud') {
+                    return cloudSources.filter(
+                        (integration) => integration.type === 'TYPE_PALADIN_CLOUD'
+                    );
+                }
+                if (type === 'ocm') {
+                    return cloudSources.filter((integration) => integration.type === 'TYPE_OCM');
+                }
+                return cloudSources;
             }
             default: {
                 // eslint-disable-next-line @typescript-eslint/restrict-template-expressions

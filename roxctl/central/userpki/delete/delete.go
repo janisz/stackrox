@@ -5,22 +5,23 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/pkg/errors"
 	"github.com/spf13/cobra"
 	v1 "github.com/stackrox/rox/generated/api/v1"
 	"github.com/stackrox/rox/generated/storage"
 	"github.com/stackrox/rox/pkg/auth/authproviders/userpki"
+	"github.com/stackrox/rox/pkg/errox"
 	pkgCommon "github.com/stackrox/rox/pkg/roxctl/common"
 	"github.com/stackrox/rox/pkg/utils"
 	"github.com/stackrox/rox/pkg/uuid"
 	"github.com/stackrox/rox/roxctl/central/userpki/list"
+	"github.com/stackrox/rox/roxctl/common"
 	"github.com/stackrox/rox/roxctl/common/environment"
 	"github.com/stackrox/rox/roxctl/common/flags"
 )
 
 var (
-	errNoProviderArg    = errors.New("provider ID/name parameter required")
-	errProviderNotFound = errors.New("provider doesn't exist")
+	errNoProviderArg    = errox.InvalidArgs.New("provider ID/name parameter required")
+	errProviderNotFound = errox.NotFound.New("provider doesn't exist")
 )
 
 type centralUserPkiDeleteCommand struct {
@@ -28,15 +29,17 @@ type centralUserPkiDeleteCommand struct {
 	providerArg string
 
 	// Properties that are injected or constructed.
-	env     environment.Environment
-	timeout time.Duration
+	env          environment.Environment
+	timeout      time.Duration
+	retryTimeout time.Duration
 }
 
-// Command adds the userpki delete command
+// Command adds the userpki delete command.
 func Command(cliEnvironment environment.Environment) *cobra.Command {
-
 	c := &cobra.Command{
-		Use: "delete id|name",
+		Use:   "delete id|name",
+		Short: "Delete a user certificate authentication provider.",
+		Long:  "Delete a configured user certificate authentication provider and its associated group mappings.",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) != 1 {
 				return errNoProviderArg
@@ -46,7 +49,7 @@ func Command(cliEnvironment environment.Environment) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if err := flags.CheckConfirmation(cmd); err != nil {
+			if err := flags.CheckConfirmation(cmd, cliEnvironment.Logger(), cliEnvironment.InputOutput()); err != nil {
 				return err
 			}
 			return deleteProvider()
@@ -54,14 +57,16 @@ func Command(cliEnvironment environment.Environment) *cobra.Command {
 	}
 	flags.AddForce(c)
 	flags.AddTimeout(c)
+	flags.AddRetryTimeout(c)
 	return c
 }
 
 func makeCentralUserPkiDeleteCommand(cliEnvironment environment.Environment, cmd *cobra.Command, args []string) *centralUserPkiDeleteCommand {
 	return &centralUserPkiDeleteCommand{
-		providerArg: args[0],
-		env:         cliEnvironment,
-		timeout:     flags.Timeout(cmd),
+		providerArg:  args[0],
+		env:          cliEnvironment,
+		timeout:      flags.Timeout(cmd),
+		retryTimeout: flags.RetryTimeout(cmd),
 	}
 }
 
@@ -85,8 +90,7 @@ func getAuthProviderByName(ctx context.Context, svc v1.AuthProviderServiceClient
 }
 
 func (cmd *centralUserPkiDeleteCommand) prepareDeleteProvider() (func() error, error) {
-
-	conn, err := cmd.env.GRPCConnection()
+	conn, err := cmd.env.GRPCConnection(common.WithRetryTimeout(cmd.retryTimeout))
 	if err != nil {
 		return nil, err
 	}
@@ -119,10 +123,9 @@ func (cmd *centralUserPkiDeleteCommand) prepareDeleteProvider() (func() error, e
 	return func() error {
 		cmd.env.Logger().PrintfLn("Deleting provider and rolemappings.")
 
-		_, err := authService.DeleteAuthProvider(ctx, &v1.ResourceByID{
+		_, err := authService.DeleteAuthProvider(ctx, &v1.DeleteByIDWithForce{
 			Id: prov.GetId(),
 		})
-
 		if err != nil {
 			return err
 		}
@@ -142,7 +145,6 @@ func (cmd *centralUserPkiDeleteCommand) prepareDeleteProvider() (func() error, e
 				PreviousGroups: relevantGroups,
 				RequiredGroups: nil,
 			})
-
 			if err != nil {
 				return err
 			}

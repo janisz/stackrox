@@ -5,11 +5,8 @@ import (
 	"errors"
 	"reflect"
 
-	"github.com/stackrox/rox/pkg/logging"
 	"github.com/stackrox/rox/pkg/sync"
 )
-
-var log = logging.LoggerForModule()
 
 type dataLoaderContextKey struct{}
 
@@ -25,6 +22,13 @@ func GetLoader(ctx context.Context, loaderType reflect.Type) (interface{}, error
 		return nil, errors.New("loader context key used for wrong object type")
 	}
 	return lc.getLoader(loaderType)
+}
+
+// HasLoaderContext checks if given context has loaders registered
+func HasLoaderContext(ctx context.Context) bool {
+	key := dataLoaderContextKey{}
+	reg := ctx.Value(key)
+	return reg != nil
 }
 
 // WithLoaderContext returns a new context that is able to track loaders for registered types.

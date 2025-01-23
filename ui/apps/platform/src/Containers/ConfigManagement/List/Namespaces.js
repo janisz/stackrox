@@ -1,7 +1,8 @@
 import React, { useContext } from 'react';
+import { useLocation, useRouteMatch } from 'react-router-dom';
 import pluralize from 'pluralize';
 
-import StatusChip from 'Components/StatusChip';
+import PolicyStatusIconText from 'Components/PatternFly/IconText/PolicyStatusIconText';
 import {
     defaultHeaderClassName,
     defaultColumnClassName,
@@ -16,6 +17,7 @@ import { namespaceSortFields } from 'constants/sortFields';
 import { NAMESPACES_NO_POLICIES_QUERY } from 'queries/namespace';
 import queryService from 'utils/queryService';
 import URLService from 'utils/URLService';
+import { getConfigMgmtPathForEntitiesAndId } from '../entities';
 import List from './List';
 
 import filterByPolicyStatus from './utilities/filterByPolicyStatus';
@@ -39,6 +41,14 @@ const buildTableColumns = (match, location, entityContext) => {
             Header: `Namespace`,
             headerClassName: `w-1/8 ${defaultHeaderClassName}`,
             className: `w-1/8 ${defaultColumnClassName}`,
+            Cell: ({ original, pdf }) => {
+                const url = getConfigMgmtPathForEntitiesAndId('NAMESPACE', original.metadata.id);
+                return (
+                    <TableCellLink pdf={pdf} url={url}>
+                        {original.metadata.name}
+                    </TableCellLink>
+                );
+            },
             accessor: 'metadata.name',
             id: namespaceSortFields.NAMESPACE,
             sortField: namespaceSortFields.NAMESPACE,
@@ -74,8 +84,10 @@ const buildTableColumns = (match, location, entityContext) => {
             headerClassName: `w-1/8 ${nonSortableHeaderClassName}`,
             className: `w-1/8 ${defaultColumnClassName}`,
             Cell: ({ original, pdf }) => {
-                const { policyStatus } = original;
-                return <StatusChip status={policyStatus.status} asString={pdf} />;
+                const {
+                    policyStatus: { status },
+                } = original;
+                return <PolicyStatusIconText isPass={status === 'pass'} isTextOnly={pdf} />;
             },
             id: 'status',
             accessor: (d) => d.policyStatus.status,
@@ -188,8 +200,6 @@ const buildTableColumns = (match, location, entityContext) => {
 const createTableRows = (data) => data.results;
 
 const Namespaces = ({
-    match,
-    location,
     className,
     selectedRowId,
     onRowClick,
@@ -198,6 +208,8 @@ const Namespaces = ({
     totalResults,
     entityContext,
 }) => {
+    const location = useLocation();
+    const match = useRouteMatch();
     const searchParam = useContext(searchContext);
 
     const autoFocusSearchInput = !selectedRowId;

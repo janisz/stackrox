@@ -5,14 +5,16 @@ import { DownloadCloud } from 'react-feather';
 import {
     CheckCircleIcon,
     ExclamationCircleIcon,
+    ExclamationTriangleIcon,
     InfoCircleIcon,
     InProgressIcon,
     MinusCircleIcon,
     ResourcesEmptyIcon,
-    TimesCircleIcon,
 } from '@patternfly/react-icons';
 
+import { Cluster, ClusterProviderMetadata } from 'types/cluster.proto';
 import { getDate } from 'utils/dateUtils';
+import { getProductBranding } from 'constants/productBranding';
 import { CertExpiryStatus } from './clusterTypes';
 
 export const runtimeOptions = [
@@ -22,9 +24,9 @@ export const runtimeOptions = [
         value: 'NO_COLLECTION',
     },
     {
-        label: 'Kernel Module',
-        tableDisplay: 'Kernel Module',
-        value: 'KERNEL_MODULE',
+        label: 'CORE BPF',
+        tableDisplay: 'CORE BPF',
+        value: 'CORE_BPF',
     },
     {
         label: 'eBPF Program',
@@ -61,7 +63,7 @@ export const clusterTablePollingInterval = 5000; // milliseconds
 export const clusterDetailPollingInterval = 3000; // milliseconds
 
 const defaultNewClusterType = 'KUBERNETES_CLUSTER';
-const defaultCollectionMethod = 'KERNEL_MODULE';
+const defaultCollectionMethod = 'CORE_BPF';
 
 export const newClusterDefault = {
     id: undefined,
@@ -109,51 +111,22 @@ const MinusCircleRotate45 = ({ className }: MinusCircleRotate45Props) => (
 
 export const styleUninitialized = {
     Icon: MinusCircleRotate45,
-    bgColor: 'bg-base-200',
-    fgColor: 'text-base-700',
+    fgColor: '',
 };
 
 export const styleHealthy = {
     Icon: CheckCircleIcon,
-    bgColor: 'bg-success-200',
-    fgColor: 'text-success-700',
+    fgColor: 'pf-v5-u-success-color-100',
 };
 
 export const styleDegraded = {
-    Icon: ExclamationCircleIcon,
-    bgColor: 'bg-warning-200',
-    fgColor: 'text-warning-700',
+    Icon: ExclamationTriangleIcon,
+    fgColor: 'pf-v5-u-warning-color-100',
 };
 
 export const styleUnhealthy = {
-    Icon: TimesCircleIcon,
-    bgColor: 'bg-alert-200',
-    fgColor: 'text-alert-700',
-};
-
-// PatternFly versions of cluster style constants
-export const styleUninitializedPF = {
-    Icon: MinusCircleRotate45,
-    bgColor: 'pf-u-background-color-100',
-    fgColor: 'pf-u-default-color-300',
-};
-
-export const styleHealthyPF = {
-    Icon: CheckCircleIcon,
-    bgColor: 'pf-u-background-color-success',
-    fgColor: 'pf-u-success-color-100',
-};
-
-export const styleDegradedPF = {
     Icon: ExclamationCircleIcon,
-    bgColor: 'pf-u-background-color-warning',
-    fgColor: 'pf-u-warning-color-100',
-};
-
-export const styleUnhealthyPF = {
-    Icon: TimesCircleIcon,
-    bgColor: 'pf-u-background-color-danger',
-    fgColor: 'pf-u-danger-color-100',
+    fgColor: 'pf-v5-u-danger-color-100',
 };
 
 // Styles for ClusterStatus, SensorStatus, CollectorStatus.
@@ -162,8 +135,7 @@ export const healthStatusStyles = {
     UNINITIALIZED: styleUninitialized,
     UNAVAILABLE: {
         Icon: ResourcesEmptyIcon,
-        bgColor: 'bg-secondary-200',
-        fgColor: 'text-secondary-700',
+        fgColor: '',
     },
     UNHEALTHY: styleUnhealthy,
     DEGRADED: styleDegraded,
@@ -173,35 +145,30 @@ export const healthStatusStyles = {
 // Special case for Collector when Sensor is UNHEALTHY or DELAYED.
 export const delayedCollectorStatusStyle = {
     Icon: InfoCircleIcon,
-    bgColor: 'bg-base-200',
-    fgColor: 'text-base-700',
+    fgColor: '',
 };
 
 // Special case for Admission Control when Sensor is UNHEALTHY or DELAYED.
 export const delayedAdmissionControlStatusStyle = {
     Icon: InfoCircleIcon,
-    bgColor: 'bg-base-200',
-    fgColor: 'text-base-700',
+    fgColor: '',
 };
 
 // Special case for Scanner when Sensor is UNHEALTHY or DELAYED.
 export const delayedScannerStatusStyle = {
     Icon: InfoCircleIcon,
-    bgColor: 'bg-base-200',
-    fgColor: 'text-base-700',
+    fgColor: '',
 };
 
 export const sensorUpgradeStyles = {
     current: styleHealthy,
     progress: {
         Icon: InProgressIcon,
-        bgColor: 'bg-tertiary-200',
-        fgColor: 'text-tertiary-700',
+        fgColor: 'pf-v5-u-primary-color-100',
     },
     download: {
         Icon: DownloadCloud,
-        bgColor: 'bg-tertiary-200',
-        fgColor: 'text-tertiary-700',
+        fgColor: 'pf-v5-u-link-color',
     },
     intervention: styleDegraded,
     failure: styleUnhealthy,
@@ -221,12 +188,16 @@ const upgradeStates: UpgradeStates = {
         type: 'current',
     },
     MANUAL_UPGRADE_REQUIRED: {
-        displayValue: 'Manual upgrade required',
+        displayValue: `Secured cluster version is not managed by ${getProductBranding().shortName}.`,
         type: 'intervention',
     },
     UPGRADE_AVAILABLE: {
         type: 'download',
         actionText: 'Upgrade available',
+    },
+    DOWNGRADE_POSSIBLE: {
+        type: 'download',
+        actionText: 'Downgrade possible',
     },
     UPGRADE_INITIALIZING: {
         displayValue: 'Upgrade initializing',
@@ -293,40 +264,33 @@ const upgradeStates: UpgradeStates = {
 };
 
 export function formatKubernetesVersion(orchestratorMetadata: { version: string }) {
-    return orchestratorMetadata?.version || 'Not applicable';
+    return orchestratorMetadata?.version || 'Not available';
 }
 
 export function formatBuildDate(orchestratorMetadata) {
     return orchestratorMetadata?.buildDate
         ? getDate(orchestratorMetadata.buildDate)
-        : 'Not applicable';
+        : 'Not available';
 }
 
-type ProviderMetadata = {
-    region: string;
-    aws?: any;
-    azure?: any;
-    google?: any;
-};
-
-export function formatCloudProvider(providerMetadata: ProviderMetadata) {
+export function formatCloudProvider(providerMetadata: ClusterProviderMetadata) {
     if (providerMetadata) {
         const { region } = providerMetadata;
 
-        if (providerMetadata.aws) {
+        if ('aws' in providerMetadata) {
             return `AWS ${region}`;
         }
 
-        if (providerMetadata.azure) {
+        if ('azure' in providerMetadata) {
             return `Azure ${region}`;
         }
 
-        if (providerMetadata.google) {
+        if ('google' in providerMetadata) {
             return `GCP ${region}`;
         }
     }
 
-    return 'Not applicable';
+    return 'Not available';
 }
 
 const shortLivedCertMaxDays = 14;
@@ -349,6 +313,19 @@ const resolveThresholds = (expiryStatus: CertExpiryStatus) => {
     return certDurationDays <= shortLivedCertMaxDays
         ? shortLivedCertThresholds
         : longLivedCertThresholds;
+};
+
+/*
+ * Adapt health status categories to certificate expiration.
+ */
+export const getClusterDeletionStatus = (daysUntilDeletion: number) => {
+    if (daysUntilDeletion < 7) {
+        return 'UNHEALTHY';
+    }
+    if (daysUntilDeletion < 30) {
+        return 'DEGRADED';
+    }
+    return 'UNINITIALIZED';
 };
 
 /*
@@ -495,7 +472,19 @@ export function findUpgradeState(
         // Auto upgrades are possible even in the case of SENSOR_VERSION_HIGHER (it's not technically an upgrade,
         // and not really something we ever expect, but eh.) If the backend detects this to be the case, it will not
         // trigger an upgrade unless asked to by the user.
-        case 'SENSOR_VERSION_HIGHER':
+        case 'SENSOR_VERSION_HIGHER': {
+            if (!hasRelevantInformationFromMostRecentUpgrade(upgradeStatus)) {
+                return upgradeStates.DOWNGRADE_POSSIBLE;
+            }
+
+            const upgradeState = get(
+                upgradeStatus,
+                'mostRecentProcess.progress.upgradeState',
+                'unknown'
+            );
+
+            return upgradeStates[upgradeState] || upgradeStates.unknown;
+        }
         case 'AUTO_UPGRADE_POSSIBLE': {
             if (!hasRelevantInformationFromMostRecentUpgrade(upgradeStatus)) {
                 return upgradeStates.UPGRADE_AVAILABLE;
@@ -519,7 +508,7 @@ export function isUpToDateStateObject(upgradeStateObject) {
     return upgradeStateObject?.type === 'current';
 }
 
-export function getUpgradeableClusters(clusters = []) {
+export function getUpgradeableClusters(clusters: Cluster[] = []): Cluster[] {
     return clusters.filter((cluster) => {
         const upgradeStatus: UpgradeStatus | null = get(cluster, 'status.upgradeStatus', null);
         const upgradeStateObject = findUpgradeState(upgradeStatus);
@@ -527,11 +516,6 @@ export function getUpgradeableClusters(clusters = []) {
         return upgradeStateObject?.actionText; // if property exists, you can try or retry an upgrade
     });
 }
-
-export const wizardSteps = Object.freeze({
-    FORM: 'FORM',
-    DEPLOYMENT: 'DEPLOYMENT',
-});
 
 export default {
     runtimeOptions,
@@ -541,5 +525,4 @@ export default {
     newClusterDefault,
     findUpgradeState,
     isUpToDateStateObject,
-    wizardSteps,
 };

@@ -2,6 +2,8 @@ package graph
 
 import (
 	"fmt"
+	"net"
+	"slices"
 	"sort"
 	"strings"
 
@@ -9,6 +11,7 @@ import (
 	v1 "github.com/stackrox/rox/generated/api/v1"
 	"github.com/stackrox/rox/generated/storage"
 	"github.com/stackrox/rox/pkg/labels"
+	"github.com/stackrox/rox/pkg/netutil"
 	"github.com/stackrox/rox/pkg/networkgraph"
 	"github.com/stackrox/rox/pkg/networkgraph/tree"
 	"github.com/stackrox/rox/pkg/set"
@@ -112,11 +115,23 @@ func (b *graphBuilder) evaluatePeers(currentNS *storage.NamespaceMetadata, peers
 
 func (b *graphBuilder) evaluatePeer(currentNS *storage.NamespaceMetadata, peer *storage.NetworkPolicyPeer) []*node {
 	if peer.GetIpBlock() != nil {
-		// TODO(ROX-5370): We assume all CIDR blocks always match all deployments and overlapping external CIDRs.
-		//  This is probably wrong, but we don't really have a good way of determining otherwise. Except for maybe
-		//  look at Pod IPs. Which we actually could.
-		allNodes := make([]*node, 0, len(b.allDeployments)+1)
-		allNodes = append(allNodes, b.allDeployments...)
+		var allNodes []*node
+		_, ipNet, err := net.ParseCIDR(peer.GetIpBlock().GetCidr())
+		if err != nil {
+			log.Warnf("Failed to parse CIDR block: %s", err)
+			return allNodes
+		}
+
+		// If the IP is in the private range, we add edges to other deployments in the cluster.
+		// This is still not the perfect approach, but it solves user issues where edges were being
+		// shown on *every* deployment with a Network Policy that uses CIDR block matchers. By
+		// limiting to private ranges only, the set of edges in the graph is likely more accurate, but
+		// still not the reality. There is an epic created to tackle this further and come up with a
+		// more elaborate logic for this: ROX-12120
+		if netutil.IsIPNetOverlapingPrivateRange(ipNet) {
+			allNodes = append(allNodes, b.allDeployments...)
+		}
+
 		allNodes = append(allNodes, b.evaluateExternalPeer(peer.GetIpBlock())...)
 		return allNodes
 	}
@@ -307,6 +322,18 @@ func (b *graphBuilder) AddEdgesForNetworkPolicies(netPols []*storage.NetworkPoli
 	b.forEachNetworkPolicy(netPols, b.addEdgesForNetworkPolicy)
 }
 
+func (b *graphBuilder) GetApplyingPoliciesPerDeployment(allNetPols []*storage.NetworkPolicy) map[string][]*storage.NetworkPolicy {
+	deploymentsToNetPols := make(map[string][]*storage.NetworkPolicy)
+	b.forEachNetworkPolicy(allNetPols, func(netPol *storage.NetworkPolicy, _ *storage.NamespaceMetadata, matchedDeployments []*node) {
+		for _, node := range matchedDeployments {
+			if id := node.deployment.GetId(); id != "" {
+				deploymentsToNetPols[id] = append(deploymentsToNetPols[id], netPol)
+			}
+		}
+	})
+	return deploymentsToNetPols
+}
+
 func (b *graphBuilder) GetApplyingPolicies(allNetPols []*storage.NetworkPolicy) []*storage.NetworkPolicy {
 	var applyingPolicies []*storage.NetworkPolicy
 	b.forEachNetworkPolicy(allNetPols, func(netPol *storage.NetworkPolicy, _ *storage.NamespaceMetadata, matchedDeployments []*node) {
@@ -347,7 +374,7 @@ func (b *graphBuilder) forEachNetworkPolicy(netPols []*storage.NetworkPolicy, do
 
 func (b *graphBuilder) PostProcess() {
 	for _, d := range b.allDeployments {
-		sort.Strings(d.applyingPoliciesIDs)
+		slices.Sort(d.applyingPoliciesIDs)
 		for _, e := range d.ingressEdges {
 			e.ports.normalizeInPlace()
 		}

@@ -12,11 +12,13 @@ func _() {
 	_ = x[scannerOnly-1]
 	_ = x[centralTLSOnly-2]
 	_ = x[scannerTLSOnly-3]
+	_ = x[centralDBOnly-4]
+	_ = x[scannerV4TLSOnly-5]
 }
 
-const _mode_name = "renderAllscannerOnlycentralTLSOnlyscannerTLSOnly"
+const _mode_name = "renderAllscannerOnlycentralTLSOnlyscannerTLSOnlycentralDBOnlyscannerV4TLSOnly"
 
-var _mode_index = [...]uint8{0, 9, 20, 34, 48}
+var _mode_index = [...]uint8{0, 9, 20, 34, 48, 61, 77}
 
 func (i mode) String() string {
 	if i < 0 || i >= mode(len(_mode_index)-1) {

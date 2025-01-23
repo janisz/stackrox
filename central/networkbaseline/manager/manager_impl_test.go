@@ -6,12 +6,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/golang/mock/gomock"
 	deploymentMocks "github.com/stackrox/rox/central/deployment/datastore/mocks"
+	queueMocks "github.com/stackrox/rox/central/deployment/queue/mocks"
 	"github.com/stackrox/rox/central/networkbaseline/datastore"
 	networkEntityDSMock "github.com/stackrox/rox/central/networkgraph/entity/datastore/mocks"
+	networkFlowDSMocks "github.com/stackrox/rox/central/networkgraph/flow/datastore/mocks"
 	networkPolicyMocks "github.com/stackrox/rox/central/networkpolicies/datastore/mocks"
-	"github.com/stackrox/rox/central/role/resources"
 	connectionMocks "github.com/stackrox/rox/central/sensor/service/connection/mocks"
 	v1 "github.com/stackrox/rox/generated/api/v1"
 	"github.com/stackrox/rox/generated/internalapi/central"
@@ -20,11 +20,15 @@ import (
 	"github.com/stackrox/rox/pkg/fixtures"
 	"github.com/stackrox/rox/pkg/networkgraph"
 	"github.com/stackrox/rox/pkg/networkgraph/networkbaseline"
+	"github.com/stackrox/rox/pkg/protoassert"
+	"github.com/stackrox/rox/pkg/protoconv"
 	"github.com/stackrox/rox/pkg/sac"
+	"github.com/stackrox/rox/pkg/sac/resources"
 	"github.com/stackrox/rox/pkg/search"
 	"github.com/stackrox/rox/pkg/sync"
 	"github.com/stackrox/rox/pkg/timestamp"
 	"github.com/stretchr/testify/suite"
+	"go.uber.org/mock/gomock"
 )
 
 var (
@@ -38,14 +42,14 @@ type fakeDS struct {
 	datastore.DataStore
 }
 
-func (f *fakeDS) UpsertNetworkBaselines(ctx context.Context, baselines []*storage.NetworkBaseline) error {
+func (f *fakeDS) UpsertNetworkBaselines(_ context.Context, baselines []*storage.NetworkBaseline) error {
 	for _, baseline := range baselines {
 		f.baselines[baseline.GetDeploymentId()] = baseline
 	}
 	return nil
 }
 
-func (f *fakeDS) Walk(ctx context.Context, fn func(baseline *storage.NetworkBaseline) error) error {
+func (f *fakeDS) Walk(_ context.Context, fn func(baseline *storage.NetworkBaseline) error) error {
 	for _, baseline := range f.baselines {
 		if err := fn(baseline); err != nil {
 			return err
@@ -54,19 +58,19 @@ func (f *fakeDS) Walk(ctx context.Context, fn func(baseline *storage.NetworkBase
 	return nil
 }
 
-func (f *fakeDS) DeleteNetworkBaseline(ctx context.Context, deploymentID string) error {
+func (f *fakeDS) DeleteNetworkBaseline(_ context.Context, deploymentID string) error {
 	delete(f.baselines, deploymentID)
 	return nil
 }
 
-func (f *fakeDS) DeleteNetworkBaselines(ctx context.Context, deploymentIDs []string) error {
+func (f *fakeDS) DeleteNetworkBaselines(_ context.Context, deploymentIDs []string) error {
 	for _, id := range deploymentIDs {
 		delete(f.baselines, id)
 	}
 	return nil
 }
 
-func (f *fakeDS) GetNetworkBaseline(ctx context.Context, deploymentID string) (*storage.NetworkBaseline, bool, error) {
+func (f *fakeDS) GetNetworkBaseline(_ context.Context, deploymentID string) (*storage.NetworkBaseline, bool, error) {
 	if baseline, ok := f.baselines[deploymentID]; ok {
 		return baseline, true, nil
 	}
@@ -80,11 +84,14 @@ func TestManager(t *testing.T) {
 type ManagerTestSuite struct {
 	suite.Suite
 
-	ds                *fakeDS
-	networkEntities   *networkEntityDSMock.MockEntityDataStore
-	deploymentDS      *deploymentMocks.MockDataStore
-	networkPolicyDS   *networkPolicyMocks.MockDataStore
-	connectionManager *connectionMocks.MockManager
+	ds                         *fakeDS
+	networkEntities            *networkEntityDSMock.MockEntityDataStore
+	deploymentDS               *deploymentMocks.MockDataStore
+	networkPolicyDS            *networkPolicyMocks.MockDataStore
+	clusterFlows               *networkFlowDSMocks.MockClusterDataStore
+	flowStore                  *networkFlowDSMocks.MockFlowDataStore
+	connectionManager          *connectionMocks.MockManager
+	deploymentObservationQueue *queueMocks.MockDeploymentObservationQueue
 
 	m             Manager
 	currTestStart timestamp.MicroTS
@@ -95,10 +102,12 @@ func (suite *ManagerTestSuite) SetupTest() {
 	suite.mockCtrl = gomock.NewController(suite.T())
 	suite.networkEntities = networkEntityDSMock.NewMockEntityDataStore(suite.mockCtrl)
 	suite.currTestStart = timestamp.Now()
-	suite.mockCtrl = gomock.NewController(suite.T())
 	suite.deploymentDS = deploymentMocks.NewMockDataStore(suite.mockCtrl)
 	suite.networkPolicyDS = networkPolicyMocks.NewMockDataStore(suite.mockCtrl)
+	suite.clusterFlows = networkFlowDSMocks.NewMockClusterDataStore(suite.mockCtrl)
+	suite.flowStore = networkFlowDSMocks.NewMockFlowDataStore(suite.mockCtrl)
 	suite.connectionManager = connectionMocks.NewMockManager(suite.mockCtrl)
+	suite.deploymentObservationQueue = queueMocks.NewMockDeploymentObservationQueue(suite.mockCtrl)
 }
 
 func (suite *ManagerTestSuite) TearDownTest() {
@@ -108,11 +117,12 @@ func (suite *ManagerTestSuite) TearDownTest() {
 func (suite *ManagerTestSuite) mustInitManager(initialBaselines ...*storage.NetworkBaseline) {
 	suite.ds = &fakeDS{baselines: make(map[string]*storage.NetworkBaseline)}
 	for _, baseline := range initialBaselines {
-		baseline.ObservationPeriodEnd = getNewObservationPeriodEnd().GogoProtobuf()
+		baseline.ObservationPeriodEnd = protoconv.ConvertMicroTSToProtobufTS(getNewObservationPeriodEnd())
 		suite.ds.baselines[baseline.GetDeploymentId()] = baseline
 	}
 	var err error
-	suite.m, err = New(suite.ds, suite.networkEntities, suite.deploymentDS, suite.networkPolicyDS, suite.connectionManager)
+	suite.networkPolicyDS.EXPECT().GetNetworkPolicies(gomock.Any(), gomock.Any(), gomock.Any()).AnyTimes()
+	suite.m, err = New(suite.ds, suite.networkEntities, suite.deploymentDS, suite.networkPolicyDS, suite.clusterFlows, suite.connectionManager)
 	suite.Require().NoError(err)
 }
 
@@ -154,7 +164,19 @@ func (suite *ManagerTestSuite) mustGetObserationPeriod(baselineID int) timestamp
 
 func (suite *ManagerTestSuite) initBaselinesForDeployments(ids ...int) {
 	for _, id := range ids {
+		suite.deploymentDS.EXPECT().GetDeployment(gomock.Any(), depID(id)).Return(
+			&storage.Deployment{
+				Id:        depID(id),
+				Name:      depName(id),
+				ClusterId: clusterID(id),
+				Namespace: ns(id),
+			}, true, nil,
+		).AnyTimes()
+		suite.clusterFlows.EXPECT().GetFlowStore(gomock.Any(), clusterID(id)).Return(suite.flowStore, nil).AnyTimes()
+		suite.flowStore.EXPECT().GetFlowsForDeployment(gomock.Any(), depID(id), false).Return(nil, nil).AnyTimes()
 		suite.Require().NoError(suite.m.ProcessDeploymentCreate(depID(id), depName(id), clusterID(id), ns(id)))
+		suite.Require().NoError(suite.m.CreateNetworkBaseline(depID(id)))
+
 	}
 }
 
@@ -184,14 +206,14 @@ func (suite *ManagerTestSuite) assertBaselinesAre(baselines ...*storage.NetworkB
 	// Assume that the test takes no longer than one minute.
 	obsPeriodEnd := obsPeriodStart.Add(time.Minute)
 	for _, baseline := range suite.ds.baselines {
-		cloned := baseline.Clone()
+		cloned := baseline.CloneVT()
 		actualObsEnd := timestamp.FromProtobuf(cloned.GetObservationPeriodEnd())
 		suite.True(actualObsEnd.After(obsPeriodStart), "Actual obs end: %v, expected obs window: %v-%v", actualObsEnd.GoTime(), obsPeriodStart.GoTime(), obsPeriodEnd.GoTime())
 		suite.True(obsPeriodEnd.After(actualObsEnd), "Actual obs end: %v, expected obs window: %v-%v", actualObsEnd.GoTime(), obsPeriodStart.GoTime(), obsPeriodEnd.GoTime())
 		cloned.ObservationPeriodEnd = nil
 		baselinesWithoutObsPeriod = append(baselinesWithoutObsPeriod, cloned)
 	}
-	suite.ElementsMatch(baselinesWithoutObsPeriod, baselines)
+	protoassert.ElementsMatch(suite.T(), baselinesWithoutObsPeriod, baselines)
 }
 
 func (suite *ManagerTestSuite) TestFlowsUpdateForOtherEntityTypes() {
@@ -211,7 +233,8 @@ func (suite *ManagerTestSuite) TestFlowsUpdateForOtherEntityTypes() {
 				Id:   extSrcID(10),
 				Desc: &storage.NetworkEntityInfo_ExternalSource_{
 					ExternalSource: &storage.NetworkEntityInfo_ExternalSource{
-						Name: extSrcName(10),
+						Name:   extSrcName(10),
+						Source: &storage.NetworkEntityInfo_ExternalSource_Cidr{Cidr: "11.0.0.0/32"},
 					},
 				},
 			},
@@ -239,6 +262,19 @@ func (suite *ManagerTestSuite) TestFlowsUpdateForOtherEntityTypes() {
 			DstEntity: networkgraph.Entity{
 				Type: storage.NetworkEntityInfo_INTERNET,
 				ID:   "INTERNETTZZ",
+			},
+			Protocol: storage.L4Protocol_L4_PROTOCOL_TCP,
+			DstPort:  13,
+		},
+		// This conn is also valid and should get incorporated into the baseline.
+		{
+			SrcEntity: networkgraph.Entity{
+				Type: storage.NetworkEntityInfo_DEPLOYMENT,
+				ID:   depID(1),
+			},
+			DstEntity: networkgraph.Entity{
+				Type: storage.NetworkEntityInfo_INTERNAL_ENTITIES,
+				ID:   "INTERNALZZ",
 			},
 			Protocol: storage.L4Protocol_L4_PROTOCOL_TCP,
 			DstPort:  13,
@@ -278,11 +314,19 @@ func (suite *ManagerTestSuite) TestFlowsUpdateForOtherEntityTypes() {
 					Id:   extSrcID(10),
 					Desc: &storage.NetworkEntityInfo_ExternalSource_{
 						ExternalSource: &storage.NetworkEntityInfo_ExternalSource{
-							Name: extSrcName(10),
+							Name:   extSrcName(10),
+							Source: &storage.NetworkEntityInfo_ExternalSource_Cidr{Cidr: "11.0.0.0/32"},
 						},
 					},
 				}},
 				Properties: []*storage.NetworkBaselineConnectionProperties{properties(false, 1)},
+			},
+			&storage.NetworkBaselinePeer{
+				Entity: &storage.NetworkEntity{Info: &storage.NetworkEntityInfo{
+					Type: storage.NetworkEntityInfo_INTERNAL_ENTITIES,
+					Id:   "INTERNALZZ",
+				}},
+				Properties: []*storage.NetworkBaselineConnectionProperties{properties(false, 13)},
 			},
 			&storage.NetworkBaselinePeer{
 				Entity: &storage.NetworkEntity{Info: &storage.NetworkEntityInfo{
@@ -320,24 +364,20 @@ func (suite *ManagerTestSuite) TestRepeatedCreates() {
 
 	suite.initBaselinesForDeployments(1, 2, 3)
 	suite.assertBaselinesAre(emptyBaseline(1), emptyBaseline(2), emptyBaseline(3))
-
 	suite.initBaselinesForDeployments(1) // Should be a no-op
 	suite.assertBaselinesAre(emptyBaseline(1), emptyBaseline(2), emptyBaseline(3))
-
 	suite.processFlowUpdate(conns(depToDepConn(1, 2, 52)), conns(depToDepConn(2, 3, 51)))
 	suite.assertBaselinesAre(
 		baselineWithPeers(1, depPeer(2, properties(false, 52))),
 		baselineWithPeers(2, depPeer(1, properties(true, 52))),
 		emptyBaseline(3),
 	)
-
 	suite.initBaselinesForDeployments(1) // Should be a no-op
 	suite.assertBaselinesAre(
 		baselineWithPeers(1, depPeer(2, properties(false, 52))),
 		baselineWithPeers(2, depPeer(1, properties(true, 52))),
 		emptyBaseline(3),
 	)
-
 }
 
 func (suite *ManagerTestSuite) TestResilienceToRestarts() {
@@ -543,13 +583,32 @@ func (suite *ManagerTestSuite) TestDeploymentDelete() {
 	)
 }
 
+func (suite *ManagerTestSuite) TestDeploymentDelete_WithoutBaseline() {
+	suite.mustInitManager(
+		baselineWithPeers(1, depPeer(2, properties(false, 52))),
+		wrapWithForbidden(baselineWithPeers(3),
+			depPeer(2, properties(false, 52))),
+	)
+
+	// DeploymentID 2 should be in the internal map, but no baseline created yet.
+	suite.Require().NoError(suite.m.ProcessDeploymentCreate(depID(2), depName(2), clusterID(2), ns(2)))
+
+	suite.Require().NoError(suite.m.ProcessDeploymentDelete(depID(2)))
+
+	// Should remove DeploymentID 2 from other baselines (BaselinedPeers and ForbiddenPeers) even if its baseline was never created
+	suite.assertBaselinesAre(
+		baselineWithPeers(1),
+		baselineWithPeers(3),
+	)
+}
+
 func (suite *ManagerTestSuite) TestDeleteWithExtSrcPeer() {
 	suite.networkPolicyDS.EXPECT().GetNetworkPolicies(gomock.Any(), gomock.Any(), gomock.Any()).Return(nil, nil).AnyTimes()
 	suite.mustInitManager(
 		baselineWithPeers(
 			1,
 			depPeer(2, properties(false, 52)),
-			extSrcPeer(3, properties(false, 443)),
+			extSrcPeer(3, "11.0.0.0/32", properties(false, 443)),
 		),
 		baselineWithPeers(2, depPeer(1, properties(true, 52))),
 	)
@@ -557,13 +616,13 @@ func (suite *ManagerTestSuite) TestDeleteWithExtSrcPeer() {
 		baselineWithPeers(
 			1,
 			depPeer(2, properties(false, 52)),
-			extSrcPeer(3, properties(false, 443)),
+			extSrcPeer(3, "11.0.0.0/32", properties(false, 443)),
 		),
 		baselineWithPeers(2, depPeer(1, properties(true, 52))),
 	)
 	// Make sure deleting a deployment does not trigger an error even if we have ext src peer
 	suite.Nil(suite.m.ProcessDeploymentDelete(depID(2)))
-	suite.assertBaselinesAre(baselineWithPeers(1, extSrcPeer(3, properties(false, 443))))
+	suite.assertBaselinesAre(baselineWithPeers(1, extSrcPeer(3, "11.0.0.0/32", properties(false, 443))))
 }
 
 func (suite *ManagerTestSuite) TestValidEntityTypesMatch() {
@@ -670,7 +729,7 @@ func (suite *ManagerTestSuite) TestLockBaseline() {
 	)
 	baseline1 := suite.mustGetBaseline(1)
 	beforeLockUpdateState := baseline1.GetLocked()
-	baseline1Copy := baseline1.Clone()
+	baseline1Copy := baseline1.CloneVT()
 	baseline1Copy.Locked = !beforeLockUpdateState
 	expectOneTimeCallToConnectionManagerWithBaseline(suite, baseline1Copy)
 
@@ -725,7 +784,8 @@ func (suite *ManagerTestSuite) TestProcessPostClusterDelete() {
 			depPeer(1, properties(true, 443)),
 		),
 	)
-	suite.Nil(suite.m.ProcessPostClusterDelete(clusterID(10)))
+	deletedIDs := []string{depID(1), depID(2)}
+	suite.Nil(suite.m.ProcessPostClusterDelete(deletedIDs))
 	suite.assertBaselinesAre(
 		baselineWithClusterAndPeers(3, 11),
 		baselineWithClusterAndPeers(4, 12),
@@ -746,7 +806,7 @@ func (suite *ManagerTestSuite) TestBaselineSyncMsg() {
 	suite.Nil(suite.m.ProcessBaselineLockUpdate(managerCtx, depID(1), false))
 
 	baseline1 := suite.mustGetBaseline(1)
-	baseline1Copy := baseline1.Clone()
+	baseline1Copy := baseline1.CloneVT()
 	baseline1Copy.Locked = true
 	// Lock state changed from unlocked to locked, we should sync this baseline to sensor now
 	expectOneTimeCallToConnectionManagerWithBaseline(suite, baseline1Copy)
@@ -791,7 +851,7 @@ func expectOneTimeCallToConnectionManagerWithBaseline(suite *ManagerTestSuite, b
 func ctxWithAccessToWrite(id int) context.Context {
 	return sac.WithGlobalAccessScopeChecker(context.Background(), sac.AllowFixedScopes(
 		sac.AccessModeScopeKeys(storage.Access_READ_WRITE_ACCESS),
-		sac.ResourceScopeKeys(resources.NetworkBaseline),
+		sac.ResourceScopeKeys(resources.DeploymentExtension),
 		sac.ClusterScopeKeys(clusterID(id)),
 		sac.NamespaceScopeKeys(ns(id)),
 	))
@@ -864,7 +924,7 @@ func depPeer(id int, properties ...*storage.NetworkBaselineConnectionProperties)
 	}
 }
 
-func extSrcPeer(id int, properties ...*storage.NetworkBaselineConnectionProperties) *storage.NetworkBaselinePeer {
+func extSrcPeer(id int, cidr string, properties ...*storage.NetworkBaselineConnectionProperties) *storage.NetworkBaselinePeer {
 	return &storage.NetworkBaselinePeer{
 		Entity: &storage.NetworkEntity{
 			Info: &storage.NetworkEntityInfo{
@@ -872,7 +932,8 @@ func extSrcPeer(id int, properties ...*storage.NetworkBaselineConnectionProperti
 				Id:   extSrcID(id),
 				Desc: &storage.NetworkEntityInfo_ExternalSource_{
 					ExternalSource: &storage.NetworkEntityInfo_ExternalSource{
-						Name: extSrcName(id),
+						Name:   extSrcName(id),
+						Source: &storage.NetworkEntityInfo_ExternalSource_Cidr{Cidr: cidr},
 					},
 				},
 			}},

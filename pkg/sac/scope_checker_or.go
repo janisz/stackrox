@@ -21,16 +21,6 @@ func NewOrScopeChecker(scopeCheckers ...ScopeChecker) ScopeChecker {
 	}
 }
 
-func (s orScopeChecker) Core() ScopeCheckerCore {
-	// We can't unambiguously return a ScopeCheckerCore here. The method itself is used only
-	// within verifying interceptor. The verifying interceptor is used within the context of the
-	// external authz plugin. Once this will be fully deprecated, we can eventually also remove this method.
-	if len(s.scopeCheckers) != 0 {
-		return s.scopeCheckers[0].Core()
-	}
-	return nil
-}
-
 func (s orScopeChecker) SubScopeChecker(keys ...ScopeKey) ScopeChecker {
 	var checkers []ScopeChecker
 	for i := range s.scopeCheckers {
@@ -41,93 +31,24 @@ func (s orScopeChecker) SubScopeChecker(keys ...ScopeKey) ScopeChecker {
 	}
 }
 
-func (s orScopeChecker) PerformChecks(ctx context.Context) error {
-	var performChecksErrs *multierror.Error
+func (s orScopeChecker) IsAllowed(subScopeKeys ...ScopeKey) bool {
 	for _, checker := range s.scopeCheckers {
-		err := checker.PerformChecks(ctx)
-		if err != nil {
-			performChecksErrs = multierror.Append(performChecksErrs, err)
-		}
-	}
-	return performChecksErrs.ErrorOrNil()
-}
-
-func (s orScopeChecker) TryAllowed(subScopeKeys ...ScopeKey) TryAllowedResult {
-	result := Deny
-	for _, checker := range s.scopeCheckers {
-		if res := checker.TryAllowed(subScopeKeys...); res == Allow {
-			return res
-		} else if res == Unknown {
-			result = Unknown
-		}
-	}
-	return result
-}
-
-func (s orScopeChecker) Allowed(ctx context.Context, subScopeKeys ...ScopeKey) (bool, error) {
-	var allowedErrs *multierror.Error
-	for _, checker := range s.scopeCheckers {
-		allowed, err := checker.Allowed(ctx, subScopeKeys...)
 		// Short-circuit on the first allowed check result.
-		if err != nil {
-			allowedErrs = multierror.Append(allowedErrs, err)
-		} else if allowed {
-			return allowed, nil
+		if checker.IsAllowed(subScopeKeys...) {
+			return true
 		}
 	}
-	return false, allowedErrs.ErrorOrNil()
+	return false
 }
 
-func (s orScopeChecker) TryAnyAllowed(subScopeKeyss [][]ScopeKey) TryAllowedResult {
-	result := Deny
+func (s orScopeChecker) AllAllowed(subScopeKeyss [][]ScopeKey) bool {
 	for _, checker := range s.scopeCheckers {
-		if res := checker.TryAnyAllowed(subScopeKeyss); res == Allow {
-			return res
-		} else if res == Unknown {
-			result = Unknown
-		}
-	}
-	return result
-}
-
-func (s orScopeChecker) AnyAllowed(ctx context.Context, subScopeKeyss [][]ScopeKey) (bool, error) {
-	var anyAllowedErrs *multierror.Error
-	for _, checker := range s.scopeCheckers {
-		allowed, err := checker.AnyAllowed(ctx, subScopeKeyss)
 		// Short-circuit on the first allowed check result.
-		if err != nil {
-			anyAllowedErrs = multierror.Append(anyAllowedErrs, err)
-		} else if allowed {
-			return allowed, nil
+		if checker.AllAllowed(subScopeKeyss) {
+			return true
 		}
 	}
-	return false, anyAllowedErrs.ErrorOrNil()
-}
-
-func (s orScopeChecker) TryAllAllowed(subScopeKeyss [][]ScopeKey) TryAllowedResult {
-	result := Deny
-	for _, checker := range s.scopeCheckers {
-		if res := checker.TryAllAllowed(subScopeKeyss); res == Allow {
-			return res
-		} else if res == Unknown {
-			result = Unknown
-		}
-	}
-	return result
-}
-
-func (s orScopeChecker) AllAllowed(ctx context.Context, subScopeKeyss [][]ScopeKey) (bool, error) {
-	var allAllowedErrs *multierror.Error
-	for _, checker := range s.scopeCheckers {
-		allowed, err := checker.AllAllowed(ctx, subScopeKeyss)
-		// Short-circuit on the first allowed check result.
-		if err != nil {
-			allAllowedErrs = multierror.Append(allAllowedErrs, err)
-		} else if allowed {
-			return allowed, nil
-		}
-	}
-	return false, allAllowedErrs.ErrorOrNil()
+	return false
 }
 
 func (s orScopeChecker) ForClusterScopedObject(obj ClusterScopedObject) ScopeChecker {

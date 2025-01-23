@@ -3,7 +3,7 @@ import PropTypes from 'prop-types';
 import pluralize from 'pluralize';
 import orderBy from 'lodash/orderBy';
 import { useQuery } from '@apollo/client';
-import { Message } from '@stackrox/ui-components';
+import { Alert } from '@patternfly/react-core';
 
 import entityTypes, { standardTypes } from 'constants/entityTypes';
 import { standardLabels } from 'messages/standards';
@@ -12,8 +12,6 @@ import Table from 'Components/Table';
 import { PanelNew, PanelBody, PanelHead, PanelHeadEnd, PanelTitle } from 'Components/Panel';
 import Loader from 'Components/Loader';
 import TablePagination from 'Components/TablePagination';
-import TableGroup from 'Components/TableGroup';
-import { getColumnsByEntity, getColumnsByStandard } from 'constants/tableColumns';
 import Query from 'Components/CacheFirstQuery';
 import NoResultsMessage from 'Components/NoResultsMessage';
 
@@ -21,6 +19,10 @@ import createPDFTable from 'utils/pdfUtils';
 import { CLUSTERS_QUERY, NAMESPACES_QUERY, NODES_QUERY, DEPLOYMENTS_QUERY } from 'queries/table';
 import { LIST_STANDARD, STANDARDS_QUERY } from 'queries/standard';
 import queryService from 'utils/queryService';
+
+import { complianceEntityTypes, entityCountNounOrdinaryCase } from '../entitiesForCompliance';
+import TableGroup from './TableGroup';
+import { getColumnsByEntity, getColumnsByStandard, getColumnsForControl } from './tableColumns';
 
 function getQuery(entityType) {
     switch (entityType) {
@@ -76,7 +78,6 @@ function formatResourceData(data, resourceType) {
         const curEntity = aggregationKeys[entityKeyIndex].id;
         const curStandard = aggregationKeys[standardKeyIndex].id;
         const entity = keys[entityKeyIndex];
-        // eslint-disable-next-line no-underscore-dangle
         if (entity.__typename === '') {
             return;
         }
@@ -270,6 +271,8 @@ const ListTable = ({
     let tableColumns;
     if (standardId) {
         tableColumns = getColumnsByStandard(standardId);
+    } else if (isControlList) {
+        tableColumns = getColumnsForControl(query);
     } else {
         tableColumns = getColumnsByEntity(entityType, standardsData.results);
     }
@@ -286,20 +289,27 @@ const ListTable = ({
                 if (!loading || (data && data.results)) {
                     const formattedData = formatData(data, entityType);
                     if (!formattedData) {
-                        headerText = `0 ${pluralize(entityType, totalRows)}`;
+                        headerText = entityCountNounOrdinaryCase(0, entityType);
                         contents = <NoResultsMessage message="No data matched your search." />;
                     } else {
                         tableData = filterByComplianceState(formattedData, query, isControlList);
                         totalRows = getTotalRows(tableData, isControlList);
+                        const entityCountNoun = entityCountNounOrdinaryCase(totalRows, entityType);
                         const { groupBy } = query;
 
+                        // Resouces: CLUSTER, NAMESPACE, NODE, DEPLOYMENT.
+                        // Or CATEGORY from View Standard link of sunburst graph on dashboard.
+                        // Or STANDARD on Controls tab of resource single page.
+                        // Otherwise undefined.
+                        const { length } = tableData;
                         const groupedByText = groupBy
-                            ? `across ${tableData.length} ${pluralize(groupBy, tableData.length)}`
+                            ? ` across ${
+                                  complianceEntityTypes.includes(groupBy)
+                                      ? entityCountNounOrdinaryCase(length, groupBy)
+                                      : `${length} ${pluralize(groupBy.toLowerCase(), length)}`
+                              }`
                             : '';
-                        headerText = `${totalRows} ${pluralize(
-                            entityType,
-                            totalRows
-                        )} ${groupedByText}`;
+                        headerText = `${entityCountNoun}${groupedByText}`;
 
                         if (tableData && tableData.length) {
                             createPDFTable(tableData, entityType, query, pdfId, tableColumns);
@@ -335,7 +345,14 @@ const ListTable = ({
                         contents = (
                             <>
                                 {data.results.errorMessage && (
-                                    <Message type="error">{data.results.errorMessage}</Message>
+                                    <Alert
+                                        variant="danger"
+                                        isInline
+                                        title="Unable to get data"
+                                        component="p"
+                                    >
+                                        {data.results.errorMessage}
+                                    </Alert>
                                 )}
                                 {tableElement}
                             </>
@@ -351,7 +368,7 @@ const ListTable = ({
                 return (
                     <PanelNew testid="panel">
                         <PanelHead>
-                            <PanelTitle isUpperCase testid="panel-header" text={headerText} />
+                            <PanelTitle testid="panel-header" text={headerText} />
                             <PanelHeadEnd>{headerComponent}</PanelHeadEnd>
                         </PanelHead>
                         <PanelBody>{contents}</PanelBody>
