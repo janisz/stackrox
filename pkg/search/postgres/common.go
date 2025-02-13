@@ -518,6 +518,59 @@ func findTableInJoins(innerJoins []Join, matchTables func(join Join) bool) (int,
 	return -1, false
 }
 
+// combineDisjunction tries to optimize disjunction queries with `IN` operator when possible.
+// If not it fallbacks to combineQueryEntries
+func combineDisjunction(entries []*pgsearch.QueryEntry) *pgsearch.QueryEntry {
+	if len(entries) == 0 {
+		return nil
+	}
+	if len(entries) == 1 {
+		return entries[0]
+	}
+
+	exactQuerySuffix := " = $$"
+
+	seenQueries := set.StringSet{}
+	seenSelectFields := set.StringSet{}
+	values := make([]any, 0, len(entries))
+	// skip for complex queries (having, groupby, multiple values and selects)
+	// here we support only simple cases of multiple exact match statements
+	// TODO(ROX-27944): add support for complex queries as well
+	for _, entry := range entries {
+		if entry.Having != nil ||
+			len(entry.GroupBy) != 0 ||
+			len(entry.Where.Values) != 1 ||
+			!strings.HasSuffix(entry.Where.Query, exactQuerySuffix) {
+			return combineQueryEntries(entries, " or ")
+		}
+		for _, selectedField := range entry.SelectedFields {
+			seenSelectFields.Add(selectedField.SelectPath)
+		}
+		seenQueries.Add(entry.Where.Query)
+		values = append(values, fmt.Sprintf("%s", entry.Where.Values[0]))
+	}
+
+	// if we've seen more than a single exact query this means we have multiple
+	// columns there and we cannot apply IN operator there
+	// TODO(ROX-27944): handle multiple selected fields
+	if len(seenQueries) != 1 || len(seenSelectFields) > 1 {
+		return combineQueryEntries(entries, " or ")
+	}
+
+	where := seenQueries.GetArbitraryElem()
+	where = strings.TrimSuffix(where, exactQuerySuffix)
+
+	return &pgsearch.QueryEntry{
+		Where: pgsearch.WhereClause{
+			Query:  fmt.Sprintf("%s IN (%s$$)", where, strings.Join(make([]string, len(entries)), "$$, ")),
+			Values: values,
+		},
+		SelectedFields: entries[0].SelectedFields,
+		GroupBy:        nil,
+	}
+
+}
+
 func combineQueryEntries(entries []*pgsearch.QueryEntry, separator string) *pgsearch.QueryEntry {
 	if len(entries) == 0 {
 		return nil
@@ -641,7 +694,7 @@ func compileQueryToPostgres(schema *walker.Schema, q *v1.Query, queryFields map[
 		if err != nil {
 			return nil, err
 		}
-		return combineQueryEntries(entries, " or "), nil
+		return combineDisjunction(entries), nil
 	case *v1.Query_BooleanQuery:
 		entries, err := entriesFromQueries(schema, sub.BooleanQuery.Must.Queries, queryFields, nowForQuery)
 		if err != nil {
@@ -914,7 +967,6 @@ func retryableRunGetManyQueryForSchema[T any, PT pgutils.Unmarshaler[T]](ctx con
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
 
 	return pgutils.ScanRows[T, PT](rows)
 }
@@ -985,7 +1037,6 @@ func RunCursorQueryForSchema[T any, PT pgutils.Unmarshaler[T]](ctx context.Conte
 		if err != nil {
 			return nil, errors.Wrap(err, "advancing in cursor")
 		}
-		defer rows.Close()
 
 		return pgutils.ScanRows[T, PT](rows)
 	}, closer, nil

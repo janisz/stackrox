@@ -2188,6 +2188,12 @@
                 "id": 30,
                 "name": "managed_by",
                 "type": "ManagerType"
+              },
+              {
+                "id": 31,
+                "name": "sensor_capabilities",
+                "type": "string",
+                "is_repeated": true
               }
             ],
             "maps": [
@@ -11986,6 +11992,11 @@
                 "id": 7,
                 "name": "client_cert_auth_config",
                 "type": "ClientCertAuthConfig"
+              },
+              {
+                "id": 8,
+                "name": "wif_enabled",
+                "type": "bool"
               }
             ],
             "messages": [
@@ -14133,6 +14144,11 @@
               {
                 "id": 9,
                 "name": "include_nvd_cvss",
+                "type": "bool"
+              },
+              {
+                "id": 10,
+                "name": "include_epss_probability",
                 "type": "bool"
               }
             ]
