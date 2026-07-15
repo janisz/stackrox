@@ -185,7 +185,7 @@ func (e *podIPsStore) moveDeploymentToHistory(deploymentID string) {
 
 func (e *podIPsStore) addToHistory(deploymentID string) {
 	ipSet := e.reverseIPMap[deploymentID]
-	for _, ip := range ipSet.AsSlice() {
+	for ip := range ipSet.All() {
 		if _, ok := e.historicalIPs[ip]; !ok {
 			e.historicalIPs[ip] = make(map[string]*entityStatus)
 		}
@@ -196,7 +196,7 @@ func (e *podIPsStore) addToHistory(deploymentID string) {
 // deleteDeploymentFromCurrent deletes all data for given deployment from the current map
 func (e *podIPsStore) deleteDeploymentFromCurrent(deploymentID string) {
 	ips := e.reverseIPMap[deploymentID]
-	for _, address := range ips.AsSlice() {
+	for address := range ips.All() {
 		deploymentsHavingIP := e.ipMap[address]
 		deploymentsHavingIP.Remove(deploymentID)
 		if deploymentsHavingIP.Cardinality() == 0 {
@@ -238,7 +238,7 @@ func containsPublicIP(ips map[net.IPAddress]struct{}) bool {
 }
 
 func containsPublicIPInFrozenSet(ips set.FrozenSet[net.IPAddress]) bool {
-	for _, ip := range ips.AsSlice() {
+	for ip := range ips.All() {
 		if ip.IsPublic() {
 			return true
 		}
