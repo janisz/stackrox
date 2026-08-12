@@ -1,4 +1,4 @@
-import React, { ReactElement } from 'react';
+import type { ReactElement } from 'react';
 import {
     BellIcon,
     CheckCircleIcon,
@@ -8,7 +8,7 @@ import {
 } from '@patternfly/react-icons';
 import { Icon } from '@patternfly/react-core';
 
-import {
+import type {
     AdministrationEventLevel,
     AdministrationEventType,
 } from 'services/AdministrationEventsService';
@@ -16,27 +16,27 @@ import {
 const iconMap: Record<AdministrationEventLevel, ReactElement> = {
     ADMINISTRATION_EVENT_LEVEL_ERROR: (
         <Icon>
-            <ExclamationCircleIcon color="var(--pf-v5-global--danger-color--100)" />
+            <ExclamationCircleIcon color="var(--pf-t--global--icon--color--status--danger--default)" />
         </Icon>
     ),
     ADMINISTRATION_EVENT_LEVEL_INFO: (
         <Icon>
-            <InfoCircleIcon color="var(--pf-v5-global--info-color--100)" />
+            <InfoCircleIcon color="var(--pf-t--global--icon--color--status--info--default)" />
         </Icon>
     ),
     ADMINISTRATION_EVENT_LEVEL_SUCCESS: (
         <Icon>
-            <CheckCircleIcon color="var(--pf-v5-global--success-color--100)" />
+            <CheckCircleIcon color="var(--pf-t--global--icon--color--status--success--default)" />
         </Icon>
     ),
     ADMINISTRATION_EVENT_LEVEL_UNKNOWN: (
         <Icon>
-            <BellIcon color="var(--pf-v5-global--default-color--200)" />
+            <BellIcon color="var(--pf-t--global--icon--color--subtle)" />
         </Icon>
     ),
     ADMINISTRATION_EVENT_LEVEL_WARNING: (
         <Icon>
-            <ExclamationTriangleIcon color="var(--pf-v5-global--warning-color--100)" />
+            <ExclamationTriangleIcon color="var(--pf-t--global--icon--color--status--warning--default)" />
         </Icon>
     ),
 };

@@ -1,28 +1,42 @@
 package processfilter
 
 import (
+	"fmt"
 	"math"
 
+	"github.com/stackrox/rox/pkg/env"
+	"github.com/stackrox/rox/pkg/logging"
 	"github.com/stackrox/rox/pkg/process/filter"
 	"github.com/stackrox/rox/pkg/sync"
 )
 
-const (
-	maxExactPathMatches = 5
-)
-
 var (
+	log = logging.LoggerForModule()
+
 	singletonInstance sync.Once
 
-	bucketSizes     = []int{8, 6, 4, 2}
 	singletonFilter filter.Filter
 )
 
 // Singleton returns a global, threadsafe process filter
 func Singleton() filter.Filter {
 	singletonInstance.Do(func() {
+		// Get effective configuration respecting both mode presets and individual overrides
+		config, mode, err := env.GetEffectiveProcessFilterConfig()
+
+		if err != nil {
+			log.Warn(err)
+		}
+
+		modeStr := ""
+		if mode != "" {
+			modeStr = fmt.Sprintf("mode=%s, ", mode)
+		}
+		log.Infof("Process filter configuration: %smaxExactPathMatches=%d, fanOutLevels=%v",
+			modeStr, config.MaxExactPathMatches, config.FanOutLevels)
+
 		// Set the maximum number of paths to the max integer in order to not filter out new processes in Sensor
-		singletonFilter = filter.NewFilter(maxExactPathMatches, math.MaxInt, bucketSizes)
+		singletonFilter = filter.NewFilter(config.MaxExactPathMatches, math.MaxInt, config.FanOutLevels)
 	})
 	return singletonFilter
 }

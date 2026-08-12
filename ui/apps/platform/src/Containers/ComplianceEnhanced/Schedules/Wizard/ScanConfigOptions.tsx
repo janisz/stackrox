@@ -1,5 +1,6 @@
-import React, { ReactElement } from 'react';
-import { FormikContextType, useFormikContext } from 'formik';
+import type { FormEvent, ReactElement } from 'react';
+import { useFormikContext } from 'formik';
+import type { FormikContextType } from 'formik';
 import {
     Divider,
     Flex,
@@ -18,32 +19,36 @@ import DayPickerDropdown from 'Components/PatternFly/DayPickerDropdown';
 import FormLabelGroup from 'Components/PatternFly/FormLabelGroup';
 import RepeatScheduleDropdown from 'Components/PatternFly/RepeatScheduleDropdown';
 
-import { ScanConfigFormValues } from '../compliance.scanConfigs.utils';
+import usePageAction from 'hooks/usePageAction';
+import type { PageActions, ScanConfigFormValues } from '../compliance.scanConfigs.utils';
 
-import { helperTextForName, helperTextForTime } from './useFormikScanConfig';
+import { helperTextForName, helperTextForNameEdit, helperTextForTime } from './useFormikScanConfig';
 
 import './ScanConfigOptions.css';
 
 function ScanConfigOptions(): ReactElement {
     const formik: FormikContextType<ScanConfigFormValues> = useFormikContext();
+    const { pageAction } = usePageAction<PageActions>();
+    const isEditAction = pageAction === 'edit';
+
     function handleSelectChange(id: string, value: string): void {
         formik.setFieldValue('parameters.daysOfWeek', []);
         formik.setFieldValue('parameters.daysOfMonth', []);
         formik.setFieldValue(id, value);
     }
 
-    function handleTimeChange(_event: React.FormEvent<HTMLInputElement>, time: string): void {
+    function handleTimeChange(_event: FormEvent<HTMLInputElement>, time: string): void {
         formik.setFieldValue('parameters.time', time);
     }
 
     function onScheduledDaysChange(id: string, selection: string[]) {
-        formik.setFieldValue(id, selection);
+        formik.setFieldValue(id, selection, true);
     }
 
     return (
         <>
-            <PageSection variant="light" padding={{ default: 'noPadding' }}>
-                <Flex direction={{ default: 'column' }} className="pf-v5-u-py-lg pf-v5-u-px-lg">
+            <PageSection hasBodyWrapper={false} padding={{ default: 'noPadding' }}>
+                <Flex direction={{ default: 'column' }} className="pf-v6-u-py-lg pf-v6-u-px-lg">
                     <FlexItem>
                         <Title headingLevel="h2">Parameters</Title>
                     </FlexItem>
@@ -51,7 +56,7 @@ function ScanConfigOptions(): ReactElement {
                 </Flex>
             </PageSection>
             <Divider component="div" />
-            <Form className="pf-v5-u-py-lg pf-v5-u-px-lg" id="scan-schedules-parameters">
+            <Form className="pf-v6-u-py-lg pf-v6-u-px-lg" id="scan-schedules-parameters">
                 <Stack hasGutter>
                     <StackItem>
                         <Stack hasGutter>
@@ -62,7 +67,9 @@ function ScanConfigOptions(): ReactElement {
                                     fieldId="parameters.name"
                                     errors={formik.errors}
                                     touched={formik.touched}
-                                    helperText={helperTextForName}
+                                    helperText={
+                                        isEditAction ? helperTextForNameEdit : helperTextForName
+                                    }
                                 >
                                     <TextInput
                                         isRequired
@@ -70,6 +77,7 @@ function ScanConfigOptions(): ReactElement {
                                         id="parameters.name"
                                         name="parameters.name"
                                         value={formik.values.parameters.name}
+                                        isDisabled={isEditAction}
                                         validated={
                                             formik.errors?.parameters?.name &&
                                             formik.touched?.parameters?.name
@@ -156,12 +164,11 @@ function ScanConfigOptions(): ReactElement {
                                                             : 'parameters.daysOfMonth'
                                                     }
                                                     value={
-                                                        formik.values.parameters.intervalType ===
+                                                        (formik.values.parameters.intervalType ===
                                                         'WEEKLY'
-                                                            ? formik.values.parameters.daysOfWeek ||
-                                                              []
+                                                            ? formik.values.parameters.daysOfWeek
                                                             : formik.values.parameters
-                                                                  .daysOfMonth || []
+                                                                  .daysOfMonth) ?? []
                                                     }
                                                     handleSelect={onScheduledDaysChange}
                                                     intervalType={
@@ -179,7 +186,14 @@ function ScanConfigOptions(): ReactElement {
                                                             ? 'parameters.daysOfWeek'
                                                             : 'parameters.daysOfMonth'
                                                     }
-                                                    onBlur={formik.handleBlur}
+                                                    onBlur={() => {
+                                                        const fieldId =
+                                                            formik.values.parameters
+                                                                .intervalType === 'WEEKLY'
+                                                                ? 'parameters.daysOfWeek'
+                                                                : 'parameters.daysOfMonth';
+                                                        formik.setFieldTouched(fieldId, true);
+                                                    }}
                                                 />
                                             </FormLabelGroup>
                                         </FlexItem>

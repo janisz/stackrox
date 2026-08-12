@@ -12,6 +12,8 @@ const (
 	Cluster3                = "caaaaaaa-bbbb-4011-0000-333333333333"
 	ClusterFake1            = "caaaaaaa-bbbb-4011-9999-111111111111"
 	ClusterFake2            = "caaaaaaa-bbbb-4011-9999-222222222222"
+	ComplianceProfileID1    = "caaaaaaa-bbbb-4011-1111-111111111111"
+	ComplianceProfileID2    = "caaaaaaa-bbbb-4011-2222-222222222222"
 	ComplianceScanConfigID1 = "caaaaaaa-bbbb-4011-1111-111111111111"
 	ComplianceScanConfigID2 = "caaaaaaa-bbbb-4011-2222-222222222222"
 	ComplianceScanConfigID3 = "caaaaaaa-bbbb-4011-3333-333333333333"
@@ -58,10 +60,17 @@ const (
 	ServiceAccount2         = "accaaaaa-bbbb-4011-0000-222222222222"
 	ServiceAccount3         = "accaaaaa-bbbb-4011-0000-333333333333"
 	ServiceAccount4         = "accaaaaa-bbbb-4011-0000-444444444444"
+	VirtualMachine1         = "edaaaaaa-bbbb-4011-0000-111111111111"
+	VirtualMachine2         = "edaaaaaa-bbbb-4011-0000-222222222222"
+	VirtualMachineFake      = "edaaaaaa-bbbb-4011-9999-111111111111"
 
 	PodName1 = "nginx-7db9fccd9b-92hfs"
 	PodName2 = "visa-processor"
+	PodName3 = "yet-another-pod-dbfcfbbdd-pkz98"
 
 	ClusterName1 = "Cluster1"
 	ClusterName2 = "Cluster2"
+
+	NodeName1 = "Node1"
+	NodeName2 = "Node2"
 )

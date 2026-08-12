@@ -1,5 +1,6 @@
-import { WizardPolicyStep4, initialExcludedDeployment, initialScope } from '../policies.utils';
-import { validationSchemaStep4 } from './policyValidationSchemas';
+import { initialExcludedDeployment, initialScope } from '../policies.utils';
+import type { WizardPolicyStep4 } from '../policies.utils';
+import { validationSchemaStep4, validationSchemaStep5 } from './policyValidationSchemas';
 
 // const options = { strict: true };
 
@@ -81,25 +82,6 @@ describe('Step 4', () => {
             expect(validationSchemaStep4.validateSync(value)).toBeDefined(); // returned value has trimmed string
         });
 
-        it('throws if key and value have undefined values', () => {
-            const value: WizardPolicyStep4 = {
-                scope: [
-                    {
-                        ...initialScope,
-                        label: {
-                            key: undefined,
-                            value: undefined,
-                        },
-                    },
-                ],
-                excludedDeploymentScopes: [],
-                excludedImageNames: [],
-            };
-            expect(() => {
-                validationSchemaStep4.validateSync(value);
-            }).toThrow();
-        });
-
         it('throws if key and value have empty strings', () => {
             const value: WizardPolicyStep4 = {
                 scope: [
@@ -138,39 +120,6 @@ describe('Step 4', () => {
             }).toThrow();
         });
 
-        it('passes if key has non-empty string and value is absent', () => {
-            const value: WizardPolicyStep4 = {
-                scope: [
-                    {
-                        ...initialScope,
-                        label: {
-                            key: 'non-empty',
-                        },
-                    },
-                ],
-                excludedDeploymentScopes: [],
-                excludedImageNames: [],
-            };
-            expect(validationSchemaStep4.validateSync(value)).toEqual(value);
-        });
-
-        it('passes if key has non-empty string and value has undefined value', () => {
-            const value: WizardPolicyStep4 = {
-                scope: [
-                    {
-                        ...initialScope,
-                        label: {
-                            key: 'non-empty',
-                            value: undefined,
-                        },
-                    },
-                ],
-                excludedDeploymentScopes: [],
-                excludedImageNames: [],
-            };
-            expect(validationSchemaStep4.validateSync(value)).toEqual(value);
-        });
-
         it('passes if key has non-empty string and value has empty string', () => {
             const value: WizardPolicyStep4 = {
                 scope: [
@@ -188,40 +137,7 @@ describe('Step 4', () => {
             expect(validationSchemaStep4.validateSync(value)).toEqual(value);
         });
 
-        it('passes if value has non-empty string and key is absent', () => {
-            const value: WizardPolicyStep4 = {
-                scope: [
-                    {
-                        ...initialScope,
-                        label: {
-                            value: 'non-empty',
-                        },
-                    },
-                ],
-                excludedDeploymentScopes: [],
-                excludedImageNames: [],
-            };
-            expect(validationSchemaStep4.validateSync(value)).toEqual(value);
-        });
-
-        it('passes if value has non-empty string and key has undefined value', () => {
-            const value: WizardPolicyStep4 = {
-                scope: [
-                    {
-                        ...initialScope,
-                        label: {
-                            key: undefined,
-                            value: 'non-empty',
-                        },
-                    },
-                ],
-                excludedDeploymentScopes: [],
-                excludedImageNames: [],
-            };
-            expect(validationSchemaStep4.validateSync(value)).toEqual(value);
-        });
-
-        it('passes if value has non-empty string and key has empty string', () => {
+        it('throws if value has non-empty string and key has empty string', () => {
             const value: WizardPolicyStep4 = {
                 scope: [
                     {
@@ -235,7 +151,9 @@ describe('Step 4', () => {
                 excludedDeploymentScopes: [],
                 excludedImageNames: [],
             };
-            expect(validationSchemaStep4.validateSync(value)).toEqual(value);
+            expect(() => {
+                validationSchemaStep4.validateSync(value);
+            }).toThrow();
         });
 
         it('passes if key and value have non-empty strings', () => {
@@ -260,7 +178,15 @@ describe('Step 4', () => {
                 scope: [
                     {
                         cluster: 'non-empty',
+                        clusterLabel: {
+                            key: 'non-empty',
+                            value: 'non-empty',
+                        },
                         namespace: 'non-empty',
+                        namespaceLabel: {
+                            key: 'non-empty',
+                            value: 'non-empty',
+                        },
                         label: {
                             key: 'non-empty',
                             value: 'non-empty',
@@ -278,7 +204,15 @@ describe('Step 4', () => {
                 scope: [
                     {
                         cluster: 'non-empty',
+                        clusterLabel: {
+                            key: 'non-empty',
+                            value: 'non-empty',
+                        },
                         namespace: 'non-empty',
+                        namespaceLabel: {
+                            key: 'non-empty',
+                            value: 'non-empty',
+                        },
                         label: {
                             key: 'non-empty',
                             value: 'non-empty',
@@ -355,7 +289,7 @@ describe('Step 4', () => {
             expect(validationSchemaStep4.validateSync(value)).toEqual(value);
         });
 
-        it('passes if key has non-empty string and value is absent', () => {
+        it('passes if key has non-empty string and value has empty string', () => {
             const value: WizardPolicyStep4 = {
                 scope: [],
                 excludedDeploymentScopes: [
@@ -365,6 +299,7 @@ describe('Step 4', () => {
                             ...initialScope,
                             label: {
                                 key: 'non-empty',
+                                value: '',
                             },
                         },
                     },
@@ -374,7 +309,7 @@ describe('Step 4', () => {
             expect(validationSchemaStep4.validateSync(value)).toEqual(value);
         });
 
-        it('passes if value has non-empty string and key is absent', () => {
+        it('throws if value has non-empty string and key has empty string', () => {
             const value: WizardPolicyStep4 = {
                 scope: [],
                 excludedDeploymentScopes: [
@@ -383,6 +318,7 @@ describe('Step 4', () => {
                         scope: {
                             ...initialScope,
                             label: {
+                                key: '',
                                 value: 'non-empty',
                             },
                         },
@@ -390,7 +326,9 @@ describe('Step 4', () => {
                 ],
                 excludedImageNames: [],
             };
-            expect(validationSchemaStep4.validateSync(value)).toEqual(value);
+            expect(() => {
+                validationSchemaStep4.validateSync(value);
+            }).toThrow();
         });
 
         it('passes if first excluded deployment has non-empty strings', () => {
@@ -406,12 +344,44 @@ describe('Step 4', () => {
                                 key: 'non-empty',
                                 value: 'non-empty',
                             },
+                            clusterLabel: null,
+                            namespaceLabel: null,
                         },
                     },
                 ],
                 excludedImageNames: [],
             };
             expect(validationSchemaStep4.validateSync(value)).toEqual(value);
+        });
+
+        it('passes if name has non-empty string and scope is null', () => {
+            const value: WizardPolicyStep4 = {
+                scope: [],
+                excludedDeploymentScopes: [
+                    {
+                        name: 'node-resolver',
+                        scope: null,
+                    },
+                ],
+                excludedImageNames: [],
+            };
+            expect(validationSchemaStep4.validateSync(value)).toEqual(value);
+        });
+
+        it('throws if scope is null and name is empty string', () => {
+            const value: WizardPolicyStep4 = {
+                scope: [],
+                excludedDeploymentScopes: [
+                    {
+                        name: '',
+                        scope: null,
+                    },
+                ],
+                excludedImageNames: [],
+            };
+            expect(() => {
+                validationSchemaStep4.validateSync(value);
+            }).toThrow();
         });
 
         it('throws if first excluded deployment has non-empty strings and second excluded deployment has initial values', () => {
@@ -427,6 +397,8 @@ describe('Step 4', () => {
                                 key: 'non-empty',
                                 value: 'non-empty',
                             },
+                            clusterLabel: null,
+                            namespaceLabel: null,
                         },
                     },
                     initialExcludedDeployment,
@@ -470,5 +442,31 @@ describe('Step 4', () => {
                 validationSchemaStep4.validateSync(value);
             }).toThrow();
         });
+    });
+});
+
+describe('Step 5 (Actions) - enforcement validation', () => {
+    it('passes with empty enforcementActions (Inform mode)', () => {
+        const value = { enforcementActions: [] };
+        expect(validationSchemaStep5.validateSync(value)).toEqual(value);
+    });
+
+    it('passes with real enforcement actions (Inform and enforce with selection)', () => {
+        const value = { enforcementActions: ['FAIL_BUILD_ENFORCEMENT'] };
+        expect(validationSchemaStep5.validateSync(value)).toEqual(value);
+    });
+
+    it('passes with multiple real enforcement actions', () => {
+        const value = {
+            enforcementActions: ['FAIL_BUILD_ENFORCEMENT', 'SCALE_TO_ZERO_ENFORCEMENT'],
+        };
+        expect(validationSchemaStep5.validateSync(value)).toEqual(value);
+    });
+
+    it('throws with only UNSET_ENFORCEMENT (Inform and enforce, no selection)', () => {
+        const value = { enforcementActions: ['UNSET_ENFORCEMENT'] };
+        expect(() => {
+            validationSchemaStep5.validateSync(value);
+        }).toThrow('At least one enforcement action must be selected when enforcement is enabled');
     });
 });

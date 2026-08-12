@@ -1,6 +1,6 @@
-/* eslint-disable @typescript-eslint/no-unused-vars */
-import React, { useState, useCallback } from 'react';
-import { generatePath, Link, useHistory } from 'react-router-dom';
+import { useCallback, useState } from 'react';
+import type { ReactElement } from 'react';
+import { Link, generatePath } from 'react-router-dom-v5-compat';
 import pluralize from 'pluralize';
 
 import {
@@ -9,7 +9,7 @@ import {
     AlertGroup,
     Bullseye,
     Button,
-    Divider,
+    Content,
     Flex,
     FlexItem,
     List,
@@ -17,8 +17,6 @@ import {
     PageSection,
     Pagination,
     Spinner,
-    Text,
-    TextContent,
     Title,
     Toolbar,
     ToolbarContent,
@@ -31,20 +29,20 @@ import { complianceEnhancedSchedulesPath } from 'routePaths';
 import DeleteModal from 'Components/PatternFly/DeleteModal';
 import EmptyStateTemplate from 'Components/EmptyStateTemplate';
 import PageTitle from 'Components/PageTitle';
-import TabNavSubHeader from 'Components/TabNav/TabNavSubHeader';
 import useAlert from 'hooks/useAlert';
 import useRestQuery from 'hooks/useRestQuery';
 import useURLPagination from 'hooks/useURLPagination';
 import useURLSort from 'hooks/useURLSort';
 import {
     complianceReportDownloadURL,
-    ComplianceScanConfigurationStatus,
     deleteComplianceScanConfiguration,
     listComplianceScanConfigurations,
     runComplianceReport,
     runComplianceScanConfiguration,
 } from 'services/ComplianceScanConfigurationService';
-import { SortOption } from 'types/table';
+import type { ComplianceScanConfigurationStatus } from 'services/ComplianceScanConfigurationService';
+import type { SortOption } from 'types/table';
+import { formatRecurringSchedule } from 'utils/dateUtils';
 import { getAxiosErrorMessage } from 'utils/responseErrorUtils';
 import { displayOnlyItemOrItemCount } from 'utils/textUtils';
 
@@ -55,17 +53,12 @@ import useAuthStatus from 'hooks/useAuthStatus';
 import useAnalytics from 'hooks/useAnalytics';
 import { DEFAULT_COMPLIANCE_PAGE_SIZE, SCAN_CONFIG_NAME_QUERY } from '../compliance.constants';
 import { scanConfigDetailsPath } from './compliance.scanConfigs.routes';
-import {
-    formatScanSchedule,
-    getTimeWithHourMinuteFromISO8601,
-} from './compliance.scanConfigs.utils';
+import { getTimeWithHourMinuteFromISO8601 } from './compliance.scanConfigs.utils';
 import ScanConfigActionsColumn from './ScanConfigActionsColumn';
 import useWatchLastSnapshotForComplianceReports from './hooks/useWatchLastSnapshotForComplianceReports';
 
 type ScanConfigsTablePageProps = {
     hasWriteAccessForCompliance: boolean;
-    isReportJobsEnabled: boolean;
-    isComplianceReportingEnabled: boolean;
 };
 
 const CreateScanConfigButton = () => {
@@ -84,9 +77,7 @@ const defaultSortOption = {
 
 function ScanConfigsTablePage({
     hasWriteAccessForCompliance,
-    isReportJobsEnabled,
-    isComplianceReportingEnabled,
-}: ScanConfigsTablePageProps): React.ReactElement {
+}: ScanConfigsTablePageProps): ReactElement {
     const { currentUser } = useAuthStatus();
     const { analyticsTrack } = useAnalytics();
 
@@ -112,11 +103,8 @@ function ScanConfigsTablePage({
 
     const { alertObj, setAlertObj, clearAlertObj } = useAlert();
 
-    let colSpan = 5;
+    let colSpan = 6;
     if (hasWriteAccessForCompliance) {
-        colSpan += 1;
-    }
-    if (isReportJobsEnabled) {
         colSpan += 1;
     }
 
@@ -238,7 +226,7 @@ function ScanConfigsTablePage({
                     <Td dataLabel="Name">
                         <Link to={scanConfigUrl}>{scanName}</Link>
                     </Td>
-                    <Td dataLabel="Schedule">{formatScanSchedule(scanConfig.scanSchedule)}</Td>
+                    <Td dataLabel="Schedule">{formatRecurringSchedule(scanConfig.scanSchedule)}</Td>
                     <Td dataLabel="Last scanned">
                         {lastExecutedTime
                             ? getTimeWithHourMinuteFromISO8601(lastExecutedTime)
@@ -253,16 +241,14 @@ function ScanConfigsTablePage({
                     <Td dataLabel="Profiles">
                         {displayOnlyItemOrItemCount(scanConfig.profiles, 'profiles')}
                     </Td>
-                    {isReportJobsEnabled && (
-                        <Td dataLabel="My last job status">
-                            <MyLastJobStatus
-                                snapshot={snapshot}
-                                isLoadingSnapshots={isLoadingSnapshots}
-                                currentUserId={currentUser.userId}
-                                baseDownloadURL={complianceReportDownloadURL}
-                            />
-                        </Td>
-                    )}
+                    <Td dataLabel="My last job status">
+                        <MyLastJobStatus
+                            snapshot={snapshot}
+                            isLoadingSnapshots={isLoadingSnapshots}
+                            currentUserId={currentUser.userId}
+                            baseDownloadURL={complianceReportDownloadURL}
+                        />
+                    </Td>
                     {hasWriteAccessForCompliance && (
                         <Td isActionCell>
                             <ScanConfigActionsColumn
@@ -272,8 +258,6 @@ function ScanConfigsTablePage({
                                 handleGenerateDownload={handleGenerateDownload}
                                 scanConfigResponse={scanSchedule}
                                 isSnapshotStatusPending={isSnapshotStatusPending}
-                                isReportJobsEnabled={isReportJobsEnabled}
-                                isComplianceReportingEnabled={isComplianceReportingEnabled}
                             />
                         </Td>
                     )}
@@ -304,7 +288,7 @@ function ScanConfigsTablePage({
                         {hasWriteAccessForCompliance && (
                             <Flex direction={{ default: 'column' }}>
                                 <FlexItem>
-                                    <Text>Create one to get started</Text>
+                                    <Content component="p">Create one to get started</Content>
                                 </FlexItem>
                                 <FlexItem>
                                     <CreateScanConfigButton />
@@ -330,14 +314,14 @@ function ScanConfigsTablePage({
     return (
         <>
             <PageTitle title="Compliance - Schedules" />
-            <PageSection component="div" variant="light">
+            <PageSection>
                 <Flex direction={{ default: 'row' }} alignItems={{ default: 'alignItemsCenter' }}>
                     <Flex direction={{ default: 'column' }}>
                         <Title headingLevel="h1">Schedules</Title>
-                        <Text>
+                        <Content component="p">
                             Configure scan schedules to run profile compliance checks on selected
                             clusters
-                        </Text>
+                        </Content>
                     </Flex>
                     {hasWriteAccessForCompliance && (
                         <FlexItem align={{ default: 'alignRight' }}>
@@ -346,9 +330,8 @@ function ScanConfigsTablePage({
                     )}
                 </Flex>
             </PageSection>
-            <Divider component="div" />
             {error ? (
-                <PageSection variant="light" isFilled id="policies-table-error">
+                <PageSection isFilled id="policies-table-error">
                     <Bullseye>
                         <Alert variant="danger" title={getAxiosErrorMessage(error)} component="p" />
                     </Bullseye>
@@ -361,7 +344,7 @@ function ScanConfigsTablePage({
                             component="p"
                             variant={alertObj.type}
                             isInline
-                            className="pf-v5-u-mb-lg"
+                            className="pf-v6-u-mb-lg"
                             actionClose={<AlertActionCloseButton onClose={clearAlertObj} />}
                         >
                             {alertObj.children}
@@ -370,7 +353,7 @@ function ScanConfigsTablePage({
 
                     <Toolbar>
                         <ToolbarContent>
-                            <ToolbarItem variant="pagination" align={{ default: 'alignRight' }}>
+                            <ToolbarItem variant="pagination" align={{ default: 'alignEnd' }}>
                                 <Pagination
                                     itemCount={listData?.totalCount ?? 0}
                                     page={page}
@@ -390,15 +373,25 @@ function ScanConfigsTablePage({
                                 <Th>Last scanned</Th>
                                 <Th>Clusters</Th>
                                 <Th>Profiles</Th>
-                                {isReportJobsEnabled && (
-                                    <HelpIconTh popoverContent={<JobStatusPopoverContent />}>
-                                        My last job status
-                                    </HelpIconTh>
-                                )}
+                                <HelpIconTh
+                                    popoverContent={
+                                        <JobStatusPopoverContent
+                                            statuses={[
+                                                'WAITING',
+                                                'PREPARING',
+                                                'DOWNLOAD_GENERATED',
+                                                'PARTIAL_SCAN_ERROR_DOWNLOAD',
+                                                'EMAIL_DELIVERED',
+                                                'PARTIAL_SCAN_ERROR_EMAIL',
+                                                'ERROR',
+                                            ]}
+                                        />
+                                    }
+                                >
+                                    My last job status
+                                </HelpIconTh>
                                 {hasWriteAccessForCompliance && (
-                                    <Th>
-                                        <span className="pf-v5-screen-reader">Row actions</span>
-                                    </Th>
+                                    <Th screenReaderText="Row actions" />
                                 )}
                             </Tr>
                         </Thead>
@@ -423,7 +416,7 @@ function ScanConfigsTablePage({
                                             variant="danger"
                                             title="Failed to delete"
                                             component="p"
-                                            className="pf-v5-u-mb-sm"
+                                            className="pf-v6-u-mb-sm"
                                         >
                                             {deleteError.toString()}
                                         </Alert>
@@ -433,18 +426,18 @@ function ScanConfigsTablePage({
                         ) : (
                             <></>
                         )}
-                        <TextContent>
-                            <Text>
+                        <Content>
+                            <Content component="p">
                                 The following scan{' '}
                                 {`${pluralize('schedule', scanConfigsToDelete.length)}`} will be
                                 deleted.
-                            </Text>
+                            </Content>
                             <List>
                                 {scanConfigsToDelete.map((scanConfig) => (
                                     <ListItem key={scanConfig.id}>{scanConfig.scanName}</ListItem>
                                 ))}
                             </List>
-                        </TextContent>
+                        </Content>
                     </DeleteModal>
                 </PageSection>
             )}

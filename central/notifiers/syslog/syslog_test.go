@@ -48,6 +48,7 @@ func (s *SyslogNotifierTestSuite) makeSyslog(notifier *storage.Notifier) *syslog
 		sender:         s.mockSender,
 		pid:            1,
 		facility:       (int(notifier.GetSyslog().GetLocalFacility()) + 16) * 8,
+		maxMessageSize: 32768,
 	}
 }
 
@@ -121,7 +122,7 @@ func (s *SyslogNotifierTestSuite) TestCEFMakeTimestampExtensionPair() {
 	key := "key"
 	value := time.Now()
 
-	msTs := int64(value.Unix())*1000 + int64(value.Nanosecond())/1000000
+	msTs := value.Unix()*1000 + int64(value.Nanosecond())/1000000
 	expectedValue := []string{fmt.Sprintf("%s=%s", key, strconv.Itoa(int(msTs)))}
 
 	extensionPair := makeTimestampExtensionPair(key, &value)
@@ -274,13 +275,12 @@ func (s *SyslogNotifierTestSuite) TestSendAuditLog() {
 func (s *SyslogNotifierTestSuite) TestAlerts() {
 	syslog := s.makeSyslog(makeNotifier())
 	testAlert := fixtures.GetAlert()
-	s.mockSender.EXPECT().SendSyslog(gomock.Any()).Return(nil)
+	s.mockSender.EXPECT().SendSyslog(gomock.Any()).Return(nil).AnyTimes()
 	s.setupMockMetadataGetterForAlert(testAlert)
 	s.Require().NoError(syslog.AlertNotify(context.Background(), testAlert))
 
 	// Ensure it doesn't panic with nil timestamps
 	testAlert.FirstOccurred = nil
-	s.mockSender.EXPECT().SendSyslog(gomock.Any()).Return(nil)
 	s.setupMockMetadataGetterForAlert(testAlert)
 	s.Require().NoError(syslog.AlertNotify(context.Background(), testAlert))
 }
@@ -312,6 +312,14 @@ func (s *SyslogNotifierTestSuite) TestValidateRemoteConfig() {
 	}
 	_, errURLValidIP := validateRemoteConfig(tcpConfigValidIP)
 	s.NoError(errURLValidIP)
+
+	tcpConfigIPv6 := &storage.Syslog_TCPConfig{
+		Hostname: "2001:db8::1",
+		Port:     514,
+	}
+	hostname, errIPv6 := validateRemoteConfig(tcpConfigIPv6)
+	s.NoError(errIPv6)
+	s.Equal("[2001:db8::1]:514", hostname)
 }
 
 func (s *SyslogNotifierTestSuite) TestHeaderFormat() {

@@ -1,13 +1,13 @@
-import React from 'react';
 import { SimpleList, SimpleListItem } from '@patternfly/react-core';
 
-import { PolicyCategory } from 'types/policy.proto';
+import type { PolicyCategory } from 'types/policy.proto';
 
 type PolicyCategoriesListProps = {
     policyCategories: PolicyCategory[];
     setSelectedCategory: (selectedCategory: PolicyCategory) => void;
 };
 
+// TODO Evaluate whether or not we should switch from SimpleList here - the disabled style is almost indistinguishable from the default style.
 function PolicyCategoriesList({
     policyCategories,
     setSelectedCategory,

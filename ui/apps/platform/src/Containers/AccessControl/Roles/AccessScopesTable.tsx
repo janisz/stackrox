@@ -1,7 +1,7 @@
-import React, { ChangeEventHandler, ReactElement } from 'react';
-import { Table, Tbody, Td, Thead, Th, Tr } from '@patternfly/react-table';
+import type { ChangeEventHandler, ReactElement } from 'react';
+import { Table, Tbody, Td, Th, Thead, Tr } from '@patternfly/react-table';
 
-import { AccessScope } from 'services/AccessScopesService';
+import type { AccessScope } from 'services/AccessScopesService';
 
 export type AccessScopesTableProps = {
     fieldId: string;
@@ -22,9 +22,7 @@ function AccessScopesTable({
         <Table variant="compact" isStickyHeader>
             <Thead>
                 <Tr>
-                    <Th>
-                        <span className="pf-v5-screen-reader">Row selection</span>
-                    </Th>
+                    <Th screenReaderText="Row selection" />
                     <Th width={20}>Name</Th>
                     <Th>Description</Th>
                 </Tr>
@@ -32,7 +30,7 @@ function AccessScopesTable({
             <Tbody>
                 {accessScopes.map(({ id, name, description }) => (
                     <Tr key={id}>
-                        <Td className="pf-v5-c-table__check">
+                        <Td>
                             <input
                                 type="radio"
                                 name={fieldId}

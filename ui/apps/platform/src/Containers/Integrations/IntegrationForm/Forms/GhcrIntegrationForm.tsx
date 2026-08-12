@@ -1,19 +1,20 @@
-import React, { ReactElement } from 'react';
-import { Flex, FlexItem, TextInput, PageSection, Form, Checkbox } from '@patternfly/react-core';
+import type { ReactElement } from 'react';
+import { Checkbox, Flex, FlexItem, Form, PageSection, TextInput } from '@patternfly/react-core';
 import * as yup from 'yup';
 import merge from 'lodash/merge';
 
-import { ImageIntegrationBase } from 'services/ImageIntegrationsService';
+import type { ImageIntegrationBase } from 'services/ImageIntegrationsService';
 
-import usePageState from 'Containers/Integrations/hooks/usePageState';
 import ExternalLink from 'Components/PatternFly/IconText/ExternalLink';
 import FormMessage from 'Components/PatternFly/FormMessage';
 import FormTestButton from 'Components/PatternFly/FormTestButton';
 import FormSaveButton from 'Components/PatternFly/FormSaveButton';
 import FormCancelButton from 'Components/PatternFly/FormCancelButton';
 import IntegrationHelpIcon from './Components/IntegrationHelpIcon';
+
+import usePageState from '../../hooks/usePageState';
 import useIntegrationForm from '../useIntegrationForm';
-import { IntegrationFormProps } from '../integrationFormTypes';
+import type { IntegrationFormProps } from '../integrationFormTypes';
 
 import IntegrationFormActions from '../IntegrationFormActions';
 import FormLabelGroup from '../FormLabelGroup';
@@ -120,7 +121,7 @@ function GhcrIntegrationForm({
 
     return (
         <>
-            <PageSection variant="light" isFilled hasOverflowScroll>
+            <PageSection isFilled hasOverflowScroll>
                 <FormMessage message={message} />
                 <Form isWidthLimited>
                     <FormLabelGroup
@@ -144,7 +145,7 @@ function GhcrIntegrationForm({
                     <FormLabelGroup
                         isRequired
                         label="Endpoint"
-                        labelIcon={
+                        labelHelp={
                             <IntegrationHelpIcon
                                 helpTitle="GitHub container registry endpoint"
                                 helpText={
@@ -175,7 +176,7 @@ function GhcrIntegrationForm({
                     </FormLabelGroup>
                     <FormLabelGroup
                         label="Username"
-                        labelIcon={
+                        labelHelp={
                             <IntegrationHelpIcon
                                 helpTitle="GitHub username"
                                 helpText={
@@ -228,7 +229,7 @@ function GhcrIntegrationForm({
                     )}
                     <FormLabelGroup
                         label="GitHub token"
-                        labelIcon={
+                        labelHelp={
                             <IntegrationHelpIcon
                                 helpTitle="GitHub token"
                                 helpText={

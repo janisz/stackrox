@@ -7,6 +7,7 @@ import (
 
 	"github.com/pkg/errors"
 	"github.com/stackrox/rox/generated/storage"
+	commonLabels "github.com/stackrox/rox/pkg/labels"
 	"github.com/stackrox/rox/pkg/mtls"
 	"github.com/stackrox/rox/pkg/protoassert"
 	"github.com/stackrox/rox/sensor/utils"
@@ -115,7 +116,7 @@ func (s *serviceCertificatesRepoSecretsImplSuite) TestGetDifferentCAsFailure() {
 				},
 			}
 			secrets := map[storage.ServiceType]*v1.Secret{scannerServiceType: secret1, unknownServiceType: secret2}
-			clientSet := fake.NewSimpleClientset(secret1, secret2)
+			clientSet := fake.NewClientset(secret1, secret2)
 			secretsClient := clientSet.CoreV1().Secrets(namespace)
 			repo := newTestRepo(secrets, secretsClient)
 
@@ -135,7 +136,7 @@ func (s *serviceCertificatesRepoSecretsImplSuite) TestPatch() {
 		"successful patch": {
 			expectedErr:           nil,
 			fixture:               s.newFixture(certSecretsRepoFixtureConfig{}),
-			persistedCertificates: certificates.ServiceCerts,
+			persistedCertificates: certificates.GetServiceCerts(),
 		},
 		"failed patch due to k8s API error": {
 			expectedErr:           errForced,
@@ -170,7 +171,7 @@ func (s *serviceCertificatesRepoSecretsImplSuite) TestSuccessfulCreate() {
 
 	fixture := s.newFixture(certSecretsRepoFixtureConfig{skipSecretCreation: true})
 	persistedCertificates, err := fixture.repo.EnsureServiceCertificates(ctx, fixture.certificates)
-	protoassert.SlicesEqual(s.T(), certificates.ServiceCerts, persistedCertificates)
+	protoassert.SlicesEqual(s.T(), certificates.GetServiceCerts(), persistedCertificates)
 	s.ErrorIs(err, nil)
 
 	secret, err := fixture.secretsClient.Get(ctx, fixture.secretName, metav1.GetOptions{})
@@ -178,6 +179,7 @@ func (s *serviceCertificatesRepoSecretsImplSuite) TestSuccessfulCreate() {
 
 	expectedLabels := utils.GetTLSSecretLabels()
 	s.Equal(expectedLabels, secret.Labels, "Secret labels do not match expected values")
+	s.Equal(commonLabels.ManagedBySensor, secret.Labels[commonLabels.ManagedByLabelKey], "Secret should have StackRox managed-by label set to sensor")
 	expectedAnnotations := utils.GetSensorKubernetesAnnotations()
 	s.Equal(expectedAnnotations, secret.Annotations, "Secret annotations do not match expected values")
 }
@@ -317,9 +319,9 @@ func (s *serviceCertificatesRepoSecretsImplSuite) newFixture(config certSecretsR
 	secrets := map[storage.ServiceType]*v1.Secret{scannerServiceType: secret}
 	var clientSet *fake.Clientset
 	if config.skipSecretCreation {
-		clientSet = fake.NewSimpleClientset(sensorDeployment)
+		clientSet = fake.NewClientset(sensorDeployment)
 	} else {
-		clientSet = fake.NewSimpleClientset(sensorDeployment, secret)
+		clientSet = fake.NewClientset(sensorDeployment, secret)
 	}
 	secretsClient := clientSet.CoreV1().Secrets(namespace)
 	clientSet.CoreV1().(*fakecorev1.FakeCoreV1).PrependReactor(config.k8sAPIVerbToError, "secrets", func(action k8sTesting.Action) (handled bool, ret runtime.Object, err error) {

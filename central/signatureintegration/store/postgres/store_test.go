@@ -41,10 +41,6 @@ func (s *SignatureIntegrationsStoreSuite) SetupTest() {
 	s.NoError(err)
 }
 
-func (s *SignatureIntegrationsStoreSuite) TearDownSuite() {
-	s.testDB.Teardown(s.T())
-}
-
 func (s *SignatureIntegrationsStoreSuite) TestStore() {
 	ctx := sac.WithAllAccess(context.Background())
 
@@ -96,6 +92,11 @@ func (s *SignatureIntegrationsStoreSuite) TestStore() {
 	}
 
 	s.NoError(store.UpsertMany(ctx, signatureIntegrations))
+
+	foundSignatureIntegrations, missing, err := store.GetMany(ctx, signatureIntegrationIDs)
+	s.NoError(err)
+	s.Empty(missing)
+	protoassert.ElementsMatch(s.T(), signatureIntegrations, foundSignatureIntegrations)
 
 	signatureIntegrationCount, err = store.Count(ctx, search.EmptyQuery())
 	s.NoError(err)

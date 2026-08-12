@@ -44,6 +44,44 @@ def main():
         )
 
 
+# Returns True if the helm_version is newer than the current_version
+def is_newer_version(current_version: str, helm_version: str):
+    helm_version_split = helm_version.split(sep='.')
+    current_version_split = current_version.split(sep='.')
+
+    # Parse helm version format using numeric encoding:
+    # - New format: X00MM where X=major digit, 00=padding, MM=minor (zero-padded)
+    #   Example: 40009 → major=4, minor=09 (version 4.9)
+    #   Example: 40011 → major=4, minor=11 (version 4.11)
+    #   Formula: major = n // 10000, minor = n % 100
+    # - Old format: X00 where X=major digit, 00=padding (version 4.0.x)
+    #   Formula: major = n // 100
+    helm_major_num = int(helm_version_split[0])
+    if helm_major_num >= 10000:
+        # New format: extract major (first digit) and minor (last 2 digits)
+        helm_major = helm_major_num // 10000
+        helm_minor = helm_major_num % 100
+        helm_version_split = [str(helm_major), str(helm_minor)] + helm_version_split[1:]
+    else:
+        # Old format: extract major by removing padding
+        helm_version_split[0] = str(helm_major_num // 100)
+
+    # Remove commit hash from the current version
+    current_version_split = current_version_split[:-1]
+    # If we are in a release branch, we will have patch version with '-rc'
+    if len(current_version_split) > 2:
+        # Remove '-rc' if present
+        current_version_split[2] = str(current_version_split[2]).rstrip("-rc")
+
+    for (current, helm) in zip(current_version_split, helm_version_split):
+        if int(current) > int(helm):
+            break
+        if int(current) < int(helm):
+            return True
+
+    return False
+
+
 def get_compatibility_test_tuples():
     Release = namedtuple("Release", ["major", "minor"])
 
@@ -58,6 +96,22 @@ def get_compatibility_test_tuples():
         shell=False,
         encoding="utf-8",
     ).strip()
+
+    # Remove the versions that are newer than the version of the current branch.
+    # This will make sure we do not test with an old test suite newer versions.
+    # It is important to not test newer versions with old tests suites because
+    # old test suites might depend on endpoints that no longer exist in newer
+    # versions.
+    # There is no risk in excluding newer versions as the compatibility tests in
+    # their respective branches will test against older versions.
+    central_chart_versions = [i for i in central_chart_versions
+                              if not
+                              is_newer_version(current_version=latest_tag,
+                                               helm_version=i)]
+    sensor_chart_versions = [i for i in sensor_chart_versions
+                             if not
+                             is_newer_version(current_version=latest_tag,
+                                              helm_version=i)]
 
     if len(central_chart_versions) == 0:
         logging.info("Found no older central chart versions to test against according to the product lifecycles API.")

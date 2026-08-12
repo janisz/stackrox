@@ -1,4 +1,5 @@
-import React, { ReactElement } from 'react';
+import { useState } from 'react';
+import type { ReactElement } from 'react';
 import {
     Alert,
     Card,
@@ -7,36 +8,51 @@ import {
     CardTitle,
     Flex,
     FlexItem,
+    Pagination,
 } from '@patternfly/react-core';
 
 import pluralize from 'pluralize';
 import IntegrationsHealth from './IntegrationsHealth';
-import { IntegrationMergedItem } from '../utils/integrations';
-import { ErrorIcon, healthIconMap, SpinnerIcon } from '../CardHeaderIcons';
+import type { IntegrationMergedItem } from '../utils/integrations';
+import { ErrorIcon, SpinnerIcon, healthIconMap } from '../CardHeaderIcons';
 
-type IntegrationHealthWidgetProps = {
+type IntegrationHealthWidgetVisualProps = {
     integrationText: string;
     integrationsMerged: IntegrationMergedItem[];
     errorMessageFetching: string;
     isFetchingInitialRequest: boolean;
 };
 
-const IntegrationHealthWidget = ({
+const IntegrationHealthWidgetVisual = ({
     integrationText,
     integrationsMerged,
     errorMessageFetching,
     isFetchingInitialRequest,
-}: IntegrationHealthWidgetProps): ReactElement => {
+}: IntegrationHealthWidgetVisualProps): ReactElement => {
+    const [page, setPage] = useState(1);
+    const [perPage, setPerPage] = useState(10);
+
+    function onSetPage(_, newPage) {
+        setPage(newPage);
+    }
+
+    function onPerPageSelect(_, newPerPage) {
+        setPerPage(newPerPage);
+    }
+
     const integrations = integrationsMerged.filter((integrationMergedItem) => {
         return integrationMergedItem.status === 'UNHEALTHY';
     });
-    /* eslint-disable no-nested-ternary */
+
+    const startIndex = (page - 1) * perPage;
+    const paginatedIntegrations = integrations.slice(startIndex, startIndex + perPage);
+
     const icon = isFetchingInitialRequest
         ? SpinnerIcon
         : errorMessageFetching
           ? ErrorIcon
           : healthIconMap[integrations.length === 0 ? 'success' : 'danger'];
-    /* eslint-enable no-nested-ternary */
+
     const hasCount = !isFetchingInitialRequest && !errorMessageFetching;
 
     return (
@@ -59,6 +75,17 @@ const IntegrationHealthWidget = ({
                                           )}`}
                                 </FlexItem>
                             )}
+                            {integrations.length > 0 && (
+                                <FlexItem align={{ default: 'alignRight' }}>
+                                    <Pagination
+                                        itemCount={integrations.length}
+                                        perPage={perPage}
+                                        page={page}
+                                        onSetPage={onSetPage}
+                                        onPerPageSelect={onPerPageSelect}
+                                    />
+                                </FlexItem>
+                            )}
                         </Flex>
                     </>
                 }
@@ -73,7 +100,7 @@ const IntegrationHealthWidget = ({
                             component="p"
                         />
                     ) : (
-                        <IntegrationsHealth integrations={integrations} />
+                        <IntegrationsHealth integrations={paginatedIntegrations} />
                     )}
                 </CardBody>
             )}
@@ -81,4 +108,4 @@ const IntegrationHealthWidget = ({
     );
 };
 
-export default IntegrationHealthWidget;
+export default IntegrationHealthWidgetVisual;

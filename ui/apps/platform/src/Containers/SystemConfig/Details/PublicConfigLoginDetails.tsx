@@ -1,6 +1,4 @@
-import React, { ReactElement } from 'react';
-
-import { PublicConfig } from 'types/config.proto';
+import type { ReactElement } from 'react';
 import {
     Card,
     CardBody,
@@ -14,6 +12,8 @@ import {
     Label,
 } from '@patternfly/react-core';
 
+import type { PublicConfig } from 'types/config.proto';
+
 export type PublicConfigLoginDetailsProps = {
     publicConfig: PublicConfig | null;
 };
@@ -25,7 +25,7 @@ const PublicConfigLoginDetails = ({
     const loginNoticeText = publicConfig?.loginNotice?.text || 'None';
 
     return (
-        <Card isFlat data-testid="login-notice-config">
+        <Card data-testid="login-notice-config">
             <CardHeader
                 actions={{
                     actions: (

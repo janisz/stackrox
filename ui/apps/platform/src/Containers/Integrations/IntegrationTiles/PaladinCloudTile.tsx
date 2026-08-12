@@ -1,23 +1,27 @@
-import React, { ReactElement } from 'react';
-import { useSelector } from 'react-redux';
+import type { ReactElement } from 'react';
+
+import type { CloudSourceIntegration } from 'services/CloudSourceService';
+
 import {
-    paladinCloudDescriptor as descriptor,
     cloudSourcesSource as source,
     getIntegrationsListPath,
+    paladinCloudDescriptor as descriptor,
 } from '../utils/integrationsList';
-import { selectors } from '../../../reducers';
 import IntegrationTile from './IntegrationTile';
 import { integrationTypeCounter } from './integrationTiles.utils';
 
-const { image, label, type } = descriptor;
+const { Logo, label, type } = descriptor;
 
-function PaladinCloudTile(): ReactElement {
-    const integrations = useSelector(selectors.getCloudSources);
+export type PaladinCloudTileProps = {
+    integrations: CloudSourceIntegration[];
+};
+
+function PaladinCloudTile({ integrations }: PaladinCloudTileProps): ReactElement {
     const countIntegrations = integrationTypeCounter(integrations);
 
     return (
         <IntegrationTile
-            image={image}
+            Logo={Logo}
             label={label}
             linkTo={getIntegrationsListPath(source, type)}
             numIntegrations={countIntegrations('TYPE_PALADIN_CLOUD')}

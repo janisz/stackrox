@@ -1,4 +1,5 @@
-import React, { ReactElement, useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
+import type { ReactElement } from 'react';
 import { Alert, Flex, Switch } from '@patternfly/react-core';
 
 import { getHideDefaultExternalSrcs, setHideDefaultExternalSrcs } from 'services/NetworkService';
@@ -25,7 +26,7 @@ function DefaultCIDRToggle({ updateNetworkNodes = () => {} }): ReactElement {
     function toggleHandler(): void {
         setHideDefaultExternalSrcs(showDefaultExternalSrcs)
             .then(() => {
-                setShowDefaultExternalSrcs(!showDefaultExternalSrcs);
+                setShowDefaultExternalSrcs((prev) => !prev);
                 setErrorMessage('');
                 updateNetworkNodes();
             })
@@ -35,7 +36,7 @@ function DefaultCIDRToggle({ updateNetworkNodes = () => {} }): ReactElement {
     }
 
     return (
-        <Flex className="pf-v5-u-mb-md">
+        <Flex className="pf-v6-u-mb-md">
             <Switch
                 id="default-cidr-toggle"
                 isChecked={showDefaultExternalSrcs}

@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestSplitQuery(t *testing.T) {
@@ -218,4 +219,17 @@ func TestValueAndModifierFromString(t *testing.T) {
 			assert.Equal(t, c.expectedModifier, modifier)
 		})
 	}
+}
+
+func TestQueryFromFieldValuesMaxParametersExceeded(t *testing.T) {
+	// Large value sets no longer panic — combineDisjunction handles them
+	// by switching to = ANY($1::text[]) when the count exceeds the threshold.
+	excessiveValues := make([]string, MaxQueryParameters+1)
+	for i := range excessiveValues {
+		excessiveValues[i] = fmt.Sprintf("value%d", i)
+	}
+
+	require.NotPanics(t, func() {
+		queryFromFieldValues("test-field", excessiveValues, false)
+	}, "queryFromFieldValues should not panic for large value sets")
 }

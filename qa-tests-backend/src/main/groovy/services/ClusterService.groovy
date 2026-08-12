@@ -2,6 +2,7 @@ package services
 
 import groovy.transform.CompileStatic
 import groovy.util.logging.Slf4j
+
 import io.stackrox.proto.api.v1.ClusterService.GetClustersRequest
 import io.stackrox.proto.api.v1.ClustersServiceGrpc
 import io.stackrox.proto.api.v1.Common
@@ -9,7 +10,6 @@ import io.stackrox.proto.storage.ClusterOuterClass
 import io.stackrox.proto.storage.ClusterOuterClass.AdmissionControllerConfig
 import io.stackrox.proto.storage.ClusterOuterClass.Cluster
 import io.stackrox.proto.storage.ClusterOuterClass.ClusterMetadata.Type
-import io.stackrox.proto.storage.ClusterOuterClass.DynamicClusterConfig
 
 @CompileStatic
 @Slf4j
@@ -29,7 +29,7 @@ class ClusterService extends BaseService {
         return getClusterServiceClient().getCluster(Common.ResourceByID.newBuilder().setId(clusterId).build()).cluster
     }
 
-    static getClusterId(String name = DEFAULT_CLUSTER_NAME) {
+    static String getClusterId(String name = DEFAULT_CLUSTER_NAME) {
         return getClusterServiceClient().getClusters(
                 GetClustersRequest.newBuilder().setQuery("Cluster:${name}").build()
         ).clustersList.find { it.name == name }?.id
@@ -53,13 +53,13 @@ class ClusterService extends BaseService {
         if (currentCluster == null) {
             return false
         }
-        Cluster.Builder builder = currentCluster.toBuilder()
 
-        Cluster cluster = builder.setDynamicConfig(
-                DynamicClusterConfig.newBuilder()
-                        .setAdmissionControllerConfig(config)
-                        .build()
-        ).build()
+        Cluster cluster = currentCluster.toBuilder()
+                .setDynamicConfig(
+                        currentCluster.getDynamicConfig().toBuilder()
+                                .setAdmissionControllerConfig(config)
+                                .build()
+                ).build()
 
         return updateCluster(cluster)
     }
@@ -69,13 +69,13 @@ class ClusterService extends BaseService {
         if (currentCluster == null) {
             return false
         }
-        Cluster.Builder builder = currentCluster.toBuilder()
 
-        Cluster cluster = builder.setDynamicConfig(
-                DynamicClusterConfig.newBuilder()
-                        .setDisableAuditLogs(disableAuditLogs)
-                        .build()
-        ).build()
+        Cluster cluster = currentCluster.toBuilder()
+                .setDynamicConfig(
+                        currentCluster.getDynamicConfig().toBuilder()
+                                .setDisableAuditLogs(disableAuditLogs)
+                                .build()
+                ).build()
 
         return updateCluster(cluster)
     }

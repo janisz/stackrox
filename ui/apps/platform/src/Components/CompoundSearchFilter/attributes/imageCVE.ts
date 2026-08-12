@@ -1,6 +1,6 @@
 // If you're adding a new attribute, make sure to add it to "imageCVEAttributes" as well
 
-import { CompoundSearchFilterAttribute } from '../types';
+import type { CompoundSearchFilterAttribute } from '../types';
 import { EPSSProbability } from './epssProbability';
 
 export const Name: CompoundSearchFilterAttribute = {
@@ -24,4 +24,32 @@ export const CVSS: CompoundSearchFilterAttribute = {
     inputType: 'condition-number',
 };
 
-export const imageCVEAttributes = [Name, DiscoveredTime, CVSS, EPSSProbability];
+export const KnownExploit: CompoundSearchFilterAttribute = {
+    displayName: 'Known exploit',
+    filterChipLabel: 'Known exploit',
+    searchTerm: 'Known Exploit', // and 'Known Ransonware Campaign' as category2
+    inputType: 'select-exclusive-double',
+    inputProps: {
+        category2: 'Known Ransonware Campaign',
+        options: [
+            {
+                label: 'Has a known exploit',
+                category: 'Known Exploit',
+                value: 'true',
+            },
+            {
+                label: 'Used in ransomware campaigns',
+                category: 'Known Ransonware Campaign',
+                value: 'true',
+            },
+            {
+                label: 'No known exploit',
+                category: 'Known Exploit',
+                value: 'false',
+            },
+        ],
+    },
+    featureFlagDependency: ['ROX_SCANNER_V4', 'ROX_CISA_KEV'],
+};
+
+export const imageCVEAttributes = [CVSS, DiscoveredTime, EPSSProbability, KnownExploit, Name];

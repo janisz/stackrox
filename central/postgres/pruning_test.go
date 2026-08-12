@@ -8,9 +8,10 @@ import (
 	"testing"
 	"time"
 
-	activeComponent "github.com/stackrox/rox/central/activecomponent/datastore"
 	administrationEventDS "github.com/stackrox/rox/central/administration/events/datastore"
 	alertStore "github.com/stackrox/rox/central/alert/datastore"
+	apitokenDS "github.com/stackrox/rox/central/apitoken/datastore"
+	apitokenTestutils "github.com/stackrox/rox/central/apitoken/testutils"
 	clusterStore "github.com/stackrox/rox/central/cluster/datastore"
 	clusterHealthPostgresStore "github.com/stackrox/rox/central/cluster/store/clusterhealth/postgres"
 	deploymentStore "github.com/stackrox/rox/central/deployment/datastore"
@@ -31,9 +32,7 @@ import (
 	"github.com/stretchr/testify/suite"
 )
 
-var (
-	orphanWindow = 30 * time.Minute
-)
+const orphanWindow = 30 * time.Minute
 
 type PostgresPruningSuite struct {
 	suite.Suite
@@ -48,57 +47,6 @@ func TestPruning(t *testing.T) {
 func (s *PostgresPruningSuite) SetupTest() {
 	s.testDB = pgtest.ForT(s.T())
 	s.ctx = sac.WithAllAccess(context.Background())
-}
-
-func (s *PostgresPruningSuite) TearDownTest() {
-	s.testDB.Teardown(s.T())
-}
-
-func (s *PostgresPruningSuite) TestPruneActiveComponents() {
-	depStore, _ := deploymentStore.GetTestPostgresDataStore(s.T(), s.testDB.DB)
-	acDS, err := activeComponent.NewForTestOnly(s.T(), s.testDB.DB)
-	s.NoError(err)
-
-	// Create and save a deployment
-	deployment := &storage.Deployment{
-		Id:   fixtureconsts.Deployment1,
-		Name: "TestDeployment",
-	}
-	err = depStore.UpsertDeployment(s.ctx, deployment)
-	s.Nil(err)
-
-	activeComponents := []*storage.ActiveComponent{
-		{
-			Id:           "test1",
-			DeploymentId: fixtureconsts.Deployment1,
-		},
-		{
-			Id:           "test2",
-			DeploymentId: fixtureconsts.Deployment2,
-		},
-		{
-			Id:           "test3",
-			DeploymentId: fixtureconsts.Deployment2,
-		},
-	}
-	err = acDS.UpsertBatch(s.ctx, activeComponents)
-	s.Nil(err)
-
-	exists, err := acDS.Exists(s.ctx, "test1")
-	s.Nil(err)
-	s.True(exists)
-	exists, err = acDS.Exists(s.ctx, "test2")
-	s.Nil(err)
-	s.True(exists)
-
-	PruneActiveComponents(s.ctx, s.testDB.DB)
-
-	exists, err = acDS.Exists(s.ctx, "test1")
-	s.Nil(err)
-	s.True(exists)
-	exists, err = acDS.Exists(s.ctx, "test2")
-	s.Nil(err)
-	s.False(exists)
 }
 
 func (s *PostgresPruningSuite) TestPruneClusterHealthStatuses() {
@@ -146,8 +94,7 @@ func (s *PostgresPruningSuite) TestPruneClusterHealthStatuses() {
 }
 
 func (s *PostgresPruningSuite) TestGetOrphanedAlertIDs() {
-	alertDS, err := alertStore.GetTestPostgresDataStore(s.T(), s.testDB.DB)
-	s.Nil(err)
+	alertDS := alertStore.GetTestPostgresDataStore(s.T(), s.testDB.DB)
 
 	deploymentDS, err := deploymentStore.GetTestPostgresDataStore(s.T(), s.testDB.DB)
 	s.Nil(err)
@@ -245,9 +192,9 @@ func (s *PostgresPruningSuite) TestGetOrphanedAlertIDs() {
 			idsToResolve, err := GetOrphanedAlertIDs(s.ctx, s.testDB.DB, orphanWindow)
 			s.NoError(err)
 			if c.shouldBePruned {
-				s.Contains(idsToResolve, c.alert.Id)
+				s.Contains(idsToResolve, c.alert.GetId())
 			} else {
-				s.NotContains(idsToResolve, c.alert.Id)
+				s.NotContains(idsToResolve, c.alert.GetId())
 			}
 			s.NoError(alertDS.DeleteAlerts(s.ctx, c.alert.GetId()))
 		})
@@ -255,8 +202,7 @@ func (s *PostgresPruningSuite) TestGetOrphanedAlertIDs() {
 }
 
 func (s *PostgresPruningSuite) TestGetOrphanedPodIDs() {
-	podDS, err := podStore.GetTestPostgresDataStore(s.T(), s.testDB.DB)
-	s.Nil(err)
+	podDS := podStore.GetTestPostgresDataStore(s.T(), s.testDB.DB)
 
 	clusterDS, err := clusterStore.GetTestPostgresDataStore(s.T(), s.testDB.DB)
 	s.Nil(err)
@@ -393,24 +339,22 @@ func (s *PostgresPruningSuite) TestRemoveOrphanedProcesses() {
 	}
 	for _, c := range cases {
 		s.T().Run(c.name, func(t *testing.T) {
-			s.testDB.Teardown(s.T())
+
 			s.testDB = pgtest.ForT(s.T())
 			// Add deployments if necessary
 			deploymentDS, err := deploymentStore.GetTestPostgresDataStore(s.T(), s.testDB.DB)
 			s.Require().NoError(err)
-			for _, deploymentID := range c.deployments.AsSlice() {
+			for deploymentID := range c.deployments.All() {
 				s.Require().NoError(deploymentDS.UpsertDeployment(s.ctx, &storage.Deployment{Id: deploymentID, ClusterId: fixtureconsts.Cluster1}))
 			}
 
-			podDS, err := podStore.GetTestPostgresDataStore(s.T(), s.testDB.DB)
-			s.Require().NoError(err)
-			for _, podID := range c.pods.AsSlice() {
+			podDS := podStore.GetTestPostgresDataStore(s.T(), s.testDB.DB)
+			for podID := range c.pods.All() {
 				err := podDS.UpsertPod(s.ctx, &storage.Pod{Id: podID, ClusterId: fixtureconsts.Cluster1})
 				s.Require().NoError(err)
 			}
 
-			processDatastore, err := processIndicatorDatastore.GetTestPostgresDataStore(s.T(), s.testDB.DB)
-			s.Require().NoError(err)
+			processDatastore := processIndicatorDatastore.GetTestPostgresDataStore(s.T(), s.testDB.DB)
 			s.Require().NoError(processDatastore.AddProcessIndicators(s.ctx, c.initialProcesses...))
 			countFromDB, err := processDatastore.Count(s.ctx, nil)
 			s.Require().NoError(err)
@@ -427,18 +371,17 @@ func (s *PostgresPruningSuite) TestRemoveOrphanedProcesses() {
 			// Cleanup
 			var cleanupIDs []string
 			for _, process := range c.initialProcesses {
-				cleanupIDs = append(cleanupIDs, process.Id)
+				cleanupIDs = append(cleanupIDs, process.GetId())
 			}
-			s.Require().NoError(processDatastore.RemoveProcessIndicators(s.ctx, cleanupIDs))
+			s.Require().NoError(processDatastore.RemoveProcessIndicators(s.ctx, cleanupIDs, processIndicatorDatastore.RemovalReasonProcessFilter))
 
-			for _, deploymentID := range c.deployments.AsSlice() {
+			for deploymentID := range c.deployments.All() {
 				s.Require().NoError(deploymentDS.RemoveDeployment(s.ctx, fixtureconsts.Cluster1, deploymentID))
 			}
 
-			for _, podID := range c.pods.AsSlice() {
+			for podID := range c.pods.All() {
 				s.Require().NoError(podDS.RemovePod(s.ctx, podID))
 			}
-
 		})
 	}
 }
@@ -538,10 +481,37 @@ func (s *PostgresPruningSuite) TestPruneAdministrationEvents() {
 	protoassert.ElementsMatch(s.T(), []*storage.AdministrationEvent{events[0], events[1], events[3], events[4]}, storedEvents)
 }
 
+func (s *PostgresPruningSuite) TestPruneAPITokens() {
+	datastore := apitokenDS.NewTestPostgres(s.T(), s.testDB)
+	now := time.Now()
+	notExpired := now.Add(48 * time.Hour)
+	isExpired := now.Add(-48 * time.Hour)
+	tokens := []*storage.TokenMetadata{
+		// Should be subject to pruning.
+		apitokenTestutils.GenerateToken(s.T(), now, isExpired, false),
+		// Should not be subject to pruning.
+		apitokenTestutils.GenerateToken(s.T(), now, notExpired, false),
+		// Should be subject to pruning.
+		apitokenTestutils.GenerateToken(s.T(), now, notExpired, true),
+		// Should not be subject to pruning.
+		apitokenTestutils.GenerateToken(s.T(), now, notExpired, false),
+	}
+	for _, token := range tokens {
+		err := datastore.AddToken(s.ctx, token)
+		s.Require().NoError(err)
+	}
+
+	PruneInvalidAPITokens(s.ctx, s.testDB, 24*time.Hour)
+
+	storedTokens, err := datastore.SearchRawTokens(s.ctx, search.EmptyQuery())
+	s.Require().NoError(err)
+	protoassert.ElementsMatch(s.T(), []*storage.TokenMetadata{tokens[1], tokens[3]}, storedTokens)
+}
+
 // Helper functions.
 
 func (s *PostgresPruningSuite) addSomePods(podDS podStore.DataStore, clusterID string, numberPods int) {
-	for i := 0; i < numberPods; i++ {
+	for range numberPods {
 		pod := &storage.Pod{
 			Id:        uuid.NewV4().String(),
 			ClusterId: clusterID,

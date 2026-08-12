@@ -1,9 +1,9 @@
-import React, { ReactElement } from 'react';
+import type { ReactElement } from 'react';
 import {
     Alert,
+    Content,
     Form,
     PageSection,
-    Text,
     TextInput,
     ToggleGroup,
     ToggleGroupItem,
@@ -11,14 +11,14 @@ import {
 import * as yup from 'yup';
 import merge from 'lodash/merge';
 
-import { ClairifyImageIntegration } from 'types/imageIntegration.proto';
+import type { ClairifyImageIntegration } from 'types/imageIntegration.proto';
 
 import FormMessage from 'Components/PatternFly/FormMessage';
 import FormTestButton from 'Components/PatternFly/FormTestButton';
 import FormSaveButton from 'Components/PatternFly/FormSaveButton';
 import FormCancelButton from 'Components/PatternFly/FormCancelButton';
 import useIntegrationForm from '../useIntegrationForm';
-import { IntegrationFormProps } from '../integrationFormTypes';
+import type { IntegrationFormProps } from '../integrationFormTypes';
 
 import IntegrationFormActions from '../IntegrationFormActions';
 import FormLabelGroup from '../FormLabelGroup';
@@ -88,17 +88,21 @@ function ClairifyIntegrationForm({
 
     return (
         <>
-            <PageSection variant="light" isFilled hasOverflowScroll>
+            <PageSection isFilled hasOverflowScroll>
                 <Alert
                     title="Deprecation notice"
                     component="p"
                     variant={'warning'}
                     isInline
-                    className="pf-v5-u-mb-lg"
+                    className="pf-v6-u-mb-lg"
                 >
-                    <Text>StackRox Scanner will be removed in a future release.</Text>
-                    <Text>No new enhancements for StackRox Scanner will be done or accepted.</Text>
-                    <Text>It is recommended to use Scanner V4, instead.</Text>
+                    <Content component="p">
+                        StackRox Scanner will be removed in a future release.
+                    </Content>
+                    <Content component="p">
+                        No new enhancements for StackRox Scanner will be done or accepted.
+                    </Content>
+                    <Content component="p">It is recommended to use Scanner V4, instead.</Content>
                 </Alert>
                 <FormMessage message={message} />
                 <Form isWidthLimited>

@@ -1,9 +1,11 @@
-import React from 'react';
-import PropTypes from 'prop-types';
 import { Field } from 'formik';
 import { Radio } from '@patternfly/react-core';
 
-const KeepBothSection = ({ changeRadio }) => {
+export type KeepBothSectionProps = {
+    changeRadio: (handler, name: string, value: string) => () => void;
+};
+
+const KeepBothSection = ({ changeRadio }: KeepBothSectionProps) => {
     return (
         <Field name="resolution">
             {({ field }) => (
@@ -18,10 +20,6 @@ const KeepBothSection = ({ changeRadio }) => {
             )}
         </Field>
     );
-};
-
-KeepBothSection.propTypes = {
-    changeRadio: PropTypes.func.isRequired,
 };
 
 export default KeepBothSection;

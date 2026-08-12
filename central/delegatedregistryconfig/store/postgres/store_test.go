@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/stackrox/rox/generated/storage"
+	"github.com/stackrox/rox/pkg/postgres"
 	"github.com/stackrox/rox/pkg/postgres/pgtest"
 	"github.com/stackrox/rox/pkg/protoassert"
 	"github.com/stackrox/rox/pkg/sac"
@@ -29,10 +30,6 @@ func TestDelegatedRegistryConfigsStore(t *testing.T) {
 func (s *DelegatedRegistryConfigsStoreSuite) SetupTest() {
 	s.testDB = pgtest.ForT(s.T())
 	s.store = New(s.testDB.DB)
-}
-
-func (s *DelegatedRegistryConfigsStoreSuite) TearDownTest() {
-	s.testDB.Teardown(s.T())
 }
 
 func (s *DelegatedRegistryConfigsStoreSuite) TestStore() {
@@ -81,4 +78,26 @@ func (s *DelegatedRegistryConfigsStoreSuite) TestStore() {
 	s.NoError(err)
 	s.True(exists)
 	protoassert.Equal(s.T(), delegatedRegistryConfig, foundDelegatedRegistryConfig)
+}
+
+func (s *DelegatedRegistryConfigsStoreSuite) TestGetWithTransactionContext() {
+	ctx := sac.WithAllAccess(context.Background())
+	store := s.store
+
+	delegatedRegistryConfig := &storage.DelegatedRegistryConfig{}
+	s.NoError(testutils.FullInit(delegatedRegistryConfig, testutils.SimpleInitializer(), testutils.JSONFieldsFilter))
+	s.NoError(store.Upsert(ctx, delegatedRegistryConfig))
+
+	// Create explicit transaction
+	tx, err := s.testDB.DB.Begin(ctx)
+	s.NoError(err)
+	defer tx.Rollback(ctx)
+
+	// Pass transaction context to Get
+	txCtx := postgres.ContextWithTx(ctx, tx)
+	retrieved, exists, err := store.Get(txCtx)
+
+	s.NoError(err)
+	s.True(exists)
+	protoassert.Equal(s.T(), delegatedRegistryConfig, retrieved)
 }

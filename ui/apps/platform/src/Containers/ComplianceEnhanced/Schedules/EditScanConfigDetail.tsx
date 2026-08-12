@@ -1,4 +1,4 @@
-import React from 'react';
+import type { ReactElement } from 'react';
 import {
     Alert,
     Breadcrumb,
@@ -15,7 +15,7 @@ import {
 import { complianceEnhancedSchedulesPath } from 'routePaths';
 import PageTitle from 'Components/PageTitle';
 import BreadcrumbItemLink from 'Components/BreadcrumbItemLink';
-import { ComplianceScanConfigurationStatus } from 'services/ComplianceScanConfigurationService';
+import type { ComplianceScanConfigurationStatus } from 'services/ComplianceScanConfigurationService';
 import { getAxiosErrorMessage } from 'utils/responseErrorUtils';
 import ScanConfigWizardForm from './Wizard/ScanConfigWizardForm';
 import { defaultScanConfigFormValues } from './Wizard/useFormikScanConfig';
@@ -31,7 +31,7 @@ function EditScanConfigDetail({
     scanConfig,
     isLoading,
     error = null,
-}: EditScanConfigDetailProps): React.ReactElement {
+}: EditScanConfigDetailProps): ReactElement {
     const parsedScanConfig = scanConfig
         ? convertScanConfigToFormik(scanConfig)
         : defaultScanConfigFormValues;
@@ -39,7 +39,7 @@ function EditScanConfigDetail({
     return (
         <>
             <PageTitle title="Edit Compliance Scan Schedule Details" />
-            <PageSection variant="light" className="pf-v5-u-py-md">
+            <PageSection type="breadcrumb">
                 <Breadcrumb>
                     <BreadcrumbItemLink to={complianceEnhancedSchedulesPath}>
                         Scan schedules
@@ -49,12 +49,11 @@ function EditScanConfigDetail({
                     )}
                 </Breadcrumb>
             </PageSection>
-            <Divider component="div" />
-            <PageSection variant="light" padding={{ default: 'noPadding' }}>
+            <PageSection padding={{ default: 'noPadding' }}>
                 {!isLoading && !error && scanConfig && (
                     <Flex
                         alignItems={{ default: 'alignItemsCenter' }}
-                        className="pf-v5-u-py-lg pf-v5-u-px-lg"
+                        className="pf-v6-u-py-lg pf-v6-u-px-lg"
                     >
                         <FlexItem flex={{ default: 'flex_1' }}>
                             <Title headingLevel="h1">Edit {scanConfig.scanName}</Title>
@@ -63,7 +62,7 @@ function EditScanConfigDetail({
                 )}
             </PageSection>
             <Divider component="div" />
-            <PageSection isCenterAligned>
+            <PageSection isFilled>
                 {isLoading ? (
                     <Bullseye>
                         <Spinner />
@@ -81,7 +80,7 @@ function EditScanConfigDetail({
                     )
                 )}
                 {!isLoading && scanConfig && (
-                    <PageSection padding={{ default: 'noPadding' }} isCenterAligned>
+                    <PageSection padding={{ default: 'noPadding' }} isFilled>
                         <ScanConfigWizardForm initialFormValues={parsedScanConfig} />
                     </PageSection>
                 )}

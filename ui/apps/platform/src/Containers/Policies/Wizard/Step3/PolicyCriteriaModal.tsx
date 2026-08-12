@@ -1,22 +1,20 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
     Button,
     Flex,
     FlexItem,
-    Modal,
-    ModalBoxBody,
-    ModalBoxFooter,
     Toolbar,
     ToolbarContent,
     ToolbarItem,
     TreeView,
-    TreeViewDataItem,
     TreeViewSearch,
 } from '@patternfly/react-core';
+import type { TreeViewDataItem } from '@patternfly/react-core';
+import { Modal, ModalBoxBody, ModalBoxFooter } from '@patternfly/react-core/deprecated';
 import { kebabCase } from 'lodash';
 
-import { PolicyGroup } from 'types/policy.proto';
-import { Descriptor } from './policyCriteriaDescriptors';
+import type { PolicyGroup } from 'types/policy.proto';
+import type { Descriptor } from './policyCriteriaDescriptors';
 
 import './PolicyCriteriaModal.css';
 
@@ -154,7 +152,7 @@ function PolicyCriteriaModal({
     const toolbar = (
         <Toolbar style={{ padding: 0 }}>
             <ToolbarContent style={{ padding: 0 }}>
-                <ToolbarItem widths={{ default: '100%' }}>
+                <ToolbarItem>
                     <TreeViewSearch
                         onSearch={onSearch}
                         id="input-search"
@@ -186,7 +184,7 @@ function PolicyCriteriaModal({
             <ModalBoxBody>
                 <Flex direction={{ default: 'column' }}>
                     <FlexItem>
-                        <Button variant="link" onClick={() => setAllExpanded(!allExpanded)}>
+                        <Button variant="link" onClick={() => setAllExpanded((prev) => !prev)}>
                             {allExpanded && 'Collapse all'}
                             {!allExpanded && 'Expand all'}
                         </Button>

@@ -1,4 +1,3 @@
-import React from 'react';
 import {
     DescriptionList,
     DescriptionListDescription,
@@ -8,16 +7,16 @@ import {
     PageSection,
     Title,
 } from '@patternfly/react-core';
-import { VulnerabilityException } from 'services/VulnerabilityExceptionService';
+import type { VulnerabilityException } from 'services/VulnerabilityExceptionService';
 import {
     RequestComment,
     RequestComments,
-    RequestContext,
     RequestCreatedAt,
     RequestExpires,
     RequestScope,
     RequestedAction,
 } from './ExceptionRequestTableCells';
+import type { RequestContext } from './ExceptionRequestTableCells';
 
 export type RequestOverviewProps = {
     exception: VulnerabilityException;
@@ -29,8 +28,8 @@ function RequestOverview({ exception, context }: RequestOverviewProps) {
     const latestComment = exception.comments.at(-1);
 
     return (
-        <PageSection variant="light">
-            <Flex direction={{ default: 'column' }}>
+        <PageSection>
+            <Flex direction={{ default: 'column' }} spaceItems={{ default: 'spaceItemsMd' }}>
                 <Title headingLevel="h2">Overview</Title>
                 <DescriptionList className="vulnerability-exception-request-overview">
                     <DescriptionListGroup>

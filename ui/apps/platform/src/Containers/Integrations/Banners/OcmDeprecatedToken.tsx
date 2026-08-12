@@ -1,9 +1,13 @@
-import React, { ReactElement } from 'react';
+import type { ReactElement } from 'react';
 import { Alert } from '@patternfly/react-core';
-import { useSelector } from 'react-redux';
-import { CloudSourceIntegration } from 'services/CloudSourceService';
 
-import { selectors } from 'reducers';
+import useRestQuery from 'hooks/useRestQuery';
+import { fetchCloudSources } from 'services/CloudSourceService';
+import type { CloudSourceIntegration } from 'services/CloudSourceService';
+
+function fetchCloudSourceList(): Promise<CloudSourceIntegration[]> {
+    return fetchCloudSources().then((r) => r.cloudSources);
+}
 
 function ocmDeprecatedCounter(integrations: CloudSourceIntegration[]) {
     return () =>
@@ -13,11 +17,12 @@ function ocmDeprecatedCounter(integrations: CloudSourceIntegration[]) {
         ).length;
 }
 
-function OcmDeprecatedTokenBanner(): ReactElement | null {
-    const integrations = useSelector(selectors.getCloudSources);
-    const countIntegrations = ocmDeprecatedCounter(integrations);
+function OcmDeprecatedToken(): ReactElement | null {
+    const { data: integrations } = useRestQuery(fetchCloudSourceList);
 
-    if (countIntegrations() === 0) {
+    const deprecatedCount = ocmDeprecatedCounter(integrations ?? []);
+
+    if (deprecatedCount() === 0) {
         return null;
     }
     return (
@@ -35,4 +40,4 @@ function OcmDeprecatedTokenBanner(): ReactElement | null {
     );
 }
 
-export default OcmDeprecatedTokenBanner;
+export default OcmDeprecatedToken;

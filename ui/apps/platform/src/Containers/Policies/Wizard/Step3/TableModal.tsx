@@ -1,28 +1,23 @@
-import React, { useCallback, useState } from 'react';
-import { Link } from 'react-router-dom';
-import {
-    Button,
-    Modal,
-    ModalBoxBody,
-    ModalBoxFooter,
-    PageSection,
-    TextInput,
-} from '@patternfly/react-core';
+import { useCallback, useState } from 'react';
+import type { ReactElement } from 'react';
+import { Link } from 'react-router-dom-v5-compat';
+import { Button, PageSection, TextInput } from '@patternfly/react-core';
+import { Modal, ModalBoxBody, ModalBoxFooter } from '@patternfly/react-core/deprecated';
 import { Table, Tbody, Td, Th, Thead, Tr } from '@patternfly/react-table';
 import isEqual from 'lodash/isEqual';
 import pluralize from 'pluralize';
 
 import TableCellValue from 'Components/TableCellValue/TableCellValue';
-import { IntegrationTableColumnDescriptor } from 'Containers/Integrations/utils/tableColumnDescriptor';
+import type { IntegrationTableColumnDescriptor } from 'Containers/Integrations/utils/tableColumnDescriptor';
 import useTableSelection from 'hooks/useTableSelection';
-import { ClientPolicyValue } from 'types/policy.proto';
-import { SignatureIntegration } from 'types/signatureIntegration.proto';
+import type { ClientPolicyValue } from 'types/policy.proto';
+import type { SignatureIntegration } from 'types/signatureIntegration.proto';
 
 type TableModalProps = {
     setValue: (value: ClientPolicyValue) => void;
     value: ClientPolicyValue;
     readOnly?: boolean;
-    rows: { id: string; link: string }[];
+    rows: (SignatureIntegration & { link: string })[];
     columns: IntegrationTableColumnDescriptor<SignatureIntegration>[];
     typeText: string;
 };
@@ -34,7 +29,7 @@ function TableModal({
     rows,
     columns,
     typeText,
-}: TableModalProps): React.ReactElement {
+}: TableModalProps): ReactElement {
     const [isModalOpen, setIsModalOpen] = useState(false);
 
     const isPreSelected = useCallback(
@@ -89,7 +84,7 @@ function TableModal({
                 hasNoBodyWrapper
             >
                 <ModalBoxBody>
-                    <PageSection variant="light">
+                    <PageSection>
                         {!!rows.length && (
                             <>
                                 Select {typeText}s from the table below.

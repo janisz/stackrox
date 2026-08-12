@@ -1,16 +1,17 @@
-import React, { CSSProperties, useCallback } from 'react';
+import { useCallback } from 'react';
+import type { CSSProperties } from 'react';
 import {
     Alert,
     Bullseye,
     Button,
+    Content,
     Divider,
     Flex,
-    Modal,
-    pluralize,
     Spinner,
-    Text,
     Title,
+    pluralize,
 } from '@patternfly/react-core';
+import { Modal } from '@patternfly/react-core/deprecated';
 import noop from 'lodash/noop';
 
 import { getWatchedImages, unwatchImage, watchImage } from 'services/imageService';
@@ -64,10 +65,10 @@ function WatchedImagesModal({
                     <Title id="manage-watched-images-modal-title" headingLevel="h2" size="2xl">
                         Manage watched images
                     </Title>
-                    <Text>
+                    <Content component="p">
                         Enter an image name to mark it as watched, so that it will continue to be
                         scanned even if no deployments use it.
-                    </Text>
+                    </Content>
                 </Flex>
             }
             isOpen={isOpen}
@@ -85,7 +86,7 @@ function WatchedImagesModal({
                 </Button>,
             ]}
         >
-            <Flex direction={{ default: 'column' }}>
+            <Flex direction={{ default: 'column' }} spaceItems={{ default: 'spaceItemsMd' }}>
                 {watchImageMutation.isSuccess && (
                     <Alert
                         variant="success"
@@ -152,11 +153,11 @@ function WatchedImagesModal({
                         </Title>
                         <WatchedImagesTable
                             aria-labelledby="current-watched-images-list"
-                            className="pf-v5-u-max-height"
+                            className="pf-v6-u-max-height"
                             style={
                                 {
                                     overflowY: 'auto',
-                                    '--pf-v5-u-max-height--MaxHeight': '280px',
+                                    '--pf-v6-u-max-height--MaxHeight': '280px',
                                 } as CSSProperties
                             }
                             watchedImages={watchedImages}

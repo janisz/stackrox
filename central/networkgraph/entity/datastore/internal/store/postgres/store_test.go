@@ -41,10 +41,6 @@ func (s *NetworkEntitiesStoreSuite) SetupTest() {
 	s.NoError(err)
 }
 
-func (s *NetworkEntitiesStoreSuite) TearDownSuite() {
-	s.testDB.Teardown(s.T())
-}
-
 func (s *NetworkEntitiesStoreSuite) TestStore() {
 	ctx := sac.WithAllAccess(context.Background())
 
@@ -96,6 +92,11 @@ func (s *NetworkEntitiesStoreSuite) TestStore() {
 	}
 
 	s.NoError(store.UpsertMany(ctx, networkEntitys))
+
+	foundNetworkEntitys, missing, err := store.GetMany(ctx, networkEntityIDs)
+	s.NoError(err)
+	s.Empty(missing)
+	protoassert.ElementsMatch(s.T(), networkEntitys, foundNetworkEntitys)
 
 	networkEntityCount, err = store.Count(ctx, search.EmptyQuery())
 	s.NoError(err)

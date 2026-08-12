@@ -1,6 +1,6 @@
 import { gql, useQuery } from '@apollo/client';
 
-import { ResourceCountsByCveSeverity } from '../../components/BySeveritySummaryCard';
+import type { ResourceCountsByCveSeverity } from '../../components/BySeveritySummaryCard';
 
 const summaryDataQuery = gql`
     query getNodeCVESummaryData($cve: String!, $query: String!) {
@@ -21,6 +21,9 @@ const summaryDataQuery = gql`
                     total
                 }
                 low {
+                    total
+                }
+                unknown {
                     total
                 }
             }

@@ -1,9 +1,9 @@
-import React from 'react';
+import type { ReactElement } from 'react';
 import { useField } from 'formik';
-import { TextInput, FormGroup } from '@patternfly/react-core';
-import { Select, SelectOption } from '@patternfly/react-core/deprecated';
+import { FormGroup, SelectOption, TextInput } from '@patternfly/react-core';
 
-import { SubComponent } from './policyCriteriaDescriptors';
+import SelectSingle from 'Components/SelectSingle/SelectSingle';
+import type { SubComponent } from './policyCriteriaDescriptors';
 
 type PolicyCriteriaFieldSubInputProps = {
     subComponent: SubComponent;
@@ -15,26 +15,20 @@ function PolicyCriteriaFieldSubInput({
     subComponent,
     readOnly = false,
     name,
-}: PolicyCriteriaFieldSubInputProps): React.ReactElement {
+}: PolicyCriteriaFieldSubInputProps): ReactElement {
     const [field, , helper] = useField(name);
-    const [isSelectOpen, setIsSelectOpen] = React.useState(false);
     const { value } = field;
     const { setValue } = helper;
 
-    function handleChangeSelect(e, val) {
-        setIsSelectOpen(false);
-        setValue(val);
-    }
-
-    function handleOnToggleSelect() {
-        setIsSelectOpen(!isSelectOpen);
+    function handleSelectChange(name: string, value: string) {
+        setValue(value);
     }
 
     /* eslint-disable default-case */
     switch (subComponent.type) {
         case 'text':
             return (
-                <FormGroup label={subComponent.label} fieldId={name} className="pf-v5-u-flex-1">
+                <FormGroup label={subComponent.label} fieldId={name} className="pf-v6-u-flex-1">
                     <TextInput
                         value={value}
                         type="text"
@@ -54,7 +48,7 @@ function PolicyCriteriaFieldSubInput({
                     isDisabled={readOnly}
                     onChange={(_event, v) => setValue(v)}
                     placeholder="(ex. 5)"
-                    className="pf-v5-u-w-25"
+                    className="pf-v6-u-w-25"
                     data-testid="policy-criteria-value-number-input"
                 />
             );
@@ -63,15 +57,14 @@ function PolicyCriteriaFieldSubInput({
                 <FormGroup
                     label={subComponent.label}
                     fieldId={name}
-                    className="pf-v5-u-flex-1 pf-v5-u-w-0"
+                    className="pf-v6-u-flex-1 pf-v6-u-w-0"
                     data-testid="policy-criteria-value-select"
                 >
-                    <Select
-                        onToggle={handleOnToggleSelect}
-                        onSelect={handleChangeSelect}
-                        isOpen={isSelectOpen}
+                    <SelectSingle
+                        id={name}
+                        value={value || ''}
+                        handleSelect={handleSelectChange}
                         isDisabled={readOnly}
-                        selections={value}
                         placeholderText={subComponent.placeholder || 'Select an option'}
                         menuAppendTo={() => document.body}
                     >
@@ -84,7 +77,7 @@ function PolicyCriteriaFieldSubInput({
                                 {option.label}
                             </SelectOption>
                         ))}
-                    </Select>
+                    </SelectSingle>
                 </FormGroup>
             );
     }

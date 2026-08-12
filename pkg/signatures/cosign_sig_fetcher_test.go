@@ -19,9 +19,10 @@ import (
 	"github.com/google/go-containerregistry/pkg/v1/remote/transport"
 	dockerRegistry "github.com/heroku/docker-registry-client/registry"
 	"github.com/pkg/errors"
-	"github.com/sigstore/cosign/v2/pkg/oci/mutate"
-	ociremote "github.com/sigstore/cosign/v2/pkg/oci/remote"
-	"github.com/sigstore/cosign/v2/pkg/oci/static"
+	"github.com/sigstore/cosign/v3/pkg/cosign"
+	"github.com/sigstore/cosign/v3/pkg/oci/mutate"
+	ociremote "github.com/sigstore/cosign/v3/pkg/oci/remote"
+	"github.com/sigstore/cosign/v3/pkg/oci/static"
 	"github.com/stackrox/rox/generated/storage"
 	"github.com/stackrox/rox/pkg/images/types"
 	imgUtils "github.com/stackrox/rox/pkg/images/utils"
@@ -41,6 +42,8 @@ const (
 		"yA5A0K7BntXwPwFqDNI1otReqFZr6BrgDFpzhJ5l2od/u+6KrcvIFT/7R1TnnpF87peJXP" +
 		"Nwxd6kyuhNCZw0YcP31X41YD+PDb3AntnydyXlI7Arzr66ib5dnZB/DefDNFibFIgwLIRU" +
 		"CSVxi8WM1FUbpsnNFr1tMsy+UUGgkYzfjmqnMq4epvVGQA=="
+	// Signature signed using Fulcio and Rekor. Proof of inclusion is in `bundle.json`.
+	sig4 = "MEQCID1AIJK4aJYJpbBVaFmoQfC4wMTJnBW/hsaCQobGoiBqAiBcfLS81tDBMhyON0jZpizle8XIzYWE2wou4CCPilVlBA=="
 
 	payload1 = "eyJjcml0aWNhbCI6eyJpZGVudGl0eSI6eyJkb2NrZXItcmVmZXJlbmNlIjoidHRsLnNoL2E1NDIzODZlLTFiMjItNDQ5" +
 		"ZC1hYWZkLWIxMjMzZjFhOWEzYyJ9LCJpbWFnZSI6eyJkb2NrZXItbWFuaWZlc3QtZGlnZXN0Ijoic2hhMjU2OmJiMTI5YTcxMmM" +
@@ -57,6 +60,10 @@ const (
 		"xNmU4MDdmODMxMGVjYzEwYzY4NzM4NSJ9LCJ0eXBlIjoiY29zaW" +
 		"duIGNvbnRhaW5lciBpbWFnZSBzaWduYXR1cmUifSwib3B0aW9uY" +
 		"WwiOm51bGx9Cg=="
+	payload4 = "eyJjcml0aWNhbCI6eyJpZGVudGl0eSI6eyJkb2NrZXItcmVmZXJlbmNlIjoidHRsLnNoLzRkM2VjYTdmLWQyNGUtNDI5N" +
+		"C1hYzExLWZhNzE0Y2U4Nzc5YiJ9LCJpbWFnZSI6eyJkb2NrZXItbWFuaWZlc3QtZGlnZXN0Ijoic2hhMjU2OjBlMWFjN2YxMmQ5M" +
+		"DRhNWNlMDc3ZDFiNWM3NjNiNTc1MGM3OTg1ZTUyNGY2MDgzZTVlYWE3ZTczMTM4MzM0NDAifSwidHlwZSI6ImNvc2lnbiBjb250Y" +
+		"WluZXIgaW1hZ2Ugc2lnbmF0dXJlIn0sIm9wdGlvbmFsIjpudWxsfQ=="
 )
 
 type mockRegistry struct {
@@ -99,8 +106,18 @@ func registryServerWithImage(imgName string) (*httptest.Server, string, error) {
 }
 
 // uploadSignatureForImage will upload the given signature and payload for the specified image reference.
-func uploadSignatureForImage(imgRef string, b64Sig string, sigPayload, certPEM, chainPEM []byte) error {
-	sig, err := static.NewSignature(sigPayload, b64Sig, static.WithCertChain(certPEM, chainPEM))
+func uploadSignatureForImage(imgRef string, b64Sig string, sigPayload, certPEM, chainPEM, byteBundle []byte) error {
+	sigOpts := []static.Option{static.WithCertChain(certPEM, chainPEM)}
+
+	rekorBundle, err := unmarshalRekorBundle(byteBundle)
+	if err != nil {
+		return err
+	}
+	if rekorBundle != nil {
+		sigOpts = append(sigOpts, static.WithBundle(rekorBundle))
+	}
+
+	sig, err := static.NewSignature(sigPayload, b64Sig, sigOpts...)
 	if err != nil {
 		return err
 	}
@@ -147,11 +164,15 @@ func TestCosignSignatureFetcher_FetchSignature_Success(t *testing.T) {
 	require.NoError(t, err, "decoding signature")
 	rawSig3, err := base64.StdEncoding.DecodeString(sig3)
 	require.NoError(t, err, "decoding signature")
+	rawSig4, err := base64.StdEncoding.DecodeString(sig4)
+	require.NoError(t, err, "decoding signature")
 	sigPayload1, err := base64.StdEncoding.DecodeString(payload1)
 	require.NoError(t, err, "decoding signature")
 	sigPayload2, err := base64.StdEncoding.DecodeString(payload2)
 	require.NoError(t, err, "decoding signature")
 	sigPayload3, err := base64.StdEncoding.DecodeString(payload3)
+	require.NoError(t, err, "decoding signature")
+	sigPayload4, err := base64.StdEncoding.DecodeString(payload4)
 	require.NoError(t, err, "decoding signature")
 
 	certPEM, err := os.ReadFile("testdata/cert.pem")
@@ -159,11 +180,21 @@ func TestCosignSignatureFetcher_FetchSignature_Success(t *testing.T) {
 	chainPEM, err := os.ReadFile("testdata/chain.pem")
 	require.NoError(t, err)
 
-	require.NoError(t, uploadSignatureForImage(imgRef, sig1, sigPayload1, nil, nil),
+	certPEMWithTlog, err := os.ReadFile("testdata/cert_with_tlog.pem")
+	require.NoError(t, err)
+	chainPEMWithTlog, err := os.ReadFile("testdata/chain_with_tlog.pem")
+	require.NoError(t, err)
+
+	bundle, err := os.ReadFile("testdata/bundle.json")
+	require.NoError(t, err)
+
+	require.NoError(t, uploadSignatureForImage(imgRef, sig1, sigPayload1, nil, nil, nil),
 		"uploading signature")
-	require.NoError(t, uploadSignatureForImage(imgRef, sig2, sigPayload2, nil, nil),
+	require.NoError(t, uploadSignatureForImage(imgRef, sig2, sigPayload2, nil, nil, nil),
 		"uploading signature")
-	require.NoError(t, uploadSignatureForImage(imgRef, sig3, sigPayload3, certPEM, chainPEM),
+	require.NoError(t, uploadSignatureForImage(imgRef, sig3, sigPayload3, certPEM, chainPEM, nil),
+		"uploading signature")
+	require.NoError(t, uploadSignatureForImage(imgRef, sig4, sigPayload4, certPEMWithTlog, chainPEMWithTlog, bundle),
 		"uploading signature")
 
 	expectedSignatures := []*storage.Signature{
@@ -172,6 +203,7 @@ func TestCosignSignatureFetcher_FetchSignature_Success(t *testing.T) {
 				Cosign: &storage.CosignSignature{
 					RawSignature:     rawSig1,
 					SignaturePayload: sigPayload1,
+					SignatureFormat:  storage.CosignSignature_SIMPLE_SIGNING,
 				},
 			},
 		},
@@ -180,6 +212,7 @@ func TestCosignSignatureFetcher_FetchSignature_Success(t *testing.T) {
 				Cosign: &storage.CosignSignature{
 					RawSignature:     rawSig2,
 					SignaturePayload: sigPayload2,
+					SignatureFormat:  storage.CosignSignature_SIMPLE_SIGNING,
 				},
 			},
 		},
@@ -190,6 +223,19 @@ func TestCosignSignatureFetcher_FetchSignature_Success(t *testing.T) {
 					SignaturePayload: sigPayload3,
 					CertPem:          certPEM,
 					CertChainPem:     chainPEM,
+					SignatureFormat:  storage.CosignSignature_SIMPLE_SIGNING,
+				},
+			},
+		},
+		{
+			Signature: &storage.Signature_Cosign{
+				Cosign: &storage.CosignSignature{
+					RawSignature:     rawSig4,
+					SignaturePayload: sigPayload4,
+					CertPem:          certPEMWithTlog,
+					CertChainPem:     chainPEMWithTlog,
+					RekorBundle:      bundle,
+					SignatureFormat:  storage.CosignSignature_SIMPLE_SIGNING,
 				},
 			},
 		},
@@ -244,6 +290,32 @@ func TestCosignSignatureFetcher_FetchSignature_NoSignature(t *testing.T) {
 	result, err := f.FetchSignatures(context.Background(), img, img.GetName().GetFullName(), reg)
 	assert.NoError(t, err)
 	assert.Nil(t, result)
+}
+
+func TestCosignSignatureFetcher_FetchSignature_SimpleSigningReferrerIgnored(t *testing.T) {
+	registryServer, imgRef, err := registryServerWithImage("nginx")
+	require.NoError(t, err, "setting up registry")
+	defer registryServer.Close()
+
+	cimg, err := imgUtils.GenerateImageFromString(imgRef)
+	require.NoError(t, err, "creating test image")
+	img := types.ToImage(cimg)
+	img.Metadata = &storage.ImageMetadata{V2: &storage.V2Metadata{Digest: "something"}}
+
+	sigPayload1, err := base64.StdEncoding.DecodeString(payload1)
+	require.NoError(t, err, "decoding payload")
+
+	// Upload a SimpleSigning signature as OCI referrer. The referrer path only
+	// supports sigstore bundles, so this signature should be ignored.
+	require.NoError(t, uploadSignatureAsReferrer(imgRef, sig1, sigPayload1, nil, nil),
+		"uploading signature as referrer")
+
+	f := newCosignSignatureFetcher()
+	reg := &mockRegistry{cfg: &registryTypes.Config{}}
+
+	res, err := f.FetchSignatures(context.Background(), img, img.GetName().GetFullName(), reg)
+	assert.NoError(t, err)
+	assert.Empty(t, res)
 }
 
 func TestIsMissingSignatureError(t *testing.T) {
@@ -454,4 +526,135 @@ func TestIsUnknownMimeTypeError(t *testing.T) {
 			assert.Equal(t, c.expectedRes, isUnknownMimeTypeError(c.err))
 		})
 	}
+}
+
+func TestConvertPayloadsToSignatures(t *testing.T) {
+	sigPayload, err := base64.StdEncoding.DecodeString(payload1)
+	require.NoError(t, err)
+	bundleJSON := []byte(`{"mediaType":"application/vnd.dev.sigstore.bundle.v0.3+json"}`)
+
+	cases := map[string]struct {
+		payloads []signaturePayload
+		assert   func(t *testing.T, sigs []*storage.Signature)
+	}{
+		"sigstore bundle": {
+			payloads: []signaturePayload{{sigstoreBundle: bundleJSON}},
+			assert: func(t *testing.T, sigs []*storage.Signature) {
+				require.Len(t, sigs, 1)
+				cosignSig := sigs[0].GetCosign()
+				assert.Equal(t, bundleJSON, cosignSig.GetSigstoreBundle())
+				assert.Equal(t, storage.CosignSignature_DEAD_SIMPLE_SIGNING_ENVELOPE, cosignSig.GetSignatureFormat())
+				assert.Empty(t, cosignSig.GetRawSignature())
+				assert.Empty(t, cosignSig.GetSignaturePayload())
+			},
+		},
+		"simple signing": {
+			payloads: []signaturePayload{
+				{SignedPayload: cosign.SignedPayload{Base64Signature: sig1, Payload: sigPayload}},
+			},
+			assert: func(t *testing.T, sigs []*storage.Signature) {
+				require.Len(t, sigs, 1)
+				cosignSig := sigs[0].GetCosign()
+				assert.Empty(t, cosignSig.GetSigstoreBundle())
+				assert.Equal(t, storage.CosignSignature_SIMPLE_SIGNING, cosignSig.GetSignatureFormat())
+				assert.Equal(t, sigPayload, cosignSig.GetSignaturePayload())
+				assert.NotEmpty(t, cosignSig.GetRawSignature())
+			},
+		},
+		"mixed formats": {
+			payloads: []signaturePayload{
+				{SignedPayload: cosign.SignedPayload{Base64Signature: sig1, Payload: sigPayload}},
+				{sigstoreBundle: bundleJSON},
+			},
+			assert: func(t *testing.T, sigs []*storage.Signature) {
+				require.Len(t, sigs, 2)
+				assert.Empty(t, sigs[0].GetCosign().GetSigstoreBundle())
+				assert.Equal(t, bundleJSON, sigs[1].GetCosign().GetSigstoreBundle())
+			},
+		},
+	}
+
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			sigs := convertPayloadsToSignatures(c.payloads, "test:latest")
+			c.assert(t, sigs)
+		})
+	}
+}
+
+func TestCosignSignatureFetcher_FetchSignature_NoV2MetadataSkipsBoth(t *testing.T) {
+	cimg, err := imgUtils.GenerateImageFromString("test.io/test:latest")
+	require.NoError(t, err)
+	img := types.ToImage(cimg)
+	// No V2 metadata set — should short-circuit before any registry call.
+
+	f := newCosignSignatureFetcher()
+	res, err := f.FetchSignatures(context.Background(), img, img.GetName().GetFullName(), nil)
+	assert.NoError(t, err)
+	assert.Nil(t, res)
+}
+
+func TestCosignSignatureFetcher_FetchSignature_NoSignatureFromEither(t *testing.T) {
+	registryServer, imgRef, err := registryServerWithImage("nginx")
+	require.NoError(t, err, "setting up registry")
+	defer registryServer.Close()
+
+	cimg, err := imgUtils.GenerateImageFromString(imgRef)
+	require.NoError(t, err, "creating test image")
+	img := types.ToImage(cimg)
+	img.Metadata = &storage.ImageMetadata{V2: &storage.V2Metadata{Digest: "something"}}
+
+	f := newCosignSignatureFetcher()
+	reg := &mockRegistry{cfg: &registryTypes.Config{}}
+
+	result, err := f.FetchSignatures(context.Background(), img, img.GetName().GetFullName(), reg)
+	assert.NoError(t, err)
+	assert.Nil(t, result)
+}
+
+func TestCosignSignatureFetcher_FetchSignature_WithCredentials(t *testing.T) {
+	registryServer, imgRef, err := registryServerWithImage("nginx")
+	require.NoError(t, err, "setting up registry")
+	defer registryServer.Close()
+
+	cimg, err := imgUtils.GenerateImageFromString(imgRef)
+	require.NoError(t, err, "creating test image")
+	img := types.ToImage(cimg)
+	img.Metadata = &storage.ImageMetadata{V2: &storage.V2Metadata{Digest: "something"}}
+
+	rawSig1, err := base64.StdEncoding.DecodeString(sig1)
+	require.NoError(t, err, "decoding signature")
+	sigPayload1, err := base64.StdEncoding.DecodeString(payload1)
+	require.NoError(t, err, "decoding payload")
+
+	require.NoError(t, uploadSignatureForImage(imgRef, sig1, sigPayload1, nil, nil, nil),
+		"uploading tag-based signature")
+
+	expectedSignatures := []*storage.Signature{
+		{
+			Signature: &storage.Signature_Cosign{
+				Cosign: &storage.CosignSignature{
+					RawSignature:     rawSig1,
+					SignaturePayload: sigPayload1,
+					SignatureFormat:  storage.CosignSignature_SIMPLE_SIGNING,
+				},
+			},
+		},
+	}
+
+	ref, err := name.ParseReference(imgRef)
+	require.NoError(t, err)
+
+	f := newCosignSignatureFetcher()
+	// Use a registry config with credentials to exercise the authenticated transport path.
+	// The URL is required for WrapTransport to perform the initial /v2/ probe.
+	reg := &mockRegistry{cfg: &registryTypes.Config{
+		Username: "testuser",
+		Password: "testpass",
+		URL:      "http://" + ref.Context().RegistryStr(),
+	}}
+
+	res, err := f.FetchSignatures(context.Background(), img, img.GetName().GetFullName(), reg)
+	assert.NoError(t, err)
+	protoassert.SlicesEqual(t, expectedSignatures, res)
 }

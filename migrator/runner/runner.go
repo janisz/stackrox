@@ -14,8 +14,11 @@ import (
 	"github.com/stackrox/rox/migrator/types"
 	pkgMigrations "github.com/stackrox/rox/pkg/migrations"
 	pgPkg "github.com/stackrox/rox/pkg/postgres"
+	"github.com/stackrox/rox/pkg/protoconv"
 	"github.com/stackrox/rox/pkg/sac"
 	"github.com/stackrox/rox/pkg/set"
+	"github.com/stackrox/rox/pkg/timestamp"
+	"github.com/stackrox/rox/pkg/version"
 )
 
 var (
@@ -27,7 +30,7 @@ func init() {
 	if env == "" {
 		return
 	}
-	for _, skipped := range strings.Split(env, ",") {
+	for skipped := range strings.SplitSeq(env, ",") {
 		migration, err := strconv.Atoi(strings.TrimSpace(skipped))
 		if err != nil {
 			log.WriteToStderrf("could not parse %v. Not skipping", skipped)
@@ -37,13 +40,11 @@ func init() {
 	}
 }
 
-// Run runs the migrator.
+// Run runs the migrator. It reads the current DB version and runs all
+// necessary migrations to bring the DB up to the current binary version.
 func Run(databases *types.Databases) error {
 	log.WriteToStderrf("In runner.Run")
 
-	// If Rocks and Bolt are passed into this function when Postgres is enabled, that means
-	// we are in a state where we need to migrate Rocks to Postgres.  In this case the Rocks
-	// sequence number will be returned and used to drive the migrations
 	dbSeqNum, err := getCurrentSeqNum(databases)
 	if err != nil {
 		return errors.Wrap(err, "getting current seq num")
@@ -68,13 +69,23 @@ func Run(databases *types.Databases) error {
 
 	// Make sure version is up to date after migrations to ensure latest version schema is used in the event
 	// there are no migrations executed.
-	currentVersion := &versionStorage.Version{SeqNum: int32(pkgMigrations.CurrentDBVersionSeqNum())}
-	ctx := sac.WithAllAccess(context.Background())
-	err = updateVersion(ctx, databases, currentVersion)
-	if err != nil {
-		return errors.Wrapf(err, "failed to update version after migrations %d", currentVersion.SeqNum)
+	return UpdateToCurrentVersion(databases)
+}
+
+// UpdateToCurrentVersion updates the stored version to the current binary version
+func UpdateToCurrentVersion(databases *types.Databases) error {
+	currentVersion := &versionStorage.Version{
+		SeqNum:        int32(pkgMigrations.CurrentDBVersionSeqNum()),
+		Version:       version.GetMainVersion(),
+		MinSeqNum:     int32(pkgMigrations.MinimumSupportedDBVersionSeqNum()),
+		LastPersisted: protoconv.ConvertMicroTSToProtobufTS(timestamp.Now()),
 	}
 
+	ctx := sac.WithAllAccess(context.Background())
+	err := updateVersion(ctx, databases, currentVersion)
+	if err != nil {
+		return errors.Wrapf(err, "failed to update version after migrations %d", currentVersion.GetSeqNum())
+	}
 	return nil
 }
 
@@ -82,12 +93,6 @@ func runMigrations(databases *types.Databases, startingSeqNum int) error {
 	for seqNum := startingSeqNum; seqNum < pkgMigrations.CurrentDBVersionSeqNum(); seqNum++ {
 		// Add an outer transaction so migrations can be wrapped in a transaction.
 		ctx := sac.WithAllAccess(context.Background())
-
-		tx, err := databases.PostgresDB.Begin(ctx)
-		if err != nil {
-			return err
-		}
-		ctx = pgPkg.ContextWithTx(ctx, tx)
 
 		// Set the context with the databases so the wrapped transaction can be used
 		databases.DBCtx = ctx
@@ -102,9 +107,15 @@ func runMigrations(databases *types.Databases, startingSeqNum int) error {
 		} else {
 			err := migration.Run(databases)
 			if err != nil {
-				return wrapRollback(ctx, tx, errors.Wrapf(err, "error running migration starting at %d", seqNum))
+				return errors.Wrapf(err, "error running migration starting at %d", seqNum)
 			}
 		}
+
+		tx, err := databases.PostgresDB.Begin(ctx)
+		if err != nil {
+			return err
+		}
+		ctx = pgPkg.ContextWithTx(ctx, tx)
 
 		err = updateVersion(ctx, databases, migration.VersionAfter)
 		if err != nil {

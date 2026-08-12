@@ -33,14 +33,18 @@ var (
 	targetResource = resources.Namespace
 )
 
-type storeType = storage.TestStruct
+type (
+	storeType = storage.TestStruct
+	callback  = func(obj *storeType) error
+)
 
 // Store is the interface to interact with the storage for storage.TestStruct
 type Store interface {
 	Upsert(ctx context.Context, obj *storeType) error
 	UpsertMany(ctx context.Context, objs []*storeType) error
 	Delete(ctx context.Context, key1 string) error
-	DeleteByQuery(ctx context.Context, q *v1.Query) ([]string, error)
+	DeleteByQuery(ctx context.Context, q *v1.Query) error
+	DeleteByQueryWithIDs(ctx context.Context, q *v1.Query) ([]string, error)
 	DeleteMany(ctx context.Context, identifiers []string) error
 	PruneMany(ctx context.Context, identifiers []string) error
 
@@ -49,17 +53,19 @@ type Store interface {
 	Search(ctx context.Context, q *v1.Query) ([]search.Result, error)
 
 	Get(ctx context.Context, key1 string) (*storeType, bool, error)
+	// Deprecated: use GetByQueryFn instead
 	GetByQuery(ctx context.Context, query *v1.Query) ([]*storeType, error)
+	GetByQueryFn(ctx context.Context, query *v1.Query, fn callback) error
 	GetMany(ctx context.Context, identifiers []string) ([]*storeType, []int, error)
 	GetIDs(ctx context.Context) ([]string, error)
 
-	Walk(ctx context.Context, fn func(obj *storeType) error) error
-	WalkByQuery(ctx context.Context, query *v1.Query, fn func(obj *storeType) error) error
+	Walk(ctx context.Context, fn callback) error
+	WalkByQuery(ctx context.Context, query *v1.Query, fn callback) error
 }
 
 // New returns a new Store instance using the provided sql instance.
 func New(db postgres.DB) Store {
-	return pgSearch.NewGenericStore[storeType, *storeType](
+	return pgSearch.NewGloballyScopedGenericStore[storeType, *storeType](
 		db,
 		schema,
 		pkGetter,
@@ -67,8 +73,9 @@ func New(db postgres.DB) Store {
 		copyFromTestStructs,
 		metricsSetAcquireDBConnDuration,
 		metricsSetPostgresOperationDurationTime,
-		pgSearch.GloballyScopedUpsertChecker[storeType, *storeType](targetResource),
 		targetResource,
+		nil,
+		nil,
 	)
 }
 
@@ -108,11 +115,12 @@ func insertIntoTestStructs(batch *pgx.Batch, obj *storage.TestStruct) error {
 		obj.GetEnums(),
 		obj.GetString_(),
 		obj.GetInt32Slice(),
+		protocompat.NilOrTime(obj.GetTimestamptz()),
 		obj.GetOneofnested().GetNested(),
 		serialized,
 	}
 
-	finalStr := "INSERT INTO test_structs (Key1, Key2, StringSlice, Bool, Uint64, Int64, Float, Labels, Timestamp, Enum, Enums, String_, Int32Slice, Oneofnested_Nested, serialized) VALUES($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15) ON CONFLICT(Key1) DO UPDATE SET Key1 = EXCLUDED.Key1, Key2 = EXCLUDED.Key2, StringSlice = EXCLUDED.StringSlice, Bool = EXCLUDED.Bool, Uint64 = EXCLUDED.Uint64, Int64 = EXCLUDED.Int64, Float = EXCLUDED.Float, Labels = EXCLUDED.Labels, Timestamp = EXCLUDED.Timestamp, Enum = EXCLUDED.Enum, Enums = EXCLUDED.Enums, String_ = EXCLUDED.String_, Int32Slice = EXCLUDED.Int32Slice, Oneofnested_Nested = EXCLUDED.Oneofnested_Nested, serialized = EXCLUDED.serialized"
+	finalStr := "INSERT INTO test_structs (Key1, Key2, StringSlice, Bool, Uint64, Int64, Float, Labels, Timestamp, Enum, Enums, String_, Int32Slice, Timestamptz, Oneofnested_Nested, serialized) VALUES($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16) ON CONFLICT(Key1) DO UPDATE SET Key1 = EXCLUDED.Key1, Key2 = EXCLUDED.Key2, StringSlice = EXCLUDED.StringSlice, Bool = EXCLUDED.Bool, Uint64 = EXCLUDED.Uint64, Int64 = EXCLUDED.Int64, Float = EXCLUDED.Float, Labels = EXCLUDED.Labels, Timestamp = EXCLUDED.Timestamp, Enum = EXCLUDED.Enum, Enums = EXCLUDED.Enums, String_ = EXCLUDED.String_, Int32Slice = EXCLUDED.Int32Slice, Timestamptz = EXCLUDED.Timestamptz, Oneofnested_Nested = EXCLUDED.Oneofnested_Nested, serialized = EXCLUDED.serialized"
 	batch.Queue(finalStr, values...)
 
 	var query string
@@ -148,47 +156,56 @@ func insertIntoTestStructsNesteds(batch *pgx.Batch, obj *storage.TestStruct_Nest
 	return nil
 }
 
+var copyColsTestStructs = []string{
+	"key1",
+	"key2",
+	"stringslice",
+	"bool",
+	"uint64",
+	"int64",
+	"float",
+	"labels",
+	"timestamp",
+	"enum",
+	"enums",
+	"string_",
+	"int32slice",
+	"timestamptz",
+	"oneofnested_nested",
+	"serialized",
+}
+
 func copyFromTestStructs(ctx context.Context, s pgSearch.Deleter, tx *postgres.Tx, objs ...*storage.TestStruct) error {
-	batchSize := pgSearch.MaxBatchSize
-	if len(objs) < batchSize {
-		batchSize = len(objs)
-	}
-	inputRows := make([][]interface{}, 0, batchSize)
-
-	// This is a copy so first we must delete the rows and re-add them
-	// Which is essentially the desired behaviour of an upsert.
-	deletes := make([]string, 0, batchSize)
-
-	copyCols := []string{
-		"key1",
-		"key2",
-		"stringslice",
-		"bool",
-		"uint64",
-		"int64",
-		"float",
-		"labels",
-		"timestamp",
-		"enum",
-		"enums",
-		"string_",
-		"int32slice",
-		"oneofnested_nested",
-		"serialized",
+	if len(objs) == 0 {
+		return nil
 	}
 
-	for idx, obj := range objs {
-		// Todo: ROX-9499 Figure out how to more cleanly template around this issue.
-		log.Debugf("This is here for now because there is an issue with pods_TerminatedInstances where the obj "+
-			"in the loop is not used as it only consists of the parent ID and the index.  Putting this here as a stop gap "+
-			"to simply use the object.  %s", obj)
+	{
+		// CopyFrom does not upsert, so delete existing rows first to achieve upsert behavior.
+		// Parent deletion cascades to children, so only the top-level parent needs deletion.
+		deletes := make([]string, 0, len(objs))
+		for _, obj := range objs {
+			deletes = append(deletes, obj.GetKey1())
+		}
+		if err := s.DeleteMany(ctx, deletes); err != nil {
+			return err
+		}
+	}
+
+	idx := 0
+	inputRows := pgx.CopyFromFunc(func() ([]any, error) {
+		if idx >= len(objs) {
+			return nil, nil
+		}
+		obj := objs[idx]
+		idx++
 
 		serialized, marshalErr := obj.MarshalVT()
 		if marshalErr != nil {
-			return marshalErr
+			return nil, marshalErr
 		}
 
-		inputRows = append(inputRows, []interface{}{
+		return []interface{}{
 			obj.GetKey1(),
 			obj.GetKey2(),
 			obj.GetStringSlice(),
@@ -202,35 +219,17 @@ func copyFromTestStructs(ctx context.Context, s pgSearch.Deleter, tx *postgres.T
 			obj.GetEnums(),
 			obj.GetString_(),
 			obj.GetInt32Slice(),
+			protocompat.NilOrTime(obj.GetTimestamptz()),
 			obj.GetOneofnested().GetNested(),
 			serialized,
-		})
+		}, nil
+	})
 
-		// Add the ID to be deleted.
-		deletes = append(deletes, obj.GetKey1())
-
-		// if we hit our batch size we need to push the data
-		if (idx+1)%batchSize == 0 || idx == len(objs)-1 {
-			// copy does not upsert so have to delete first.  parent deletion cascades so only need to
-			// delete for the top level parent
-
-			if err := s.DeleteMany(ctx, deletes); err != nil {
-				return err
-			}
-			// clear the inserts and vals for the next batch
-			deletes = deletes[:0]
-
-			if _, err := tx.CopyFrom(ctx, pgx.Identifier{"test_structs"}, copyCols, pgx.CopyFromRows(inputRows)); err != nil {
-				return err
-			}
-			// clear the input rows for the next batch
-			inputRows = inputRows[:0]
-		}
+	if _, err := tx.CopyFrom(ctx, pgx.Identifier{"test_structs"}, copyColsTestStructs, inputRows); err != nil {
+		return err
 	}
 
-	for idx, obj := range objs {
-		_ = idx // idx may or may not be used depending on how nested we are, so avoid compile-time errors.
-
+	for _, obj := range objs {
 		if err := copyFromTestStructsNesteds(ctx, s, tx, obj.GetKey1(), obj.GetNested()...); err != nil {
 			return err
 		}
@@ -239,31 +238,31 @@ func copyFromTestStructs(ctx context.Context, s pgSearch.Deleter, tx *postgres.T
 	return nil
 }
 
+var copyColsTestStructsNesteds = []string{
+	"test_structs_key1",
+	"idx",
+	"nested",
+	"isnested",
+	"int64",
+	"nested2_nested2",
+	"nested2_isnested",
+	"nested2_int64",
+}
+
 func copyFromTestStructsNesteds(ctx context.Context, s pgSearch.Deleter, tx *postgres.Tx, testStructKey1 string, objs ...*storage.TestStruct_Nested) error {
-	batchSize := pgSearch.MaxBatchSize
-	if len(objs) < batchSize {
-		batchSize = len(objs)
-	}
-	inputRows := make([][]interface{}, 0, batchSize)
-
-	copyCols := []string{
-		"test_structs_key1",
-		"idx",
-		"nested",
-		"isnested",
-		"int64",
-		"nested2_nested2",
-		"nested2_isnested",
-		"nested2_int64",
+	if len(objs) == 0 {
+		return nil
 	}
 
-	for idx, obj := range objs {
-		// Todo: ROX-9499 Figure out how to more cleanly template around this issue.
-		log.Debugf("This is here for now because there is an issue with pods_TerminatedInstances where the obj "+
-			"in the loop is not used as it only consists of the parent ID and the index.  Putting this here as a stop gap "+
-			"to simply use the object.  %s", obj)
+	idx := 0
+	inputRows := pgx.CopyFromFunc(func() ([]any, error) {
+		if idx >= len(objs) {
+			return nil, nil
+		}
+		obj := objs[idx]
+		idx++
 
-		inputRows = append(inputRows, []interface{}{
+		return []interface{}{
 			testStructKey1,
 			idx,
 			obj.GetNested(),
@@ -272,19 +271,11 @@ func copyFromTestStructsNesteds(ctx context.Context, s pgSearch.Deleter, tx *pos
 			obj.GetNested2().GetNested2(),
 			obj.GetNested2().GetIsNested(),
 			obj.GetNested2().GetInt64(),
-		})
+		}, nil
+	})
 
-		// if we hit our batch size we need to push the data
-		if (idx+1)%batchSize == 0 || idx == len(objs)-1 {
-			// copy does not upsert so have to delete first.  parent deletion cascades so only need to
-			// delete for the top level parent
-
-			if _, err := tx.CopyFrom(ctx, pgx.Identifier{"test_structs_nesteds"}, copyCols, pgx.CopyFromRows(inputRows)); err != nil {
-				return err
-			}
-			// clear the input rows for the next batch
-			inputRows = inputRows[:0]
-		}
+	if _, err := tx.CopyFrom(ctx, pgx.Identifier{"test_structs_nesteds"}, copyColsTestStructsNesteds, inputRows); err != nil {
+		return err
 	}
 
 	return nil

@@ -12,13 +12,11 @@ updates:
       day: 'wednesday'
     # always update package.json files to match new version for any package in UI monorepo
     versioning-strategy: increase
-    open-pull-requests-limit: 1
+    open-pull-requests-limit: 3
     labels:
       - "dependencies"
       - "area/ui"
       - "auto-retest"
-    reviewers:
-      - "stackrox/ui-dep-updaters"
     commit-message:
       include: scope
       prefix: chore
@@ -27,14 +25,12 @@ updates:
     directory: 'qa-tests-backend/'
     schedule:
       interval: 'daily'
-    open-pull-requests-limit: 1
+    open-pull-requests-limit: 3
     labels:
       - "ci-all-qa-tests"
       - "dependencies"
       - "auto-merge"
       - "auto-retest"
-    reviewers:
-      - "stackrox/backend-dep-updaters"
     commit-message:
       include: scope
       prefix: chore
@@ -49,8 +45,6 @@ updates:
       - "dependencies"
       - "auto-merge"
       - "auto-retest"
-    reviewers:
-      - "stackrox/backend-dep-updaters"
     commit-message:
       include: scope
       prefix: chore
@@ -64,6 +58,9 @@ updates:
       # so we ensure Scanner V4 does not have any unexpected changes.
       - dependency-name: "github.com/quay/claircore"
     groups:
+      golang.org/x:
+        patterns:
+          - "golang.org/x/*"
       k8s.io:
         update-types:
           - "patch"
@@ -84,8 +81,6 @@ updates:
     - "dependencies"
     - "auto-merge"
     - "auto-retest"
-    reviewers:
-      - "stackrox/backend-dep-updaters"
     commit-message:
       include: scope
       prefix: chore
@@ -100,8 +95,6 @@ updates:
     - "dependencies"
     - "auto-merge"
     - "auto-retest"
-    reviewers:
-    - "stackrox/backend-dep-updaters"
     commit-message:
       include: scope
       prefix: chore
@@ -116,14 +109,12 @@ updates:
     - "dependencies"
     - "auto-merge"
     - "auto-retest"
-    reviewers:
-      - "stackrox/backend-dep-updaters"
     commit-message:
       include: scope
       prefix: chore
 
   - package-ecosystem: 'gomod'
-    directory: '/tools/retest/'
+    directory: '/tools/check-workflow-run'
     schedule:
       interval: 'weekly'
       day: 'wednesday'
@@ -132,8 +123,20 @@ updates:
     - "dependencies"
     - "auto-merge"
     - "auto-retest"
-    reviewers:
-    - "stackrox/backend-dep-updaters"
+    commit-message:
+      include: scope
+      prefix: chore
+
+  - package-ecosystem: 'gomod'
+    directory: '/tools/build/'
+    schedule:
+      interval: 'weekly'
+      day: 'wednesday'
+    open-pull-requests-limit: 3
+    labels:
+    - "dependencies"
+    - "auto-merge"
+    - "auto-retest"
     commit-message:
       include: scope
       prefix: chore
@@ -149,8 +152,6 @@ updates:
     - "area/operator"
     - "auto-merge"
     - "auto-retest"
-    reviewers:
-    - "stackrox/backend-dep-updaters"
     commit-message:
       include: scope
       prefix: chore
@@ -166,8 +167,21 @@ updates:
     - "area/operator"
     - "auto-merge"
     - "auto-retest"
-    reviewers:
-    - "stackrox/backend-dep-updaters"
+    commit-message:
+      include: scope
+      prefix: chore
+
+  - package-ecosystem: 'gomod'
+    directory: '/operator/tools/kubebuilder/'
+    schedule:
+      interval: 'weekly'
+      day: 'wednesday'
+    open-pull-requests-limit: 3
+    labels:
+    - "dependencies"
+    - "area/operator"
+    - "auto-merge"
+    - "auto-retest"
     commit-message:
       include: scope
       prefix: chore
@@ -183,8 +197,6 @@ updates:
     - "area/operator"
     - "auto-merge"
     - "auto-retest"
-    reviewers:
-    - "stackrox/backend-dep-updaters"
     commit-message:
       include: scope
       prefix: chore
@@ -200,8 +212,21 @@ updates:
     - "area/operator"
     - "auto-merge"
     - "auto-retest"
-    reviewers:
-    - "stackrox/backend-dep-updaters"
+    commit-message:
+      include: scope
+      prefix: chore
+
+  - package-ecosystem: 'gomod'
+    directory: '/operator/tools/crdify/'
+    schedule:
+      interval: 'weekly'
+      day: 'wednesday'
+    open-pull-requests-limit: 3
+    labels:
+    - "dependencies"
+    - "area/operator"
+    - "auto-merge"
+    - "auto-retest"
     commit-message:
       include: scope
       prefix: chore
@@ -217,8 +242,6 @@ updates:
     - "area/operator"
     - "auto-merge"
     - "auto-retest"
-    reviewers:
-    - "stackrox/backend-dep-updaters"
     commit-message:
       include: scope
       prefix: chore
@@ -238,14 +261,12 @@ updates:
     - "area/operator"
     - "auto-merge"
     - "auto-retest"
-    reviewers:
-    - "stackrox/backend-dep-updaters"
     commit-message:
       include: scope
       prefix: chore
 
   - package-ecosystem: 'gomod'
-    directory: '/scanner/tools/'
+    directory: '/scanner/hack/quay'
     schedule:
       interval: 'weekly'
       day: 'wednesday'
@@ -255,85 +276,125 @@ updates:
     - "area/scanner"
     - "auto-merge"
     - "auto-retest"
-    reviewers:
-    - "stackrox/scanner"
+    commit-message:
+      include: scope
+      prefix: chore
+
+  - package-ecosystem: 'gomod'
+    directory: '/tests/performance/scale'
+    schedule:
+      interval: 'weekly'
+      day: 'wednesday'
+    open-pull-requests-limit: 3
+    labels:
+    - "dependencies"
+    - "auto-merge"
+    - "auto-retest"
     commit-message:
       include: scope
       prefix: chore
 
   - package-ecosystem: 'docker'
     directory: 'operator/'
+    exclude-paths: [ '**/konflux*.Dockerfile' ]
     schedule:
       interval: 'weekly'
       day: 'wednesday'
-    open-pull-requests-limit: 1
+    open-pull-requests-limit: 3
     labels:
     - "dependencies"
     - "area/operator"
     - "auto-merge"
     - "auto-retest"
-    reviewers:
-    - "stackrox/backend-dep-updaters"
+    commit-message:
+      include: scope
+      prefix: chore
+    ignore:
+      # ubi9/go-toolset has both Go-based (1.x) and RHEL-based (9.x) tags.
+      # Only track Go version tags.
+      - dependency-name: "ubi9/go-toolset"
+        versions: [">= 2"]
+
+  - package-ecosystem: 'docker'
+    directory: 'operator/tests/controller/metrics'
+    exclude-paths: [ '**/konflux*.Dockerfile' ]
+    schedule:
+      interval: 'monthly'
+    open-pull-requests-limit: 3
+    labels:
+    - "dependencies"
+    - "area/operator"
+    - "auto-merge"
+    - "auto-retest"
     commit-message:
       include: scope
       prefix: chore
 
   - package-ecosystem: 'docker'
     directory: 'image/rhel'
+    exclude-paths: [ '**/konflux*.Dockerfile' ]
     schedule:
       interval: 'weekly'
       day: 'wednesday'
-    open-pull-requests-limit: 1
+    open-pull-requests-limit: 3
     labels:
     - "ci-all-qa-tests"
     - "dependencies"
-    reviewers:
-    - "stackrox/backend-dep-updaters"
     commit-message:
       include: scope
       prefix: chore
 
   - package-ecosystem: 'docker'
     directory: 'image/postgres'
+    exclude-paths: [ '**/konflux*.Dockerfile' ]
     schedule:
       interval: 'weekly'
       day: 'wednesday'
-    open-pull-requests-limit: 1
+    open-pull-requests-limit: 3
     labels:
     - "ci-all-qa-tests"
     - "dependencies"
-    reviewers:
-    - "stackrox/backend-dep-updaters"
     commit-message:
       include: scope
       prefix: chore
 
   - package-ecosystem: 'docker'
     directory: 'scanner/image/scanner'
+    exclude-paths: [ '**/konflux*.Dockerfile' ]
     schedule:
       interval: 'weekly'
       day: 'wednesday'
-    open-pull-requests-limit: 1
+    open-pull-requests-limit: 3
     labels:
     - "ci-all-qa-tests"
     - "dependencies"
-    reviewers:
-    - "stackrox/scanner"
     commit-message:
       include: scope
       prefix: chore
 
   - package-ecosystem: 'docker'
     directory: 'scanner/image/db'
+    exclude-paths: [ '**/konflux*.Dockerfile' ]
+    schedule:
+      interval: 'weekly'
+      day: 'wednesday'
+    open-pull-requests-limit: 3
+    labels:
+    - "ci-all-qa-tests"
+    - "dependencies"
+    commit-message:
+      include: scope
+      prefix: chore
+
+  - package-ecosystem: 'docker'
+    directory: '.github/test-images'
     schedule:
       interval: 'weekly'
       day: 'wednesday'
     open-pull-requests-limit: 1
     labels:
-    - "ci-all-qa-tests"
     - "dependencies"
-    reviewers:
-    - "stackrox/scanner"
+    - "auto-retest"
     commit-message:
       include: scope
       prefix: chore
@@ -343,9 +404,7 @@ updates:
     schedule:
       interval: 'weekly'
       day: 'wednesday'
-    open-pull-requests-limit: 1
-    reviewers:
-    - "stackrox/backend-dep-updaters"
+    open-pull-requests-limit: 3
     commit-message:
       include: scope
       prefix: chore
@@ -353,3 +412,120 @@ updates:
       actions:
         patterns:
           - "actions/*"
+
+  # Below configuration is workaround for dependabot issue
+  # about local actions in .github/actions/ are not checked
+  # https://github.com/dependabot/dependabot-core/issues/6345
+
+  - package-ecosystem: github-actions
+    directory: /.github/actions/cache-go-dependencies
+    schedule:
+      interval: 'weekly'
+      day: 'wednesday'
+    open-pull-requests-limit: 3
+    commit-message:
+      include: scope
+      prefix: chore
+    groups:
+      actions:
+        patterns:
+        - "actions/*"
+
+  - package-ecosystem: github-actions
+    directory: /.github/actions/cache-gradle-dependencies
+    schedule:
+      interval: 'weekly'
+      day: 'wednesday'
+    open-pull-requests-limit: 3
+    commit-message:
+      include: scope
+      prefix: chore
+    groups:
+      actions:
+        patterns:
+        - "actions/*"
+
+  - package-ecosystem: github-actions
+    directory: /.github/actions/cache-ui-dependencies
+    schedule:
+      interval: 'weekly'
+      day: 'wednesday'
+    open-pull-requests-limit: 3
+    commit-message:
+      include: scope
+      prefix: chore
+    groups:
+      actions:
+        patterns:
+        - "actions/*"
+
+  - package-ecosystem: github-actions
+    directory: /.github/actions/download-artifact-with-retry
+    schedule:
+      interval: 'weekly'
+      day: 'wednesday'
+    open-pull-requests-limit: 3
+    commit-message:
+      include: scope
+      prefix: chore
+    groups:
+      actions:
+        patterns:
+        - "actions/*"
+
+  - package-ecosystem: github-actions
+    directory: /.github/actions/handle-tagged-build
+    schedule:
+      interval: 'weekly'
+      day: 'wednesday'
+    open-pull-requests-limit: 3
+    commit-message:
+      include: scope
+      prefix: chore
+    groups:
+      actions:
+        patterns:
+        - "actions/*"
+
+
+  - package-ecosystem: github-actions
+    directory: /.github/actions/job-preamble
+    schedule:
+      interval: 'weekly'
+      day: 'wednesday'
+    open-pull-requests-limit: 3
+    commit-message:
+      include: scope
+      prefix: chore
+    groups:
+      actions:
+        patterns:
+        - "actions/*"
+
+  - package-ecosystem: github-actions
+    directory: /.github/actions/junit2jira
+    schedule:
+      interval: 'weekly'
+      day: 'wednesday'
+    open-pull-requests-limit: 3
+    commit-message:
+      include: scope
+      prefix: chore
+    groups:
+      actions:
+        patterns:
+        - "actions/*"
+
+  - package-ecosystem: github-actions
+    directory: /.github/actions/upload-artifact-with-retry
+    schedule:
+      interval: 'weekly'
+      day: 'wednesday'
+    open-pull-requests-limit: 3
+    commit-message:
+      include: scope
+      prefix: chore
+    groups:
+      actions:
+        patterns:
+        - "actions/*"

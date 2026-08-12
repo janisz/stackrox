@@ -1,17 +1,17 @@
-import React, { ReactElement, useState } from 'react';
-import { format } from 'date-fns';
+import { useState } from 'react';
+import type { ReactElement } from 'react';
 import {
     Card,
+    CardBody,
+    CardExpandableContent,
     CardHeader,
     CardTitle,
-    CardExpandableContent,
-    CardBody,
     DescriptionList,
 } from '@patternfly/react-core';
 
 import DescriptionListItem from 'Components/DescriptionListItem';
-import dateTimeFormat from 'constants/dateTimeFormat';
-import { NetworkFlowInfo } from 'types/alert.proto';
+import type { NetworkFlowInfo } from 'types/alert.proto';
+import { getDateTime } from 'utils/dateUtils';
 
 export type NetworkFlowCardProps = {
     networkFlowInfo: NetworkFlowInfo;
@@ -23,12 +23,12 @@ function NetworkFlowCard({ networkFlowInfo, message, time }: NetworkFlowCardProp
     const [isExpanded, setIsExpanded] = useState(true);
 
     function onExpand() {
-        setIsExpanded(!isExpanded);
+        setIsExpanded((prev) => !prev);
     }
 
     return (
-        <div className="pf-v5-u-mb-md">
-            <Card isExpanded={isExpanded} isFlat>
+        <div className="pf-v6-u-mb-md">
+            <Card isExpanded={isExpanded}>
                 <CardHeader
                     onExpand={onExpand}
                     toggleButtonProps={{ 'aria-expanded': isExpanded, 'aria-label': 'Details' }}
@@ -36,7 +36,7 @@ function NetworkFlowCard({ networkFlowInfo, message, time }: NetworkFlowCardProp
                     <CardTitle>{message}</CardTitle>
                 </CardHeader>
                 <CardExpandableContent>
-                    <CardBody>
+                    <CardBody className="pf-v6-u-mt-lg">
                         <DescriptionList>
                             <DescriptionListItem
                                 term="Source entity type"
@@ -95,7 +95,7 @@ function NetworkFlowCard({ networkFlowInfo, message, time }: NetworkFlowCardProp
                             <DescriptionListItem term="Protocol" desc={networkFlowInfo.protocol} />
                             <DescriptionListItem
                                 term="Time"
-                                desc={time ? format(time, dateTimeFormat) : 'N/A'}
+                                desc={time ? getDateTime(time) : 'N/A'}
                             />
                         </DescriptionList>
                     </CardBody>

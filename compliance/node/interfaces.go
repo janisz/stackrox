@@ -28,11 +28,3 @@ type NodeIndexer interface {
 	IndexNode(ctx context.Context) (*v4.IndexReport, error)
 	GetIntervals() *utils.NodeScanIntervals
 }
-
-// UnconfirmedMessageHandler handles the observation of sending, and ACK/NACK messages
-type UnconfirmedMessageHandler interface {
-	HandleACK()
-	HandleNACK()
-	ObserveSending()
-	RetryCommand() <-chan struct{}
-}

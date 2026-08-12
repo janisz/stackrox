@@ -41,10 +41,6 @@ func (s *BlobsStoreSuite) SetupTest() {
 	s.NoError(err)
 }
 
-func (s *BlobsStoreSuite) TearDownSuite() {
-	s.testDB.Teardown(s.T())
-}
-
 func (s *BlobsStoreSuite) TestStore() {
 	ctx := sac.WithAllAccess(context.Background())
 
@@ -96,6 +92,11 @@ func (s *BlobsStoreSuite) TestStore() {
 	}
 
 	s.NoError(store.UpsertMany(ctx, blobs))
+
+	foundBlobs, missing, err := store.GetMany(ctx, blobIDs)
+	s.NoError(err)
+	s.Empty(missing)
+	protoassert.ElementsMatch(s.T(), blobs, foundBlobs)
 
 	blobCount, err = store.Count(ctx, search.EmptyQuery())
 	s.NoError(err)

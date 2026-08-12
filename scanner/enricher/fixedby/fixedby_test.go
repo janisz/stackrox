@@ -1,11 +1,11 @@
 package fixedby_test
 
 import (
-	"context"
 	"encoding/json"
 	"testing"
 
 	"github.com/quay/claircore"
+	"github.com/quay/claircore/test"
 	"github.com/quay/claircore/toolkit/types/cpe"
 	"github.com/stackrox/rox/scanner/enricher/fixedby"
 	"github.com/stretchr/testify/assert"
@@ -226,7 +226,7 @@ func TestEnrich_AWS(t *testing.T) {
 					"1": {"1", "2", "3", "4"},
 				},
 			},
-			expected: "3.40.1",
+			expected: "3.40.0-2.amzn2023.0.4",
 		},
 	}
 
@@ -1224,6 +1224,7 @@ func TestEnrich_RHCC(t *testing.T) {
 				Repositories: map[string]*claircore.Repository{
 					"1": {
 						Name: "Red Hat Container Catalog",
+						Key:  "rhcc-container-repository",
 						URI:  "https://catalog.redhat.com/software/containers/explore",
 					},
 				},
@@ -1265,6 +1266,7 @@ func TestEnrich_RHCC(t *testing.T) {
 				Repositories: map[string]*claircore.Repository{
 					"1": {
 						Name: "Red Hat Container Catalog",
+						Key:  "rhcc-container-repository",
 						URI:  "https://catalog.redhat.com/software/containers/explore",
 					},
 				},
@@ -1802,8 +1804,9 @@ func TestEnrich_Ubuntu(t *testing.T) {
 }
 
 func runTest(t *testing.T, tc testcase) {
+	ctx := test.Logging(t)
 	var e fixedby.Enricher
-	_, m, err := e.Enrich(context.Background(), nil, tc.report)
+	_, m, err := e.Enrich(ctx, nil, tc.report)
 	assert.NoError(t, err)
 
 	got := make(map[string]string)

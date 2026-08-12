@@ -79,6 +79,12 @@ func (p *pipelineImpl) Run(ctx context.Context, _ string, msg *central.MsgFromSe
 		log.Warn("Removal of node inventory is unsupported action")
 		return nil
 	}
+	if !features.LegacyScanner.Enabled() {
+		replyCompliance(ctx, "", ninv.GetNodeName(), central.NodeInventoryACK_ACK, injector)
+		log.Debug("Discarding v2 NodeInventory because the legacy scanner is disabled")
+		return nil
+	}
+
 	ninv = ninv.CloneVT()
 
 	// Read the node from the database, if not found we fail.
@@ -94,7 +100,7 @@ func (p *pipelineImpl) Run(ctx context.Context, _ string, msg *central.MsgFromSe
 
 	if shouldDiscardMsg(node) {
 		// To prevent resending the inventory, still acknowledge receipt of it
-		sendComplianceAck(ctx, node, ninv, injector)
+		replyCompliance(ctx, node.GetClusterId(), ninv.GetNodeName(), central.NodeInventoryACK_ACK, injector)
 		log.Debug("Discarding v2 NodeScan in favor of v4 NodeScan")
 		return nil
 	}
@@ -115,7 +121,7 @@ func (p *pipelineImpl) Run(ctx context.Context, _ string, msg *central.MsgFromSe
 		return err
 	}
 
-	sendComplianceAck(ctx, node, ninv, injector)
+	replyCompliance(ctx, node.GetClusterId(), ninv.GetNodeName(), central.NodeInventoryACK_ACK, injector)
 	return nil
 }
 
@@ -123,7 +129,7 @@ func (p *pipelineImpl) Run(ctx context.Context, _ string, msg *central.MsgFromSe
 func shouldDiscardMsg(node *storage.Node) bool {
 	// In a mixed environment, there might be v2-only clusters, so there is no Scanner v4 scan available for that cluster.
 	// If a cluster only ever produces v2 NodeScans, they need to be processed and persisted, even if Node Indexing is enabled.
-	if node.GetScan() == nil || node.GetScan().ScannerVersion != storage.NodeScan_SCANNER_V4 {
+	if node.GetScan() == nil || node.GetScan().GetScannerVersion() != storage.NodeScan_SCANNER_V4 {
 		return false
 	}
 	// Discard this v2 message if NodeScanning v4 and v2 are running in parallel on the same cluster.
@@ -138,29 +144,31 @@ func shouldDiscardMsg(node *storage.Node) bool {
 	return false
 }
 
-func sendComplianceAck(ctx context.Context, node *storage.Node, ninv *storage.NodeInventory, injector common.MessageInjector) {
+// replyCompliance uses injector to send a SensorACK and NodeInventoryACK to Compliance.
+func replyCompliance(ctx context.Context, clusterID, nodeName string, t central.NodeInventoryACK_Action, injector common.MessageInjector) {
 	if injector == nil {
 		return
 	}
-	reply := replyCompliance(node.GetClusterId(), ninv.GetNodeName(), central.NodeInventoryACK_ACK)
-	if err := injector.InjectMessage(ctx, reply); err != nil {
-		log.Warnf("Failed sending node-inventory-ACK to Sensor for %s: %v", nodeDatastore.NodeString(node), err)
-	} else {
-		log.Debugf("Sent node-inventory-ACK for %s", nodeDatastore.NodeString(node))
-	}
-}
 
-func replyCompliance(clusterID, nodeName string, t central.NodeInventoryACK_Action) *central.MsgToSensor {
-	return &central.MsgToSensor{
-		Msg: &central.MsgToSensor_NodeInventoryAck{
-			NodeInventoryAck: &central.NodeInventoryACK{
-				ClusterId:   clusterID,
-				NodeName:    nodeName,
-				Action:      t,
-				MessageType: central.NodeInventoryACK_NodeInventory,
-			},
-		},
-	}
+	common.SendSensorACK(ctx, convertLegacyActionToSensor(t), central.SensorACK_NODE_INVENTORY, nodeName, "", injector)
+
+	common.SendLegacyNodeInventoryACK(
+		ctx,
+		clusterID,
+		nodeName,
+		t,
+		central.NodeInventoryACK_NodeInventory,
+		injector,
+	)
+
+	log.Debugf("Sent node-inventory ACKs for node %s in cluster %s", nodeName, clusterID)
 }
 
 func (p *pipelineImpl) OnFinish(_ string) {}
+
+func convertLegacyActionToSensor(action central.NodeInventoryACK_Action) central.SensorACK_Action {
+	if action == central.NodeInventoryACK_ACK {
+		return central.SensorACK_ACK
+	}
+	return central.SensorACK_NACK
+}

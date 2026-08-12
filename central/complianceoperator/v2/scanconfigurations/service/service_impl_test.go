@@ -8,9 +8,9 @@ import (
 	"github.com/pkg/errors"
 	blobDSMocks "github.com/stackrox/rox/central/blob/datastore/mocks"
 	clusterDatastoreMocks "github.com/stackrox/rox/central/cluster/datastore/mocks"
-	benchmarkMocks "github.com/stackrox/rox/central/complianceoperator/v2/benchmarks/datastore/mocks"
 	managerMocks "github.com/stackrox/rox/central/complianceoperator/v2/compliancemanager/mocks"
 	profileDatastore "github.com/stackrox/rox/central/complianceoperator/v2/profiles/datastore/mocks"
+	"github.com/stackrox/rox/central/complianceoperator/v2/report"
 	snapshotMocks "github.com/stackrox/rox/central/complianceoperator/v2/report/datastore/mocks"
 	reportManagerMocks "github.com/stackrox/rox/central/complianceoperator/v2/report/manager/mocks"
 	scanConfigMocks "github.com/stackrox/rox/central/complianceoperator/v2/scanconfigurations/datastore/mocks"
@@ -32,6 +32,7 @@ import (
 	"github.com/stackrox/rox/pkg/protocompat"
 	"github.com/stackrox/rox/pkg/protoconv"
 	"github.com/stackrox/rox/pkg/sac"
+	"github.com/stackrox/rox/pkg/sac/resources"
 	"github.com/stackrox/rox/pkg/search"
 	"github.com/stackrox/rox/pkg/timestamp"
 	"github.com/stackrox/rox/pkg/uuid"
@@ -98,7 +99,6 @@ type ComplianceScanConfigServiceTestSuite struct {
 	notifierDS                  *notifierDS.MockDataStore
 	profileDS                   *profileDatastore.MockDataStore
 	clusterDatastore            *clusterDatastoreMocks.MockDataStore
-	benchmarkDS                 *benchmarkMocks.MockDataStore
 	snapshotDS                  *snapshotMocks.MockDataStore
 	blobDS                      *blobDSMocks.MockDatastore
 	service                     Service
@@ -123,10 +123,9 @@ func (s *ComplianceScanConfigServiceTestSuite) SetupTest() {
 	s.suiteDataStore = suiteMocks.NewMockDataStore(s.mockCtrl)
 	s.profileDS = profileDatastore.NewMockDataStore(s.mockCtrl)
 	s.clusterDatastore = clusterDatastoreMocks.NewMockDataStore(s.mockCtrl)
-	s.benchmarkDS = benchmarkMocks.NewMockDataStore(s.mockCtrl)
 	s.snapshotDS = snapshotMocks.NewMockDataStore(s.mockCtrl)
 	s.blobDS = blobDSMocks.NewMockDatastore(s.mockCtrl)
-	s.service = New(s.scanConfigDatastore, s.scanSettingBindingDatastore, s.suiteDataStore, s.manager, s.reportManager, s.notifierDS, s.profileDS, s.benchmarkDS, s.clusterDatastore, s.snapshotDS, s.blobDS)
+	s.service = New(s.scanConfigDatastore, s.scanSettingBindingDatastore, s.suiteDataStore, s.manager, s.reportManager, s.notifierDS, s.profileDS, s.clusterDatastore, s.snapshotDS, s.blobDS)
 }
 
 func (s *ComplianceScanConfigServiceTestSuite) TearDownTest() {
@@ -259,7 +258,9 @@ func (s *ComplianceScanConfigServiceTestSuite) TestDeleteComplianceScanConfigura
 	}
 	s.manager.EXPECT().DeleteScan(gomock.Any(), validID).Return(nil).Times(1)
 	s.snapshotDS.EXPECT().SearchSnapshots(gomock.Any(), gomock.Any()).Times(1).Return(snapshots, nil)
-	s.blobDS.EXPECT().Delete(gomock.Any(), common.GetComplianceReportBlobPath(validID, snapshotID)).Times(1).Return(nil)
+	s.blobDS.EXPECT().Delete(gomock.Cond[context.Context](func(ctx context.Context) bool {
+		return validateBlobContext(ctx, storage.Access_READ_WRITE_ACCESS)
+	}), common.GetComplianceReportBlobPath(validID, snapshotID)).Times(1).Return(nil)
 
 	_, err := s.service.DeleteComplianceScanConfiguration(allAccessContext, &v2.ResourceByID{Id: validID})
 	s.Require().NoError(err)
@@ -276,7 +277,7 @@ func (s *ComplianceScanConfigServiceTestSuite) TestDeleteComplianceScanConfigura
 
 	_, err = s.service.DeleteComplianceScanConfiguration(allAccessContext, &v2.ResourceByID{Id: failingID})
 	s.Require().Error(err)
-	s.Require().Contains(err.Error(), "Unable to delete scan config")
+	s.Require().Contains(err.Error(), "manager error")
 }
 
 func (s *ComplianceScanConfigServiceTestSuite) TestCreateComplianceScanConfigurationScanExists() {
@@ -284,12 +285,12 @@ func (s *ComplianceScanConfigServiceTestSuite) TestCreateComplianceScanConfigura
 
 	request := getTestAPIRec()
 	storageRequest := convertV2ScanConfigToStorage(allAccessContext, request)
-	managerErr := errors.Errorf("Scan Configuration named %q already exists.", request.GetScanName())
+	managerErr := errors.Errorf("Scan configuration named %q already exists.", request.GetScanName())
 	s.manager.EXPECT().ProcessScanRequest(gomock.Any(), storageRequest, []string{fixtureconsts.Cluster1}).Return(nil, managerErr).Times(1)
-	expectedErr := errors.Wrapf(errox.InvalidArgs, "Unable to process scan config. Scan Configuration named %q already exists.", request.GetScanName())
 
 	config, err := s.service.CreateComplianceScanConfiguration(allAccessContext, request)
-	s.Require().Equal(expectedErr.Error(), err.Error())
+	s.Require().ErrorIs(err, errox.InvalidArgs)
+	s.Require().Contains(err.Error(), managerErr.Error())
 	s.Require().Nil(config)
 }
 
@@ -574,7 +575,7 @@ func (s *ComplianceScanConfigServiceTestSuite) ListComplianceScanConfigProfiles(
 			}
 
 			s.scanConfigDatastore.EXPECT().GetProfilesNames(gomock.Any(), tc.query).Return([]string{"ocp4"}, nil).Times(1)
-			s.scanConfigDatastore.EXPECT().CountDistinctProfiles(gomock.Any(), tc.expectedCountQ).Return(1, nil).Times(1)
+			s.scanConfigDatastore.EXPECT().DistinctProfiles(gomock.Any(), tc.expectedCountQ).Return(map[string]int{"ocp4": 1}, nil).Times(1)
 
 			searchQuery := search.NewQueryBuilder().AddSelectFields().AddExactMatches(search.ComplianceOperatorProfileName, "ocp4").ProtoQuery()
 			searchQuery.Pagination = &v1.QueryPagination{}
@@ -606,15 +607,6 @@ func (s *ComplianceScanConfigServiceTestSuite) ListComplianceScanConfigProfiles(
 				},
 			}
 			s.profileDS.EXPECT().SearchProfiles(gomock.Any(), searchQuery).Return(profiles, nil).Times(1)
-
-			for _, profile := range profiles {
-				s.benchmarkDS.EXPECT().GetBenchmarksByProfileName(s.ctx, profile.GetName()).Return([]*storage.ComplianceOperatorBenchmarkV2{{
-					Id:        uuid.NewV4().String(),
-					Name:      "CIS",
-					ShortName: "OCP_CIS",
-					Version:   "1-5",
-				}}, nil).Times(1)
-			}
 
 			configProfiles, err := s.service.ListComplianceScanConfigProfiles(allAccessContext, tc.query)
 			s.Require().NoError(err)
@@ -679,7 +671,7 @@ func (s *ComplianceScanConfigServiceTestSuite) TestRunReport() {
 		ReportNotificationMethod: v2.NotificationMethod_EMAIL,
 	})
 	s.Require().NoError(err)
-	s.Equal(v2.ComplianceRunReportResponse_SUBMITTED, resp.RunState, "Failed to submit report")
+	s.Equal(v2.ComplianceRunReportResponse_SUBMITTED, resp.GetRunState(), "Failed to submit report")
 
 	s.scanConfigDatastore.EXPECT().GetScanConfiguration(ctx, validScanConfigID).Return(validScanConfig, true, nil)
 	s.reportManager.EXPECT().SubmitReportRequest(ctx, validScanConfig, storage.ComplianceOperatorReportStatus_DOWNLOAD).Return(nil)
@@ -689,7 +681,7 @@ func (s *ComplianceScanConfigServiceTestSuite) TestRunReport() {
 		ReportNotificationMethod: v2.NotificationMethod_DOWNLOAD,
 	})
 	s.Require().NoError(err)
-	s.Equal(v2.ComplianceRunReportResponse_SUBMITTED, resp.RunState, "Failed to submit report")
+	s.Equal(v2.ComplianceRunReportResponse_SUBMITTED, resp.GetRunState(), "Failed to submit report")
 }
 
 func (s *ComplianceScanConfigServiceTestSuite) TestGetReportHistory() {
@@ -730,6 +722,14 @@ func (s *ComplianceScanConfigServiceTestSuite) TestGetReportHistory() {
 					StartedAt:                now,
 					CompletedAt:              now,
 				},
+				FailedClusters: []*storage.ComplianceOperatorReportSnapshotV2_FailedCluster{
+					{
+						ClusterId:       "cluster-1",
+						ClusterName:     "cluster-1",
+						OperatorVersion: "v1.6.0",
+						Reasons:         []string{report.INTERNAL_ERROR},
+					},
+				},
 			},
 		}
 		sc := &storage.ComplianceOperatorScanConfigurationV2{
@@ -754,6 +754,152 @@ func (s *ComplianceScanConfigServiceTestSuite) TestGetReportHistory() {
 						ReportNotificationMethod: v2.NotificationMethod_EMAIL,
 						StartedAt:                now,
 						CompletedAt:              now,
+						FailedClusters: []*v2.FailedCluster{
+							{
+								ClusterId:       "cluster-1",
+								ClusterName:     "cluster-1",
+								OperatorVersion: "v1.6.0",
+								Reason:          report.INTERNAL_ERROR,
+							},
+						},
+					},
+					ReportData: &v2.ComplianceScanConfigurationStatus{
+						Id:       scanConfigID,
+						ScanName: scanConfigID,
+						ScanConfig: &v2.BaseComplianceScanConfigurationSettings{
+							OneTimeScan: false,
+							Profiles:    []string{},
+							Notifiers:   []*v2.NotifierConfiguration{},
+						},
+						ClusterStatus: []*v2.ClusterScanStatus{},
+						ModifiedBy:    &v2.SlimUser{},
+					},
+					User:                &v2.SlimUser{},
+					IsDownloadAvailable: false,
+				},
+			},
+		}, res)
+	})
+
+	s.Run("Success for download", func() {
+		scanConfigID := "scan-config-1"
+		now := protocompat.TimestampNow()
+		snapshots := []*storage.ComplianceOperatorReportSnapshotV2{
+			{
+				ReportId:            "snapshot-1",
+				ScanConfigurationId: scanConfigID,
+				ReportStatus: &storage.ComplianceOperatorReportStatus{
+					ReportRequestType:        storage.ComplianceOperatorReportStatus_ON_DEMAND,
+					ReportNotificationMethod: storage.ComplianceOperatorReportStatus_DOWNLOAD,
+					StartedAt:                now,
+					CompletedAt:              now,
+					RunState:                 storage.ComplianceOperatorReportStatus_GENERATED,
+				},
+			},
+		}
+		sc := &storage.ComplianceOperatorScanConfigurationV2{
+			Id:             scanConfigID,
+			ScanConfigName: scanConfigID,
+		}
+
+		s.snapshotDS.EXPECT().SearchSnapshots(allAccessContext, gomock.Any()).Return(snapshots, nil)
+		s.scanConfigDatastore.EXPECT().GetScanConfiguration(allAccessContext, scanConfigID).Return(sc, true, nil)
+		s.scanConfigDatastore.EXPECT().GetScanConfigClusterStatus(allAccessContext, scanConfigID).Return(nil, nil)
+		s.suiteDataStore.EXPECT().GetSuites(allAccessContext, gomock.Any()).Return(nil, nil)
+		s.blobDS.EXPECT().Search(gomock.Cond[context.Context](func(ctx context.Context) bool {
+			return validateBlobContext(ctx, storage.Access_READ_ACCESS)
+		}), gomock.Any()).Times(1).Return([]search.Result{
+			{
+				ID: common.GetComplianceReportBlobPath(scanConfigID, "snapshot-1"),
+			},
+		}, nil)
+
+		res, err := s.service.GetReportHistory(allAccessContext, &v2.ComplianceReportHistoryRequest{Id: scanConfigID})
+		s.Require().NoError(err)
+		protoassert.Equal(s.T(), &v2.ComplianceReportHistoryResponse{
+			ComplianceReportSnapshots: []*v2.ComplianceReportSnapshot{
+				{
+					ReportJobId:  "snapshot-1",
+					ScanConfigId: scanConfigID,
+					ReportStatus: &v2.ComplianceReportStatus{
+						ReportRequestType:        v2.ComplianceReportStatus_ON_DEMAND,
+						ReportNotificationMethod: v2.NotificationMethod_DOWNLOAD,
+						StartedAt:                now,
+						CompletedAt:              now,
+						FailedClusters:           []*v2.FailedCluster{},
+						RunState:                 v2.ComplianceReportStatus_GENERATED,
+					},
+					ReportData: &v2.ComplianceScanConfigurationStatus{
+						Id:       scanConfigID,
+						ScanName: scanConfigID,
+						ScanConfig: &v2.BaseComplianceScanConfigurationSettings{
+							OneTimeScan: false,
+							Profiles:    []string{},
+							Notifiers:   []*v2.NotifierConfiguration{},
+						},
+						ClusterStatus: []*v2.ClusterScanStatus{},
+						ModifiedBy:    &v2.SlimUser{},
+					},
+					User:                &v2.SlimUser{},
+					IsDownloadAvailable: true,
+				},
+			},
+		}, res)
+	})
+
+	s.Run("Success with failed cluster and multiple errors", func() {
+		scanConfigID := "scan-config-1"
+		now := protocompat.TimestampNow()
+		snapshots := []*storage.ComplianceOperatorReportSnapshotV2{
+			{
+				ReportId:            "snapshot-1",
+				ScanConfigurationId: scanConfigID,
+				ReportStatus: &storage.ComplianceOperatorReportStatus{
+					ReportRequestType:        storage.ComplianceOperatorReportStatus_SCHEDULED,
+					ReportNotificationMethod: storage.ComplianceOperatorReportStatus_EMAIL,
+					StartedAt:                now,
+					CompletedAt:              now,
+				},
+				FailedClusters: []*storage.ComplianceOperatorReportSnapshotV2_FailedCluster{
+					{
+						ClusterId:       "cluster-1",
+						ClusterName:     "cluster-1",
+						OperatorVersion: "v1.6.0",
+						Reasons:         []string{report.INTERNAL_ERROR, report.COMPLIANCE_VERSION_ERROR},
+					},
+				},
+			},
+		}
+		sc := &storage.ComplianceOperatorScanConfigurationV2{
+			Id:             scanConfigID,
+			ScanConfigName: scanConfigID,
+		}
+
+		s.snapshotDS.EXPECT().SearchSnapshots(allAccessContext, gomock.Any()).Return(snapshots, nil)
+		s.scanConfigDatastore.EXPECT().GetScanConfiguration(allAccessContext, scanConfigID).Return(sc, true, nil)
+		s.scanConfigDatastore.EXPECT().GetScanConfigClusterStatus(allAccessContext, scanConfigID).Return(nil, nil)
+		s.suiteDataStore.EXPECT().GetSuites(allAccessContext, gomock.Any()).Return(nil, nil)
+
+		res, err := s.service.GetReportHistory(allAccessContext, &v2.ComplianceReportHistoryRequest{Id: scanConfigID})
+		s.Require().NoError(err)
+		protoassert.Equal(s.T(), &v2.ComplianceReportHistoryResponse{
+			ComplianceReportSnapshots: []*v2.ComplianceReportSnapshot{
+				{
+					ReportJobId:  "snapshot-1",
+					ScanConfigId: scanConfigID,
+					ReportStatus: &v2.ComplianceReportStatus{
+						ReportRequestType:        v2.ComplianceReportStatus_SCHEDULED,
+						ReportNotificationMethod: v2.NotificationMethod_EMAIL,
+						StartedAt:                now,
+						CompletedAt:              now,
+						FailedClusters: []*v2.FailedCluster{
+							{
+								ClusterId:       "cluster-1",
+								ClusterName:     "cluster-1",
+								OperatorVersion: "v1.6.0",
+								Reason:          failedClusterReasonsJoinFunc([]string{report.INTERNAL_ERROR, report.COMPLIANCE_VERSION_ERROR}),
+							},
+						},
 					},
 					ReportData: &v2.ComplianceScanConfigurationStatus{
 						Id:       scanConfigID,
@@ -999,7 +1145,9 @@ func (s *ComplianceScanConfigServiceTestSuite) TestDeleteReport() {
 
 		ctx := getContextForUser(s.T(), s.mockCtrl, allAccessContext, storageRequester)
 		s.snapshotDS.EXPECT().GetSnapshot(gomock.Any(), snapshotID).Return(snapshot, true, nil)
-		s.blobDS.EXPECT().Delete(gomock.Any(), common.GetComplianceReportBlobPath(snapshot.GetScanConfigurationId(), snapshotID)).Return(errors.New("some error"))
+		s.blobDS.EXPECT().Delete(gomock.Cond[context.Context](func(ctx context.Context) bool {
+			return validateBlobContext(ctx, storage.Access_READ_WRITE_ACCESS)
+		}), common.GetComplianceReportBlobPath(snapshot.GetScanConfigurationId(), snapshotID)).Return(errors.New("some error"))
 
 		_, err := s.service.DeleteReport(ctx, &v2.ResourceByID{Id: snapshotID})
 		s.Require().Error(err)
@@ -1011,7 +1159,9 @@ func (s *ComplianceScanConfigServiceTestSuite) TestDeleteReport() {
 
 		ctx := getContextForUser(s.T(), s.mockCtrl, allAccessContext, storageRequester)
 		s.snapshotDS.EXPECT().GetSnapshot(gomock.Any(), snapshotID).Return(snapshot, true, nil)
-		s.blobDS.EXPECT().Delete(gomock.Any(), common.GetComplianceReportBlobPath(snapshot.GetScanConfigurationId(), snapshotID)).Return(nil)
+		s.blobDS.EXPECT().Delete(gomock.Cond[context.Context](func(ctx context.Context) bool {
+			return validateBlobContext(ctx, storage.Access_READ_WRITE_ACCESS)
+		}), common.GetComplianceReportBlobPath(snapshot.GetScanConfigurationId(), snapshotID)).Return(nil)
 
 		_, err := s.service.DeleteReport(ctx, &v2.ResourceByID{Id: snapshotID})
 		s.Require().NoError(err)
@@ -1048,6 +1198,19 @@ func getTestAPIStatusRec(createdTime, lastUpdatedTime time.Time) *apiV2.Complian
 	}
 }
 
+// TestGetProfiles_NoMatch verifies that when GetProfilesNames returns nil (filter
+// matches no scan configs), getProfiles short-circuits and returns an empty list
+// rather than falling through to SearchProfiles with no WHERE clause (which would
+// return every profile in the database).
+func (s *ComplianceScanConfigServiceTestSuite) TestGetProfiles_NoMatch() {
+	s.scanConfigDatastore.EXPECT().GetProfilesNames(gomock.Any(), gomock.Any()).Return(nil, nil).Times(1)
+
+	profiles, count, err := s.service.(*serviceImpl).getProfiles(s.ctx, search.EmptyQuery(), search.EmptyQuery())
+	s.Require().NoError(err)
+	s.Empty(profiles)
+	s.Zero(count)
+}
+
 func getTestAPIRec() *apiV2.ComplianceScanConfiguration {
 	return &apiV2.ComplianceScanConfiguration{
 		ScanName: "test-scan",
@@ -1063,8 +1226,13 @@ func getTestAPIRec() *apiV2.ComplianceScanConfiguration {
 
 func getContextForUser(t *testing.T, ctrl *gomock.Controller, ctx context.Context, user *storage.SlimUser) context.Context {
 	mockID := mockIdentity.NewMockIdentity(ctrl)
-	mockID.EXPECT().UID().Return(user.Id).AnyTimes()
-	mockID.EXPECT().FullName().Return(user.Name).AnyTimes()
-	mockID.EXPECT().FriendlyName().Return(user.Name).AnyTimes()
+	mockID.EXPECT().UID().Return(user.GetId()).AnyTimes()
+	mockID.EXPECT().FullName().Return(user.GetName()).AnyTimes()
+	mockID.EXPECT().FriendlyName().Return(user.GetName()).AnyTimes()
 	return authn.ContextWithIdentity(ctx, mockID, t)
+}
+
+func validateBlobContext(ctx context.Context, access storage.Access) bool {
+	scopeChecker := sac.ForResource(resources.Administration)
+	return scopeChecker.ScopeChecker(ctx, access).IsAllowed()
 }

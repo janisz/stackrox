@@ -9,9 +9,11 @@ import (
 
 // Scope represents storage.Scope in the Custom Resource.
 type Scope struct {
-	Cluster   string               `yaml:",omitempty"`
-	Namespace string               `yaml:",omitempty"`
-	Label     *storage.Scope_Label `yaml:",omitempty"`
+	Cluster        string               `yaml:",omitempty"`
+	Namespace      string               `yaml:",omitempty"`
+	Label          *storage.Scope_Label `yaml:",omitempty"`
+	ClusterLabel   *storage.Scope_Label `yaml:",omitempty"`
+	NamespaceLabel *storage.Scope_Label `yaml:",omitempty"`
 }
 
 // convertScope Converts storage.Scope to *Scope
@@ -21,9 +23,11 @@ func convertScope(p *storage.Scope) *Scope {
 	}
 
 	return &Scope{
-		Cluster:   p.Cluster,
-		Namespace: p.Namespace,
-		Label:     p.Label,
+		Cluster:        p.Cluster,
+		Namespace:      p.Namespace,
+		Label:          p.Label,
+		ClusterLabel:   p.ClusterLabel,
+		NamespaceLabel: p.NamespaceLabel,
 	}
 }
 
@@ -127,6 +131,7 @@ type Policy struct {
 	CriteriaLocked     bool                                 `yaml:"criteriaLocked"`
 	MitreVectorsLocked bool                                 `yaml:"mitreVectorsLocked"`
 	IsDefault          bool                                 `yaml:"isDefault"`
+	EvaluationFilter   *storage.EvaluationFilter            `yaml:"evaluationFilter,omitempty"`
 }
 
 // convertPolicy Converts storage.Policy to *Policy
@@ -154,6 +159,7 @@ func convertPolicy(p *storage.Policy) *Policy {
 		CriteriaLocked:     p.CriteriaLocked,
 		MitreVectorsLocked: p.MitreVectorsLocked,
 		IsDefault:          p.IsDefault,
+		EvaluationFilter:   p.EvaluationFilter,
 	}
 }
 

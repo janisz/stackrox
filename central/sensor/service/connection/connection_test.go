@@ -4,12 +4,14 @@ import (
 	"context"
 	"crypto/x509"
 	"encoding/pem"
+	"maps"
 	"slices"
 	"testing"
 	"time"
 
 	"github.com/pkg/errors"
 	scanConfigMocks "github.com/stackrox/rox/central/complianceoperator/v2/scanconfigurations/datastore/mocks"
+	"github.com/stackrox/rox/central/convert/internaltov2storage"
 	"github.com/stackrox/rox/central/hash/manager/mocks"
 	clusterMgrMock "github.com/stackrox/rox/central/sensor/service/common/mocks"
 	pipelineMock "github.com/stackrox/rox/central/sensor/service/pipeline/mocks"
@@ -50,6 +52,26 @@ var (
 				{
 					ProfileName: "TestProfileName",
 				},
+			},
+			Schedule: &storage.Schedule{
+				IntervalType: storage.Schedule_DAILY,
+				Hour:         1,
+				Minute:       2, Interval: &storage.Schedule_DaysOfWeek_{
+					DaysOfWeek: &storage.Schedule_DaysOfWeek{
+						Days: []int32{1},
+					},
+				},
+			},
+		},
+		{
+			ScanConfigName: "TestConfigWithRefs",
+			Profiles: []*storage.ComplianceOperatorScanConfigurationV2_ProfileName{
+				{ProfileName: "ocp4-cis"},
+				{ProfileName: "ocp4-cis-tailored"},
+			},
+			ProfileRefs: []*storage.ComplianceOperatorScanConfigurationV2_ProfileReference{
+				{Name: "ocp4-cis", Kind: storage.ComplianceOperatorProfileV2_PROFILE},
+				{Name: "ocp4-cis-tailored", Kind: storage.ComplianceOperatorProfileV2_TAILORED_PROFILE},
 			},
 			Schedule: &storage.Schedule{
 				IntervalType: storage.Schedule_DAILY,
@@ -144,10 +166,18 @@ func (s *testSuite) TestSendsScanConfigurationMsgOnRun() {
 				return slice.GetScanConfigName() == sc.GetUpdateScan().GetScanSettings().GetScanName()
 			})
 			s.Require().NotEqual(-1, idx)
-			s.Assert().Equal(scanConfigs[idx].GetScanConfigName(), sc.GetUpdateScan().GetScanSettings().GetScanName())
-			cron, err := schedule.ConvertToCronTab(scanConfigs[idx].GetSchedule())
+			stored := scanConfigs[idx]
+			settings := sc.GetUpdateScan().GetScanSettings()
+			s.Assert().Equal(stored.GetScanConfigName(), settings.GetScanName())
+			cron, err := schedule.ConvertToCronTab(stored.GetSchedule())
 			s.Require().NoError(err)
 			s.Assert().Equal(cron, sc.GetUpdateScan().GetCron())
+			// profile_refs must be forwarded with correct kinds
+			s.Require().Len(settings.GetProfileRefs(), len(stored.GetProfileRefs()))
+			for i, ref := range settings.GetProfileRefs() {
+				s.Assert().Equal(stored.GetProfileRefs()[i].GetName(), ref.GetName())
+				s.Assert().Equal(internaltov2storage.StorageToCentralProfileKind(stored.GetProfileRefs()[i].GetKind()), ref.GetKind())
+			}
 		}
 	}
 }
@@ -164,16 +194,12 @@ func (s *testSuite) TestGetPolicySyncMsgFromPoliciesDoesntDowngradeBelowMinimumV
 
 	policySync := msg.GetPolicySync()
 	s.Require().NotNil(policySync)
-	s.NotEmpty(policySync.Policies)
-	s.Equal(policyversion.CurrentVersion().String(), policySync.Policies[0].GetPolicyVersion())
+	s.NotEmpty(policySync.GetPolicies())
+	s.Equal(policyversion.CurrentVersion().String(), policySync.GetPolicies()[0].GetPolicyVersion())
 }
 
 func (s *testSuite) TestSendDeduperStateIfSensorReconciliation() {
-	s.T().Setenv(features.SensorReconciliationOnReconnect.EnvVar(), "true")
 	s.T().Setenv(env.MaxDeduperEntriesPerMessage.EnvVar(), "2")
-	if !features.SensorReconciliationOnReconnect.Enabled() {
-		s.T().Skip("Test skipped if ROX_SENSOR_RECONCILIATION feature flag isn't set")
-	}
 	cases := map[string]struct {
 		givenSensorCapabilities     []centralsensor.SensorCapability
 		givenSensorState            central.SensorHello_SensorState
@@ -304,9 +330,7 @@ func (s *testSuite) TestSendDeduperStateIfSensorReconciliation() {
 				}
 				deduperStateSent := make(map[string]uint64)
 				for _, state := range deduperStates {
-					for k, v := range state.GetResourceHashes() {
-						deduperStateSent[k] = v
-					}
+					maps.Copy(deduperStateSent, state.GetResourceHashes())
 					s.Equal(tc.expectNumberOfDeduperStates, int(state.GetTotal()))
 					s.True(currentSet.Contains(int(state.GetCurrent())))
 					currentSet.Remove(int(state.GetCurrent()))
@@ -337,8 +361,8 @@ func (s *testSuite) TestGetPolicySyncMsgFromPoliciesDoesntDowngradeInvalidVersio
 
 	policySync := msg.GetPolicySync()
 	s.Require().NotNil(policySync)
-	s.NotEmpty(policySync.Policies)
-	s.Equal(policyversion.CurrentVersion().String(), policySync.Policies[0].GetPolicyVersion())
+	s.NotEmpty(policySync.GetPolicies())
+	s.Equal(policyversion.CurrentVersion().String(), policySync.GetPolicies()[0].GetPolicyVersion())
 }
 
 func (s *testSuite) TestSendsAuditLogSyncMessageIfEnabledOnRun() {
@@ -573,7 +597,7 @@ func (s *testSuite) TestDelegatedRegistryConfigOnRun() {
 
 		for _, msg := range server.sentList {
 			if deleConfig := msg.GetDelegatedRegistryConfig(); deleConfig != nil {
-				s.Equal(central.DelegatedRegistryConfig_ALL, deleConfig.EnabledFor)
+				s.Equal(central.DelegatedRegistryConfig_ALL, deleConfig.GetEnabledFor())
 				return
 			}
 		}
@@ -668,10 +692,11 @@ func (s *testSuite) TestImageIntegrationsOnRun() {
 		s.NoError(sensorMockConn.Run(ctx, server, withCap))
 		for _, msg := range server.sentList {
 			if imgInts := msg.GetImageIntegrations(); imgInts != nil {
-				s.Len(imgInts.DeletedIntegrationIds, 0)
-				s.Len(imgInts.UpdatedIntegrations, 1)
-				s.Equal(imgInts.UpdatedIntegrations[0].Name, "valid")
-				s.Equal(imgInts.UpdatedIntegrations[0].Id, "id1")
+				s.Len(imgInts.GetDeletedIntegrationIds(), 0)
+				s.Len(imgInts.GetUpdatedIntegrations(), 1)
+				s.Equal(imgInts.GetUpdatedIntegrations()[0].GetName(), "valid")
+				s.Equal(imgInts.GetUpdatedIntegrations()[0].GetId(), "id1")
+				s.True(imgInts.GetRefresh())
 				return
 			}
 		}

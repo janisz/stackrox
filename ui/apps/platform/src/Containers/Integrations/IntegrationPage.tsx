@@ -1,9 +1,8 @@
-import React, { ReactElement } from 'react';
+import type { ReactElement } from 'react';
 import {
     Breadcrumb,
     BreadcrumbItem,
     Button,
-    Divider,
     Flex,
     FlexItem,
     PageSection,
@@ -15,14 +14,14 @@ import { integrationsPath } from 'routePaths';
 import PageTitle from 'Components/PageTitle';
 import LinkShim from 'Components/PatternFly/LinkShim';
 import BreadcrumbItemLink from 'Components/BreadcrumbItemLink';
-import { Traits } from 'types/traits.proto';
-import { TraitsOriginLabel } from 'Containers/AccessControl/TraitsOriginLabel';
-import { isUserResource } from 'Containers/AccessControl/traits';
-import TechPreviewLabel from 'Components/PatternFly/TechPreviewLabel';
+import type { Traits } from 'types/traits.proto';
+import TraitsOriginLabel from 'Components/TraitsOriginLabel';
+import { isUserResource } from 'utils/traits.utils';
+import TechnologyPreviewLabel from 'Components/PatternFly/PreviewLabel/TechnologyPreviewLabel';
 import { getIntegrationLabel } from './utils/integrationsList';
 import { getEditDisabledMessage, getIsMachineAccessConfig } from './utils/integrationUtils';
 import usePageState from './hooks/usePageState';
-import useIntegrationPermissions from './hooks/useIntegrationPermissions';
+import usePermissions from 'hooks/usePermissions';
 
 export type IntegrationPageProps = {
     title: string;
@@ -32,7 +31,8 @@ export type IntegrationPageProps = {
 };
 
 function IntegrationPage({ title, name, traits, children }: IntegrationPageProps): ReactElement {
-    const permissions = useIntegrationPermissions();
+    const { hasReadWriteAccess } = usePermissions();
+    const hasWritePermission = hasReadWriteAccess('Integration');
     const {
         pageState,
         params: { source, type, id },
@@ -47,21 +47,22 @@ function IntegrationPage({ title, name, traits, children }: IntegrationPageProps
     const editDisabledMessage = getEditDisabledMessage(type);
 
     const hasTraitsLabel =
-        pageState !== 'CREATE' && pageState !== 'LIST' && (type === 'generic' || type === 'splunk');
+        pageState !== 'CREATE' &&
+        pageState !== 'LIST' &&
+        (type === 'generic' || type === 'splunk' || type === 'machineAccess');
     const hasEditButton =
-        pageState === 'VIEW_DETAILS' && permissions[source].write && isUserResource(traits);
+        pageState === 'VIEW_DETAILS' && hasWritePermission && isUserResource(traits);
     return (
         <>
             <PageTitle title={title} />
-            <PageSection variant="light" className="pf-v5-u-py-md">
+            <PageSection type="breadcrumb">
                 <Breadcrumb>
                     <BreadcrumbItemLink to={integrationsPath}>Integrations</BreadcrumbItemLink>
                     <BreadcrumbItemLink to={integrationsListPath}>{typeLabel}</BreadcrumbItemLink>
                     <BreadcrumbItem isActive>{title}</BreadcrumbItem>
                 </Breadcrumb>
             </PageSection>
-            <Divider component="div" />
-            <PageSection variant="light">
+            <PageSection>
                 <Flex alignItems={{ default: 'alignItemsCenter' }}>
                     {(name || getIsMachineAccessConfig(source, type)) && (
                         <FlexItem>
@@ -70,7 +71,7 @@ function IntegrationPage({ title, name, traits, children }: IntegrationPageProps
                     )}
                     {isTechPreview && (
                         <FlexItem>
-                            <TechPreviewLabel />
+                            <TechnologyPreviewLabel />
                         </FlexItem>
                     )}
                     {hasTraitsLabel && <TraitsOriginLabel traits={traits} />}

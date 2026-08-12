@@ -8,6 +8,7 @@ import (
 	"github.com/hashicorp/go-multierror"
 	"github.com/pkg/errors"
 	clusterDataStore "github.com/stackrox/rox/central/cluster/datastore"
+	clusterInitStore "github.com/stackrox/rox/central/clusterinit/store"
 	installationStore "github.com/stackrox/rox/central/installation/store"
 	"github.com/stackrox/rox/central/metrics/telemetry"
 	"github.com/stackrox/rox/central/securedclustercertgen"
@@ -15,6 +16,7 @@ import (
 	"github.com/stackrox/rox/central/sensor/service/pipeline"
 	"github.com/stackrox/rox/generated/internalapi/central"
 	"github.com/stackrox/rox/generated/storage"
+	"github.com/stackrox/rox/pkg/centralproxy"
 	"github.com/stackrox/rox/pkg/centralsensor"
 	"github.com/stackrox/rox/pkg/env"
 	"github.com/stackrox/rox/pkg/errox"
@@ -23,11 +25,11 @@ import (
 	"github.com/stackrox/rox/pkg/grpc/authz/idcheck"
 	"github.com/stackrox/rox/pkg/grpc/authz/or"
 	"github.com/stackrox/rox/pkg/logging"
-	"github.com/stackrox/rox/pkg/maputils"
 	"github.com/stackrox/rox/pkg/protocompat"
 	protoconv "github.com/stackrox/rox/pkg/protoconv/certs"
 	"github.com/stackrox/rox/pkg/sac"
 	"github.com/stackrox/rox/pkg/safe"
+	"github.com/stackrox/rox/pkg/set"
 	"github.com/stackrox/rox/pkg/sliceutils"
 	"github.com/stackrox/rox/pkg/utils"
 	"google.golang.org/grpc"
@@ -45,19 +47,27 @@ var (
 type serviceImpl struct {
 	central.UnimplementedSensorServiceServer
 
-	manager      connection.Manager
-	pf           pipeline.Factory
-	clusters     clusterDataStore.DataStore
-	installation installationStore.Store
+	manager          connection.Manager
+	pf               pipeline.Factory
+	clusters         clusterDataStore.DataStore
+	installation     installationStore.Store
+	clusterInitStore clusterInitStore.Store
 }
 
 // New creates a new Service using the given manager.
-func New(manager connection.Manager, pf pipeline.Factory, clusters clusterDataStore.DataStore, installation installationStore.Store) Service {
+func New(
+	manager connection.Manager,
+	pf pipeline.Factory,
+	clusters clusterDataStore.DataStore,
+	installation installationStore.Store,
+	clusterInitStore clusterInitStore.Store,
+) Service {
 	return &serviceImpl{
-		manager:      manager,
-		pf:           pf,
-		clusters:     clusters,
-		installation: installation,
+		manager:          manager,
+		pf:               pf,
+		clusters:         clusters,
+		installation:     installation,
+		clusterInitStore: clusterInitStore,
 	}
 }
 
@@ -125,11 +135,10 @@ func (s *serviceImpl) Communicate(server central.SensorService_CommunicateServer
 
 		capabilities := sliceutils.StringSlice(eventPipeline.Capabilities()...)
 		capabilities = append(capabilities, centralsensor.SecuredClusterCertificatesReissue)
-		if features.SensorReconciliationOnReconnect.Enabled() {
-			capabilities = append(capabilities, centralsensor.SendDeduperStateOnReconnect)
-		}
+		capabilities = append(capabilities, centralsensor.SendDeduperStateOnReconnect)
 		if features.ComplianceEnhancements.Enabled() {
 			capabilities = append(capabilities, centralsensor.ComplianceV2Integrations)
+			capabilities = append(capabilities, centralsensor.ComplianceV2TailoredProfiles)
 		}
 		if features.ComplianceRemediationV2.Enabled() {
 			capabilities = append(capabilities, centralsensor.ComplianceV2Remediations)
@@ -140,32 +149,43 @@ func (s *serviceImpl) Communicate(server central.SensorService_CommunicateServer
 		if features.ClusterRegistrationSecrets.Enabled() {
 			capabilities = append(capabilities, centralsensor.ClusterRegistrationSecretSupported)
 		}
+		if features.FlattenImageData.Enabled() {
+			capabilities = append(capabilities, centralsensor.FlattenImageData)
+		}
+		if features.InitContainerSupport.Enabled() {
+			capabilities = append(capabilities, centralsensor.InitContainerSupport)
+		}
+		if features.OCPConsoleIntegration.Enabled() {
+			capabilities = append(capabilities, centralsensor.InternalTokenAPISupported.String())
+			capabilities = append(capabilities, centralsensor.CentralProxyPathFiltering.String())
+		}
 
 		preferences := s.manager.GetConnectionPreference(clusterID)
 
 		// Let's be polite and respond with a greeting from our side.
 		centralHello := &central.CentralHello{
-			ClusterId:        clusterID,
-			ManagedCentral:   env.ManagedCentral.BooleanSetting(),
-			CentralId:        installInfo.GetId(),
-			Capabilities:     capabilities,
-			SendDeduperState: preferences.SendDeduperState,
+			ClusterId:         clusterID,
+			ManagedCentral:    env.ManagedCentral.BooleanSetting(),
+			CentralId:         installInfo.GetId(),
+			Capabilities:      capabilities,
+			SendDeduperState:  preferences.SendDeduperState,
+			AllowedProxyPaths: centralproxy.AllowedProxyPaths.AsSlice(),
 		}
 
 		if err := safe.RunE(func() error {
 			sensorNamespace := sensorHello.GetDeploymentIdentification().GetAppNamespace()
-			certificateSet, err := securedclustercertgen.IssueSecuredClusterCerts(sensorNamespace, clusterID)
+			certificateSet, err := securedclustercertgen.IssueSecuredClusterCerts(
+				sensorNamespace, clusterID, isCARotationSupported(sensorHello), "")
 			if err != nil {
 				return errors.Wrapf(err, "issuing a certificate bundle for cluster %s", cluster.GetName())
 			}
-			certBundle, err := protoconv.ConvertTypedServiceCertificateSetToFileMap(certificateSet)
-			centralHello.CertBundle = maputils.ConvertBytesMapToStrings(certBundle)
+			centralHello.CertBundle, err = protoconv.ConvertTypedServiceCertificateSetToFileMap(certificateSet)
 			if err != nil {
 				return errors.Wrap(err, "converting typed service certificate set to file map")
 			}
 			return nil
 		}); err != nil {
-			log.Errorf("Could not include certificate bundle in sensor hello message: %s", err)
+			log.Errorf("Could not include certificate bundle in sensor hello message: %s.", err)
 		}
 
 		if err := server.Send(&central.MsgToSensor{Msg: &central.MsgToSensor_Hello{Hello: centralHello}}); err != nil {
@@ -175,22 +195,53 @@ func (s *serviceImpl) Communicate(server central.SensorService_CommunicateServer
 
 	if svcType == storage.ServiceType_REGISTRANT_SERVICE {
 		// Terminate connection which uses a CRS certificate at this point.
+		log.Infof("Terminating initial CRS flow from cluster %s (%s).", cluster.GetName(), cluster.GetId())
 		return nil
+	}
+
+	// At this point sensor is connecting with non-CRS service certificates. This could mean either init bundle certificates
+	// or freshly issued per-cluster service certificates.
+
+	if cluster.GetHealthStatus().GetLastContact() == nil && cluster.GetInitBundleId() != "" {
+		// The call to MarkClusterRegistrationComplete also updates the revocation state of the CRS used for this
+		// cluster, if needed (no-op in init bundle case).
+		log.Infof("First connection from cluster %s (%s) using a sensor service certificate.", cluster.GetName(), cluster.GetId())
+		if err := s.clusterInitStore.MarkClusterRegistrationComplete(clusterDSSAC, cluster.GetInitBundleId(), cluster.GetName()); err != nil {
+			return errors.Wrapf(err, "updating completed-registrations counter for cluster registration secret %q", cluster.GetInitBundleId())
+		}
+	}
+	if clusterInitArtifactId := cluster.GetInitBundleId(); clusterInitArtifactId != "" && svc.GetInitBundleId() == "" {
+		// Sensor has connected with a non-init certificate.
+		// At this point we can clear the cluster's InitBundleId, irregardless of which init artifact type has been used.
+		// For CRS, this is the point after which we don't need it anymore for any sort of bookkepping.
+		// For init bundles, this was previously done in `LookupOrCreateClusterFromConfig()`, now it is being done here,
+		// slightly later in the flow.
+		cluster.InitBundleId = ""
+		if err := s.clusters.UpdateCluster(clusterDSSAC, cluster); err != nil {
+			return errors.Wrapf(err, "clearing init artifact ID of cluster %s", cluster.GetName())
+		}
+		log.Infof("Cleared init artifact ID (%s) of newly created cluster %s.", clusterInitArtifactId, cluster.GetName())
 	}
 
 	if expiryStatus, err := getCertExpiryStatus(identity); err != nil {
 		notBefore, notAfter := identity.ValidityPeriod()
-		log.Warnf("Failed to convert expiry status of sensor cert (NotBefore: %v, Expiry: %v) from cluster %s to proto: %v",
+		log.Warnf("Failed to convert expiry status of sensor cert (NotBefore: %v, Expiry: %v) from cluster %s to proto: %v.",
 			notBefore, notAfter, cluster.GetId(), err)
 	} else if expiryStatus != nil {
 		if err := s.clusters.UpdateClusterCertExpiryStatus(clusterDSSAC, cluster.GetId(), expiryStatus); err != nil {
-			log.Warnf("Failed to update cluster expiry status for cluster %s: %v", cluster.GetId(), err)
+			log.Warnf("Failed to update cluster expiry status for cluster %s: %v.", cluster.GetId(), err)
 		}
 	}
 
-	log.Infof("Cluster %s (%s) has successfully connected to Central", cluster.GetName(), cluster.GetId())
+	log.Infof("Cluster %s (%s) has successfully connected to Central.", cluster.GetName(), cluster.GetId())
 
 	return s.manager.HandleConnection(server.Context(), sensorHello, cluster, eventPipeline, server)
+}
+
+func isCARotationSupported(sensorHello *central.SensorHello) bool {
+	capabilities := sliceutils.FromStringSlice[centralsensor.SensorCapability](sensorHello.GetCapabilities()...)
+	capSet := set.NewSet(capabilities...)
+	return capSet.Contains(centralsensor.SensorCARotationSupported)
 }
 
 func getCertExpiryStatus(identity authn.Identity) (*storage.ClusterCertExpiryStatus, error) {
@@ -240,7 +291,7 @@ func (s *serviceImpl) getClusterForConnection(sensorHello *central.SensorHello, 
 		}
 	}
 
-	cluster, err := s.clusters.LookupOrCreateClusterFromConfig(clusterDSSAC, clusterID, serviceID.InitBundleId, sensorHello)
+	cluster, err := s.clusters.LookupOrCreateClusterFromConfig(clusterDSSAC, clusterID, serviceID.GetInitBundleId(), sensorHello)
 	if err != nil {
 		return nil, errors.Errorf("could not fetch cluster for sensor: %v", err)
 	}

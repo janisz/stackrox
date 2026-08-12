@@ -1,13 +1,14 @@
 import { format } from 'date-fns';
 
 import { graphql } from '../../constants/apiEndpoints';
+import { visitFromHorizontalNav } from '../../helpers/nav';
 import { interactAndVisitNetworkGraphWithDeploymentSelected } from '../../helpers/networkGraph';
 import { interactAndWaitForResponses } from '../../helpers/request';
 import { visit } from '../../helpers/visit';
 
 // visit
 
-const riskURL = '/main/risk';
+const basePath = '/main/risk/workloads';
 
 export const deploymentswithprocessinfoAlias = 'deploymentswithprocessinfo';
 export const deploymentscountAlias = 'deploymentscount';
@@ -28,48 +29,39 @@ const routeMatcherMap = {
     },
 };
 
-export function visitRiskDeployments() {
+function getRiskURL(filteredWorkflowView, search = '') {
+    if (filteredWorkflowView) {
+        return `${basePath}?filteredWorkflowView=${filteredWorkflowView}&${search}`;
+    }
+    return `${basePath}?${search}`;
+}
+
+export function visitRiskDeployments(filteredWorkflowView) {
+    visit(getRiskURL(filteredWorkflowView), routeMatcherMap);
+
+    cy.get('h1:contains("Risk")');
+}
+
+export function visitRiskDeploymentsWithSearchQuery(filteredWorkflowView, search) {
+    const riskURL = getRiskURL(filteredWorkflowView, search);
     visit(riskURL, routeMatcherMap);
 
     cy.get('h1:contains("Risk")');
 }
 
-export function visitRiskDeploymentsWithSearchQuery(search) {
-    visit(`${riskURL}${search}`, routeMatcherMap);
+export function viewFirstRiskDeployment() {
+    return cy.get('tbody tr:first td[data-label="Name"]').then(($td) => {
+        const deploymentName = $td.text().trim();
 
-    cy.get('h1:contains("Risk")');
+        cy.get('tbody tr:first td[data-label="Name"] a').click();
+        cy.get(`h1:contains("${deploymentName}")`);
+
+        return cy.wrap(deploymentName);
+    });
 }
 
-export function viewRiskDeploymentByName(deploymentName) {
-    // Assume location is risk deployments table.
-    const routeMatcherMapForDeployment = {
-        'deploymentswithrisk/id': {
-            method: 'GET',
-            url: '/v1/deploymentswithrisk/*',
-        },
-    };
-
-    interactAndWaitForResponses(() => {
-        // Specify nth-child(4) for Namespace to make sure it is stackrox.
-        // For example, prevent multiple matches with collector in gmp-system namespace.
-        //
-        // Specify nth-child(1) for Name of deployment.
-        //
-        // Call contains method with RegExp for exact match and only first element.
-        // Unlike contains pseudo-selector which would require :nth(0) in case of multiple matches.
-        cy.get(
-            `.rt-tbody .rt-tr:has('.rt-td:nth-child(4):contains("stackrox")') .rt-td:nth-child(1)`
-        )
-            .contains(new RegExp(`^${deploymentName}$`))
-            .click();
-    }, routeMatcherMapForDeployment);
-
-    // Unlike some classic containers, risk list header has different data-testid attribute.
-    cy.get(`[data-testid="panel-header"]:contains("${deploymentName}")`);
-}
-
-export function viewRiskDeploymentInNetworkGraph() {
-    interactAndVisitNetworkGraphWithDeploymentSelected(() => {
+export function viewRiskDeploymentInNetworkGraph(deploymentName) {
+    interactAndVisitNetworkGraphWithDeploymentSelected(deploymentName, () => {
         cy.get('a:contains("View Deployment in Network Graph")').click();
     });
 }
@@ -160,10 +152,17 @@ export function clickFirstDrillDownButtonInEventTimeline(fixtureForPodEventTimel
 // interact
 
 export function clickTab(tabText) {
-    cy.get(`button[data-testid="tab"]:contains("${tabText}")`).click();
+    cy.get(`*[role="tablist"] button:contains("${tabText}")`).click();
 }
 
 export function filterEventsByType(eventType) {
     cy.get('[aria-label="Modal"] .react-select__control').click();
     cy.get(`[aria-label="Modal"] .react-select__option:contains("${eventType}")`).click();
+}
+
+/**
+ * @param {'User Workloads'|'Platform'|'All Deployments'} viewName
+ */
+export function selectFilteredWorkflowView(viewName) {
+    visitFromHorizontalNav(viewName);
 }

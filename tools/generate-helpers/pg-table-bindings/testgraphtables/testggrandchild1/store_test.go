@@ -41,10 +41,6 @@ func (s *TestGGrandChild1StoreSuite) SetupTest() {
 	s.NoError(err)
 }
 
-func (s *TestGGrandChild1StoreSuite) TearDownSuite() {
-	s.testDB.Teardown(s.T())
-}
-
 func (s *TestGGrandChild1StoreSuite) TestStore() {
 	ctx := sac.WithAllAccess(context.Background())
 
@@ -96,6 +92,11 @@ func (s *TestGGrandChild1StoreSuite) TestStore() {
 	}
 
 	s.NoError(store.UpsertMany(ctx, testGGrandChild1s))
+
+	foundTestGGrandChild1s, missing, err := store.GetMany(ctx, testGGrandChild1IDs)
+	s.NoError(err)
+	s.Empty(missing)
+	protoassert.ElementsMatch(s.T(), testGGrandChild1s, foundTestGGrandChild1s)
 
 	testGGrandChild1Count, err = store.Count(ctx, search.EmptyQuery())
 	s.NoError(err)

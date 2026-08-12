@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import { useState } from 'react';
 import {
     Card,
     CardBody,
@@ -11,7 +11,7 @@ import {
     StackItem,
 } from '@patternfly/react-core';
 
-import { PortConfig } from 'types/deployment.proto';
+import type { PortConfig } from 'types/deployment.proto';
 
 type DeploymentPortConfigProps = {
     port: PortConfig;
@@ -33,7 +33,6 @@ function DeploymentPortConfig({ port }: DeploymentPortConfigProps) {
             toggleText={toggleText}
             onToggle={(_event, _isExpanded: boolean) => onToggle(_isExpanded)}
             isExpanded={isExpanded}
-            displaySize="lg"
             isWidthLimited
         >
             <Stack hasGutter>
@@ -66,7 +65,7 @@ function DeploymentPortConfig({ port }: DeploymentPortConfigProps) {
                         {port.exposureInfos.map((exposureInfo) => {
                             return (
                                 <StackItem key={exposureInfo.serviceId}>
-                                    <Card isFlat>
+                                    <Card>
                                         <CardBody>
                                             <DescriptionList
                                                 columnModifier={{ default: '2Col' }}

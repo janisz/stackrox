@@ -1,26 +1,32 @@
-import React, { ReactElement } from 'react';
+import type { ReactElement } from 'react';
 import { ExclamationCircleIcon, ExclamationTriangleIcon } from '@patternfly/react-icons';
-import { SVGIconProps } from '@patternfly/react-icons/dist/esm/createIcon';
+import type { SVGIconProps } from '@patternfly/react-icons/dist/esm/createIcon';
 import { Icon } from '@patternfly/react-core';
 
 // TODO import the following function components:
 
 export const DangerIcon = (props: SVGIconProps) => (
     <Icon>
-        <ExclamationCircleIcon color="var(--pf-v5-global--danger-color--100)" {...props} />
+        <ExclamationCircleIcon
+            color="var(--pf-t--global--icon--color--status--danger--default)"
+            {...props}
+        />
     </Icon>
 );
 
 export const WarningIcon = (props: SVGIconProps) => (
     <Icon>
-        <ExclamationTriangleIcon color="var(--pf-v5-global--warning-color--100)" {...props} />
+        <ExclamationTriangleIcon
+            color="var(--pf-t--global--icon--color--status--warning--default)"
+            {...props}
+        />
     </Icon>
 );
 
 type IconType = 'danger' | 'warning';
 
 function getIcon(type?: IconType): ReactElement | null {
-    const className = 'pf-v5-u-display-inline pf-v5-u-ml-sm';
+    const className = 'pf-v6-u-display-inline pf-v6-u-ml-sm';
 
     switch (type) {
         case 'danger':

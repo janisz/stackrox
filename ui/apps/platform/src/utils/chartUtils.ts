@@ -1,16 +1,11 @@
-import { History } from 'react-router-dom';
-import {
-    ChartBarProps,
-    ChartLabelProps,
-    ChartThemeColor,
-    getTheme,
-} from '@patternfly/react-charts';
+import type { NavigateFunction } from 'react-router-dom-v5-compat';
+import { ChartThemeColor, getTheme } from '@patternfly/react-charts/victory';
+import type { ChartBarProps, ChartLabelProps } from '@patternfly/react-charts/victory';
 import merge from 'lodash/merge';
 
 import { policySeverityColorMap } from 'constants/severityColors';
-import { ValueOf } from './type.utils';
 
-export const solidBlueChartColor = 'var(--pf-v5-global--palette--blue-400)';
+export const solidBlueChartColor = 'var(--pf-t--color--blue--40)';
 
 export const severityColorScale = Object.values(policySeverityColorMap);
 
@@ -52,30 +47,25 @@ export const patternflySeverityTheme = {
 };
 
 type ChartEventProp = NonNullable<ChartBarProps['events']>[number];
-type ChartEventHandler = ValueOf<ChartEventProp['eventHandlers']>;
 
 /**
  * A helper function to generate a chart onClick event that initiates navigation to another page.
  */
 export function navigateOnClickEvent(
-    history: History,
-    /** A function that generates the link to navigate to when the entity is clicked */
-    linkWith: (props: ChartLabelProps) => string,
-    /** An array of Victory onClick event handlers that will be called before navigation is initiated */
-    defaultOnClicks: ChartEventHandler[] = []
+    navigate: NavigateFunction,
+    linkWith: (props: ChartLabelProps) => string
 ): ChartEventProp {
-    const navigateEventHandler = {
-        mutation: (props) => {
-            const link = linkWith(props);
-            history.push(link);
-            return null;
-        },
-    };
-
     return {
         target: 'data',
         eventHandlers: {
-            onClick: () => [...defaultOnClicks, navigateEventHandler],
+            onClick: () => [
+                {
+                    mutation: (props) => {
+                        navigate(linkWith(props));
+                        return null;
+                    },
+                },
+            ],
         },
     };
 }

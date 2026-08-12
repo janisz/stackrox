@@ -6,7 +6,6 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
-	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -71,7 +70,7 @@ var _ RefreshConnector = (*openshiftConnector)(nil)
 
 type user struct {
 	k8sapi.TypeMeta   `json:",inline"`
-	k8sapi.ObjectMeta `json:"metadata,omitempty"`
+	k8sapi.ObjectMeta `json:"metadata,omitzero"`
 	Identities        []string `json:"identities" protobuf:"bytes,3,rep,name=identities"`
 	FullName          string   `json:"fullName,omitempty" protobuf:"bytes,2,opt,name=fullName"`
 	Groups            []string `json:"groups" protobuf:"bytes,4,rep,name=groups"`
@@ -185,7 +184,7 @@ func getUniqueEndpoints(endpoints ...string) ([]string, error) {
 		if port == "" {
 			port = "443"
 		}
-		hostnameAndPort := fmt.Sprintf("%s:%s", u.Hostname(), port)
+		hostnameAndPort := net.JoinHostPort(u.Hostname(), port)
 		uniqueHostnamesAndPorts.Add(hostnameAndPort)
 	}
 	return uniqueHostnamesAndPorts.AsSlice(), nil
@@ -302,7 +301,7 @@ func (c *openshiftConnector) identity(ctx context.Context, s Scopes, token *oaut
 func (c *openshiftConnector) user(ctx context.Context, client *http.Client) (u user, err error) {
 	url := strings.TrimSuffix(c.apiURL, "/") + openshiftUsersURL
 
-	req, err := http.NewRequest("GET", url, nil)
+	req, err := http.NewRequest(http.MethodGet, url, nil)
 	if err != nil {
 		return u, errors.Wrap(err, "creating a users request")
 	}

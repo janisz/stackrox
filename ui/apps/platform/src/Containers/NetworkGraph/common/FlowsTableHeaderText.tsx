@@ -1,18 +1,18 @@
-import React, { ReactElement } from 'react';
-import { Text, TextContent, TextVariants } from '@patternfly/react-core';
+import type { ReactElement } from 'react';
+import { Content, ContentVariants } from '@patternfly/react-core';
 
 type FlowsTableHeaderTextProps = {
-    type: 'baseline' | 'active' | 'inactive' | 'baseline simulated';
+    type: 'baseline' | 'active' | 'inactive' | 'baseline simulated' | 'total';
     numFlows: number;
 };
 
 function FlowsTableHeaderText({ type, numFlows }: FlowsTableHeaderTextProps): ReactElement {
     return (
-        <TextContent>
-            <Text component={TextVariants.h3}>
+        <Content>
+            <Content component={ContentVariants.h3}>
                 {numFlows} {type} flows
-            </Text>
-        </TextContent>
+            </Content>
+        </Content>
     );
 }
 

@@ -1,5 +1,5 @@
-import React, { CSSProperties, ReactNode } from 'react';
-import { Skeleton, Card, CardBody, CardHeader } from '@patternfly/react-core';
+import type { CSSProperties, ReactElement, ReactNode } from 'react';
+import { Card, CardBody, CardHeader, Skeleton } from '@patternfly/react-core';
 
 import { defaultChartHeight } from 'utils/chartUtils';
 import { CancelledPromiseError } from 'services/cancellationUtils';
@@ -23,7 +23,7 @@ function WidgetCard({
     errorMessage,
     header,
     children,
-}: WidgetCardProps) {
+}: WidgetCardProps): ReactElement {
     let cardContent: ReactNode;
 
     if (isLoading && !error) {
@@ -39,13 +39,13 @@ function WidgetCard({
     }
 
     return (
-        <Card className="pf-v5-u-h-100">
+        <Card className="pf-v6-u-h-100">
             <CardHeader>
-                <div className="pf-v5-u-flex-grow-1">{header}</div>
+                <div className="pf-v6-u-flex-grow-1">{header}</div>
             </CardHeader>
             <CardBody
-                className="pf-v5-u-min-height"
-                style={{ '--pf-v5-u-min-height--MinHeight': height } as CSSProperties}
+                className="pf-v6-u-min-height"
+                style={{ '--pf-v6-u-min-height--MinHeight': height } as CSSProperties}
             >
                 {cardContent}
             </CardBody>

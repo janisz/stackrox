@@ -1,4 +1,3 @@
-import React from 'react';
 import { Bullseye } from '@patternfly/react-core';
 import { ExclamationCircleIcon } from '@patternfly/react-icons';
 
@@ -18,7 +17,7 @@ function TableErrorComponent({ error, message }: TableErrorComponentProps) {
                 headingLevel="h2"
                 title={getAxiosErrorMessage(error)}
                 icon={ExclamationCircleIcon}
-                iconClassName="pf-v5-u-danger-color-100"
+                status="danger"
             >
                 {message}
             </EmptyStateTemplate>

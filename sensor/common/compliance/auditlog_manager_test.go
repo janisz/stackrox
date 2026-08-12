@@ -11,6 +11,7 @@ import (
 	"github.com/stackrox/rox/pkg/concurrency"
 	"github.com/stackrox/rox/pkg/protoassert"
 	"github.com/stackrox/rox/pkg/protocompat"
+	"github.com/stackrox/rox/pkg/testutils/goleak"
 	"github.com/stackrox/rox/pkg/uuid"
 	"github.com/stackrox/rox/sensor/common"
 	"github.com/stackrox/rox/sensor/common/message"
@@ -48,7 +49,7 @@ type AuditLogCollectionManagerTestSuite struct {
 }
 
 func (s *AuditLogCollectionManagerTestSuite) TearDownTest() {
-	defer assertNoGoroutineLeaks(s.T())
+	goleak.AssertNoGoroutineLeaks(s.T())
 }
 
 func (s *AuditLogCollectionManagerTestSuite) getFakeServersAndStates() (map[string]sensor.ComplianceService_CommunicateServer, map[string]*storage.AuditLogFileState) {
@@ -70,10 +71,6 @@ func (s *AuditLogCollectionManagerTestSuite) getFakeServersAndStates() (map[stri
 	return servers, fileStates
 }
 
-func (s *AuditLogCollectionManagerTestSuite) getClusterID() string {
-	return "FAKECLUSTERID"
-}
-
 func (s *AuditLogCollectionManagerTestSuite) getManager(
 	servers map[string]sensor.ComplianceService_CommunicateServer,
 	fileStates map[string]*storage.AuditLogFileState,
@@ -84,7 +81,7 @@ func (s *AuditLogCollectionManagerTestSuite) getManager(
 	}
 
 	return &auditLogCollectionManagerImpl{
-		clusterIDGetter:         s.getClusterID,
+		clusterID:               &fakeClusterIDWaiter{},
 		eligibleComplianceNodes: servers,
 		fileStates:              fileStates,
 		updaterTicker:           time.NewTicker(updateInterval),
@@ -303,17 +300,17 @@ func (s *AuditLogCollectionManagerTestSuite) TestStateSaverSavesFileStates() {
 	manager.enabled.Set(true) // start out enabled
 
 	s.NoError(manager.Start())
-	defer manager.Stop(nil)
+	defer manager.Stop()
 
 	// Now pass in a few messages and wait for the state to get updated asynchronously
 	expectedFileStates := make(map[string]*storage.AuditLogFileState)
 	startTime := time.Now()
-	for node := 0; node < 2; node++ {
-		for i := 0; i < 2; i++ {
+	for node := range 2 {
+		for i := range 2 {
 			nodeName := fmt.Sprintf("node-%d", node)
 			msgTime := startTime.Add(time.Duration(i*10) * time.Minute)
 			msg := s.getMsgFromCompliance(nodeName, msgTime)
-			state := s.getAuditLogFileState(msgTime, msg.GetAuditEvents().Events[0].Id)
+			state := s.getAuditLogFileState(msgTime, msg.GetAuditEvents().GetEvents()[0].GetId())
 			expectedFileStates[nodeName] = state
 
 			manager.AuditMessagesChan() <- msg
@@ -339,12 +336,12 @@ func (s *AuditLogCollectionManagerTestSuite) TestStateSaverDoesNotSaveIfMsgHasNo
 	manager.enabled.Set(true) // start out enabled
 
 	s.NoError(manager.Start())
-	defer manager.Stop(nil)
+	defer manager.Stop()
 
 	// Now pass in a few messages and wait for the state to get updated asynchronously
 	startTime := time.Now()
-	for node := 0; node < 2; node++ {
-		for i := 0; i < 2; i++ {
+	for node := range 2 {
+		for range 2 {
 			msg := &sensor.MsgFromCompliance{
 				Node: fmt.Sprintf("node-%d", node),
 				Msg: &sensor.MsgFromCompliance_AuditEvents{
@@ -410,7 +407,7 @@ func (s *AuditLogCollectionManagerTestSuite) TestUpdaterDoesNotSendWhenNoFileSta
 
 	err := manager.Start()
 	s.Require().NoError(err)
-	defer manager.Stop(nil)
+	defer manager.Stop()
 
 	timer := time.NewTimer(updateTimeout + (500 * time.Millisecond)) // wait an extra 1/2 second
 
@@ -432,7 +429,7 @@ func (s *AuditLogCollectionManagerTestSuite) TestUpdaterDoesNotSendIfInitStateNo
 
 	err := manager.Start()
 	s.Require().NoError(err)
-	defer manager.Stop(nil)
+	defer manager.Stop()
 
 	timer := time.NewTimer(updateTimeout + (500 * time.Millisecond)) // wait an extra 1/2 second
 
@@ -457,7 +454,7 @@ func (s *AuditLogCollectionManagerTestSuite) TestUpdaterSendsUpdateWithLatestFil
 
 	err := manager.Start()
 	s.Require().NoError(err)
-	defer manager.Stop(nil)
+	defer manager.Stop()
 
 	status := s.getUpdaterStatusMsg(manager, 10)
 	protoassert.MapEqual(s.T(), expectedStatus, status.GetNodeAuditLogFileStates())
@@ -479,7 +476,7 @@ func (s *AuditLogCollectionManagerTestSuite) TestUpdaterSendsUpdateWhenForced() 
 
 	err := manager.Start()
 	s.Require().NoError(err)
-	defer manager.Stop(nil)
+	defer manager.Stop()
 
 	manager.ForceUpdate()
 
@@ -491,7 +488,7 @@ func (s *AuditLogCollectionManagerTestSuite) getUpdaterStatusMsg(updater updater
 	timer := time.NewTimer(updateTimeout)
 
 	var status *central.AuditLogStatusInfo
-	for i := 0; i < times; i++ {
+	for range times {
 		select {
 		case response := <-updater.ResponsesC():
 			status = response.Msg.(*central.MsgFromSensor_AuditLogStatusInfo).AuditLogStatusInfo
@@ -553,5 +550,11 @@ func (s *AuditLogCollectionManagerTestSuite) TestUpdaterSkipsOnOfflineMode() {
 
 	}
 
-	manager.Stop(nil)
+	manager.Stop()
+}
+
+type fakeClusterIDWaiter struct{}
+
+func (f *fakeClusterIDWaiter) Get() string {
+	return "FAKECLUSTERID"
 }

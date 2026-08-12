@@ -1,6 +1,7 @@
 package compliance
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"strings"
@@ -11,13 +12,14 @@ import (
 	v4 "github.com/stackrox/rox/generated/internalapi/scanner/v4"
 	"github.com/stackrox/rox/generated/internalapi/sensor"
 	"github.com/stackrox/rox/generated/storage"
+	"github.com/stackrox/rox/pkg/centralsensor"
 	"github.com/stackrox/rox/pkg/concurrency"
 	"github.com/stackrox/rox/pkg/protocompat"
+	"github.com/stackrox/rox/pkg/testutils/goleak"
 	"github.com/stackrox/rox/pkg/uuid"
 	"github.com/stackrox/rox/sensor/common"
 	"github.com/stackrox/rox/sensor/common/compliance/index"
 	"github.com/stretchr/testify/suite"
-	"go.uber.org/goleak"
 )
 
 func TestNodeInventoryHandler(t *testing.T) {
@@ -54,18 +56,29 @@ func fakeNodeIndex(arch string) *v4.IndexReport {
 		HashId:  fmt.Sprintf("sha256:%s", strings.Repeat("a", 64)),
 		Success: true,
 		Contents: &v4.Contents{
-			Packages: []*v4.Package{
-				exemplaryPackage("0", "vim-minimal", arch),
-				exemplaryPackage("1", "vim-minimal-noarch", "noarch"),
-				exemplaryPackage("2", "vim-minimal-empty-arch", ""),
+			Packages: map[string]*v4.Package{
+				"0": exemplaryPackage("0", "vim-minimal", arch),
+				"1": exemplaryPackage("1", "vim-minimal-noarch", "noarch"),
+				"2": exemplaryPackage("2", "vim-minimal-empty-arch", ""),
 			},
-			Repositories: []*v4.Repository{
-				exemplaryRepo("0"),
-				exemplaryRepo("1"),
-				exemplaryRepo("2"),
+			Repositories: map[string]*v4.Repository{
+				"0": exemplaryRepo("0"),
+				"1": exemplaryRepo("1"),
+				"2": exemplaryRepo("2"),
 			},
 		},
 	}
+}
+
+func fakeNodeIndexWithRHCOS(arch string) *v4.IndexReport {
+	ir := fakeNodeIndex(arch)
+	ir.Contents.Packages["rhcos-pkg"] = &v4.Package{
+		Id:      "rhcos-pkg",
+		Name:    "rhcos",
+		Version: "9.6.20260324-0",
+		Arch:    arch,
+	}
+	return ir
 }
 
 func exemplaryPackage(id, name, arch string) *v4.Package {
@@ -103,81 +116,8 @@ type NodeInventoryHandlerTestSuite struct {
 	suite.Suite
 }
 
-func assertNoGoroutineLeaks(t *testing.T) {
-	goleak.VerifyNone(t,
-		// Ignore a known leak: https://github.com/DataDog/dd-trace-go/issues/1469
-		goleak.IgnoreTopFunction("github.com/golang/glog.(*fileSink).flushDaemon"),
-		// Ignore a known leak caused by importing the GCP cscc SDK.
-		goleak.IgnoreTopFunction("go.opencensus.io/stats/view.(*worker).start"),
-	)
-}
-
 func (s *NodeInventoryHandlerTestSuite) TearDownTest() {
-	assertNoGoroutineLeaks(s.T())
-}
-
-func (s *NodeInventoryHandlerTestSuite) TestExtractArch() {
-	cases := map[string]struct {
-		rpmArch      string
-		expectedArch string
-	}{
-		"noarch": {
-			rpmArch:      "noarch",
-			expectedArch: "",
-		},
-		"empty-arch": {
-			rpmArch:      "",
-			expectedArch: "",
-		},
-		"x86_64": {
-			rpmArch:      "x86_64",
-			expectedArch: "x86_64",
-		},
-		"foobar": {
-			rpmArch:      "foobar",
-			expectedArch: "foobar",
-		},
-	}
-	for name, tc := range cases {
-		s.Run(name, func() {
-			got := extractArch(fakeNodeIndex(tc.rpmArch))
-			s.Equal(tc.expectedArch, got)
-		})
-	}
-}
-
-func (s *NodeInventoryHandlerTestSuite) TestAttachRPMtoRHCOS() {
-	arch := "x86_64"
-	rpmIR := fakeNodeIndex(arch)
-	got := attachRPMtoRHCOS("417.94.202501071621-0", arch, rpmIR)
-
-	s.Lenf(got.GetContents().GetPackages(), len(rpmIR.GetContents().GetPackages())+1, "IR should have 1 extra package")
-	s.Lenf(got.GetContents().GetEnvironments(), len(rpmIR.GetContents().GetEnvironments())+1, "IR should have 1 extra envinronment")
-	s.Lenf(got.GetContents().GetRepositories(), len(rpmIR.GetContents().GetRepositories())+1, "IR should have 1 extra repository")
-
-	var rhcosPKG *v4.Package
-	for _, p := range got.GetContents().GetPackages() {
-		if p.GetName() == "rhcos" {
-			rhcosPKG = p
-			break
-		}
-	}
-	s.Require().NotNil(rhcosPKG, "the 'rhcos' pkg should exist in node index")
-	s.Equal("rhcos", rhcosPKG.GetName())
-	s.Equal(arch, rhcosPKG.GetArch())
-	s.Equal("600", rhcosPKG.GetId())
-
-	var rhcosRepo *v4.Repository
-	for _, r := range got.GetContents().GetRepositories() {
-		if r.GetId() == "600" {
-			rhcosRepo = r
-			break
-		}
-	}
-	s.Require().NotNil(rhcosRepo, "the golden repos should exist in node index")
-	s.Equal("", rhcosRepo.GetKey())
-	s.Equal(goldenName, rhcosRepo.GetName())
-	s.Equal(goldenURI, rhcosRepo.GetUri())
+	goleak.AssertNoGoroutineLeaks(s.T())
 }
 
 func (s *NodeInventoryHandlerTestSuite) TestCapabilities() {
@@ -186,7 +126,9 @@ func (s *NodeInventoryHandlerTestSuite) TestCapabilities() {
 	reports := make(chan *index.IndexReportWrap)
 	defer close(reports)
 	h := NewNodeInventoryHandler(inventories, reports, &mockAlwaysHitNodeIDMatcher{}, &mockRHCOSNodeMatcher{})
-	s.Nil(h.Capabilities())
+	caps := h.Capabilities()
+	s.Require().Len(caps, 1)
+	s.Equal(centralsensor.SensorACKSupport, caps[0])
 }
 
 func (s *NodeInventoryHandlerTestSuite) TestResponsesCShouldPanicWhenNotStarted() {
@@ -217,14 +159,14 @@ func (s *NodeInventoryHandlerTestSuite) TestStopHandler() {
 	// This is a producer that stops the handler after producing the first message and then sends many (29) more messages.
 	go func() {
 		defer producer.Flow().ReportStopped()
-		for i := 0; i < 30; i++ {
+		for i := range 30 {
 			select {
 			case <-producer.Flow().StopRequested():
 				return
 			case inventories <- fakeNodeInventory("Node"):
 				if i == 0 {
 					s.NoError(consumer.Stopped().Wait()) // This blocks until consumer receives its 1 message
-					h.Stop(nil)
+					h.Stop()
 				}
 			}
 		}
@@ -249,7 +191,7 @@ func (s *NodeInventoryHandlerTestSuite) TestHandlerRegularRoutine() {
 	s.NoError(producer.Stopped().Wait())
 	s.NoError(consumer.Stopped().Wait())
 
-	h.Stop(nil)
+	h.Stop()
 	s.NoError(h.Stopped().Wait())
 }
 
@@ -266,8 +208,7 @@ func (s *NodeInventoryHandlerTestSuite) TestHandlerStopIgnoresError() {
 	s.NoError(producer.Stopped().Wait())
 	s.NoError(consumer.Stopped().Wait())
 
-	errTest := errors.New("example-stop-error")
-	h.Stop(errTest)
+	h.Stop()
 	// This test indicates that the handler ignores an error that's supplied to its Stop function.
 	// The handler will report either an internal error if it occurred during processing or nil otherwise.
 	s.NoError(h.Stopped().Wait())
@@ -324,20 +265,225 @@ func (s *NodeInventoryHandlerTestSuite) TestHandlerCentralACKsToCompliance() {
 			result := consumeAndCountCompliance(s.T(), handler.ComplianceC(), tc.expectedACKCount+tc.expectedNACKCount)
 
 			for _, reply := range tc.centralReplies {
-				s.NoError(mockCentralReply(handler, reply))
+				s.NoError(mockCentralReply(s.T().Context(), handler, reply))
 			}
 
 			s.NoError(result.sc.Stopped().Wait())
 			s.Equal(tc.expectedACKCount, result.ACKCount)
 			s.Equal(tc.expectedNACKCount, result.NACKCount)
 
-			handler.Stop(nil)
+			handler.Stop()
 			s.T().Logf("waiting for handler to stop")
 			s.NoError(handler.Stopped().Wait())
 		})
 
 	}
 
+}
+
+// TestHandlerSensorACKsToCompliance tests the new SensorACK message handling.
+// Node-related SensorACK messages from Central 4.10+ should be forwarded to Compliance as ComplianceACK.
+// Non-node messages (like VM_INDEX_REPORT) should be ignored.
+func (s *NodeInventoryHandlerTestSuite) TestHandlerSensorACKsToCompliance() {
+	cases := map[string]struct {
+		sensorACK           *central.SensorACK
+		shouldForward       bool // true if message should be forwarded to Compliance
+		expectedAction      sensor.MsgToCompliance_ComplianceACK_Action
+		expectedMessageType sensor.MsgToCompliance_ComplianceACK_MessageType
+		expectedReason      string
+		expectedHostname    string
+		expectedBroadcast   bool
+	}{
+		"NODE_INVENTORY ACK should be forwarded": {
+			sensorACK: &central.SensorACK{
+				Action:      central.SensorACK_ACK,
+				MessageType: central.SensorACK_NODE_INVENTORY,
+				ResourceId:  "node-1",
+			},
+			shouldForward:       true,
+			expectedAction:      sensor.MsgToCompliance_ComplianceACK_ACK,
+			expectedMessageType: sensor.MsgToCompliance_ComplianceACK_NODE_INVENTORY,
+		},
+		"NODE_INVENTORY NACK should be forwarded with reason": {
+			sensorACK: &central.SensorACK{
+				Action:      central.SensorACK_NACK,
+				MessageType: central.SensorACK_NODE_INVENTORY,
+				ResourceId:  "node-1",
+				Reason:      "some failure reason",
+			},
+			shouldForward:       true,
+			expectedAction:      sensor.MsgToCompliance_ComplianceACK_NACK,
+			expectedMessageType: sensor.MsgToCompliance_ComplianceACK_NODE_INVENTORY,
+			expectedReason:      "some failure reason",
+		},
+		"NODE_INDEX_REPORT ACK should be forwarded": {
+			sensorACK: &central.SensorACK{
+				Action:      central.SensorACK_ACK,
+				MessageType: central.SensorACK_NODE_INDEX_REPORT,
+				ResourceId:  "node-2",
+			},
+			shouldForward:       true,
+			expectedAction:      sensor.MsgToCompliance_ComplianceACK_ACK,
+			expectedMessageType: sensor.MsgToCompliance_ComplianceACK_NODE_INDEX_REPORT,
+		},
+		"NODE_INDEX_REPORT NACK should be forwarded with reason": {
+			sensorACK: &central.SensorACK{
+				Action:      central.SensorACK_NACK,
+				MessageType: central.SensorACK_NODE_INDEX_REPORT,
+				ResourceId:  "node-2",
+				Reason:      "index failure",
+			},
+			shouldForward:       true,
+			expectedAction:      sensor.MsgToCompliance_ComplianceACK_NACK,
+			expectedMessageType: sensor.MsgToCompliance_ComplianceACK_NODE_INDEX_REPORT,
+			expectedReason:      "index failure",
+		},
+		"NODE_INDEX_REPORT with unknown action should be ignored": {
+			sensorACK: &central.SensorACK{
+				Action:      central.SensorACK_Action(999),
+				MessageType: central.SensorACK_NODE_INDEX_REPORT,
+				ResourceId:  "node-2",
+			},
+			shouldForward: false,
+		},
+		"Broadcast NODE_INVENTORY ACK should set broadcast": {
+			sensorACK: &central.SensorACK{
+				Action:      central.SensorACK_ACK,
+				MessageType: central.SensorACK_NODE_INVENTORY,
+				ResourceId:  "",
+			},
+			shouldForward:       true,
+			expectedAction:      sensor.MsgToCompliance_ComplianceACK_ACK,
+			expectedMessageType: sensor.MsgToCompliance_ComplianceACK_NODE_INVENTORY,
+			expectedHostname:    "",
+			expectedBroadcast:   true,
+		},
+		"VM_INDEX_REPORT ACK should be ignored": {
+			sensorACK: &central.SensorACK{
+				Action:      central.SensorACK_ACK,
+				MessageType: central.SensorACK_VM_INDEX_REPORT,
+				ResourceId:  "vm-1",
+			},
+			shouldForward: false,
+		},
+	}
+
+	for name, tc := range cases {
+		s.Run(name, func() {
+			ch := make(chan *storage.NodeInventory)
+			defer close(ch)
+			reports := make(chan *index.IndexReportWrap)
+			defer close(reports)
+			handler := NewNodeInventoryHandler(ch, reports, &mockAlwaysHitNodeIDMatcher{}, &mockRHCOSNodeMatcher{})
+			s.NoError(handler.Start())
+			handler.Notify(common.SensorComponentEventCentralReachable)
+
+			if tc.shouldForward {
+				// Start a goroutine to receive the ComplianceACK before sending
+				// (channel is unbuffered so we need a receiver ready)
+				msgCh := make(chan common.MessageToComplianceWithAddress, 1)
+				errCh := make(chan error, 1)
+				go func() {
+					select {
+					case msg := <-handler.ComplianceC():
+						msgCh <- msg
+					case <-time.After(3 * time.Second):
+						errCh <- errors.New("ComplianceACK message not received within 3 seconds")
+					}
+				}()
+
+				// Send the SensorACK message
+				err := handler.ProcessMessage(s.T().Context(), &central.MsgToSensor{
+					Msg: &central.MsgToSensor_SensorAck{SensorAck: tc.sensorACK},
+				})
+				s.NoError(err)
+
+				select {
+				case err := <-errCh:
+					s.Fail(err.Error())
+				case msg := <-msgCh:
+					// Verify ComplianceACK was sent to Compliance
+					complianceAck := msg.Msg.GetComplianceAck()
+					s.Require().NotNil(complianceAck, "Expected ComplianceACK message")
+					s.Equal(tc.expectedAction, complianceAck.GetAction())
+					s.Equal(tc.expectedMessageType, complianceAck.GetMessageType())
+					s.Equal(tc.sensorACK.GetResourceId(), complianceAck.GetResourceId())
+					s.Equal(tc.expectedReason, complianceAck.GetReason())
+					if tc.expectedHostname != "" || tc.expectedBroadcast {
+						s.Equal(tc.expectedHostname, msg.Hostname)
+						s.Equal(tc.expectedBroadcast, msg.Broadcast)
+					} else {
+						s.Equal(tc.sensorACK.GetResourceId(), msg.Hostname)
+						s.False(msg.Broadcast)
+					}
+				}
+
+			} else {
+				// Send the SensorACK message
+				err := handler.ProcessMessage(s.T().Context(), &central.MsgToSensor{
+					Msg: &central.MsgToSensor_SensorAck{SensorAck: tc.sensorACK},
+				})
+				s.NoError(err)
+
+				// Verify no message arrives within the timeout.
+				select {
+				case msg := <-handler.ComplianceC():
+					s.Failf("Message should not be forwarded to Compliance", "got: %v", msg)
+				case <-time.After(20 * time.Millisecond):
+					// Expected: nothing received.
+				}
+			}
+
+			handler.Stop()
+			s.NoError(handler.Stopped().Wait())
+		})
+	}
+}
+
+// TestHandlerAcceptsBothAckTypes tests that the handler accepts both legacy NodeInventoryACK
+// and new SensorACK message types.
+func (s *NodeInventoryHandlerTestSuite) TestHandlerAcceptsBothAckTypes() {
+	ch := make(chan *storage.NodeInventory)
+	defer close(ch)
+	reports := make(chan *index.IndexReportWrap)
+	defer close(reports)
+	handler := NewNodeInventoryHandler(ch, reports, &mockAlwaysHitNodeIDMatcher{}, &mockRHCOSNodeMatcher{})
+
+	// Test legacy NodeInventoryACK
+	legacyMsg := &central.MsgToSensor{
+		Msg: &central.MsgToSensor_NodeInventoryAck{NodeInventoryAck: &central.NodeInventoryACK{
+			ClusterId: "cluster-1",
+			NodeName:  "node-1",
+			Action:    central.NodeInventoryACK_ACK,
+		}},
+	}
+	s.True(handler.Accepts(legacyMsg), "Handler should accept legacy NodeInventoryACK")
+
+	// Test new SensorACK for node-related messages
+	nodeAckMsg := &central.MsgToSensor{
+		Msg: &central.MsgToSensor_SensorAck{SensorAck: &central.SensorACK{
+			Action:      central.SensorACK_ACK,
+			MessageType: central.SensorACK_NODE_INDEX_REPORT,
+			ResourceId:  "node-1",
+		}},
+	}
+	s.True(handler.Accepts(nodeAckMsg), "Handler should accept SensorACK for node messages")
+
+	// Test SensorACK for VM messages (should be handled by VM handler, not accepted here)
+	vmAckMsg := &central.MsgToSensor{
+		Msg: &central.MsgToSensor_SensorAck{SensorAck: &central.SensorACK{
+			Action:      central.SensorACK_ACK,
+			MessageType: central.SensorACK_VM_INDEX_REPORT,
+			ResourceId:  "vm-1",
+		}},
+	}
+	s.False(handler.Accepts(vmAckMsg), "Handler should not accept SensorACK for VM messages")
+
+	// Test message without ACK
+	otherMsg := &central.MsgToSensor{
+		Msg: &central.MsgToSensor_ClusterConfig{},
+	}
+	s.False(handler.Accepts(otherMsg), "Handler should not accept other message types")
 }
 
 // This test simulates a running Sensor loosing connection to Central, followed by a reconnect.
@@ -376,22 +522,22 @@ func (s *NodeInventoryHandlerTestSuite) TestHandlerOfflineACKNACK() {
 		result := consumeAndCountCompliance(s.T(), h.ComplianceC(), state.expectedACKCount+state.expectedNACKCount)
 
 		if state.event == common.SensorComponentEventCentralReachable {
-			s.NoError(mockCentralReply(h, central.NodeInventoryACK_ACK))
+			s.NoError(mockCentralReply(s.T().Context(), h, central.NodeInventoryACK_ACK))
 		}
 		s.NoError(result.sc.Stopped().Wait())
 		s.Equal(state.expectedACKCount, result.ACKCount)
 		s.Equal(state.expectedNACKCount, result.NACKCount)
 	}
 
-	h.Stop(nil)
+	h.Stop()
 	s.T().Logf("waiting for handler to stop")
 	s.NoError(h.Stopped().Wait())
 }
 
-func mockCentralReply(h *nodeInventoryHandlerImpl, ackType central.NodeInventoryACK_Action) error {
+func mockCentralReply(ctx context.Context, h *nodeInventoryHandlerImpl, ackType central.NodeInventoryACK_Action) error {
 	select {
 	case <-h.ResponsesC():
-		return h.ProcessMessage(&central.MsgToSensor{
+		return h.ProcessMessage(ctx, &central.MsgToSensor{
 			Msg: &central.MsgToSensor_NodeInventoryAck{NodeInventoryAck: &central.NodeInventoryACK{
 				ClusterId: "4",
 				NodeName:  "4",
@@ -410,7 +556,7 @@ func (s *NodeInventoryHandlerTestSuite) generateTestInputNoClose(numToProduce in
 	st := concurrency.NewStopper()
 	go func() {
 		defer st.Flow().ReportStopped()
-		for i := 0; i < numToProduce; i++ {
+		for i := range numToProduce {
 			select {
 			case <-st.Flow().StopRequested():
 				return
@@ -427,7 +573,7 @@ func consumeAndCount[T any](ch <-chan T, numToConsume int) concurrency.StopperCl
 	st := concurrency.NewStopper()
 	go func() {
 		defer st.Flow().ReportStopped()
-		for i := 0; i < numToConsume; i++ {
+		for i := range numToConsume {
 			select {
 			case <-st.Flow().StopRequested():
 				st.LowLevel().ResetStopRequest()
@@ -455,7 +601,7 @@ func consumeAndCountCompliance(t *testing.T, ch <-chan common.MessageToComplianc
 	st := concurrency.NewStopper()
 	go func() {
 		defer st.Flow().ReportStopped()
-		for i := 0; i < numToConsume; i++ {
+		for i := range numToConsume {
 			select {
 			case <-st.Flow().StopRequested():
 				t.Logf("Stop requested")
@@ -469,13 +615,22 @@ func consumeAndCountCompliance(t *testing.T, ch <-chan common.MessageToComplianc
 					st.Flow().StopWithError(fmt.Errorf("consumer consumed %d messages but expected to do %d", i, numToConsume))
 					return
 				}
-				t.Logf("Executing ++ on action %s", msg.Msg.GetAck().GetAction())
-				switch msg.Msg.GetAck().GetAction() {
-				case sensor.MsgToCompliance_NodeInventoryACK_ACK:
-					ms.ACKCount++
-				case sensor.MsgToCompliance_NodeInventoryACK_NACK:
-					ms.NACKCount++
+				if ack := msg.Msg.GetAck(); ack != nil {
+					st.Flow().StopWithError(fmt.Errorf("unexpected legacy ACK message from Sensor to Compliance: action=%s type=%s", ack.GetAction(), ack.GetMessageType()))
+					return
 				}
+				if complianceAck := msg.Msg.GetComplianceAck(); complianceAck != nil {
+					t.Logf("Executing ++ on compliance ack action %s", complianceAck.GetAction())
+					switch complianceAck.GetAction() {
+					case sensor.MsgToCompliance_ComplianceACK_ACK:
+						ms.ACKCount++
+					case sensor.MsgToCompliance_ComplianceACK_NACK:
+						ms.NACKCount++
+					}
+					continue
+				}
+				st.Flow().StopWithError(fmt.Errorf("unexpected message to Compliance: %T", msg.Msg.GetMsg()))
+				return
 			}
 		}
 	}()
@@ -502,7 +657,7 @@ func (s *NodeInventoryHandlerTestSuite) TestMultipleStartHandler() {
 	s.NoError(producer.Stopped().Wait())
 	s.NoError(consumer.Stopped().Wait())
 
-	h.Stop(nil)
+	h.Stop()
 	s.NoError(h.Stopped().Wait())
 
 	// No second start even after a stop
@@ -521,8 +676,8 @@ func (s *NodeInventoryHandlerTestSuite) TestDoubleStopHandler() {
 	consumer := consumeAndCount(h.ResponsesC(), 10)
 	s.NoError(producer.Stopped().Wait())
 	s.NoError(consumer.Stopped().Wait())
-	h.Stop(nil)
-	h.Stop(nil)
+	h.Stop()
+	h.Stop()
 	s.NoError(h.Stopped().Wait())
 	// it should not block
 	s.NoError(h.Stopped().Wait())
@@ -551,7 +706,7 @@ func (s *NodeInventoryHandlerTestSuite) generateNilTestInputNoClose(numToProduce
 	st := concurrency.NewStopper()
 	go func() {
 		defer st.Flow().ReportStopped()
-		for i := 0; i < numToProduce; i++ {
+		for range numToProduce {
 			select {
 			case <-st.Flow().StopRequested():
 				return
@@ -575,7 +730,7 @@ func (s *NodeInventoryHandlerTestSuite) TestHandlerNilInput() {
 	s.NoError(producer.Stopped().Wait())
 	s.NoError(consumer.Stopped().Wait())
 
-	h.Stop(nil)
+	h.Stop()
 	s.NoError(h.Stopped().Wait())
 }
 
@@ -596,7 +751,7 @@ func (s *NodeInventoryHandlerTestSuite) TestHandlerNodeUnknown() {
 	s.NoError(centralConsumer.Stopped().Wait())
 	s.NoError(complianceConsumer.Stopped().Wait())
 
-	h.Stop(nil)
+	h.Stop()
 	s.NoError(h.Stopped().Wait())
 }
 
@@ -615,9 +770,79 @@ func (s *NodeInventoryHandlerTestSuite) TestHandlerCentralNotReady() {
 	s.NoError(centralConsumer.Stopped().Wait())
 	s.NoError(complianceConsumer.Stopped().Wait())
 
-	h.Stop(nil)
+	h.Stop()
 	s.T().Logf("waiting for handler to stop")
 	s.NoError(h.Stopped().Wait())
+}
+
+func (s *NodeInventoryHandlerTestSuite) TestSendNodeIndex_RHCOSDetection() {
+	cases := []struct {
+		name           string
+		indexReport    *v4.IndexReport
+		rhcosMatcher   NodeRHCOSMatcher
+		expectRHCOSPkg bool
+	}{
+		{
+			name:           "compliance already added rhcos",
+			indexReport:    fakeNodeIndexWithRHCOS("x86_64"),
+			rhcosMatcher:   &mockRHCOSNodeMatcher{},
+			expectRHCOSPkg: true,
+		},
+		{
+			name:           "no rhcos + osImage=RHCOS - warning logged, no modification",
+			indexReport:    fakeNodeIndex("x86_64"),
+			rhcosMatcher:   &mockRHCOSNodeMatcher{},
+			expectRHCOSPkg: false,
+		},
+		{
+			name:           "no rhcos + non-RHCOS osImage - no modification",
+			indexReport:    fakeNodeIndex("x86_64"),
+			rhcosMatcher:   &mockNonRHCOSNodeMatcher{},
+			expectRHCOSPkg: false,
+		},
+	}
+
+	for _, tc := range cases {
+		s.Run(tc.name, func() {
+			inventories := make(chan *storage.NodeInventory)
+			defer close(inventories)
+			reports := make(chan *index.IndexReportWrap)
+			defer close(reports)
+
+			h := NewNodeInventoryHandler(inventories, reports, &mockAlwaysHitNodeIDMatcher{}, tc.rhcosMatcher)
+			s.NoError(h.Start())
+			h.Notify(common.SensorComponentEventCentralReachable)
+
+			go func() {
+				reports <- &index.IndexReportWrap{
+					NodeName:    "test-node",
+					NodeID:      "test-node-id",
+					IndexReport: tc.indexReport,
+				}
+			}()
+
+			select {
+			case msg := <-h.ResponsesC():
+				result := msg.GetEvent().GetIndexReport()
+				s.Require().NotNil(result)
+
+				var hasRHCOS bool
+				for _, p := range result.GetContents().GetPackages() {
+					if p.GetName() == "rhcos" {
+						hasRHCOS = true
+						break
+					}
+				}
+				s.Equal(tc.expectRHCOSPkg, hasRHCOS, "rhcos package presence")
+
+			case <-time.After(5 * time.Second):
+				s.Fail("timeout waiting for response")
+			}
+
+			h.Stop()
+			s.NoError(h.Stopped().Wait())
+		})
+	}
 }
 
 // mockAlwaysHitNodeIDMatcher always finds a node when GetNodeResource is called
@@ -636,10 +861,82 @@ func (c *mockNeverHitNodeIDMatcher) GetNodeID(_ string) (string, error) {
 	return "", errors.New("cannot find node")
 }
 
-// mockNeverHitNodeIDMatcher simulates inability to find a node when GetNodeResource is called
+// mockRHCOSNodeMatcher always identifies as RHCOS and provides a valid version
 type mockRHCOSNodeMatcher struct{}
 
-// GetRHCOSVersion always identifies as RHCOS and provides a valid version
 func (c *mockRHCOSNodeMatcher) GetRHCOSVersion(_ string) (bool, string, error) {
 	return true, "417.94.202412120651-0", nil
+}
+
+// mockNonRHCOSNodeMatcher always identifies as non-RHCOS
+type mockNonRHCOSNodeMatcher struct{}
+
+func (c *mockNonRHCOSNodeMatcher) GetRHCOSVersion(_ string) (bool, string, error) {
+	return false, "", nil
+}
+
+func TestHasRHCOSPackage(t *testing.T) {
+	tests := []struct {
+		name     string
+		report   *v4.IndexReport
+		expected bool
+	}{
+		{
+			name:     "nil report",
+			report:   nil,
+			expected: false,
+		},
+		{
+			name: "empty report",
+			report: &v4.IndexReport{
+				Contents: &v4.Contents{},
+			},
+			expected: false,
+		},
+		{
+			name: "no rhcos package",
+			report: &v4.IndexReport{
+				Contents: &v4.Contents{
+					Packages: map[string]*v4.Package{
+						"1": {Name: "bash"},
+						"2": {Name: "vim"},
+					},
+				},
+			},
+			expected: false,
+		},
+		{
+			name: "rhcos in packages",
+			report: &v4.IndexReport{
+				Contents: &v4.Contents{
+					Packages: map[string]*v4.Package{
+						"1":         {Name: "bash"},
+						"rhcos-pkg": {Name: "rhcos"},
+					},
+				},
+			},
+			expected: true,
+		},
+		{
+			name: "rhcos in deprecated packages only - should not match",
+			report: &v4.IndexReport{
+				Contents: &v4.Contents{
+					PackagesDEPRECATED: []*v4.Package{
+						{Name: "bash"},
+						{Name: "rhcos"},
+					},
+				},
+			},
+			expected: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := hasRHCOSPackage(tt.report)
+			if result != tt.expected {
+				t.Errorf("hasRHCOSPackage() = %v, expected %v", result, tt.expected)
+			}
+		})
+	}
 }

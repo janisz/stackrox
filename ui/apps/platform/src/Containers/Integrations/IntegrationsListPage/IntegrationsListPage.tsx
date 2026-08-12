@@ -1,37 +1,49 @@
-import React, { ReactElement, useState } from 'react';
+import { useState } from 'react';
+import type { ReactElement } from 'react';
 import {
-    PageSection,
-    PageSectionVariants,
-    Title,
+    Alert,
+    AlertActionCloseButton,
+    AlertGroup,
     Breadcrumb,
     BreadcrumbItem,
-    Divider,
+    Content,
     Flex,
+    PageSection,
+    Title,
+    pluralize,
 } from '@patternfly/react-core';
-import { useParams, useHistory } from 'react-router-dom';
-import { connect } from 'react-redux';
 
+import { Link } from 'react-router-dom-v5-compat';
 import BreadcrumbItemLink from 'Components/BreadcrumbItemLink';
+import ExternalLink from 'Components/PatternFly/IconText/ExternalLink';
 import PageTitle from 'Components/PageTitle';
 import ConfirmationModal from 'Components/PatternFly/ConfirmationModal';
-import useCentralCapabilities from 'hooks/useCentralCapabilities';
-import { actions as integrationsActions } from 'reducers/integrations';
-import { actions as apitokensActions } from 'reducers/apitokens';
-import { actions as machineAccessActions } from 'reducers/machineAccessConfigs';
-import { actions as cloudSourcesActions } from 'reducers/cloudSources';
+import useRestMutation from 'hooks/useRestMutation';
+import useToasts from 'hooks/patternfly/useToasts';
+import type { Toast } from 'hooks/patternfly/useToasts';
+import { getTableUIState } from 'utils/getTableUIState';
+import { getAxiosErrorMessage } from 'utils/responseErrorUtils';
 import { integrationsPath } from 'routePaths';
+import { deleteIntegrations, isServiceIntegrationSource } from 'services/IntegrationsService';
+import { revokeAPITokens } from 'services/APITokensService';
+import { deleteMachineAccessConfigs } from 'services/MachineAccessService';
+import { deleteCloudSources } from 'services/CloudSourceService';
+import { triggerBackup } from 'services/BackupIntegrationsService';
 
-import TechPreviewLabel from 'Components/PatternFly/TechPreviewLabel';
+import TechnologyPreviewLabel from 'Components/PatternFly/PreviewLabel/TechnologyPreviewLabel';
 import useIntegrations from '../hooks/useIntegrations';
 import { getIntegrationLabel } from '../utils/integrationsList';
 import {
     getIsAPIToken,
     getIsCloudSource,
-    getIsClusterInitBundle,
+    getIsGCR,
     getIsMachineAccessConfig,
-    getIsSignatureIntegration,
+    getIsS3,
+    getIsS3Compatible,
     getIsScannerV4,
+    getIsSignatureIntegration,
 } from '../utils/integrationUtils';
+import type { IntegrationSource, IntegrationType } from '../utils/integrationUtils';
 
 import {
     DeleteAPITokensConfirmationText,
@@ -39,70 +51,94 @@ import {
 } from './ConfirmationTexts';
 import IntegrationsTable from './IntegrationsTable';
 
-function IntegrationsListPage({
-    deleteIntegrations,
-    triggerBackup,
-    revokeAPITokens,
-    deleteMachineAccessConfigs,
-    deleteCloudSources,
-}): ReactElement {
-    const { source, type } = useParams();
-    const integrations = useIntegrations({ source, type });
-    const [deletingIntegrationIds, setDeletingIntegrationIds] = useState([]);
+export type IntegrationsListPageProps = {
+    source: IntegrationSource;
+    type: IntegrationType;
+};
 
-    const history = useHistory();
+function IntegrationsListPage({ source, type }: IntegrationsListPageProps): ReactElement {
+    const { integrations, isLoading, error, refetch } = useIntegrations({ source, type });
+    const [deletingIntegrationIds, setDeletingIntegrationIds] = useState<string[]>([]);
+    const { toasts, addToast, removeToast } = useToasts();
 
-    const { isCentralCapabilityAvailable } = useCentralCapabilities();
-    const canUseCloudBackupIntegrations = isCentralCapabilityAvailable(
-        'centralCanUseCloudBackupIntegrations'
-    );
-    if (!canUseCloudBackupIntegrations && source === 'backups') {
-        history.replace(integrationsPath);
-    }
+    const tableState = getTableUIState({
+        isLoading,
+        data: integrations,
+        error,
+        searchFilter: {},
+    });
 
     const typeLabel = getIntegrationLabel(source, type);
     const isAPIToken = getIsAPIToken(source, type);
-    const isClusterInitBundle = getIsClusterInitBundle(source, type);
     const isMachineAccessConfig = getIsMachineAccessConfig(source, type);
     const isSignatureIntegration = getIsSignatureIntegration(source);
     const isScannerV4 = getIsScannerV4(source, type);
+    const isGCR = getIsGCR(source, type);
     const isCloudSource = getIsCloudSource(source);
+    const isS3 = getIsS3(source, type);
+    const isS3Compatible = getIsS3Compatible(source, type);
 
     // There is currently nothing relevant in Tech Preview.
     const isTechPreview = false;
 
-    function onDeleteIntegrations(ids) {
+    const deleteMutation = useRestMutation(
+        (ids: string[]) => {
+            if (isAPIToken) {
+                return revokeAPITokens(ids);
+            }
+            if (isMachineAccessConfig) {
+                return deleteMachineAccessConfigs(ids);
+            }
+            if (isCloudSource) {
+                return deleteCloudSources(ids);
+            }
+            if (isServiceIntegrationSource(source)) {
+                return deleteIntegrations(source, ids).then(() => undefined);
+            }
+            return Promise.reject(new Error('Invalid integration source'));
+        },
+        {
+            onSuccess: () => {
+                const count = deletingIntegrationIds.length;
+                addToast(`Successfully deleted ${pluralize(count, 'integration')}`, 'success');
+                setDeletingIntegrationIds([]);
+                refetch();
+            },
+        }
+    );
+
+    const backupMutation = useRestMutation(triggerBackup, {
+        onSuccess: () => addToast('Backup was successful', 'success'),
+        onError: (error) => addToast(`Backup failed: ${getAxiosErrorMessage(error)}`, 'danger'),
+    });
+
+    function onDeleteIntegrations(ids: string[]) {
         setDeletingIntegrationIds(ids);
     }
 
     function onConfirmDeletingIntegrationIds() {
-        if (isAPIToken) {
-            revokeAPITokens(deletingIntegrationIds);
-        } else if (isMachineAccessConfig) {
-            deleteMachineAccessConfigs(deletingIntegrationIds);
-        } else if (isCloudSource) {
-            deleteCloudSources(deletingIntegrationIds);
-        } else {
-            deleteIntegrations(source, type, deletingIntegrationIds);
-        }
-        setDeletingIntegrationIds([]);
+        deleteMutation.mutate(deletingIntegrationIds);
     }
 
     function onCancelDeleteIntegrationIds() {
+        deleteMutation.reset();
         setDeletingIntegrationIds([]);
+    }
+
+    function onTriggerBackup(id: string) {
+        backupMutation.mutate(id);
     }
 
     return (
         <>
             <PageTitle title={typeLabel} />
-            <PageSection variant={PageSectionVariants.light} className="pf-v5-u-py-md">
+            <PageSection type="breadcrumb">
                 <Breadcrumb>
                     <BreadcrumbItemLink to={integrationsPath}>Integrations</BreadcrumbItemLink>
                     <BreadcrumbItem isActive>{typeLabel}</BreadcrumbItem>
                 </Breadcrumb>
             </PageSection>
-            <Divider component="div" />
-            <PageSection variant="light">
+            <PageSection>
                 <Title headingLevel="h1">
                     {isSignatureIntegration ? 'Signature' : ''} Integrations
                 </Title>
@@ -113,18 +149,82 @@ function IntegrationsListPage({
                             alignItems={{ default: 'alignItemsCenter' }}
                         >
                             <span>{typeLabel}</span>
-                            {isTechPreview && <TechPreviewLabel />}
+                            {isTechPreview && <TechnologyPreviewLabel />}
                         </Flex>
                     </Title>
                 )}
             </PageSection>
-            <PageSection variant="default">
+            {isGCR && (
+                <PageSection>
+                    <Alert title="Deprecation notice" component="p" variant="warning" isInline>
+                        Google Container Registry has been deprecated by Google. New integrations
+                        cannot be created. Use Google Artifact Registry instead. See the{' '}
+                        <ExternalLink>
+                            <a
+                                href="https://cloud.google.com/container-registry/docs/deprecations/container-registry-deprecation"
+                                target="_blank"
+                                rel="noopener noreferrer"
+                            >
+                                Container Registry deprecation notice
+                            </a>
+                        </ExternalLink>{' '}
+                        for more information.
+                    </Alert>
+                </PageSection>
+            )}
+            {isS3 && (
+                <PageSection>
+                    <Alert title="AWS S3 backup storage" component="p" variant="info" isInline>
+                        This integration is for AWS S3 only. For other S3-compatible storage
+                        providers, use the{' '}
+                        <Link to={`${integrationsPath}/backups/s3compatible`}>
+                            S3 API Compatible integration
+                        </Link>{' '}
+                        instead.
+                    </Alert>
+                </PageSection>
+            )}
+            {isS3Compatible && (
+                <PageSection>
+                    <Alert
+                        title="S3 API compatible backup storage"
+                        component="p"
+                        variant="info"
+                        isInline
+                    >
+                        <Content component="p">
+                            For AWS S3, use the{' '}
+                            <Link to={`${integrationsPath}/backups/s3`}>Amazon S3 integration</Link>{' '}
+                            instead.
+                        </Content>
+                        <Content component="p">
+                            <ExternalLink>
+                                <a
+                                    href="https://www.redhat.com/en/technologies/cloud-computing/openshift-data-foundation"
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                >
+                                    Red Hat OpenShift Data Foundation
+                                </a>
+                            </ExternalLink>{' '}
+                            is officially supported as an S3-compatible backup target. Compatibility
+                            with other S3 storage providers depends on their adherence to the S3
+                            specification. <span style={{ whiteSpace: 'nowrap' }}>Red Hat</span>{' '}
+                            does not test and support every S3 API compatible provider.
+                        </Content>
+                    </Alert>
+                </PageSection>
+            )}
+            <PageSection>
                 <IntegrationsTable
-                    integrations={integrations}
-                    hasMultipleDelete={!isClusterInitBundle}
+                    tableState={tableState}
+                    hasMultipleDelete
                     onDeleteIntegrations={onDeleteIntegrations}
-                    onTriggerBackup={triggerBackup}
+                    onTriggerBackup={onTriggerBackup}
                     isReadOnly={isScannerV4}
+                    isCreationDisabled={isGCR}
+                    source={source}
+                    type={type}
                 />
             </PageSection>
             {isAPIToken && (
@@ -132,38 +232,73 @@ function IntegrationsListPage({
                     ariaLabel="Confirm delete"
                     confirmText="Delete"
                     isOpen={deletingIntegrationIds.length !== 0}
+                    isLoading={deleteMutation.isLoading}
                     onConfirm={onConfirmDeletingIntegrationIds}
                     onCancel={onCancelDeleteIntegrationIds}
                     title="Delete API token"
                 >
-                    <DeleteAPITokensConfirmationText
-                        numIntegrations={deletingIntegrationIds.length}
-                    />
+                    <Flex
+                        direction={{ default: 'column' }}
+                        spaceItems={{ default: 'spaceItemsMd' }}
+                    >
+                        {deleteMutation.isError && (
+                            <Alert variant="danger" isInline title="Failed to delete" component="p">
+                                {getAxiosErrorMessage(deleteMutation.error)}
+                            </Alert>
+                        )}
+                        <DeleteAPITokensConfirmationText
+                            numIntegrations={deletingIntegrationIds.length}
+                        />
+                    </Flex>
                 </ConfirmationModal>
             )}
-            {!isAPIToken && !isClusterInitBundle && (
+            {!isAPIToken && (
                 <ConfirmationModal
                     ariaLabel="Confirm delete"
                     confirmText="Delete"
                     isOpen={deletingIntegrationIds.length !== 0}
+                    isLoading={deleteMutation.isLoading}
                     onConfirm={onConfirmDeletingIntegrationIds}
                     onCancel={onCancelDeleteIntegrationIds}
                 >
-                    <DeleteIntegrationsConfirmationText
-                        numIntegrations={deletingIntegrationIds.length}
-                    />
+                    <Flex
+                        direction={{ default: 'column' }}
+                        spaceItems={{ default: 'spaceItemsMd' }}
+                    >
+                        {deleteMutation.isError && (
+                            <Alert variant="danger" isInline title="Failed to delete" component="p">
+                                {getAxiosErrorMessage(deleteMutation.error)}
+                            </Alert>
+                        )}
+                        <DeleteIntegrationsConfirmationText
+                            numIntegrations={deletingIntegrationIds.length}
+                        />
+                    </Flex>
                 </ConfirmationModal>
             )}
+            <AlertGroup isToast isLiveRegion>
+                {toasts.map(({ key, variant, title, children }: Toast) => (
+                    <Alert
+                        variant={variant}
+                        title={title}
+                        component="p"
+                        timeout={4000}
+                        onTimeout={() => removeToast(key)}
+                        actionClose={
+                            <AlertActionCloseButton
+                                title={title}
+                                variantLabel={`${variant} alert`}
+                                onClose={() => removeToast(key)}
+                            />
+                        }
+                        key={key}
+                    >
+                        {children}
+                    </Alert>
+                ))}
+            </AlertGroup>
         </>
     );
 }
 
-const mapDispatchToProps = {
-    deleteIntegrations: integrationsActions.deleteIntegrations,
-    triggerBackup: integrationsActions.triggerBackup,
-    revokeAPITokens: apitokensActions.revokeAPITokens,
-    deleteMachineAccessConfigs: machineAccessActions.deleteMachineAccessConfigs,
-    deleteCloudSources: cloudSourcesActions.deleteCloudSources,
-};
-
-export default connect(null, mapDispatchToProps)(IntegrationsListPage);
+export default IntegrationsListPage;

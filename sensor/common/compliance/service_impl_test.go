@@ -13,6 +13,7 @@ import (
 	"github.com/stackrox/rox/generated/storage"
 	"github.com/stackrox/rox/pkg/concurrency"
 	"github.com/stackrox/rox/pkg/set"
+	"github.com/stackrox/rox/pkg/testutils/goleak"
 	"github.com/stackrox/rox/pkg/utils"
 	"github.com/stackrox/rox/sensor/common"
 	mocksCompliance "github.com/stackrox/rox/sensor/common/compliance/mocks"
@@ -71,11 +72,11 @@ func (s *complianceServiceSuite) SetupTest() {
 }
 
 func (s *complianceServiceSuite) TearDownTest() {
-	s.srv.Stop(nil)
+	s.srv.Stop()
 	if s.stopServerFn != nil {
 		s.stopServerFn()
 	}
-	assertNoGoroutineLeaks(s.T())
+	goleak.AssertNoGoroutineLeaks(s.T())
 }
 
 func (s *complianceServiceSuite) TestServiceOfflineMode() {
@@ -171,7 +172,7 @@ func TestConcurrentWrites(t *testing.T) {
 		stopper:                   set.NewSet[concurrency.Stopper](),
 	}
 	var stopFns []func()
-	for i := 0; i < 1000; i++ {
+	for i := range 1000 {
 		_, stopFn := createMockService(t, i, srv, mockOrchestrator, mockAuditLogManager, mockAuditLogC)
 		stopFns = append(stopFns, stopFn)
 	}

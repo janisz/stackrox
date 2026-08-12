@@ -1,4 +1,4 @@
-import React, { ReactElement, ReactNode } from 'react';
+import type { ReactElement, ReactNode } from 'react';
 import { Flex, Icon } from '@patternfly/react-core';
 import { ExternalLinkAltIcon } from '@patternfly/react-icons';
 
@@ -21,7 +21,7 @@ function ExternalLink({ children }: ExternalLinkProps): ReactElement {
         >
             {children}
             <Icon>
-                <ExternalLinkAltIcon color="var(--pf-v5-global--link--Color)" />
+                <ExternalLinkAltIcon color="var(--pf-t--global--text--color--link--default)" />
             </Icon>
         </Flex>
     );

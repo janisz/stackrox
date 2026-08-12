@@ -14,10 +14,9 @@ import (
 )
 
 func TestGetClusterMetadataFromNodeLabels(t *testing.T) {
-	t.Parallel()
 
 	ctx := context.Background()
-	k8sClient := fake.NewSimpleClientset()
+	k8sClient := fake.NewClientset()
 	expectedClusterName := "my-cluster"
 	expectedClusterID := "arn:aws:eks:us-east-1:1234:cluster/my-cluster"
 

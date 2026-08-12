@@ -4,12 +4,17 @@ import (
 	"archive/zip"
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -19,9 +24,7 @@ import (
 	"github.com/quay/claircore/libvuln/driver"
 	"github.com/quay/claircore/libvuln/updates"
 	"github.com/quay/claircore/test"
-	"github.com/quay/zlog"
-	"github.com/rs/zerolog"
-	"github.com/stackrox/rox/scanner/datastore/postgres"
+	"github.com/stackrox/rox/pkg/set"
 	"github.com/stackrox/rox/scanner/datastore/postgres/mocks"
 	"github.com/stackrox/rox/scanner/updater/jsonblob"
 	"github.com/stretchr/testify/assert"
@@ -64,83 +67,7 @@ func testHTTPServer(t *testing.T, content func(r *http.Request) io.ReadSeeker) (
 	return srv, now
 }
 
-func TestSingleBundleUpdate(t *testing.T) {
-	t.Setenv("ROX_SCANNER_V4_MULTI_BUNDLE", "false")
-
-	srv, now := testHTTPServer(t, func(r *http.Request) io.ReadSeeker {
-		accept := r.Header.Get("X-Scanner-V4-Accept")
-		if accept != "" {
-			t.Fatalf("X-Scanner-V4-Accept header should not be set for single-bundle")
-		}
-		return strings.NewReader("test")
-	})
-
-	locker := &testLocker{
-		locker: updates.NewLocalLockSource(),
-		fail:   true,
-	}
-	store := mocks.NewMockMatcherStore(gomock.NewController(t))
-	metadataStore := mocks.NewMockMatcherMetadataStore(gomock.NewController(t))
-	u := &Updater{
-		locker:        locker,
-		store:         store,
-		metadataStore: metadataStore,
-		client:        srv.Client(),
-		url:           srv.URL,
-		root:          t.TempDir(),
-		skipGC:        false,
-		importFunc: func(_ context.Context, _ io.Reader) error {
-			return nil
-		},
-		retryDelay:  1 * time.Second,
-		retryMax:    1,
-		distManager: newDistManager(store),
-	}
-
-	// Skip update when locking fails.
-	err := u.Update(context.Background())
-	assert.NoError(t, err)
-
-	locker.fail = false
-
-	dists := []claircore.Distribution{
-		{
-			ID: "0",
-		},
-		{
-			ID: "1",
-		},
-	}
-
-	// Successful update.
-	metadataStore.EXPECT().
-		GetLastVulnerabilityUpdate(gomock.Any()).
-		Return(now.Add(-time.Minute), nil)
-	metadataStore.EXPECT().
-		SetLastVulnerabilityUpdate(gomock.Any(), gomock.Eq(postgres.SingleBundleUpdateKey), now).
-		Return(nil)
-	store.EXPECT().
-		GC(gomock.Any(), gomock.Any()).
-		Return(int64(0), nil)
-	store.EXPECT().
-		Distributions(gomock.Any()).
-		Return(dists, nil)
-	err = u.Update(context.Background())
-	assert.NoError(t, err)
-	assert.Equal(t, dists, u.KnownDistributions())
-
-	// No update.
-	metadataStore.EXPECT().
-		GetLastVulnerabilityUpdate(gomock.Any()).
-		Return(now.Add(time.Minute), nil)
-	err = u.Update(context.Background())
-	assert.NoError(t, err)
-	assert.Equal(t, dists, u.KnownDistributions())
-}
-
 func TestMultiBundleUpdate(t *testing.T) {
-	t.Setenv("ROX_SCANNER_V4_MULTI_BUNDLE", "true")
-
 	// TODO(ROX-26236): Test with zst files, as a chunk of the updater function is currently untested.
 	srv, now := testHTTPServer(t, func(r *http.Request) io.ReadSeeker {
 		accept := r.Header.Get("X-Scanner-V4-Accept")
@@ -167,7 +94,7 @@ func TestMultiBundleUpdate(t *testing.T) {
 		store:         store,
 		metadataStore: metadataStore,
 		client:        srv.Client(),
-		url:           srv.URL,
+		urls:          []string{srv.URL},
 		root:          t.TempDir(),
 		skipGC:        false,
 		importFunc:    func(_ context.Context, _ io.Reader) error { return nil },
@@ -180,7 +107,7 @@ func TestMultiBundleUpdate(t *testing.T) {
 	metadataStore.EXPECT().
 		GetLastVulnerabilityUpdate(gomock.Any()).
 		Return(time.Time{}, errors.New("err"))
-	err := u.Update(context.Background())
+	err := u.Update(test.Logging(t))
 	assert.Error(t, err)
 	assert.Nil(t, u.KnownDistributions())
 
@@ -209,7 +136,7 @@ func TestMultiBundleUpdate(t *testing.T) {
 	store.EXPECT().
 		Distributions(gomock.Any()).
 		Return(dists, nil)
-	err = u.Update(context.Background())
+	err = u.Update(test.Logging(t))
 	assert.NoError(t, err)
 	assert.Equal(t, dists, u.KnownDistributions())
 
@@ -217,9 +144,84 @@ func TestMultiBundleUpdate(t *testing.T) {
 	metadataStore.EXPECT().
 		GetLastVulnerabilityUpdate(gomock.Any()).
 		Return(now.Add(time.Minute), nil)
-	err = u.Update(context.Background())
+	err = u.Update(test.Logging(t))
 	assert.NoError(t, err)
 	assert.Equal(t, dists, u.KnownDistributions())
+}
+
+func TestMultiBundleUpdate_PreRegistration(t *testing.T) {
+	bundleNames := []string{"alpine.json.zst", "nvd.json.zst", "rhel-vex.json.zst"}
+
+	srv, now := testHTTPServer(t, func(_ *http.Request) io.ReadSeeker {
+		var buf bytes.Buffer
+		zw := zip.NewWriter(&buf)
+		for _, name := range bundleNames {
+			_, err := zw.Create(name)
+			require.NoError(t, err)
+		}
+		require.NoError(t, zw.Close())
+		return bytes.NewReader(buf.Bytes())
+	})
+
+	ctrl := gomock.NewController(t)
+	store := mocks.NewMockMatcherStore(ctrl)
+	metadataStore := mocks.NewMockMatcherMetadataStore(ctrl)
+
+	prevTime := now.Add(-time.Minute)
+
+	u := &Updater{
+		locker:        &testLocker{locker: updates.NewLocalLockSource()},
+		store:         store,
+		metadataStore: metadataStore,
+		client:        srv.Client(),
+		urls:          []string{srv.URL},
+		root:          t.TempDir(),
+		skipGC:        true,
+		importFunc:    func(_ context.Context, _ io.Reader) error { return nil },
+		retryDelay:    1 * time.Second,
+		retryMax:      1,
+		distManager:   newDistManager(store),
+	}
+
+	// GetLastVulnerabilityUpdate at start of runMultiBundleUpdate.
+	metadataStore.EXPECT().
+		GetLastVulnerabilityUpdate(gomock.Any()).
+		Return(prevTime, nil)
+
+	// Pre-registration phase: GetOrSetLastVulnerabilityUpdate for each bundle.
+	// These must all complete before any processing-phase calls.
+	preReg := make([]*gomock.Call, len(bundleNames))
+	for i, name := range bundleNames {
+		preReg[i] = metadataStore.EXPECT().
+			GetOrSetLastVulnerabilityUpdate(gomock.Any(), name, prevTime).
+			Return(prevTime, nil)
+	}
+
+	// Processing phase: each updateBundle calls GetOrSetLastVulnerabilityUpdate.
+	// Return zipTime (now) so updateBundle skips actual import (no zst decoding needed).
+	// Constrained to happen AFTER all pre-registration calls.
+	for _, name := range bundleNames {
+		call := metadataStore.EXPECT().
+			GetOrSetLastVulnerabilityUpdate(gomock.Any(), name, prevTime).
+			Return(now, nil)
+		for _, pre := range preReg {
+			call.After(pre)
+		}
+	}
+
+	// GC and Initialized at end of runMultiBundleUpdate.
+	metadataStore.EXPECT().
+		GCVulnerabilityUpdates(gomock.Any(), gomock.Any(), now).
+		Return(nil)
+	store.EXPECT().
+		Distributions(gomock.Any()).
+		Return(nil, nil)
+	metadataStore.EXPECT().
+		GetLastVulnerabilityUpdate(gomock.Any()).
+		Return(now, nil)
+
+	err := u.Update(test.Logging(t))
+	assert.NoError(t, err)
 }
 
 func TestFetch(t *testing.T) {
@@ -229,44 +231,107 @@ func TestFetch(t *testing.T) {
 
 	u := &Updater{
 		client:     srv.Client(),
-		url:        srv.URL,
+		urls:       []string{srv.URL},
 		root:       t.TempDir(),
 		retryDelay: 1 * time.Second,
 		retryMax:   1,
 	}
 
 	// Fetch file, as it's modified after the given time.
-	f, timestamp, err := u.fetch(context.Background(), time.Time{})
+	f, timestamp, err := u.fetch(test.Logging(t), time.Time{})
 	require.NoError(t, err)
 	assert.NotNil(t, f)
 	assert.Equal(t, now, timestamp)
 
 	// Fetch file, as it's modified after the given time.
-	f, timestamp, err = u.fetch(context.Background(), now.Add(-time.Minute))
+	f, timestamp, err = u.fetch(test.Logging(t), now.Add(-time.Minute))
 	require.NoError(t, err)
 	assert.NotNil(t, f)
 	assert.Equal(t, now, timestamp)
 
 	// Do not fetch file, as it's not modified after the given time.
-	f, timestamp, err = u.fetch(context.Background(), now.Add(time.Minute))
+	f, timestamp, err = u.fetch(test.Logging(t), now.Add(time.Minute))
 	require.NoError(t, err)
 	assert.Nil(t, f)
 	assert.Equal(t, time.Time{}, timestamp)
 }
 
+func TestFetchRCBundle(t *testing.T) {
+	var paths []string
+	now, err := http.ParseTime(time.Now().UTC().Format(http.TimeFormat))
+	require.NoError(t, err)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.Path)
+		if r.URL.Path == "/v1-rc/vulnerabilities.zip" {
+			http.ServeContent(w, r, "test-file", now, strings.NewReader("rc"))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	t.Cleanup(srv.Close)
+
+	u := &Updater{
+		client:     srv.Client(),
+		urls:       []string{srv.URL + "/v1-rc/vulnerabilities.zip", srv.URL + "/v1/vulnerabilities.zip"},
+		root:       t.TempDir(),
+		retryDelay: 1 * time.Second,
+		retryMax:   1,
+	}
+
+	f, timestamp, err := u.fetch(test.Logging(t), time.Time{})
+	require.NoError(t, err)
+	assert.NotNil(t, f)
+	assert.Equal(t, now, timestamp)
+	assert.Equal(t, []string{"/v1-rc/vulnerabilities.zip"}, paths)
+}
+
+func TestFetchRCBundleFallback(t *testing.T) {
+	var paths []string
+	now, err := http.ParseTime(time.Now().UTC().Format(http.TimeFormat))
+	require.NoError(t, err)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.Path)
+		switch r.URL.Path {
+		case "/v1-rc/vulnerabilities.zip":
+			http.NotFound(w, r)
+		case "/v1/vulnerabilities.zip":
+			http.ServeContent(w, r, "test-file", now, strings.NewReader("ga"))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	u := &Updater{
+		client:     srv.Client(),
+		urls:       []string{srv.URL + "/v1-rc/vulnerabilities.zip", srv.URL + "/v1/vulnerabilities.zip"},
+		root:       t.TempDir(),
+		retryDelay: 1 * time.Second,
+		retryMax:   1,
+	}
+
+	f, timestamp, err := u.fetch(test.Logging(t), time.Time{})
+	require.NoError(t, err)
+	assert.NotNil(t, f)
+	assert.Equal(t, now, timestamp)
+	assert.Equal(t, []string{"/v1-rc/vulnerabilities.zip", "/v1/vulnerabilities.zip"}, paths)
+}
+
 func TestUpdater_Initialized(t *testing.T) {
 	t.Run("when initialized then return ready", func(t *testing.T) {
+		ctx := test.Logging(t)
 		ctrl := gomock.NewController(t)
 		metaMock := mocks.NewMockMatcherMetadataStore(ctrl)
 		u := Updater{
 			metadataStore: metaMock,
 		}
 		u.initialized.Store(true)
-		got := u.Initialized(context.Background())
+		got := u.Initialized(ctx)
 		assert.True(t, got, `expecting "ready" got "not ready"`)
 	})
 
 	t.Run("when not initialized and get last update is empty then return not ready", func(t *testing.T) {
+		ctx := test.Logging(t)
 		ctrl := gomock.NewController(t)
 		metaMock := mocks.NewMockMatcherMetadataStore(ctrl)
 		metaMock.
@@ -275,11 +340,12 @@ func TestUpdater_Initialized(t *testing.T) {
 		u := Updater{
 			metadataStore: metaMock,
 		}
-		got := u.Initialized(context.Background())
+		got := u.Initialized(ctx)
 		assert.False(t, got, `expecting "not ready" got "ready"`)
 	})
 
 	t.Run("when not initialized and get last update is not empty then return ready", func(t *testing.T) {
+		ctx := test.Logging(t)
 		ctrl := gomock.NewController(t)
 		metaMock := mocks.NewMockMatcherMetadataStore(ctrl)
 		metaMock.
@@ -289,15 +355,17 @@ func TestUpdater_Initialized(t *testing.T) {
 		u := Updater{
 			metadataStore: metaMock,
 		}
-		got := u.Initialized(context.Background())
+		got := u.Initialized(ctx)
 		assert.True(t, got, `expecting "ready" got "not ready"`)
 	})
 
 	t.Run("when not initialized and get last update fails then log return not ready", func(t *testing.T) {
-		b := &bytes.Buffer{}
-		l := zerolog.New(b)
-		zlog.Set(&l)
-		ctx := zlog.Test(context.Background(), t)
+		var buf bytes.Buffer
+		h := slog.NewJSONHandler(&buf, nil)
+		prev := slog.Default()
+		slog.SetDefault(slog.New(h))
+		t.Cleanup(func() { slog.SetDefault(prev) })
+		ctx := context.Background()
 		ctrl := gomock.NewController(t)
 		metaMock := mocks.NewMockMatcherMetadataStore(ctrl)
 		metaMock.
@@ -310,14 +378,93 @@ func TestUpdater_Initialized(t *testing.T) {
 		u.initialized.Store(false)
 		got := u.Initialized(ctx)
 		assert.False(t, got, `expecting "not ready" got "ready"`)
-		assert.Contains(t, `"did not get previous vuln update timestamp"`, b.String())
-		assert.Contains(t, `"error":"last update failed (fake error)"`, b.String())
-		assert.Contains(t, `"level":"error"`, b.String())
+
+		var entry map[string]interface{}
+		require.NoError(t, json.Unmarshal(buf.Bytes(), &entry))
+		assert.Equal(t, "did not get previous vuln update timestamp", entry["msg"])
+		assert.Contains(t, entry["reason"], "last update failed (fake error)")
+		assert.Equal(t, "WARN", entry["level"])
 	})
 }
 
+func TestIsBundleAllowed(t *testing.T) {
+	tests := map[string]struct {
+		allowlist set.FrozenSet[string]
+		filename  string
+		want      bool
+	}{
+		"empty allowlist permits all": {
+			filename: "alpine.json.zst",
+			want:     true,
+		},
+		"allowed bundle is permitted": {
+			allowlist: set.NewFrozenSet("alpine", "nvd"),
+			filename:  "alpine.json.zst",
+			want:      true,
+		},
+		"non-allowed bundle is denied": {
+			allowlist: set.NewFrozenSet("alpine", "nvd"),
+			filename:  "ubuntu.json.zst",
+			want:      false,
+		},
+		"directory prefix is ignored": {
+			allowlist: set.NewFrozenSet("alpine", "nvd"),
+			filename:  "bundles/alpine.json.zst",
+			want:      true,
+		},
+		"directory prefix with non-allowed bundle is denied": {
+			allowlist: set.NewFrozenSet("alpine", "nvd"),
+			filename:  "bundles/ubuntu.json.zst",
+			want:      false,
+		},
+	}
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			u := &Updater{vulnBundleAllowlist: tc.allowlist}
+			assert.Equal(t, tc.want, u.isBundleAllowed(tc.filename))
+		})
+	}
+}
+
+func TestIsRetryableDialError(t *testing.T) {
+	testCases := map[string]struct {
+		err  error
+		want bool
+	}{
+		"nil": {
+			err:  nil,
+			want: false,
+		},
+		"non-OpError": {
+			err:  errors.New("connection refused"),
+			want: false,
+		},
+		"read op": {
+			err:  &net.OpError{Op: "read", Err: errors.New("connection refused")},
+			want: false,
+		},
+		"connection refused": {
+			err:  &net.OpError{Op: "dial", Err: &os.SyscallError{Syscall: "connect", Err: syscall.ECONNREFUSED}},
+			want: true,
+		},
+		"i/o timeout": {
+			err:  &net.OpError{Op: "dial", Err: &net.DNSError{IsTimeout: true}},
+			want: true,
+		},
+		"other dial error": {
+			err:  &net.OpError{Op: "dial", Err: errors.New("no route to host")},
+			want: false,
+		},
+	}
+	for name, tc := range testCases {
+		t.Run(name, func(t *testing.T) {
+			assert.Equal(t, tc.want, isRetryableDialError(tc.err))
+		})
+	}
+}
+
 func TestUpdater_Import(t *testing.T) {
-	ctx := zlog.Test(context.Background(), t)
+	ctx := test.Logging(t)
 	ctrl := gomock.NewController(t)
 
 	// Represents one vulnerability or enrichment iteration.

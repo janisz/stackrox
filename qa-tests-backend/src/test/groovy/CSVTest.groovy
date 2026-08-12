@@ -81,7 +81,6 @@ class CSVTest extends BaseSpecification {
 
     private static final Map<String, String> QUERIES = [
             "FIXABLE_CVES_IN_IMAGE_QUERY"     : FIXABLE_CVES_IN_IMAGE_QUERY,
-            "FIXABLE_CVES_IN_COMPONENT_QUERY" : FIXABLE_CVES_IN_COMPONENT_QUERY,
             "FIXABLE_CVES_IN_DEPLOYMENT_QUERY": FIXABLE_CVES_IN_DEPLOYMENT_QUERY,
     ]
 
@@ -94,8 +93,7 @@ class CSVTest extends BaseSpecification {
         ImageService.scanImage("quay.io/rhacs-eng/qa-multi-arch:nginx")
         orchestrator.createDeployment(CVE_DEPLOYMENT)
         assert Services.waitForDeployment(CVE_DEPLOYMENT)
-        // wait for all image CVEs to be discovered and added to db
-        sleep(5000)
+        assert Services.waitForVulnerabilitiesForImage(CVE_DEPLOYMENT)
     }
 
     def cleanupSpec() {
@@ -108,9 +106,6 @@ class CSVTest extends BaseSpecification {
         }
     }
 
-    // Non-postgres runs
-    // "CVE", "CVE Type(s)", "Fixable", "CVSS Score (version)", "Env Impact (%)", "Impact Score", "Deployments",
-    // "Images", "Nodes", "Components", "Scanned", "Published", "Summary"
     // Postgres runs
     // "Image CVE", "Fixable", "CVSS Score", "Env Impact (%s)", "Impact Score", "Deployments", "Images",
     // "Image Components", "Last Scanned", "Published", "Summary"
@@ -135,16 +130,21 @@ class CSVTest extends BaseSpecification {
         return 7
     }
 
-    def getComponentId() {
-        return "openssl#1.1.1d-0+deb10u7#debian:10"
-    }
-
-    def getComponentQuery() {
-        return "COMPONENT ID:" + getComponentId() + "+Fixable:true"
-    }
-
     def getCVETypeImageQuery() {
         return "CVE Type:IMAGE_CVE+"
+    }
+
+    def getTestImageId() {
+        return flattenImageDataEnabled ? TEST_IMAGE_V2_ID : TEST_IMAGE_SHA
+    }
+
+    def getDeploymentUid() {
+        return CVE_DEPLOYMENT.deploymentUid
+    }
+
+    def getFixableCvesInImageQuery() {
+        def imageFilter = flattenImageDataEnabled ? "Image ID" : "Image Sha"
+        return "${imageFilter}:${getTestImageId()}+Fixable:true"
     }
 
     Map<String, Object> payload(String id) {
@@ -240,11 +240,9 @@ class CSVTest extends BaseSpecification {
         where:
         "Data is"
 
-        description                        | id                           | query
-        "FIXABLE_CVES_IN_IMAGE_QUERY"      | TEST_IMAGE_SHA               | "Image Sha:${TEST_IMAGE_SHA}+Fixable:true"
-        "FIXABLE_CVES_IN_COMPONENT_QUERY"  | getComponentId()             | getComponentQuery()
-        "FIXABLE_CVES_IN_DEPLOYMENT_QUERY" | CVE_DEPLOYMENT.deploymentUid |
-                "Deployment ID:${CVE_DEPLOYMENT.deploymentUid}+Fixable:true"
+        description                        | id                 | query
+        "FIXABLE_CVES_IN_IMAGE_QUERY"      | getTestImageId()   | getFixableCvesInImageQuery()
+        "FIXABLE_CVES_IN_DEPLOYMENT_QUERY" | getDeploymentUid() | "Deployment ID:${getDeploymentUid()}+Fixable:true"
     }
 
     @EqualsAndHashCode(includeFields = true)

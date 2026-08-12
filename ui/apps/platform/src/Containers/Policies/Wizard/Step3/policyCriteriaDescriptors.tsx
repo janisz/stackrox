@@ -1,15 +1,80 @@
 import {
-    portExposureLabels,
     envVarSrcLabels,
-    rbacPermissionLabels,
-    policyCriteriaCategories,
     mountPropagationLabels,
+    policyCriteriaCategories,
+    portExposureLabels,
+    rbacPermissionLabels,
     seccompProfileTypeLabels,
     severityRatings,
 } from 'messages/common';
-import { FeatureFlagEnvVar } from 'types/featureFlag';
-import ImageSigningTableModal from 'Containers/Policies/Wizard/Step3/ImageSigningTableModal';
-import { LifecycleStage } from 'types/policy.proto';
+import type { FeatureFlagEnvVar } from 'types/featureFlag';
+import type { LifecycleStage } from 'types/policy.proto';
+
+import ImageSigningTableModal from './ImageSigningTableModal';
+
+/**
+ * Validates that a file path is absolute and does not contain directory traversal.
+ * Glob pattern validation is left to the backend (Go's doublestar library).
+ */
+export function validateFilePath(value: string): string | undefined {
+    const trimmed = value.trim();
+    if (trimmed.length === 0) {
+        return undefined;
+    }
+    if (!trimmed.startsWith('/')) {
+        return 'File path must be absolute (start with /)';
+    }
+    if (trimmed.split('/').includes('..')) {
+        return 'File path must not contain directory traversal (..)';
+    }
+    return undefined;
+}
+
+const highChurnPrefixes: Record<string, string> = {
+    '/tmp': 'temporary file',
+    '/proc': 'system',
+    '/sys': 'system',
+    '/var/log': 'log file',
+};
+
+/**
+ * Returns a warning message when a file path glob pattern is structurally too broad,
+ * such as root-level catch-alls or globs under high-churn directories.
+ */
+export function warnBroadFilePath(value: string): string | undefined {
+    const trimmed = value.trim();
+
+    // Root-level catch-all without additional path segments: /**, /*
+    if (trimmed === '/**' || trimmed === '/*') {
+        return 'This pattern matches every file event on the system, creating significant evaluation overhead. Consider narrowing to a specific directory like /etc/**.';
+    }
+
+    // Root-level glob with trailing path: /*/bar, /**/bar
+    if (trimmed.startsWith('/*/') || trimmed.startsWith('/**/')) {
+        return 'This pattern matches across all subdirectories of root. Consider scoping to a specific directory.';
+    }
+
+    // High-churn directories with unscoped glob wildcards
+    const matchedPrefix = Object.keys(highChurnPrefixes).find(
+        (prefix) =>
+            trimmed.startsWith(`${prefix}/`) && (trimmed.endsWith('/**') || trimmed.endsWith('/*'))
+    );
+    if (matchedPrefix) {
+        return `This directory is known for frequent ${highChurnPrefixes[matchedPrefix]} activity and may generate a high volume of file events, which increases policy evaluation overhead.`;
+    }
+
+    // Unscoped recursive glob (ends with **) under any other prefix
+    if (trimmed.endsWith('/**')) {
+        return 'Recursive glob patterns that match everything under a directory can generate a high volume of alerts and evaluation overhead. Consider scoping the pattern more narrowly.';
+    }
+
+    // Unscoped single-level glob (ends with /*) under any other prefix
+    if (trimmed.endsWith('/*')) {
+        return 'Single-level glob patterns under a directory can still match a high volume of file events. Consider narrowing to a specific file name or extension.';
+    }
+
+    return undefined;
+}
 
 const equalityOptions: DescriptorOption[] = [
     { label: 'Is greater than', value: '>' },
@@ -127,6 +192,64 @@ const APIVerbs: DescriptorOption[] = ['CREATE', 'DELETE', 'GET', 'PATCH', 'UPDAT
     label: verb,
     value: verb,
 }));
+
+const fileOperationOptions: DescriptorOption[] = [
+    ['OPEN', 'Open (Writable)'],
+    ['CREATE', 'Create'],
+    ['RENAME', 'Rename'],
+    ['UNLINK', 'Delete (Unlink)'],
+    ['PERMISSION_CHANGE', 'Permission change'],
+    ['OWNERSHIP_CHANGE', 'Ownership change'],
+    ['XATTR_CHANGE', 'Extended attribute change'],
+].map(([value, label]) => ({ value, label }));
+
+const processActivityDescriptors: Descriptor[] = [
+    {
+        name: 'Process Name',
+        shortName: 'Process name',
+        longName: 'Process name is',
+        negatedName: 'Process name doesn’t match',
+        category: policyCriteriaCategories.PROCESS_ACTIVITY,
+        type: 'text',
+        placeholder: 'apt-get',
+        canBooleanLogic: true,
+        lifecycleStages: ['RUNTIME'],
+    },
+    {
+        name: 'Process Ancestor',
+        shortName: 'Process ancestor',
+        longName: 'Process ancestor is',
+        negatedName: 'Process ancestor doesn’t match',
+        category: policyCriteriaCategories.PROCESS_ACTIVITY,
+        type: 'text',
+        placeholder: 'java',
+        canBooleanLogic: true,
+        lifecycleStages: ['RUNTIME'],
+    },
+    {
+        name: 'Process Arguments',
+        shortName: 'Process arguments',
+        longName: 'Process arguments are',
+        negatedName: 'Process arguments don’t match',
+        category: policyCriteriaCategories.PROCESS_ACTIVITY,
+        type: 'text',
+        placeholder: 'install nmap',
+        canBooleanLogic: true,
+        lifecycleStages: ['RUNTIME'],
+    },
+    {
+        label: 'Process UID',
+        name: 'Process UID',
+        shortName: 'Process UID',
+        longName: 'Process UID is',
+        negatedName: 'Process UID doesn’t match',
+        category: policyCriteriaCategories.PROCESS_ACTIVITY,
+        type: 'text',
+        placeholder: '0',
+        canBooleanLogic: true,
+        lifecycleStages: ['RUNTIME'],
+    },
+];
 
 const subComponentsForContainerMemory: SubComponent[] = [
     {
@@ -312,6 +435,9 @@ export type SelectDescriptor = {
 export type TextDescriptor = {
     type: 'text';
     placeholder?: string;
+    helperText?: string;
+    validate?: (value: string) => string | undefined;
+    warn?: (value: string) => string | undefined;
 } & BaseDescriptor &
     DescriptorCanBoolean &
     DescriptorCanNegate;
@@ -354,10 +480,10 @@ export const policyCriteriaDescriptors: Descriptor[] = [
         lifecycleStages: ['BUILD', 'DEPLOY', 'RUNTIME'],
     },
     {
-        label: 'Image signature',
+        label: 'Require image signature',
         name: imageSigningCriteriaName,
-        shortName: 'Image signature',
-        longName: 'Image signature is missing or wrong',
+        shortName: 'Require image signature',
+        longName: 'Image must be signed by a trusted signer',
         category: policyCriteriaCategories.IMAGE_REGISTRY,
         type: 'tableModal',
         tableType: 'imageSigning',
@@ -381,7 +507,7 @@ export const policyCriteriaDescriptors: Descriptor[] = [
         name: 'Image Scan Age',
         shortName: 'Image scan age',
         longName: 'Minimum days since last image scan',
-        category: policyCriteriaCategories.IMAGE_CONTENTS,
+        category: policyCriteriaCategories.IMAGE_SCANNING,
         type: 'number',
         placeholder: '1',
         canBooleanLogic: false,
@@ -441,7 +567,7 @@ export const policyCriteriaDescriptors: Descriptor[] = [
         name: 'Unscanned Image',
         shortName: 'Image scan status',
         longName: 'Image scan status is',
-        category: policyCriteriaCategories.IMAGE_CONTENTS,
+        category: policyCriteriaCategories.IMAGE_SCANNING,
         type: 'radioGroup',
         radioButtons: [
             {
@@ -463,7 +589,7 @@ export const policyCriteriaDescriptors: Descriptor[] = [
         name: 'CVSS',
         shortName: 'CVSS',
         longName: 'Common Vulnerability Scoring System (CVSS) score',
-        category: policyCriteriaCategories.IMAGE_CONTENTS,
+        category: policyCriteriaCategories.IMAGE_SCANNING,
         type: 'group',
         subComponents: [
             {
@@ -490,7 +616,7 @@ export const policyCriteriaDescriptors: Descriptor[] = [
         longName:
             'Common Vulnerability Scoring System (CVSS) score from National Vulnerability Database (NVD)',
         infoText: 'NVD CVSS scores require Scanner V4',
-        category: policyCriteriaCategories.IMAGE_CONTENTS,
+        category: policyCriteriaCategories.IMAGE_SCANNING,
         type: 'group',
         subComponents: [
             {
@@ -515,7 +641,7 @@ export const policyCriteriaDescriptors: Descriptor[] = [
         name: 'Severity',
         shortName: 'Severity',
         longName: 'Vulnerability severity rating is',
-        category: policyCriteriaCategories.IMAGE_CONTENTS,
+        category: policyCriteriaCategories.IMAGE_SCANNING,
         type: 'group',
         subComponents: [
             {
@@ -541,7 +667,7 @@ export const policyCriteriaDescriptors: Descriptor[] = [
         label: 'Fixable',
         name: 'Fixable',
         shortName: 'Fixable',
-        category: policyCriteriaCategories.IMAGE_CONTENTS,
+        category: policyCriteriaCategories.IMAGE_SCANNING,
         type: 'radioGroup',
         radioButtons: [
             {
@@ -563,7 +689,7 @@ export const policyCriteriaDescriptors: Descriptor[] = [
         shortName: 'Fixed by',
         longName: 'Package version where a vulnerability is fixed',
         negatedName: 'Package version where a vulnerability is not fixed',
-        category: policyCriteriaCategories.IMAGE_CONTENTS,
+        category: policyCriteriaCategories.IMAGE_SCANNING,
         type: 'text',
         placeholder: '.*',
         canBooleanLogic: true,
@@ -575,17 +701,38 @@ export const policyCriteriaDescriptors: Descriptor[] = [
         shortName: 'CVE',
         longName: 'CVE identifier is',
         negatedName: 'CVE identifier doesn’t match',
-        category: policyCriteriaCategories.IMAGE_CONTENTS,
+        category: policyCriteriaCategories.IMAGE_SCANNING,
         type: 'text',
         placeholder: 'CVE-2017-11882',
         canBooleanLogic: true,
         lifecycleStages: ['BUILD', 'DEPLOY', 'RUNTIME'],
     },
     {
+        label: 'Days Since CVE Was Published',
+        name: 'Days Since CVE Was Published',
+        shortName: 'Days since CVE was published',
+        category: policyCriteriaCategories.IMAGE_SCANNING,
+        type: 'number',
+        placeholder: '0',
+        canBooleanLogic: false,
+        lifecycleStages: ['BUILD', 'DEPLOY', 'RUNTIME'],
+    },
+    {
+        label: 'Days Since CVE Fix Was Available',
+        name: 'Days Since CVE Fix Was Available',
+        shortName: 'Days since CVE fix was available',
+        category: policyCriteriaCategories.IMAGE_SCANNING,
+        type: 'number',
+        placeholder: '0',
+        canBooleanLogic: false,
+        lifecycleStages: ['BUILD', 'DEPLOY', 'RUNTIME'],
+        featureFlagDependency: ['ROX_CVE_FIX_TIMESTAMP'],
+    },
+    {
         label: 'Days Since CVE Was First Discovered In Image',
         name: 'Days Since CVE Was First Discovered In Image',
         shortName: 'Days since CVE was first discovered in image',
-        category: policyCriteriaCategories.IMAGE_CONTENTS,
+        category: policyCriteriaCategories.IMAGE_SCANNING,
         type: 'number',
         placeholder: '0',
         canBooleanLogic: false,
@@ -595,7 +742,7 @@ export const policyCriteriaDescriptors: Descriptor[] = [
         label: 'Days Since CVE Was First Discovered In System',
         name: 'Days Since CVE Was First Discovered In System',
         shortName: 'Days since CVE was first discovered in system',
-        category: policyCriteriaCategories.IMAGE_CONTENTS,
+        category: policyCriteriaCategories.IMAGE_SCANNING,
         type: 'number',
         placeholder: '0',
         canBooleanLogic: false,
@@ -767,8 +914,8 @@ export const policyCriteriaDescriptors: Descriptor[] = [
     {
         label: 'Volume source',
         name: 'Volume Source',
-        shortName: 'Volume source',
-        longName: 'Volume source is',
+        shortName: 'Volume source path',
+        longName: 'Volume source path is',
         negatedName: 'Volume source doesn’t match',
         category: policyCriteriaCategories.STORAGE,
         type: 'text',
@@ -779,8 +926,8 @@ export const policyCriteriaDescriptors: Descriptor[] = [
     {
         label: 'Volume destination',
         name: 'Volume Destination',
-        shortName: 'Volume destination',
-        longName: 'Volume destination is',
+        shortName: 'Volume destination path',
+        longName: 'Volume destination (mountPath) path is',
         negatedName: 'Volume destination doesn’t match',
         category: policyCriteriaCategories.STORAGE,
         type: 'text',
@@ -792,11 +939,11 @@ export const policyCriteriaDescriptors: Descriptor[] = [
         label: 'Volume type',
         name: 'Volume Type',
         shortName: 'Volume type',
-        longName: 'Volume type is',
+        longName: 'Volume type (e.g. secret, configMap, hostPath) is',
         negatedName: 'Volume type doesn’t match',
         category: policyCriteriaCategories.STORAGE,
         type: 'text',
-        placeholder: 'bind, secret',
+        placeholder: 'hostPath',
         canBooleanLogic: true,
         lifecycleStages: ['DEPLOY', 'RUNTIME'],
     },
@@ -828,7 +975,7 @@ export const policyCriteriaDescriptors: Descriptor[] = [
         longName: 'Mount propagation is',
         negatedName: 'Mount propagation is not',
         category: policyCriteriaCategories.STORAGE,
-        type: 'multiselect',
+        type: 'select',
         options: Object.keys(mountPropagationLabels).map((key) => ({
             label: mountPropagationLabels[key],
             value: key,
@@ -864,7 +1011,7 @@ export const policyCriteriaDescriptors: Descriptor[] = [
         shortName: 'Exposed port',
         negatedName: 'Exposed port doesn’t match',
         category: policyCriteriaCategories.NETWORKING,
-        type: 'number',
+        type: 'text', // Use 'text' instead of 'number', as this field supports range qualifiers (>, >=, <, <=)
         placeholder: '22',
         canBooleanLogic: true,
         lifecycleStages: ['DEPLOY', 'RUNTIME'],
@@ -884,22 +1031,6 @@ export const policyCriteriaDescriptors: Descriptor[] = [
             })),
         canBooleanLogic: true,
         lifecycleStages: ['DEPLOY', 'RUNTIME'],
-    },
-    {
-        label: 'Network baselining enabled',
-        name: 'Unexpected Network Flow Detected',
-        shortName: 'Unexpected network flow detected',
-        longName: 'Network baselining status',
-        category: policyCriteriaCategories.NETWORKING,
-        type: 'radioGroup',
-        radioButtons: [
-            { text: 'Unexpected network flow', value: true },
-            { text: 'Expected network flow', value: false },
-        ],
-        defaultValue: false,
-        reverse: false,
-        canBooleanLogic: false,
-        lifecycleStages: ['RUNTIME'],
     },
     {
         label: 'Ingress Network Policy',
@@ -953,7 +1084,7 @@ export const policyCriteriaDescriptors: Descriptor[] = [
     },
     {
         label: 'Container CPU limit',
-        name: 'Container CPU Limit"',
+        name: 'Container CPU Limit',
         shortName: 'Container CPU limit',
         category: policyCriteriaCategories.CONTAINER_CONFIGURATION,
         type: 'group',
@@ -1148,51 +1279,40 @@ export const policyCriteriaDescriptors: Descriptor[] = [
         canBooleanLogic: false,
         lifecycleStages: ['DEPLOY', 'RUNTIME'],
     },
+    ...processActivityDescriptors,
     {
-        name: 'Process Name',
-        shortName: 'Process name',
-        longName: 'Process name is',
-        negatedName: 'Process name doesn’t match',
-        category: policyCriteriaCategories.PROCESS_ACTIVITY,
-        type: 'text',
-        placeholder: 'apt-get',
-        canBooleanLogic: true,
+        label: 'Network baselining enabled',
+        name: 'Unexpected Network Flow Detected',
+        shortName: 'Unexpected network flow detected',
+        longName: 'Network baselining status',
+        category: policyCriteriaCategories.BASELINE_DEVIATION,
+        type: 'radioGroup',
+        radioButtons: [
+            { text: 'Unexpected network flow', value: true },
+            { text: 'Expected network flow', value: false },
+        ],
+        defaultValue: false,
+        reverse: false,
+        canBooleanLogic: false,
         lifecycleStages: ['RUNTIME'],
     },
     {
-        name: 'Process Ancestor',
-        shortName: 'Process ancestor',
-        longName: 'Process ancestor is',
-        negatedName: 'Process ancestor doesn’t match',
-        category: policyCriteriaCategories.PROCESS_ACTIVITY,
-        type: 'text',
-        placeholder: 'java',
-        canBooleanLogic: true,
+        label: 'Process baselining enabled',
+        name: 'Unexpected Process Executed',
+        shortName: 'Unexpected process executed',
+        longName: 'Process baselining status',
+        category: policyCriteriaCategories.BASELINE_DEVIATION,
+        type: 'radioGroup',
+        radioButtons: [
+            { text: 'Unexpected process', value: true },
+            { text: 'Expected process', value: false },
+        ],
+        defaultValue: false,
+        reverse: false,
+        canBooleanLogic: false,
         lifecycleStages: ['RUNTIME'],
     },
-    {
-        name: 'Process Arguments',
-        shortName: 'Process arguments',
-        longName: 'Process arguments are',
-        negatedName: 'Process arguments don’t match',
-        category: policyCriteriaCategories.PROCESS_ACTIVITY,
-        type: 'text',
-        placeholder: 'install nmap',
-        canBooleanLogic: true,
-        lifecycleStages: ['RUNTIME'],
-    },
-    {
-        label: 'Process UID',
-        name: 'Process UID',
-        shortName: 'Process UID',
-        longName: 'Process UID is',
-        negatedName: 'Process UID doesn’t match',
-        category: policyCriteriaCategories.PROCESS_ACTIVITY,
-        type: 'text',
-        placeholder: '0',
-        canBooleanLogic: true,
-        lifecycleStages: ['RUNTIME'],
-    },
+
     {
         name: 'Writable Host Mount',
         shortName: 'Host mount writability',
@@ -1216,28 +1336,12 @@ export const policyCriteriaDescriptors: Descriptor[] = [
         lifecycleStages: ['DEPLOY', 'RUNTIME'],
     },
     {
-        label: 'Process baselining enabled',
-        name: 'Unexpected Process Executed',
-        shortName: 'Unexpected process executed',
-        longName: 'Process baselining status',
-        category: policyCriteriaCategories.PROCESS_ACTIVITY,
-        type: 'radioGroup',
-        radioButtons: [
-            { text: 'Unexpected process', value: true },
-            { text: 'Expected process', value: false },
-        ],
-        defaultValue: false,
-        reverse: false,
-        canBooleanLogic: false,
-        lifecycleStages: ['RUNTIME'],
-    },
-    {
         label: 'Service account',
         name: 'Service Account',
         shortName: 'Service account',
         longName: 'Service account name is',
         negatedName: 'Service account name doesn’t match',
-        category: policyCriteriaCategories.KUBERNETES_ACCESS,
+        category: policyCriteriaCategories.ACCESS_CONTROL,
         type: 'text',
         canBooleanLogic: true,
         lifecycleStages: ['DEPLOY', 'RUNTIME'],
@@ -1246,7 +1350,7 @@ export const policyCriteriaDescriptors: Descriptor[] = [
         label: 'Automount service account token',
         name: 'Automount Service Account Token',
         shortName: 'Automount service account token',
-        category: policyCriteriaCategories.KUBERNETES_ACCESS,
+        category: policyCriteriaCategories.ACCESS_CONTROL,
         type: 'radioGroup',
         radioButtons: [
             {
@@ -1268,7 +1372,7 @@ export const policyCriteriaDescriptors: Descriptor[] = [
         shortName: 'Minimum RBAC permissions',
         longName: 'RBAC permission level is at least',
         negatedName: 'RBAC permission level is less than',
-        category: policyCriteriaCategories.KUBERNETES_ACCESS,
+        category: policyCriteriaCategories.ACCESS_CONTROL,
         type: 'select',
         options: Object.keys(rbacPermissionLabels).map((key) => ({
             label: rbacPermissionLabels[key],
@@ -1363,15 +1467,19 @@ export const policyCriteriaDescriptors: Descriptor[] = [
         label: 'Kubernetes action',
         name: 'Kubernetes Resource',
         shortName: 'Kubernetes action',
-        category: policyCriteriaCategories.KUBERNETES_EVENTS,
+        category: policyCriteriaCategories.USER_ISSUED_CONTAINER_COMMANDS,
         type: 'select',
         options: [
+            {
+                label: 'Pod attach',
+                value: 'PODS_ATTACH',
+            },
             {
                 label: 'Pod exec',
                 value: 'PODS_EXEC',
             },
             {
-                label: 'Pods port forward',
+                label: 'Pod port forward',
                 value: 'PODS_PORTFORWARD',
             },
         ],
@@ -1383,7 +1491,7 @@ export const policyCriteriaDescriptors: Descriptor[] = [
         name: 'Kubernetes User Name',
         shortName: 'Kubernetes user name',
         negatedName: 'Kubernetes user name doesn’t match',
-        category: policyCriteriaCategories.KUBERNETES_EVENTS,
+        category: policyCriteriaCategories.USER_ISSUED_CONTAINER_COMMANDS,
         type: 'text',
         canBooleanLogic: false,
         lifecycleStages: ['RUNTIME'],
@@ -1393,7 +1501,7 @@ export const policyCriteriaDescriptors: Descriptor[] = [
         name: 'Kubernetes User Groups',
         shortName: 'Kubernetes user groups',
         negatedName: 'Kubernetes user group doesn’t match',
-        category: policyCriteriaCategories.KUBERNETES_EVENTS,
+        category: policyCriteriaCategories.USER_ISSUED_CONTAINER_COMMANDS,
         type: 'text',
         canBooleanLogic: false,
         lifecycleStages: ['RUNTIME'],
@@ -1463,14 +1571,51 @@ export const policyCriteriaDescriptors: Descriptor[] = [
         canBooleanLogic: false,
         lifecycleStages: ['DEPLOY', 'RUNTIME'],
     },
+    {
+        label: 'File path',
+        name: 'File Path',
+        shortName: 'File path',
+        category: policyCriteriaCategories.FILE_ACTIVITY,
+        type: 'text',
+        placeholder: '/home/**/.ssh/id_*',
+        helperText: 'Enter an absolute file path. Supports glob patterns.',
+        validate: validateFilePath,
+        warn: warnBroadFilePath,
+        canBooleanLogic: false,
+        lifecycleStages: ['RUNTIME'],
+        featureFlagDependency: ['ROX_SENSITIVE_FILE_ACTIVITY'],
+    },
+    {
+        label: 'File operation',
+        name: 'File Operation',
+        shortName: 'File operation',
+        category: policyCriteriaCategories.FILE_ACTIVITY,
+        type: 'select',
+        placeholder: 'Select an option',
+        options: fileOperationOptions,
+        canBooleanLogic: false,
+        lifecycleStages: ['RUNTIME'],
+        featureFlagDependency: ['ROX_SENSITIVE_FILE_ACTIVITY'],
+    },
 ];
 
 export const auditLogDescriptor: Descriptor[] = [
     {
+        label: 'Kubernetes API verb',
+        name: 'Kubernetes API Verb',
+        shortName: 'Kubernetes API verb',
+        category: policyCriteriaCategories.RESOURCE_OPERATION,
+        type: 'select',
+        placeholder: 'Select an API verb',
+        options: APIVerbs,
+        canBooleanLogic: false,
+        lifecycleStages: ['RUNTIME'],
+    },
+    {
         label: 'Kubernetes resource type',
         name: 'Kubernetes Resource',
         shortName: 'Kubernetes resource type',
-        category: policyCriteriaCategories.KUBERNETES_EVENTS,
+        category: policyCriteriaCategories.RESOURCE_OPERATION,
         type: 'select',
         placeholder: 'Select a resource',
         options: [
@@ -1507,22 +1652,11 @@ export const auditLogDescriptor: Descriptor[] = [
         lifecycleStages: ['RUNTIME'],
     },
     {
-        label: 'Kubernetes API verb',
-        name: 'Kubernetes API Verb',
-        shortName: 'Kubernetes API verb',
-        category: policyCriteriaCategories.KUBERNETES_EVENTS,
-        type: 'select',
-        placeholder: 'Select an API verb',
-        options: APIVerbs,
-        canBooleanLogic: false,
-        lifecycleStages: ['RUNTIME'],
-    },
-    {
         label: 'Kubernetes resource name',
         name: 'Kubernetes Resource Name',
         shortName: 'Kubernetes resource name',
         negatedName: 'Kubernetes resource name doesn’t match',
-        category: policyCriteriaCategories.KUBERNETES_EVENTS,
+        category: policyCriteriaCategories.RESOURCE_ATTRIBUTES,
         type: 'text',
         canBooleanLogic: false,
         lifecycleStages: ['RUNTIME'],
@@ -1532,7 +1666,7 @@ export const auditLogDescriptor: Descriptor[] = [
         name: 'Kubernetes User Name',
         shortName: 'Kubernetes user name',
         negatedName: 'Kubernetes user name doesn’t match',
-        category: policyCriteriaCategories.KUBERNETES_EVENTS,
+        category: policyCriteriaCategories.RESOURCE_ATTRIBUTES,
         type: 'text',
         canBooleanLogic: false,
         lifecycleStages: ['RUNTIME'],
@@ -1542,7 +1676,7 @@ export const auditLogDescriptor: Descriptor[] = [
         name: 'Kubernetes User Groups',
         shortName: 'Kubernetes user groups',
         negatedName: 'Kubernetes user group doesn’t match',
-        category: policyCriteriaCategories.KUBERNETES_EVENTS,
+        category: policyCriteriaCategories.RESOURCE_ATTRIBUTES,
         type: 'text',
         canBooleanLogic: false,
         lifecycleStages: ['RUNTIME'],
@@ -1553,7 +1687,7 @@ export const auditLogDescriptor: Descriptor[] = [
         shortName: 'User agent',
         longName: 'User agent is',
         negatedName: 'User agent doesn’t match',
-        category: policyCriteriaCategories.KUBERNETES_EVENTS,
+        category: policyCriteriaCategories.RESOURCE_ATTRIBUTES,
         type: 'text',
         canBooleanLogic: false,
         lifecycleStages: ['RUNTIME'],
@@ -1564,7 +1698,7 @@ export const auditLogDescriptor: Descriptor[] = [
         shortName: 'Source IP address',
         longName: 'Source IP address is',
         negatedName: 'Source IP address doesn’t match',
-        category: policyCriteriaCategories.KUBERNETES_EVENTS,
+        category: policyCriteriaCategories.RESOURCE_ATTRIBUTES,
         type: 'text',
         canBooleanLogic: false,
         lifecycleStages: ['RUNTIME'],
@@ -1573,7 +1707,7 @@ export const auditLogDescriptor: Descriptor[] = [
         label: 'Is impersonated user',
         name: 'Is Impersonated User',
         shortName: 'Is impersonated user',
-        category: policyCriteriaCategories.KUBERNETES_EVENTS,
+        category: policyCriteriaCategories.RESOURCE_ATTRIBUTES,
         type: 'radioGroup',
         radioButtons: [
             { text: 'True', value: true },
@@ -1582,4 +1716,32 @@ export const auditLogDescriptor: Descriptor[] = [
         canBooleanLogic: false,
         lifecycleStages: ['RUNTIME'],
     },
+];
+
+export const nodeEventDescriptor: Descriptor[] = [
+    {
+        label: 'File path',
+        name: 'File Path',
+        shortName: 'File path',
+        category: policyCriteriaCategories.FILE_ACTIVITY,
+        type: 'text',
+        placeholder: '/home/**/.ssh/id_*',
+        helperText: 'Enter an absolute file path. Supports glob patterns.',
+        validate: validateFilePath,
+        warn: warnBroadFilePath,
+        canBooleanLogic: false,
+        lifecycleStages: ['RUNTIME'],
+    },
+    {
+        label: 'File operation',
+        name: 'File Operation',
+        shortName: 'File operation',
+        category: policyCriteriaCategories.FILE_ACTIVITY,
+        type: 'select',
+        placeholder: 'Select an option',
+        options: fileOperationOptions,
+        canBooleanLogic: false,
+        lifecycleStages: ['RUNTIME'],
+    },
+    ...processActivityDescriptors,
 ];

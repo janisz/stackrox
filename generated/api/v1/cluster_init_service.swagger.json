@@ -18,6 +18,7 @@
   "paths": {
     "/v1/cluster-init/ca-config": {
       "get": {
+        "summary": "GetCAConfig is deprecated. Use operator-based installation with CRS instead.",
         "operationId": "ClusterInitService_GetCAConfig",
         "responses": {
           "200": {
@@ -29,7 +30,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/googlerpcStatus"
+              "$ref": "#/definitions/googleRpcStatus"
             }
           }
         },
@@ -51,7 +52,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/googlerpcStatus"
+              "$ref": "#/definitions/googleRpcStatus"
             }
           }
         },
@@ -71,7 +72,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/googlerpcStatus"
+              "$ref": "#/definitions/googleRpcStatus"
             }
           }
         },
@@ -82,6 +83,38 @@
             "required": true,
             "schema": {
               "$ref": "#/definitions/v1CRSGenRequest"
+            }
+          }
+        ],
+        "tags": [
+          "ClusterInitService"
+        ]
+      }
+    },
+    "/v1/cluster-init/crs-extended": {
+      "post": {
+        "operationId": "ClusterInitService_GenerateCRSExtended",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1CRSGenResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/googleRpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/v1CRSGenRequestExtended"
             }
           }
         ],
@@ -104,7 +137,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/googlerpcStatus"
+              "$ref": "#/definitions/googleRpcStatus"
             }
           }
         },
@@ -125,6 +158,7 @@
     },
     "/v1/cluster-init/init-bundles": {
       "get": {
+        "summary": "Init bundles are deprecated in favor of Cluster Registration Secrets (CRS).",
         "operationId": "ClusterInitService_GetInitBundles",
         "responses": {
           "200": {
@@ -136,7 +170,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/googlerpcStatus"
+              "$ref": "#/definitions/googleRpcStatus"
             }
           }
         },
@@ -145,6 +179,7 @@
         ]
       },
       "post": {
+        "summary": "Init bundles are deprecated in favor of Cluster Registration Secrets (CRS).",
         "operationId": "ClusterInitService_GenerateInitBundle",
         "responses": {
           "200": {
@@ -156,7 +191,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/googlerpcStatus"
+              "$ref": "#/definitions/googleRpcStatus"
             }
           }
         },
@@ -177,7 +212,7 @@
     },
     "/v1/cluster-init/init-bundles/revoke": {
       "patch": {
-        "summary": "RevokeInitBundle deletes cluster init bundle. If this operation impacts any cluster\nthen its ID should be included in request.\nIf confirm_impacted_clusters_ids does not match with current impacted clusters\nthen request will fail with error that includes all impacted clusters.",
+        "summary": "RevokeInitBundle deletes cluster init bundle. If this operation impacts any cluster\nthen its ID should be included in request.\nIf confirm_impacted_clusters_ids does not match with current impacted clusters\nthen request will fail with error that includes all impacted clusters.\nInit bundles are deprecated in favor of Cluster Registration Secrets (CRS).",
         "operationId": "ClusterInitService_RevokeInitBundle",
         "responses": {
           "200": {
@@ -189,7 +224,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/googlerpcStatus"
+              "$ref": "#/definitions/googleRpcStatus"
             }
           }
         },
@@ -250,7 +285,7 @@
         }
       }
     },
-    "googlerpcStatus": {
+    "googleRpcStatus": {
       "type": "object",
       "properties": {
         "code": {
@@ -321,6 +356,26 @@
         }
       }
     },
+    "v1CRSGenRequestExtended": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "validUntil": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "validFor": {
+          "type": "string"
+        },
+        "maxRegistrations": {
+          "type": "string",
+          "format": "uint64",
+          "title": "4 was int32 max_registrations"
+        }
+      }
+    },
     "v1CRSGenResponse": {
       "type": "object",
       "properties": {
@@ -352,6 +407,22 @@
         "expiresAt": {
           "type": "string",
           "format": "date-time"
+        },
+        "maxRegistrations": {
+          "type": "string",
+          "format": "uint64"
+        },
+        "registrationsInitiated": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "registrationsCompleted": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
         }
       }
     },

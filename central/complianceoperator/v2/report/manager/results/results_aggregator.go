@@ -4,8 +4,8 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
-	benchmarksDS "github.com/stackrox/rox/central/complianceoperator/v2/benchmarks/datastore"
 	checkResults "github.com/stackrox/rox/central/complianceoperator/v2/checkresults/datastore"
 	"github.com/stackrox/rox/central/complianceoperator/v2/checkresults/utils"
 	profileDS "github.com/stackrox/rox/central/complianceoperator/v2/profiles/datastore"
@@ -15,12 +15,19 @@ import (
 	scanDS "github.com/stackrox/rox/central/complianceoperator/v2/scans/datastore"
 	"github.com/stackrox/rox/generated/storage"
 	"github.com/stackrox/rox/pkg/logging"
+	"github.com/stackrox/rox/pkg/protocompat"
 	"github.com/stackrox/rox/pkg/search"
+	"github.com/stackrox/rox/pkg/set"
 )
 
 const (
 	DATA_NOT_AVAILABLE = "Data Not Available"
-	NO_REMEDIATION     = "No Remediation Available"
+	// CONTROL_NOT_APPLICABLE is used when a control reference cannot be resolved for structural reasons
+	// (e.g. tailored profiles with no benchmark mapping, or profiles like E8 whose benchmark short name
+	// has no matching standard in rule annotations). DATA_NOT_AVAILABLE is used instead when the lookup
+	// fails due to errors or data-integrity issues.
+	CONTROL_NOT_APPLICABLE = "N/A"
+	NO_REMEDIATION         = "No Remediation Available"
 )
 
 var (
@@ -32,7 +39,6 @@ type Aggregator struct {
 	scanDS           scanDS.DataStore
 	profileDS        profileDS.DataStore
 	remediationDS    remediationDS.DataStore
-	benchmarkDS      benchmarksDS.DataStore
 	complianceRuleDS complianceRuleDS.DataStore
 
 	aggreateResults aggregateResultsFn
@@ -43,7 +49,6 @@ func NewAggregator(
 	scanDS scanDS.DataStore,
 	profileDS profileDS.DataStore,
 	remediationDS remediationDS.DataStore,
-	benchmarksDS benchmarksDS.DataStore,
 	complianceRuleDS complianceRuleDS.DataStore,
 ) *Aggregator {
 	ret := &Aggregator{
@@ -51,7 +56,6 @@ func NewAggregator(
 		scanDS:           scanDS,
 		profileDS:        profileDS,
 		remediationDS:    remediationDS,
-		benchmarkDS:      benchmarksDS,
 		complianceRuleDS: complianceRuleDS,
 	}
 	ret.aggreateResults = ret.AggregateResults
@@ -65,16 +69,24 @@ type aggregateResultsFn func(context.Context, string, *[]*report.ResultRow, *che
 func (g *Aggregator) GetReportData(req *report.Request) *report.Results {
 	resultsCSV := make(map[string][]*report.ResultRow)
 	reportResults := &report.Results{}
+	reportResults.ClustersData = make(map[string]*report.ClusterData)
 	for _, clusterID := range req.ClusterIDs {
-		clusterResults, clusterStatus, err := g.getReportDataForCluster(req.Ctx, req.ScanConfigID, clusterID)
+		clusterData, ok := req.ClusterData[clusterID]
+		if !ok {
+			log.Errorf("empty cluster data for cluster %q", clusterID)
+			continue
+		}
+		clusterResults, clusterStatus, err := g.getReportDataForCluster(req.Ctx, req.ScanConfigID, clusterID, clusterData)
 		if err != nil {
 			log.Errorf("Data not found for cluster %s", clusterID)
 			continue
 		}
+
 		resultsCSV[clusterID] = clusterResults
 		reportResults.TotalPass += clusterStatus.totalPass
 		reportResults.TotalFail += clusterStatus.totalFail
 		reportResults.TotalMixed += clusterStatus.totalMixed
+		reportResults.ClustersData[clusterID] = clusterData
 	}
 	reportResults.Clusters = len(req.ClusterIDs)
 	reportResults.Profiles = req.Profiles
@@ -82,16 +94,34 @@ func (g *Aggregator) GetReportData(req *report.Request) *report.Results {
 	return reportResults
 }
 
-func (g *Aggregator) getReportDataForCluster(ctx context.Context, scanConfigID, clusterID string) ([]*report.ResultRow, *checkStatus, error) {
+func (g *Aggregator) getReportDataForCluster(ctx context.Context, scanConfigID, clusterID string, clusterData *report.ClusterData) ([]*report.ResultRow, *checkStatus, error) {
 	var ret []*report.ResultRow
-	scanConfigQuery := search.NewQueryBuilder().AddExactMatches(search.ComplianceOperatorScanConfig, scanConfigID).
-		AddExactMatches(search.ClusterID, clusterID).
-		ProtoQuery()
 	statuses := &checkStatus{
 		totalPass:  0,
 		totalFail:  0,
 		totalMixed: 0,
 	}
+	successfulScanNames := clusterData.ScanNames
+	if clusterData.FailedInfo != nil {
+		if len(clusterData.FailedInfo.FailedScans) == 0 {
+			// The entire cluster failed to report (e.g. sensor disconnected,
+			// scan config watcher timed out without receiving any results from
+			// this cluster). Exclude all results to avoid including stale data
+			// from a previous scan cycle in the report.
+			return ret, statuses, nil
+		}
+		allScansSet := set.NewStringSet(successfulScanNames...)
+		failedScansSet := set.NewStringSet()
+		for _, scan := range clusterData.FailedInfo.FailedScans {
+			failedScansSet.Add(scan.GetScanName())
+		}
+		successfulScanNames = allScansSet.Difference(failedScansSet).AsSlice()
+	}
+	scanConfigQuery := search.NewQueryBuilder().
+		AddExactMatches(search.ComplianceOperatorScanConfig, scanConfigID).
+		AddExactMatches(search.ClusterID, clusterID).
+		AddExactMatches(search.ComplianceOperatorScanName, successfulScanNames...).
+		ProtoQuery()
 	err := g.checkResultsDS.WalkByQuery(ctx, scanConfigQuery, g.aggreateResults(ctx, clusterID, &ret, statuses))
 	return ret, statuses, err
 }
@@ -99,18 +129,20 @@ func (g *Aggregator) getReportDataForCluster(ctx context.Context, scanConfigID, 
 func (g *Aggregator) AggregateResults(ctx context.Context, clusterID string, clusterResults *[]*report.ResultRow, checkStatus *checkStatus) checkResultWalkByQuery {
 	return func(checkResult *storage.ComplianceOperatorCheckResultV2) error {
 		row := &report.ResultRow{
-			ClusterName:  checkResult.GetClusterName(),
-			CheckName:    checkResult.GetCheckName(),
-			Description:  checkResult.GetDescription(),
-			Status:       checkResult.GetStatus().String(),
-			Rationale:    checkResult.GetRationale(),
-			Instructions: checkResult.GetInstructions(),
+			ClusterName:    checkResult.GetClusterName(),
+			CheckName:      checkResult.GetCheckName(),
+			Description:    checkResult.GetDescription(),
+			Status:         checkResult.GetStatus().String(),
+			Rationale:      checkResult.GetRationale(),
+			Instructions:   checkResult.GetInstructions(),
+			AssessmentTime: protocompat.ConvertTimestampToString(checkResult.GetLastStartedTime(), time.RFC1123),
 		}
-		profileInfo, profileName, err := g.getProfileInfo(ctx, checkResult, clusterID)
+		profileInfo, profileName, profileType, err := g.getProfileInfo(ctx, checkResult, clusterID)
 		if err != nil {
 			return err
 		}
 		row.Profile = profileInfo
+		row.ProfileType = profileType
 		remediationInfo, err := g.getRemediationInfo(ctx, checkResult, clusterID)
 		if err != nil {
 			return err
@@ -127,19 +159,32 @@ func (g *Aggregator) AggregateResults(ctx context.Context, clusterID string, clu
 	}
 }
 
-func (g *Aggregator) getProfileInfo(ctx context.Context, checkResult *storage.ComplianceOperatorCheckResultV2, clusterID string) (string, string, error) {
+func (g *Aggregator) getProfileInfo(ctx context.Context, checkResult *storage.ComplianceOperatorCheckResultV2, clusterID string) (string, string, string, error) {
 	q := search.NewQueryBuilder().
 		AddExactMatches(search.ComplianceOperatorScanRef, checkResult.GetScanRefId()).
 		ProtoQuery()
 	profiles, err := g.profileDS.SearchProfiles(ctx, q)
 	if err != nil {
-		return "", "", err
+		return "", "", "", err
 	}
 	if len(profiles) < 1 {
 		log.Errorf("profile not found for cluster %s and check name %s", clusterID, checkResult.GetCheckName())
-		return DATA_NOT_AVAILABLE, "", nil
+		return DATA_NOT_AVAILABLE, "", DATA_NOT_AVAILABLE, nil
 	}
-	return fmt.Sprintf("%s %s", profiles[0].GetName(), profiles[0].GetProfileVersion()), profiles[0].GetName(), nil
+	profileInfo := fmt.Sprintf("%s %s", profiles[0].GetName(), profiles[0].GetProfileVersion())
+	profileType := operatorKindToHumanReadable(profiles[0].GetOperatorKind())
+	return profileInfo, profiles[0].GetName(), profileType, nil
+}
+
+func operatorKindToHumanReadable(kind storage.ComplianceOperatorProfileV2_OperatorKind) string {
+	switch kind {
+	case storage.ComplianceOperatorProfileV2_PROFILE:
+		return "Profile"
+	case storage.ComplianceOperatorProfileV2_TAILORED_PROFILE:
+		return "Tailored Profile"
+	default:
+		return DATA_NOT_AVAILABLE
+	}
 }
 
 func (g *Aggregator) getRemediationInfo(ctx context.Context, checkResult *storage.ComplianceOperatorCheckResultV2, clusterID string) (string, error) {
@@ -173,13 +218,13 @@ func (g *Aggregator) getControlsInfo(ctx context.Context, checkResult *storage.C
 		log.Errorf("Unable to process compliance rule for result %q", checkResult.GetCheckName())
 		return DATA_NOT_AVAILABLE, nil
 	}
-	controls, err := utils.GetControlsForScanResults(ctx, g.complianceRuleDS, []string{rules[0].GetName()}, profileName, g.benchmarkDS)
+	controls, err := utils.GetControlsForScanResults(ctx, g.complianceRuleDS, []string{rules[0].GetName()}, profileName)
 	if err != nil {
 		log.Errorf("Unable to retrieve controls for result %q.Error %s", checkResult.GetCheckName(), err)
 		return DATA_NOT_AVAILABLE, err
 	}
 	if len(controls) == 0 {
-		return DATA_NOT_AVAILABLE, nil
+		return CONTROL_NOT_APPLICABLE, nil
 	}
 	controlsList := make([]string, 0, len(controls))
 	for _, ctrl := range controls {

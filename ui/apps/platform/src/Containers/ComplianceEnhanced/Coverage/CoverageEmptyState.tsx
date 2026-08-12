@@ -1,6 +1,5 @@
-import React from 'react';
-import { Link } from 'react-router-dom';
-import { Text, Bullseye, Flex, FlexItem, PageSection } from '@patternfly/react-core';
+import { Link } from 'react-router-dom-v5-compat';
+import { Bullseye, Content, Flex, FlexItem, PageSection } from '@patternfly/react-core';
 import { CubesIcon } from '@patternfly/react-icons';
 
 import EmptyStateTemplate from 'Components/EmptyStateTemplate';
@@ -15,8 +14,8 @@ function CoverageEmptyState() {
     return (
         <>
             <CoveragesPageHeader />
-            <PageSection isFilled>
-                <Bullseye className="pf-v5-u-background-color-100">
+            <PageSection hasBodyWrapper={false} isFilled>
+                <Bullseye>
                     <EmptyStateTemplate
                         title="No scan data available"
                         headingLevel="h2"
@@ -25,10 +24,10 @@ function CoverageEmptyState() {
                         <Flex direction={{ default: 'column' }}>
                             {hasWriteAccessForCompliance && (
                                 <FlexItem>
-                                    <Text>
+                                    <Content component="p">
                                         Create a scan schedule to assess profile compliance on
                                         selected clusters.
-                                    </Text>
+                                    </Content>
                                 </FlexItem>
                             )}
                             <FlexItem>

@@ -16,6 +16,7 @@ import (
 	"github.com/stackrox/rox/pkg/telemetry/phonehome"
 	"github.com/stackrox/rox/pkg/utils"
 	"github.com/stackrox/rox/pkg/version"
+	roxctlCommon "github.com/stackrox/rox/roxctl/common"
 	env "github.com/stackrox/rox/roxctl/common/environment"
 	"github.com/stackrox/rox/roxctl/common/flags"
 	"github.com/stackrox/rox/roxctl/common/logger"
@@ -28,10 +29,11 @@ func Command(cliEnvironment env.Environment) *cobra.Command {
 	helmOutputCmd := &helmOutputCommand{env: cliEnvironment}
 
 	c := &cobra.Command{
-		Use:       fmt.Sprintf("output <%s>", common.PrettyChartNameList),
-		Short:     "Output a Helm Chart.",
-		ValidArgs: []string{common.ChartCentralServices, common.ChartSecuredClusterServices},
-		Args:      cobra.ExactValidArgs(1),
+		Use:        fmt.Sprintf("output <%s>", common.PrettyChartNameList),
+		Short:      "Output a Helm Chart",
+		Deprecated: roxctlCommon.DeprecatedInFavorOfOperator,
+		ValidArgs:  []string{common.ChartCentralServices, common.ChartSecuredClusterServices},
+		Args:       cobra.ExactValidArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			helmOutputCmd.Construct(args[0], cmd)
 
@@ -42,10 +44,10 @@ func Command(cliEnvironment env.Environment) *cobra.Command {
 			return helmOutputCmd.outputHelmChart()
 		},
 	}
-	c.PersistentFlags().StringVar(&helmOutputCmd.outputDir, "output-dir", "", "Path to the output directory for Helm chart (default: './stackrox-<chart name>-chart')")
-	c.PersistentFlags().BoolVar(&helmOutputCmd.removeOutputDir, "remove", false, "Remove the output directory if it already exists")
-	c.PersistentFlags().BoolVar(&helmOutputCmd.rhacs, "rhacs", false, "Render RHACS chart flavor")
-	c.PersistentFlags().BoolVar(&helmOutputCmd.telemetry, "enable-telemetry", version.IsReleaseVersion(), "Whether to enable telemetry")
+	c.PersistentFlags().StringVar(&helmOutputCmd.outputDir, "output-dir", "", "Path to the output directory for Helm chart (default: './stackrox-<chart name>-chart').")
+	c.PersistentFlags().BoolVar(&helmOutputCmd.removeOutputDir, "remove", false, "Remove the output directory if it already exists.")
+	c.PersistentFlags().BoolVar(&helmOutputCmd.rhacs, "rhacs", false, "Render RHACS chart flavor.")
+	c.PersistentFlags().BoolVar(&helmOutputCmd.telemetry, "enable-telemetry", version.IsReleaseVersion(), "Whether to enable telemetry.")
 
 	deprecationNote := fmt.Sprintf("use '--%s=%s' instead", flags.ImageDefaultsFlagName, defaults.ImageFlavorNameRHACSRelease)
 	utils.Must(c.PersistentFlags().MarkDeprecated("rhacs", deprecationNote))

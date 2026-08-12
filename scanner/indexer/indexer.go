@@ -6,6 +6,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"log/slog"
 	"math/rand/v2"
 	"net/http"
 	"net/url"
@@ -20,28 +21,29 @@ import (
 	"github.com/google/go-containerregistry/pkg/v1/remote"
 	"github.com/google/go-containerregistry/pkg/v1/remote/transport"
 	lru "github.com/hashicorp/golang-lru/v2"
-	"github.com/jackc/pgx/v4/pgxpool"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/quay/claircore"
 	"github.com/quay/claircore/alpine"
 	ccpostgres "github.com/quay/claircore/datastore/postgres"
 	"github.com/quay/claircore/dpkg"
 	"github.com/quay/claircore/gobin"
 	ccindexer "github.com/quay/claircore/indexer"
+	"github.com/quay/claircore/indexer/controller"
 	"github.com/quay/claircore/java"
 	"github.com/quay/claircore/libindex"
 	"github.com/quay/claircore/nodejs"
-	"github.com/quay/claircore/pkg/ctxlock"
+	"github.com/quay/claircore/pkg/ctxlock/v2"
 	"github.com/quay/claircore/python"
 	"github.com/quay/claircore/rhel"
 	"github.com/quay/claircore/rhel/rhcc"
 	"github.com/quay/claircore/rpm"
 	"github.com/quay/claircore/ruby"
-	"github.com/quay/zlog"
 	"github.com/stackrox/rox/pkg/buildinfo"
 	"github.com/stackrox/rox/pkg/env"
 	"github.com/stackrox/rox/pkg/features"
 	"github.com/stackrox/rox/pkg/httputil/proxy"
 	"github.com/stackrox/rox/pkg/utils"
+	pkgversion "github.com/stackrox/rox/pkg/version"
 	"github.com/stackrox/rox/scanner/config"
 	"github.com/stackrox/rox/scanner/datastore/postgres"
 	"github.com/stackrox/rox/scanner/indexer/manifest"
@@ -123,23 +125,31 @@ func proxiedRemoteTransport(insecure bool) http.RoundTripper {
 		return tr
 	}()
 	if insecure {
-		tr.TLSClientConfig = &tls.Config{
-			InsecureSkipVerify: true,
+		if tr.TLSClientConfig == nil {
+			tr.TLSClientConfig = &tls.Config{}
 		}
+		tr.TLSClientConfig.InsecureSkipVerify = true
 	}
 	return tr
 }
 
-// ReportGetter can get index reports from an Indexer.
-type ReportGetter interface {
-	GetIndexReport(context.Context, string) (*claircore.IndexReport, bool, error)
+// ReportProvider provides index reports and repository-to-CPE mappings from an Indexer.
+type ReportProvider interface {
+	GetIndexReport(context.Context, string, bool) (*claircore.IndexReport, bool, error)
+	GetRepositoryToCPEMapping(context.Context, string) (*FetchResult, error)
+}
+
+// ReportStorer stores a claircore.IndexReport.
+type ReportStorer interface {
+	StoreIndexReport(ctx context.Context, hashID string, indexerVersion string, report *claircore.IndexReport) (string, error)
 }
 
 // Indexer represents an image indexer.
 //
 //go:generate mockgen-wrapper
 type Indexer interface {
-	ReportGetter
+	ReportProvider
+	ReportStorer
 	IndexContainerImage(context.Context, string, string, ...Option) (*claircore.IndexReport, error)
 	Close(context.Context) error
 	Ready(context.Context) error
@@ -154,15 +164,16 @@ type localIndexer struct {
 	getLayerTimeout time.Duration
 
 	metadataStore          postgres.IndexerMetadataStore
+	externalIndexStore     postgres.ExternalIndexStore
 	manifestManager        *manifest.Manager
 	deleteIntervalStart    int64
 	deleteIntervalDuration int64
+
+	repositoryToCPEFetcher *RepositoryToCPEFetcher
 }
 
 // NewIndexer creates a new indexer.
 func NewIndexer(ctx context.Context, cfg config.IndexerConfig) (Indexer, error) {
-	ctx = zlog.ContextWithValues(ctx, "component", "scanner/backend/indexer.NewIndexer")
-
 	var success bool
 
 	pool, err := postgres.Connect(ctx, cfg.Database.ConnString, "libindex")
@@ -205,6 +216,11 @@ func NewIndexer(ctx context.Context, cfg config.IndexerConfig) (Indexer, error) 
 		}
 	}
 
+	externalIndexStore, err := postgres.InitPostgresExternalIndexStore(ctx, pool, true)
+	if err != nil {
+		return nil, fmt.Errorf("initializing postgres external index store: %w", err)
+	}
+
 	root, err := os.MkdirTemp("", "scanner-fetcharena-*")
 	if err != nil {
 		return nil, fmt.Errorf("creating indexer root directory: %w", err)
@@ -215,9 +231,8 @@ func NewIndexer(ctx context.Context, cfg config.IndexerConfig) (Indexer, error) 
 		}
 	}()
 
-	// Note: http.DefaultTransport has already been modified to handle configured proxies.
-	// See scanner/cmd/scanner/main.go.
-	t, err := httputil.TransportMux(http.DefaultTransport, httputil.WithDenyStackRoxServices(!cfg.StackRoxServices))
+	defaultTransport := httputil.NewInsecureCapableTransport(http.DefaultTransport.(*http.Transport))
+	t, err := httputil.TransportMux(defaultTransport, httputil.WithDenyStackRoxServices(!cfg.StackRoxServices))
 	if err != nil {
 		return nil, fmt.Errorf("creating HTTP transport: %w", err)
 	}
@@ -239,7 +254,7 @@ func NewIndexer(ctx context.Context, cfg config.IndexerConfig) (Indexer, error) 
 
 	var manifestManager *manifest.Manager
 	if features.ScannerV4ReIndex.Enabled() {
-		manifestManager = manifest.NewManager(ctx, metadataStore, locker)
+		manifestManager = manifest.NewManager(ctx, metadataStore, externalIndexStore, locker)
 		// Set any manifests indexed prior to the existence of the manifest_metadata table
 		// to expire immediately.
 		// TODO(ROX-26957): Consider moving this elsewhere so we do not block initialization.
@@ -254,20 +269,31 @@ func NewIndexer(ctx context.Context, cfg config.IndexerConfig) (Indexer, error) 
 		// Start the manifest GC.
 		go func() {
 			if err := manifestManager.StartGC(); err != nil {
-				zlog.Error(ctx).Err(err).Msg("manifest GC failed")
+				slog.ErrorContext(ctx, "manifest GC failed", "reason", err)
 			}
 		}()
 	}
 
 	deleteIntervalStart := env.ScannerV4ManifestDeleteStart.DurationSetting()
 	if deleteIntervalStart < minManifestDeleteStart {
-		zlog.Warn(ctx).Msgf("configured manifest delete interval (%v) start is too small: setting to %v", deleteIntervalStart, minManifestDeleteStart)
+		slog.WarnContext(ctx, "configured manifest delete interval start too small, using minimum", "configured", deleteIntervalStart, "minimum", minManifestDeleteStart)
 		deleteIntervalStart = minManifestDeleteStart
 	}
 	deleteIntervalDuration := env.ScannerV4ManifestDeleteDuration.DurationSetting()
 	if deleteIntervalDuration < minManifestDeleteDuration {
-		zlog.Warn(ctx).Msgf("configured manifest delete interval (%v) duration is too small: setting to %v", deleteIntervalDuration, minManifestDeleteDuration)
+		slog.WarnContext(ctx, "configured manifest delete interval duration too small, using minimum", "configured", deleteIntervalDuration, "minimum", minManifestDeleteDuration)
 		deleteIntervalDuration = minManifestDeleteDuration
+	}
+
+	var repo2cpeFetcher *RepositoryToCPEFetcher
+	if cfg.RepositoryToCPEURL != "" {
+		var err error
+		repo2cpeFetcher, err = NewRepositoryToCPEFetcher(client, cfg.RepositoryToCPEURL, cfg.RepositoryToCPEFile)
+		if err != nil {
+			return nil, fmt.Errorf("creating repository-to-CPE fetcher: %w", err)
+		}
+	} else if features.SBOMScanning.Enabled() {
+		slog.ErrorContext(ctx, "unconfigured repository_to_cpe_url may lead to inaccurate SBOM scanning results")
 	}
 
 	success = true
@@ -276,12 +302,15 @@ func NewIndexer(ctx context.Context, cfg config.IndexerConfig) (Indexer, error) 
 		vscnrs:          vscnrs,
 		pool:            pool,
 		root:            root,
-		getLayerTimeout: time.Duration(cfg.GetLayerTimeout),
+		getLayerTimeout: cfg.GetLayerTimeout,
 
 		metadataStore:          metadataStore,
+		externalIndexStore:     externalIndexStore,
 		manifestManager:        manifestManager,
 		deleteIntervalStart:    int64(deleteIntervalStart.Seconds()),
 		deleteIntervalDuration: int64(deleteIntervalDuration.Seconds()),
+
+		repositoryToCPEFetcher: repo2cpeFetcher,
 	}, nil
 }
 
@@ -334,6 +363,10 @@ func newLibindex(ctx context.Context, indexerCfg config.IndexerConfig, client *h
 				}),
 				"java": castToConfig(func(cfg *java.ScannerConfig) {
 					cfg.DisableAPI = true
+					if features.ScannerV4MavenSearch.Enabled() {
+						cfg.DisableAPI = false
+						cfg.API = env.ScannerV4MavenSearchURL.Setting()
+					}
 				}),
 			},
 		},
@@ -349,7 +382,6 @@ func newLibindex(ctx context.Context, indexerCfg config.IndexerConfig, client *h
 
 // Close closes the indexer.
 func (i *localIndexer) Close(ctx context.Context) error {
-	ctx = zlog.ContextWithValues(ctx, "component", "scanner/backend/indexer.Close")
 	err := errors.Join(i.libIndex.Close(ctx), os.RemoveAll(i.root))
 	if features.ScannerV4ReIndex.Enabled() && i.manifestManager != nil {
 		err = errors.Join(err, i.manifestManager.StopGC())
@@ -365,13 +397,32 @@ func (i *localIndexer) Ready(ctx context.Context) error {
 	return nil
 }
 
+// GetRepositoryToCPEMapping fetches the repository-to-CPE mapping from upstream.
+// If ifModifiedSince is provided, returns Modified=false if data hasn't changed.
+// On the initial fetch (empty ifModifiedSince), if the URL fetch fails and seed
+// data was loaded from a file, the seed data is returned as a fallback.
+func (i *localIndexer) GetRepositoryToCPEMapping(ctx context.Context, ifModifiedSince string) (*FetchResult, error) {
+	if i.repositoryToCPEFetcher == nil {
+		return nil, errors.New("unsupported repository_to_cpe_url configuration")
+	}
+	result, err := i.repositoryToCPEFetcher.Fetch(ctx, ifModifiedSince)
+	if err != nil && ifModifiedSince == "" {
+		if initial := i.repositoryToCPEFetcher.InitialData(); initial != nil {
+			slog.WarnContext(ctx, "URL fetch failed; falling back to seed mapping file", "reason", err)
+			return &FetchResult{
+				Modified: true,
+				Data:     initial,
+			}, nil
+		}
+	}
+	return result, err
+}
+
 // IndexContainerImage creates a ClairCore index report for a given container
 // image. The manifest is populated with layers from the image specified by a
 // URL. This method performs a partial content request on each layer to generate
 // the layer's URI and headers.
 func (i *localIndexer) IndexContainerImage(ctx context.Context, hashID string, imageURL string, opts ...Option) (*claircore.IndexReport, error) {
-	ctx = zlog.ContextWithValues(ctx, "component", "scanner/backend/indexer.IndexContainerImage")
-
 	manifestDigest, err := createManifestDigest(hashID)
 	if err != nil {
 		return nil, err
@@ -395,10 +446,7 @@ func (i *localIndexer) IndexContainerImage(ctx context.Context, hashID string, i
 		Hash: manifestDigest,
 	}
 
-	zlog.Info(ctx).
-		Str("image_reference", imgRef.String()).
-		Int("layers_count", len(imgLayers)).
-		Msg("retrieving layers to populate container image manifest")
+	slog.InfoContext(ctx, "retrieving layers to populate container image manifest", "image_reference", imgRef.String(), "layers_count", len(imgLayers))
 	for _, layer := range imgLayers {
 		ccDigest, layerDigest, err := getLayerDigests(layer)
 		if err != nil {
@@ -411,6 +459,9 @@ func (i *localIndexer) IndexContainerImage(ctx context.Context, hashID string, i
 		}
 		layerReq.Header.Del("User-Agent")
 		layerReq.Header.Del("Range")
+		if o.insecureSkipTLSVerify {
+			layerReq.Header.Set(httputil.InsecureSkipTLSVerifyHeader, "true")
+		}
 		manifest.Layers = append(manifest.Layers, &claircore.Layer{
 			Hash:    ccDigest,
 			URI:     layerReq.URL.String(),
@@ -487,7 +538,7 @@ func getLayerRequest(ctx context.Context, httpClient *http.Client, imgRef name.R
 	if err != nil {
 		return nil, err
 	}
-	req, err := http.NewRequest("GET", u.String(), nil)
+	req, err := http.NewRequest(http.MethodGet, u.String(), nil)
 	if err != nil {
 		return nil, err
 	}
@@ -499,26 +550,21 @@ func getLayerRequest(ctx context.Context, httpClient *http.Client, imgRef name.R
 	utils.IgnoreError(res.Body.Close)
 	if res.StatusCode != http.StatusPartialContent {
 		if exists, _ := regsNoRange.ContainsOrAdd(registryURL.Host, struct{}{}); !exists {
-			zlog.Warn(ctx).
-				Str("registry", registryURL.Host).
-				Msg("Range HTTP header may not be supported, so indexing may required about twice as many image pulls")
+			slog.WarnContext(ctx, "Range HTTP header may not be supported, so indexing may required about twice as many image pulls", "registry", registryURL.Host)
 		}
 
-		zlog.Debug(ctx).
-			Int("status_code", res.StatusCode).
-			Int("len", int(res.ContentLength)).
-			Str("url", u.String()).
-			Msg("server might not support requests with Range HTTP header")
+		slog.DebugContext(ctx, "server might not support requests with Range HTTP header", "status_code", res.StatusCode, "len", int(res.ContentLength), "url", u.String())
 	}
 	return res.Request, nil
 }
 
-// GetIndexReport retrieves an IndexReport for the given hash ID, if it exists and is up-to-date.
-func (i *localIndexer) GetIndexReport(ctx context.Context, hashID string) (*claircore.IndexReport, bool, error) {
+// GetIndexReport retrieves an IndexReport for the given hash ID if it exists and is up to date.
+func (i *localIndexer) GetIndexReport(ctx context.Context, hashID string, includeExternal bool) (*claircore.IndexReport, bool, error) {
 	manifestDigest, err := createManifestDigest(hashID)
 	if err != nil {
 		return nil, false, err
 	}
+
 	if features.ScannerV4ReIndex.Enabled() && i.metadataStore != nil {
 		exists, err := i.metadataStore.ManifestExists(ctx, manifestDigest.String())
 		if err != nil {
@@ -539,19 +585,53 @@ func (i *localIndexer) GetIndexReport(ctx context.Context, hashID string) (*clai
 			//    known manifests over to the metadata table, but there is still an older Indexer running which successfully
 			//    indexes a manifest after the migration. The manifest metadata table will now be missing an entry related to
 			//    this new index report. This is ok, as it will be caught here and the manifest will be re-indexed.
+
+			// Check the external index report store.
+			if includeExternal {
+				if ir, found, err := i.externalIndexStore.GetIndexReport(ctx, hashID); err != nil {
+					return nil, false, err
+				} else if found {
+					return ir, true, nil
+				}
+			}
+
 			return nil, false, nil
 		}
 	}
+
+	// Prefer index reports from claircore's database over the external index
+	// reports. Note that the index report must have been generated via the
+	// latest indexers.
 	scanned, err := i.libIndex.Store.ManifestScanned(ctx, manifestDigest, i.vscnrs)
 	if err != nil {
-		return nil, false, fmt.Errorf("fetching manifest: %w", err)
+		return nil, false, fmt.Errorf("fetching scanned manifest: %w", err)
 	}
 	if !scanned {
 		// The IndexReport is obsolete, as there has been an update to
 		// the versioned scanners since this manifest was indexed.
 		return nil, false, nil
 	}
-	return i.libIndex.IndexReport(ctx, manifestDigest)
+	ir, exists, err := i.libIndex.IndexReport(ctx, manifestDigest)
+	if err != nil {
+		return nil, false, fmt.Errorf("fetching index report: %w", err)
+	}
+	if exists {
+		return ir, true, nil
+	}
+
+	// Check the external index report store. Note that this won't check if the
+	// index report was generated via the latest indexers.
+	if includeExternal {
+		ir, found, err := i.externalIndexStore.GetIndexReport(ctx, hashID)
+		if err != nil {
+			return nil, false, err
+		}
+		if found {
+			return ir, true, nil
+		}
+	}
+
+	return nil, false, nil
 }
 
 // createManifestDigest creates a unique claircore.Digest from a Scanner's manifest hash ID.
@@ -562,6 +642,56 @@ func createManifestDigest(hashID string) (claircore.Digest, error) {
 		return claircore.Digest{}, fmt.Errorf("creating manifest digest: %w", err)
 	}
 	return d, nil
+}
+
+func (i *localIndexer) StoreIndexReport(ctx context.Context, hashID string, indexerVersion string, report *claircore.IndexReport) (string, error) {
+
+	var err error
+	report.Hash, err = createManifestDigest(hashID)
+	if err != nil {
+		return "", fmt.Errorf("creating claircore manifest digest: %w", err)
+	}
+	// Note that the conversion to and from v4.Contents truncates the
+	// claircore.IndexReport's Success and State fields. If the index report
+	// made it to this point, assume it's in a healthy state.
+	report.Success = true
+	report.State = controller.IndexFinished.String()
+
+	err = i.externalIndexStore.StoreIndexReport(
+		ctx,
+		hashID,
+		indexerVersion,
+		report,
+		i.randomExpiry(time.Now()),
+		shouldUpdateExternalIndexReport(indexerVersion),
+	)
+	if err != nil {
+		if errors.Is(err, postgres.ErrDidNotUpdateRow) {
+			return "NOT_MODIFIED", nil
+		}
+
+		return "", fmt.Errorf("storing external index report with (hashID %q): %w", hashID, err)
+	}
+
+	return "SUCCESS", nil
+}
+
+// shouldUpdateExternalIndexReport returns a function to satisfy the versionCmp
+// requirement for postgres.ExternalIndexStore.StoreIndexReport. Closes over
+// incomingVersion and is intended to compare that version with the stored
+// indexer version to determine if the incoming version should overwrite the
+// existing external index report.
+func shouldUpdateExternalIndexReport(incomingVersion string) func(iv string) bool {
+	return func(storedVersion string) bool {
+		incomingIsValid := pkgversion.GetVersionKind(incomingVersion) != pkgversion.InvalidKind
+		storedIsValid := pkgversion.GetVersionKind(storedVersion) != pkgversion.InvalidKind
+		if incomingIsValid && storedIsValid {
+			return pkgversion.CompareVersions(incomingVersion, storedVersion) >= 0
+		}
+
+		return incomingIsValid ||
+			!incomingIsValid && !storedIsValid
+	}
 }
 
 // getContainerImageLayers fetches the image's manifest from the registry to get

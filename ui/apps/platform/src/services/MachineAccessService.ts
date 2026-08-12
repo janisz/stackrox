@@ -1,7 +1,8 @@
+import type { Traits } from 'types/traits.proto';
 import axios from './instance';
-import { Empty } from './types';
+import type { Empty } from './types';
 
-export type MachineConfigType = 'GENERIC' | 'GITHUB_ACTIONS';
+export type MachineConfigType = 'GENERIC' | 'GITHUB_ACTIONS' | 'KUBE_SERVICE_ACCOUNT';
 
 export type MachineConfigMapping = {
     key: string;
@@ -14,21 +15,17 @@ export type AuthMachineToMachineConfig = {
     tokenExpirationDuration: string;
     type: MachineConfigType;
     issuer: string;
+    audience: string;
     mappings: MachineConfigMapping[];
+    traits?: Traits;
 };
 
 const machineAccessURL = `/v1/auth/m2m`;
 
-export function fetchMachineAccessConfigs(): Promise<{
-    response: { configs: AuthMachineToMachineConfig[] };
-}> {
+export function fetchMachineAccessConfigs(): Promise<{ configs: AuthMachineToMachineConfig[] }> {
     return axios
         .get<{ configs: AuthMachineToMachineConfig[] }>(machineAccessURL)
-        .then((response) => {
-            return {
-                response: response.data || { configs: [] },
-            };
-        });
+        .then((response) => response.data);
 }
 
 export function deleteMachineAccessConfig(id: string): Promise<Empty> {
@@ -46,7 +43,7 @@ export function createMachineAccessConfig(data: AuthMachineToMachineConfig): Pro
         .post<AuthMachineToMachineConfig>(machineAccessURL, { config: data })
         .then((response) => {
             return {
-                response: response.data || {},
+                response: response.data ?? {},
             };
         });
 }

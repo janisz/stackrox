@@ -7,10 +7,12 @@ set -euo pipefail
 
 TEST_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")"/../.. && pwd)"
 
-EARLIER_TAG="4.1.3"
-EARLIER_SHA="8a4677e3d45ebc4f065ec052d1d66d6ead2084bb"
-CURRENT_TAG="$(make --quiet --no-print-directory tag)"
-PREVIOUS_RELEASES=("4.1.3" "4.2.5" "4.3.8" "4.4.7" "4.5.5" "4.6.2")
+EARLIER_TAG="4.6.2"
+EARLIER_SHA="ecff2a443c8b9a2dc7bf606162da89da81dd8e9e"
+CURRENT_TAG="${MAIN_IMAGE_TAG:-"$(make --quiet --no-print-directory tag)"}"
+COLLECTOR_TAG="${MAIN_IMAGE_TAG:-"$(make --quiet --no-print-directory collector-tag)"}"
+SCANNER_TAG="${MAIN_IMAGE_TAG:-"$(make --quiet --no-print-directory scanner-tag)"}"
+PREVIOUS_RELEASES=("4.6.10" "4.7.9" "4.8.11" "4.9.9" "4.10.5" "4.11.1")
 
 # shellcheck source=../../scripts/lib.sh
 source "$TEST_ROOT/scripts/lib.sh"
@@ -75,8 +77,8 @@ test_upgrade_paths() {
 
     local log_output_dir="$1"
 
-    # To test we remain backwards compatible rollback to 4.1.x
-    FORCE_ROLLBACK_VERSION="4.1.3"
+    # To test we remain backwards compatible rollback to 4.6.x
+    FORCE_ROLLBACK_VERSION="${EARLIER_TAG}"
 
     cd "$REPO_FOR_TIME_TRAVEL"
     git checkout "$EARLIER_SHA"
@@ -94,7 +96,7 @@ test_upgrade_paths() {
     wait_for_api
     setup_client_TLS_certs
 
-    restore_4_1_backup
+    restore_4_6_backup
     wait_for_api
 
     # Run with some scale to have data populated to migrate
@@ -166,6 +168,10 @@ test_upgrade_paths() {
 
     touch "${UPGRADE_PROGRESS_POSTGRES_CENTRAL_DB_BOUNCE}"
 
+    # Since central gets upgraded, connection with sensor will be terminated several times.
+    # To avoid sensor restarts we will scale it down.
+    kubectl -n stackrox patch deploy/sensor -p '{ "spec": { "replicas": 0 } }';
+
     ########################################################################################
     # Upgrade back to latest to run the smoke tests by first walking previous releases     #
     ########################################################################################
@@ -220,23 +226,23 @@ test_upgrade_paths() {
     helm uninstall -n stackrox stackrox-secured-cluster-services
 
     # Remove scaled Sensor from Central
-    "$TEST_ROOT/bin/$TEST_HOST_PLATFORM/roxctl" -e "$API_ENDPOINT" cluster delete --name scale-remote
+    "$TEST_ROOT/bin/$TEST_HOST_PLATFORM/roxctl" -e "$API_ENDPOINT" --ca "" --insecure-skip-tls-verify cluster delete --name scale-remote
 
     info "Fetching a sensor bundle for cluster 'remote'"
     "$TEST_ROOT/bin/$TEST_HOST_PLATFORM/roxctl" version
     rm -rf sensor-remote
-    "$TEST_ROOT/bin/$TEST_HOST_PLATFORM/roxctl" -e "$API_ENDPOINT" sensor get-bundle remote
+    "$TEST_ROOT/bin/$TEST_HOST_PLATFORM/roxctl" -e "$API_ENDPOINT" --ca "" --insecure-skip-tls-verify sensor get-bundle remote
     [[ -d sensor-remote ]]
 
     info "Installing sensor"
     ./sensor-remote/sensor.sh
     kubectl -n stackrox set image deploy/sensor "*=$REGISTRY/main:$CURRENT_TAG"
     kubectl -n stackrox set image deploy/admission-control "*=$REGISTRY/main:$CURRENT_TAG"
-    kubectl -n stackrox set image ds/collector "collector=$REGISTRY/collector:$(make collector-tag)" \
+    kubectl -n stackrox set image ds/collector "collector=$REGISTRY/collector:${COLLECTOR_TAG}" \
         "compliance=$REGISTRY/main:$CURRENT_TAG"
     if [[ "$(kubectl -n stackrox get ds/collector -o=jsonpath='{$.spec.template.spec.containers[*].name}')" == *"node-inventory"* ]]; then
         echo "Upgrading node-inventory container"
-        kubectl -n stackrox set image ds/collector "node-inventory=$REGISTRY/scanner-slim:$(make scanner-tag)"
+        kubectl -n stackrox set image ds/collector "node-inventory=$REGISTRY/scanner-slim:${SCANNER_TAG}"
     else
         echo "Skipping node-inventory container as this is not Openshift 4"
     fi
@@ -286,7 +292,9 @@ force_rollback_to_previous_postgres() {
 
     kubectl -n stackrox patch configmap/central-config -p "$config_patch"
     kubectl -n stackrox set image deploy/central "central=$REGISTRY/main:$FORCE_ROLLBACK_VERSION"
-    kubectl -n stackrox set image deploy/central-db "*=$REGISTRY/central-db:$FORCE_ROLLBACK_VERSION"
+
+    # Do not rollback central-db image, since downgrade from PG15 to PG13 is
+    # not possible.
 }
 
 deploy_scaled_workload() {

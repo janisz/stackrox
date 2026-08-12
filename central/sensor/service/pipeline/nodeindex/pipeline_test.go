@@ -1,7 +1,6 @@
 package nodeindex
 
 import (
-	"context"
 	"testing"
 
 	clusterDatastoreMocks "github.com/stackrox/rox/central/cluster/datastore/mocks"
@@ -10,8 +9,12 @@ import (
 	"github.com/stackrox/rox/generated/internalapi/central"
 	v4 "github.com/stackrox/rox/generated/internalapi/scanner/v4"
 	"github.com/stackrox/rox/generated/storage"
+	"github.com/stackrox/rox/pkg/centralsensor"
+	"github.com/stackrox/rox/pkg/concurrency"
 	"github.com/stackrox/rox/pkg/features"
 	nodesEnricherMocks "github.com/stackrox/rox/pkg/nodes/enricher/mocks"
+	"github.com/stackrox/rox/pkg/protoassert"
+	"github.com/stackrox/rox/pkg/sync"
 	"github.com/stretchr/testify/assert"
 	"go.uber.org/mock/gomock"
 )
@@ -22,7 +25,7 @@ func TestPipelineWithEmptyIndex(t *testing.T) {
 	p := &pipelineImpl{}
 	expectedError := "unexpected resource type"
 
-	err := p.Run(context.Background(), "", nil, nil)
+	err := p.Run(t.Context(), "", nil, nil)
 
 	assert.Contains(t, err.Error(), expectedError)
 }
@@ -30,13 +33,18 @@ func TestPipelineWithEmptyIndex(t *testing.T) {
 func TestPipelineWithIncorrectAction(t *testing.T) {
 	t.Setenv(features.NodeIndexEnabled.EnvVar(), "true")
 	t.Setenv(features.ScannerV4.EnvVar(), "true")
-	p := &pipelineImpl{}
-	msg := createMsg()
-	msg.GetEvent().Action = central.ResourceAction_REMOVE_RESOURCE
+	for _, ir := range []*v4.IndexReport{
+		mockIndexReport,
+		mockDeprecatedIndexReport,
+	} {
+		p := &pipelineImpl{}
+		msg := createMsg(ir)
+		msg.GetEvent().Action = central.ResourceAction_REMOVE_RESOURCE
 
-	err := p.Run(context.Background(), "", msg, nil)
+		err := p.Run(t.Context(), "", msg, nil)
 
-	assert.Nil(t, err)
+		assert.NoError(t, err)
+	}
 }
 
 func TestPipelineEnrichesAndUpserts(t *testing.T) {
@@ -48,47 +56,270 @@ func TestPipelineEnrichesAndUpserts(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	clusterStore := clusterDatastoreMocks.NewMockDataStore(ctrl)
 	nodeDatastore := nodeDatastoreMocks.NewMockDataStore(ctrl)
-	nodeDatastore.EXPECT().GetNode(gomock.Any(), gomock.Eq("1")).Times(1).Return(&node, true, nil)
+	nodeDatastore.EXPECT().GetNode(gomock.Any(), gomock.Eq("1")).Times(2).Return(&node, true, nil)
 	riskManager := riskManagerMocks.NewMockManager(ctrl)
-	riskManager.EXPECT().CalculateRiskAndUpsertNode(gomock.Any()).Times(1).Return(nil)
+	riskManager.EXPECT().CalculateRiskAndUpsertNode(gomock.Any()).Times(2).Return(nil)
 	enricher := nodesEnricherMocks.NewMockNodeEnricher(ctrl)
-	enricher.EXPECT().EnrichNodeWithVulnerabilities(gomock.Any(), nil, gomock.Any()).Times(1).Return(nil)
+	enricher.EXPECT().EnrichNodeWithVulnerabilities(gomock.Any(), nil, gomock.Any()).Times(2).Return(nil)
 
+	for _, ir := range []*v4.IndexReport{
+		mockIndexReport,
+		mockDeprecatedIndexReport,
+	} {
+		p := &pipelineImpl{
+			clusterStore:  clusterStore,
+			nodeDatastore: nodeDatastore,
+			riskManager:   riskManager,
+			enricher:      enricher,
+		}
+		msg := createMsg(ir)
+		msg.GetEvent().Action = central.ResourceAction_UNSET_ACTION_RESOURCE
+
+		err := p.Run(t.Context(), "", msg, nil)
+
+		assert.NoError(t, err)
+	}
+}
+
+func TestPipelineSendsSensorAndLegacyACKs(t *testing.T) {
+	t.Setenv(features.NodeIndexEnabled.EnvVar(), "true")
+	t.Setenv(features.ScannerV4.EnvVar(), "true")
+
+	ctrl := gomock.NewController(t)
+	clusterStore := clusterDatastoreMocks.NewMockDataStore(ctrl)
+	nodeDatastore := nodeDatastoreMocks.NewMockDataStore(ctrl)
+	riskManager := riskManagerMocks.NewMockManager(ctrl)
+	enricher := nodesEnricherMocks.NewMockNodeEnricher(ctrl)
+
+	node := storage.Node{
+		Id:        "1",
+		Name:      "node-name",
+		ClusterId: "cluster-id",
+	}
+	msg := createMsg(mockIndexReport)
+
+	gomock.InOrder(
+		nodeDatastore.EXPECT().GetNode(gomock.Any(), gomock.Eq(node.GetId())).Times(1).Return(&node, true, nil),
+		enricher.EXPECT().EnrichNodeWithVulnerabilities(gomock.Any(), nil, gomock.Any()).Times(1).Return(nil),
+		riskManager.EXPECT().CalculateRiskAndUpsertNode(gomock.Any()).Times(1).Return(nil),
+	)
+
+	injector := &recordingInjector{
+		capabilities: map[centralsensor.SensorCapability]bool{
+			centralsensor.SensorACKSupport: true,
+		},
+	}
 	p := &pipelineImpl{
 		clusterStore:  clusterStore,
 		nodeDatastore: nodeDatastore,
 		riskManager:   riskManager,
 		enricher:      enricher,
 	}
-	msg := createMsg()
-	msg.GetEvent().Action = central.ResourceAction_UNSET_ACTION_RESOURCE
 
-	err := p.Run(context.Background(), "", msg, nil)
+	err := p.Run(t.Context(), node.GetClusterId(), msg, injector)
+	assert.NoError(t, err)
 
-	assert.Nil(t, err)
+	protoassert.SlicesEqual(t, []*central.SensorACK{
+		{
+			Action:      central.SensorACK_ACK,
+			MessageType: central.SensorACK_NODE_INDEX_REPORT,
+			ResourceId:  node.GetName(),
+		},
+	}, injector.getSentSensorACKs())
+
+	protoassert.SlicesEqual(t, []*central.NodeInventoryACK{
+		{
+			ClusterId:   node.GetClusterId(),
+			NodeName:    node.GetName(),
+			Action:      central.NodeInventoryACK_ACK,
+			MessageType: central.NodeInventoryACK_NodeIndexer,
+		},
+	}, injector.getSentACKs())
 }
 
-func createMsg() *central.MsgFromSensor {
+func TestPipelineSkipsSensorACKWhenCapabilityMissing(t *testing.T) {
+	t.Setenv(features.NodeIndexEnabled.EnvVar(), "true")
+	t.Setenv(features.ScannerV4.EnvVar(), "true")
+
+	ctrl := gomock.NewController(t)
+	clusterStore := clusterDatastoreMocks.NewMockDataStore(ctrl)
+	nodeDatastore := nodeDatastoreMocks.NewMockDataStore(ctrl)
+	riskManager := riskManagerMocks.NewMockManager(ctrl)
+	enricher := nodesEnricherMocks.NewMockNodeEnricher(ctrl)
+
+	node := storage.Node{
+		Id:        "1",
+		Name:      "node-name",
+		ClusterId: "cluster-id",
+	}
+	msg := createMsg(mockIndexReport)
+
+	gomock.InOrder(
+		nodeDatastore.EXPECT().GetNode(gomock.Any(), gomock.Eq(node.GetId())).Times(1).Return(&node, true, nil),
+		enricher.EXPECT().EnrichNodeWithVulnerabilities(gomock.Any(), nil, gomock.Any()).Times(1).Return(nil),
+		riskManager.EXPECT().CalculateRiskAndUpsertNode(gomock.Any()).Times(1).Return(nil),
+	)
+
+	injector := &recordingInjector{
+		capabilities: map[centralsensor.SensorCapability]bool{},
+	}
+	p := &pipelineImpl{
+		clusterStore:  clusterStore,
+		nodeDatastore: nodeDatastore,
+		riskManager:   riskManager,
+		enricher:      enricher,
+	}
+
+	err := p.Run(t.Context(), node.GetClusterId(), msg, injector)
+	assert.NoError(t, err)
+	assert.Empty(t, injector.getSentSensorACKs(), "sensor ACK should be skipped without SensorACKSupport")
+
+	protoassert.SlicesEqual(t, []*central.NodeInventoryACK{
+		{
+			ClusterId:   node.GetClusterId(),
+			NodeName:    node.GetName(),
+			Action:      central.NodeInventoryACK_ACK,
+			MessageType: central.NodeInventoryACK_NodeIndexer,
+		},
+	}, injector.getSentACKs())
+}
+
+func createMsg(ir *v4.IndexReport) *central.MsgFromSensor {
 	return &central.MsgFromSensor{
 		Msg: &central.MsgFromSensor_Event{
 			Event: &central.SensorEvent{
 				Id: "1",
 				Resource: &central.SensorEvent_IndexReport{
-					IndexReport: createIndexReport(),
+					IndexReport: ir,
 				},
 			},
 		},
 	}
 }
 
-func createIndexReport() *v4.IndexReport {
-	return &v4.IndexReport{
+type recordingInjector struct {
+	lock         sync.Mutex
+	legacy       []*central.NodeInventoryACK
+	sensor       []*central.SensorACK
+	capabilities map[centralsensor.SensorCapability]bool
+}
+
+func (r *recordingInjector) HasCapability(cap centralsensor.SensorCapability) bool {
+	return r.capabilities[cap]
+}
+
+func (r *recordingInjector) InjectMessage(_ concurrency.Waitable, msg *central.MsgToSensor) error {
+	r.lock.Lock()
+	defer r.lock.Unlock()
+	if ack := msg.GetNodeInventoryAck(); ack != nil {
+		r.legacy = append(r.legacy, ack.CloneVT())
+	}
+	if ack := msg.GetSensorAck(); ack != nil {
+		r.sensor = append(r.sensor, ack.CloneVT())
+	}
+	return nil
+}
+
+func (r *recordingInjector) InjectMessageIntoQueue(_ *central.MsgFromSensor) {}
+
+func (r *recordingInjector) getSentACKs() []*central.NodeInventoryACK {
+	r.lock.Lock()
+	defer r.lock.Unlock()
+	out := make([]*central.NodeInventoryACK, 0, len(r.legacy))
+	for _, ack := range r.legacy {
+		if ack != nil {
+			out = append(out, ack)
+		}
+	}
+	return out
+}
+
+func (r *recordingInjector) getSentSensorACKs() []*central.SensorACK {
+	r.lock.Lock()
+	defer r.lock.Unlock()
+	out := make([]*central.SensorACK, 0, len(r.sensor))
+	for _, ack := range r.sensor {
+		if ack != nil {
+			out = append(out, ack)
+		}
+	}
+	return out
+}
+
+var (
+	mockIndexReport = &v4.IndexReport{
 		HashId:  "",
 		State:   "7", // IndexFinished
 		Success: true,
 		Err:     "",
 		Contents: &v4.Contents{
-			Packages: []*v4.Package{
+			Packages: map[string]*v4.Package{
+				"0": {
+					Id:      "0",
+					Name:    "openssh-clients",
+					Version: "8.7p1-38.el9",
+					Kind:    "binary",
+					Source: &v4.Package{
+						Name:    "openssh",
+						Version: "8.7p1-38.el9",
+						Kind:    "source",
+						Source:  nil,
+						Cpe:     "cpe:2.3:*:*:*:*:*:*:*:*:*:*:*",
+					},
+					PackageDb:      "sqlite:usr/share/rpm",
+					RepositoryHint: "hash:sha256:f52ca767328e6919ec11a1da654e92743587bd3c008f0731f8c4de3af19c1830|key:199e2f91fd431d51",
+					Arch:           "x86_64",
+					Cpe:            "cpe:2.3:*:*:*:*:*:*:*:*:*:*:*",
+				},
+				"1": {
+					Id:      "1",
+					Name:    "skopeo",
+					Version: "2:1.14.4-2.rhaos4.16.el9",
+					Kind:    "binary",
+					Source: &v4.Package{
+						Name:    "skopeo",
+						Version: "2:1.14.4-2.rhaos4.16.el9",
+						Kind:    "source",
+						Cpe:     "cpe:2.3:*:*:*:*:*:*:*:*:*:*:*",
+					},
+					PackageDb:      "sqlite:usr/share/rpm",
+					RepositoryHint: "hash:sha256:072a75d1b9b36457751ef05031fd69615f21ebaa935c30d74d827328b78fa694|key:199e2f91fd431d51",
+					Arch:           "x86_64",
+					Cpe:            "cpe:2.3:*:*:*:*:*:*:*:*:*:*:*",
+				},
+			},
+			Repositories: map[string]*v4.Repository{
+				"cpe:/o:redhat:enterprise_linux:9::fastdatapath": {
+					Id:   "0",
+					Name: "cpe:/o:redhat:enterprise_linux:9::fastdatapath",
+					Key:  "rhel-cpe-repository",
+					Cpe:  "cpe:2.3:o:redhat:enterprise_linux:9:*:fastdatapath:*:*:*:*:*",
+				},
+				"cpe:/a:redhat:openshift:4.16::el9": {
+					Id:   "1",
+					Name: "cpe:/a:redhat:openshift:4.16::el9",
+					Key:  "rhel-cpe-repository",
+					Cpe:  "cpe:2.3:a:redhat:openshift:4.16:*:el9:*:*:*:*:*",
+				},
+			},
+			Environments: map[string]*v4.Environment_List{"1": {Environments: []*v4.Environment{
+				{
+					PackageDb:     "sqlite:usr/share/rpm",
+					IntroducedIn:  "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+					RepositoryIds: []string{"cpe:/o:redhat:enterprise_linux:9::fastdatapath", "cpe:/a:redhat:openshift:4.16::el9"},
+				},
+			},
+			}},
+		},
+	}
+
+	mockDeprecatedIndexReport = &v4.IndexReport{
+		HashId:  "",
+		State:   "7", // IndexFinished
+		Success: true,
+		Err:     "",
+		Contents: &v4.Contents{
+			PackagesDEPRECATED: []*v4.Package{
 				{
 					Id:      "0",
 					Name:    "openssh-clients",
@@ -123,7 +354,7 @@ func createIndexReport() *v4.IndexReport {
 					Cpe:            "cpe:2.3:*:*:*:*:*:*:*:*:*:*:*",
 				},
 			},
-			Repositories: []*v4.Repository{
+			RepositoriesDEPRECATED: []*v4.Repository{
 				{
 					Id:   "0",
 					Name: "cpe:/o:redhat:enterprise_linux:9::fastdatapath",
@@ -137,7 +368,7 @@ func createIndexReport() *v4.IndexReport {
 					Cpe:  "cpe:2.3:a:redhat:openshift:4.16:*:el9:*:*:*:*:*",
 				},
 			},
-			Environments: map[string]*v4.Environment_List{"1": {Environments: []*v4.Environment{
+			EnvironmentsDEPRECATED: map[string]*v4.Environment_List{"1": {Environments: []*v4.Environment{
 				{
 					PackageDb:     "sqlite:usr/share/rpm",
 					IntroducedIn:  "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
@@ -147,4 +378,4 @@ func createIndexReport() *v4.IndexReport {
 			}},
 		},
 	}
-}
+)

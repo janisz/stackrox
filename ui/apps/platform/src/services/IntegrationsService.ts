@@ -1,15 +1,24 @@
 import axios from './instance';
-import { Empty } from './types';
-import { AuthMachineToMachineConfig, updateMachineAccessConfig } from './MachineAccessService';
-import { UpdateCloudSourceRequest, updateCloudSource } from './CloudSourceService';
+import type { Empty } from './types';
+import { updateMachineAccessConfig } from './MachineAccessService';
+import type { AuthMachineToMachineConfig } from './MachineAccessService';
+import { updateCloudSource } from './CloudSourceService';
+import type { UpdateCloudSourceRequest } from './CloudSourceService';
 
-export type IntegrationSource =
-    | 'authProviders'
-    | 'backups'
-    | 'imageIntegrations'
-    | 'notifiers'
-    | 'signatureIntegrations'
-    | 'cloudSources';
+export const serviceIntegrationSources = [
+    'authProviders',
+    'backups',
+    'imageIntegrations',
+    'notifiers',
+    'signatureIntegrations',
+    'cloudSources',
+] as const;
+
+export type IntegrationSource = (typeof serviceIntegrationSources)[number];
+
+export function isServiceIntegrationSource(source: string): source is IntegrationSource {
+    return serviceIntegrationSources.some((s) => s === source);
+}
 
 function getPath(source: IntegrationSource): string {
     switch (source) {
@@ -56,13 +65,9 @@ export type IntegrationOptions = {
 /*
  * Fetch list of registered integrations based on source.
  */
-export function fetchIntegration(
-    source: IntegrationSource
-): Promise<{ response: Record<string, unknown> }> {
+export function fetchIntegration(source: IntegrationSource): Promise<Record<string, unknown>> {
     const path = getPath(source);
-    return axios.get(path).then((response) => ({
-        response: response.data,
-    }));
+    return axios.get<Record<string, unknown>>(path).then((response) => response.data);
 }
 
 /*
@@ -133,7 +138,9 @@ export function createIntegration(
     const hasUpdatePassword = typeof data.updatePassword === 'boolean';
     const createData = hasUpdatePassword ? data[getJsonFieldBySource(source)] : data;
 
-    return axios.post(getPath(source), createData);
+    return axios.post<IntegrationBase>(getPath(source), createData).then((response) => {
+        return response.data;
+    });
 }
 
 /*

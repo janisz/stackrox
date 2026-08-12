@@ -1,16 +1,21 @@
 import { addDays, format } from 'date-fns';
-import { hasFeatureFlag } from '../../../helpers/features';
 import { getDescriptionListGroup } from '../../../helpers/formHelpers';
+import { hasFeatureFlag } from '../../../helpers/features';
 import {
-    interactAndWaitForResponses,
     getRouteMatcherMapForGraphQL,
+    interactAndWaitForResponses,
 } from '../../../helpers/request';
 import { visit } from '../../../helpers/visit';
 import { selectors } from './WorkloadCves.selectors';
 import { selectors as vulnSelectors } from '../vulnerabilities.selectors';
+import {
+    compoundFiltersSelectors,
+    selectAttribute,
+    selectEntity,
+} from '../../../helpers/compoundFilters';
 
 export function getDateString(date) {
-    return format(date, 'MM/DD/YYYY');
+    return format(date, 'MMM DD, YYYY');
 }
 
 /**
@@ -23,30 +28,24 @@ export function getFutureDateByDays(days) {
 }
 
 export function visitWorkloadCveOverview({ clearFiltersOnVisit = true, urlSearch = '' } = {}) {
-    // With Workload CVEs split between User and Platform components, we can only reliably expect
-    // CVEs to be present for the built-in (Platform) components during CI
-    const basePath = hasFeatureFlag('ROX_PLATFORM_CVE_SPLIT')
-        ? '/main/vulnerabilities/platform/'
-        : '/main/vulnerabilities/workload-cves/';
-    visit(basePath + urlSearch);
+    const routeMatcherMap = getRouteMatcherMapForGraphQL(['getImageCVEList']);
+    const staticResponseMap = {
+        getImageCVEList: { fixture: 'vulnerabilities/workloadCves/getImageCVEList.json' },
+    };
+    const basePath = '/main/vulnerabilities/platform/';
+    visit(basePath + urlSearch, routeMatcherMap, staticResponseMap);
 
-    const pageTitle = hasFeatureFlag('ROX_PLATFORM_CVE_SPLIT')
-        ? 'Platform vulnerabilities'
-        : 'Workload CVEs';
-    cy.get(`h1:contains("${pageTitle}")`);
+    cy.get(`h1:contains("Platform vulnerabilities")`);
     cy.location('pathname').should('eq', basePath);
 
-    // Wait for the initial table load to begin and complete
-    cy.get(selectors.loadingSpinner).should('exist');
-    cy.get(selectors.loadingSpinner).should('not.exist');
-
-    // Clear the default filters that will be applied to increase the likelihood of finding entities with
-    // CVEs. The default filters of Severity: Critical and Severity: Important make it very likely that
-    // there will be no results across entity tabs on the overview page.
     if (clearFiltersOnVisit) {
-        cy.get(vulnSelectors.clearFiltersButton).click();
-        // Ensure the data in the table has settled before continuing with the test
-        cy.get(selectors.isUpdatingTable).should('not.exist');
+        interactAndWaitForResponses(
+            () => {
+                cy.get(vulnSelectors.clearFiltersButton).click();
+            },
+            routeMatcherMap,
+            staticResponseMap
+        );
     }
 }
 
@@ -100,23 +99,6 @@ function selectSearchOption(searchOption) {
     cy.get(selectors.searchOptionsDropdown).click();
 }
 
-export function selectEntitySearchOption(entity) {
-    cy.get(selectors.searchEntityDropdown).click();
-    cy.get(selectors.searchEntityMenuItem)
-        .contains(new RegExp(`^${entity}$`))
-        .click();
-
-    cy.get(selectors.searchEntityDropdown).click();
-}
-
-export function selectAttributeSearchOption(searchAttribute) {
-    cy.get(selectors.searchAttributeDropdown).click();
-    cy.get(selectors.searchAttributeMenuItem)
-        .contains(new RegExp(`^${searchAttribute}$`))
-        .click();
-    cy.get(selectors.searchAttributeDropdown).click();
-}
-
 /**
  * Type a value into the search filter typeahead and select the first matching value.
  * @param {('CVE' | 'Image' | 'Deployment' | 'Cluster' | 'Namespace' | 'Requester' | 'Request name')} searchOption
@@ -130,16 +112,6 @@ export function typeAndSelectCustomSearchFilterValue(searchOption, value) {
     cy.get(selectors.searchOptionsValueTypeahead(searchOption)).click();
 }
 
-export function typeAndEnterSearchFilterValue(entity, searchTerm, value) {
-    selectEntitySearchOption(entity);
-    selectAttributeSearchOption(searchTerm);
-    cy.get(selectors.searchValueTypeahead).click();
-    cy.get(selectors.searchValueTypeahead).type(value);
-    cy.get(selectors.searchValueMenuItem)
-        .contains(new RegExp(`^${value}$`))
-        .click();
-}
-
 /**
  * Type and enter custom text into the search filter typeahead
  * @param {string} entity
@@ -147,8 +119,8 @@ export function typeAndEnterSearchFilterValue(entity, searchTerm, value) {
  * @param {string} value
  */
 export function typeAndEnterCustomSearchFilterValue(entity, searchTerm, value) {
-    selectEntitySearchOption(entity);
-    selectAttributeSearchOption(searchTerm);
+    selectEntity(entity);
+    selectAttribute(searchTerm);
     cy.get(selectors.searchValueTypeahead).click();
     cy.get(selectors.searchValueTypeahead).type(value);
     cy.get(selectors.searchValueApplyButton).click();
@@ -189,22 +161,27 @@ export function extractNonZeroSeverityFromCount(severityCountText) {
 }
 
 export function cancelAllCveExceptions() {
-    const auth = { bearer: Cypress.env('ROX_AUTH_TOKEN') };
+    return cy.env(['ROX_AUTH_TOKEN']).then(({ ROX_AUTH_TOKEN }) => {
+        const auth = { bearer: ROX_AUTH_TOKEN };
 
-    cy.request({ url: '/v2/vulnerability-exceptions', auth }).as('vulnExceptions');
+        cy.request({
+            url: '/v2/vulnerability-exceptions?query=Requester User Name:ui_tests',
+            auth,
+        }).as('vulnExceptions');
 
-    return cy.get('@vulnExceptions').then((res) => {
-        return Promise.all(
-            res.body.exceptions.map(({ id, expired, requester }) => {
-                return requester?.name === 'ui_tests' && !expired
-                    ? cy.request({
-                          url: `/v2/vulnerability-exceptions/${id}/cancel`,
-                          auth,
-                          method: 'POST',
-                      })
-                    : Promise.resolve();
-            })
-        );
+        return cy.get('@vulnExceptions').then((res) => {
+            return Promise.all(
+                res.body.exceptions.map(({ id, expired }) => {
+                    return !expired
+                        ? cy.request({
+                              url: `/v2/vulnerability-exceptions/${id}/cancel`,
+                              auth,
+                              method: 'POST',
+                          })
+                        : Promise.resolve();
+                })
+            );
+        });
     });
 }
 
@@ -232,7 +209,7 @@ export function selectSingleCveForException(exceptionType) {
 }
 
 /**
- * Selects the first CVE on each of two pages for the table and opens the exception modal
+ * Selects all cves on the current table page and opens the exception modal
  * @param {('DEFERRAL' | 'FALSE_POSITIVE')} exceptionType
  */
 export function selectMultipleCvesForException(exceptionType) {
@@ -242,31 +219,18 @@ export function selectMultipleCvesForException(exceptionType) {
             ? selectors.deferCveModal
             : selectors.markCveFalsePositiveModal;
 
-    const cveNames = [];
-
-    // Select the first CVE on the first page and the first CVE on the second page
-    // to test multi-deferral flows
+    // Select all visible CVEs to test multi-cve exceptions
     return cy
-        .get(selectors.nthTableRow(1))
-        .then(($row) => {
-            cveNames.push($row.find('td[data-label="CVE"]').text());
-            cy.wrap($row).then(($rowElement) => {
-                const checkbox = $rowElement.find(selectors.tableRowSelectCheckbox);
-                cy.wrap(checkbox).click();
+        .get(`${selectors.allTableRows} td[data-label="CVE"]`)
+        .then(($cells) => $cells.map((_i, cell) => cell.innerText).get())
+        .then((cveNames) => {
+            cy.get(`${selectors.allTableRows} ${selectors.tableRowSelectCheckbox}`).click({
+                multiple: true,
             });
-            return cy.get(selectors.nthTableRow(2));
-        })
-        .then(($nextRow) => {
-            cveNames.push($nextRow.find('td[data-label="CVE"]').text());
-            cy.wrap($nextRow).then(($rowElement) => {
-                const checkbox = $rowElement.find(selectors.tableRowSelectCheckbox);
-                cy.wrap(checkbox).click();
-            });
-
             cy.get(selectors.bulkActionMenuToggle).click();
             cy.get(selectors.menuOption(menuOption)).click();
             cy.get('button:contains("CVE selections")').click();
-            // TODO - Update this code when modal form is completed
+
             cveNames.forEach((name) => {
                 cy.get(`${modalSelector}:contains("${name}")`);
             });
@@ -284,42 +248,75 @@ export function verifySelectedCvesInModal(cveNames) {
 }
 
 /**
- * Visits an image single page via the workload CVE overview page and mocks the responses for the image
- * details and CVE list. We need to mock the CVE list to ensure that multiple CVEs are present for the image. We
- * also need to mock the image details to ensure Apollo does not duplicate CVE requests due to mismatched
- * image IDs.
- *
- * @returns {Cypress.Chainable} - The image name
+ * Transform a v1 image CVE response to a v2 response format.
+ * The v2 response uses `imageV2` as the root key, `ImageV2` as the typename,
+ * a UUID-style `id`, and an additional `digest` field.
  */
-export function visitImageSinglePageWithMockedResponses() {
+export function toImageV2Response(v1Response) {
+    const { image } = v1Response.data;
+    return {
+        data: {
+            imageV2: {
+                ...image,
+                id: '4c657931-d333-5cb8-8f0d-7e3836525ec7',
+                digest: image.id,
+                __typename: 'ImageV2',
+            },
+        },
+    };
+}
+
+/**
+ * Navigates to the image list, clicks the first image, and mocks the detail page responses.
+ *
+ * Assumes the caller has already visited the workload CVE overview page and
+ * switched to the Image tab.
+ *
+ * @returns {Cypress.Chainable<string>} - The image name
+ */
+export function clickFirstImageWithMockedResponses() {
     const imageDetailsOpname = 'getImageDetails';
     const cveListOpname = 'getCVEsForImage';
-    const routeMatcherMapForImageCves = getRouteMatcherMapForGraphQL([
-        imageDetailsOpname,
-        cveListOpname,
-    ]);
-    const staticResponseMapForImageCves = {
-        [imageDetailsOpname]: {
-            fixture: 'vulnerabilities/workloadCves/imageWithMultipleCves.json',
-        },
-        [cveListOpname]: { fixture: 'vulnerabilities/workloadCves/multipleCvesForImage.json' },
-    };
+    const routeMatcherMap = getRouteMatcherMapForGraphQL([imageDetailsOpname, cveListOpname]);
 
+    return cy
+        .fixture('vulnerabilities/workloadCves/multipleCvesForImage.json')
+        .then((v1Response) => {
+            const staticResponseMap = {
+                [imageDetailsOpname]: {
+                    fixture: 'vulnerabilities/workloadCves/imageWithMultipleCves.json',
+                },
+                [cveListOpname]: hasFeatureFlag('ROX_FLATTEN_IMAGE_DATA')
+                    ? { body: toImageV2Response(v1Response) }
+                    : { body: v1Response },
+            };
+
+            return interactAndWaitForResponses(
+                () => cy.get('tbody tr td[data-label="Image"] a').first().click(),
+                routeMatcherMap,
+                staticResponseMap
+            ).then(() => {
+                return cy.get('h1').then(($h1) => {
+                    return $h1.text().replace(/(@sha256)?:.*/, '');
+                });
+            });
+        });
+}
+
+/**
+ * Visits an image single page via the workload CVE overview page and mocks the responses for the image
+ * details and CVE list.
+ *
+ * @returns {Cypress.Chainable<string>} - The image name
+ */
+export function visitImageSinglePageWithMockedResponses() {
     visitWorkloadCveOverview();
 
-    interactAndWaitForResponses(
-        () => {
-            selectEntityTab('Image');
-            cy.get('tbody tr td[data-label="Image"] a').first().click();
-        },
-        routeMatcherMapForImageCves,
-        staticResponseMapForImageCves
-    );
-
-    return cy.get('h1').then(($h1) => {
-        // Remove the SHA and/or tag from the image name
-        return $h1.text().replace(/(@sha256)?:.*/, '');
+    interactAndWaitForImageList(() => {
+        selectEntityTab('Image');
     });
+
+    return clickFirstImageWithMockedResponses();
 }
 
 /**
@@ -380,13 +377,15 @@ export function verifyExceptionConfirmationDetails(params) {
  * Clean up any existing watched images via API
  */
 export function unwatchAllImages() {
-    const auth = { bearer: Cypress.env('ROX_AUTH_TOKEN') };
+    return cy.env(['ROX_AUTH_TOKEN']).then(({ ROX_AUTH_TOKEN }) => {
+        const auth = { bearer: ROX_AUTH_TOKEN };
 
-    cy.request({ url: '/v1/watchedimages', auth }).as('listWatchedImages');
+        cy.request({ url: '/v1/watchedimages', auth }).as('listWatchedImages');
 
-    cy.get('@listWatchedImages').then((res) => {
-        res.body.watchedImages.forEach(({ name }) => {
-            cy.request({ url: `/v1/watchedimages?name=${name}`, auth, method: 'DELETE' });
+        cy.get('@listWatchedImages').then((res) => {
+            res.body.watchedImages.forEach(({ name }) => {
+                cy.request({ url: `/v1/watchedimages?name=${name}`, auth, method: 'DELETE' });
+            });
         });
     });
 }
@@ -476,7 +475,10 @@ export function interactAndWaitForImageList(callback) {
     const imageListOpname = 'getImageList';
     const imageListRouteMatcherMap = getRouteMatcherMapForGraphQL([imageListOpname]);
     imageListRouteMatcherMap[imageListOpname].times = 1;
-    return interactAndWaitForResponses(callback, imageListRouteMatcherMap);
+    const staticResponseMap = {
+        [imageListOpname]: { fixture: 'vulnerabilities/workloadCves/getImageList.json' },
+    };
+    return interactAndWaitForResponses(callback, imageListRouteMatcherMap, staticResponseMap);
 }
 
 /**
@@ -488,18 +490,49 @@ export function interactAndWaitForDeploymentList(callback) {
     const deploymentListOpname = 'getDeploymentList';
     const deploymentListRouteMatcherMap = getRouteMatcherMapForGraphQL([deploymentListOpname]);
     deploymentListRouteMatcherMap[deploymentListOpname].times = 1;
-    return interactAndWaitForResponses(callback, deploymentListRouteMatcherMap);
-}
-
-export function waitForTableLoadCompleteIndicator() {
-    cy.get(`table ${selectors.loadingSpinner}`);
-    cy.get(`table ${selectors.loadingSpinner}`).should('not.exist');
+    const staticResponseMap = {
+        [deploymentListOpname]: { fixture: 'vulnerabilities/workloadCves/getDeploymentList.json' },
+    };
+    return interactAndWaitForResponses(callback, deploymentListRouteMatcherMap, staticResponseMap);
 }
 
 export function visitNamespaceView() {
-    cy.get('a:contains("Prioritize by namespace view")').click();
+    const routeMatcherMap = getRouteMatcherMapForGraphQL(['getNamespaceViewNamespaces']);
+    const staticResponseMap = {
+        getNamespaceViewNamespaces: {
+            fixture: 'vulnerabilities/workloadCves/getNamespaceViewNamespaces.json',
+        },
+    };
+    interactAndWaitForResponses(
+        () => {
+            cy.get('a:contains("Namespace view")').click();
+        },
+        routeMatcherMap,
+        staticResponseMap
+    );
 }
 
 export function viewCvesByObservationState(observationState) {
     cy.get('button[role="tab"]').contains(observationState).click();
+}
+
+export function assertSearchEntities(entities) {
+    cy.get(compoundFiltersSelectors.entityMenuToggle).click();
+    cy.get(compoundFiltersSelectors.entityMenuItem).should('have.length', entities.length);
+    entities.forEach((entity) => {
+        cy.get(compoundFiltersSelectors.entityMenuItem).contains(entity);
+    });
+}
+
+export function mockSbomGenerationRequest() {
+    return cy.intercept('POST', '/api/v1/images/sbom', (req) =>
+        req.reply({
+            delay: 1000,
+            statusCode: 200,
+            headers: {
+                'content-disposition': 'attachment; filename="sbom.json"',
+            },
+            body: { mock: true },
+        })
+    );
 }

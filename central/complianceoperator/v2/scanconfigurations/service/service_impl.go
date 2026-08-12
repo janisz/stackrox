@@ -9,7 +9,7 @@ import (
 	"github.com/pkg/errors"
 	blobDS "github.com/stackrox/rox/central/blob/datastore"
 	clusterDatastore "github.com/stackrox/rox/central/cluster/datastore"
-	benchmarksDS "github.com/stackrox/rox/central/complianceoperator/v2/benchmarks/datastore"
+	"github.com/stackrox/rox/central/complianceoperator/v2/benchmark"
 	"github.com/stackrox/rox/central/complianceoperator/v2/compliancemanager"
 	profileDS "github.com/stackrox/rox/central/complianceoperator/v2/profiles/datastore"
 	snapshotDS "github.com/stackrox/rox/central/complianceoperator/v2/report/datastore"
@@ -45,7 +45,7 @@ const (
 
 var (
 	authorizer = perrpc.FromMap(map[authz.Authorizer][]string{
-		user.With(permissions.View(resources.Compliance)): {
+		user.With(permissions.View(resources.Compliance), permissions.View(resources.Cluster)): {
 			v2.ComplianceScanConfigurationService_ListComplianceScanConfigurations_FullMethodName,
 			v2.ComplianceScanConfigurationService_GetComplianceScanConfiguration_FullMethodName,
 			v2.ComplianceScanConfigurationService_ListComplianceScanConfigProfiles_FullMethodName,
@@ -53,7 +53,7 @@ var (
 			v2.ComplianceScanConfigurationService_GetReportHistory_FullMethodName,
 			v2.ComplianceScanConfigurationService_GetMyReportHistory_FullMethodName,
 		},
-		user.With(permissions.Modify(resources.Compliance)): {
+		user.With(permissions.Modify(resources.Compliance), permissions.View(resources.Cluster)): {
 			v2.ComplianceScanConfigurationService_CreateComplianceScanConfiguration_FullMethodName,
 			v2.ComplianceScanConfigurationService_DeleteComplianceScanConfiguration_FullMethodName,
 			v2.ComplianceScanConfigurationService_RunComplianceScanConfiguration_FullMethodName,
@@ -71,7 +71,7 @@ var (
 // New returns a service object for registering with grpc.
 func New(scanConfigDS scanConfigDS.DataStore, scanSettingBindingsDS scanSettingBindingsDS.DataStore,
 	suiteDS suiteDS.DataStore, manager compliancemanager.Manager, reportManager complianceReportManager.Manager, notifierDS notifierDS.DataStore, profileDS profileDS.DataStore,
-	benchmarkDS benchmarksDS.DataStore, clusterDS clusterDatastore.DataStore, snapshotDS snapshotDS.DataStore, blobDS blobDS.Datastore) Service {
+	clusterDS clusterDatastore.DataStore, snapshotDS snapshotDS.DataStore, blobDS blobDS.Datastore) Service {
 	return &serviceImpl{
 		scanConfigDS:                    scanConfigDS,
 		complianceScanSettingBindingsDS: scanSettingBindingsDS,
@@ -80,7 +80,6 @@ func New(scanConfigDS scanConfigDS.DataStore, scanSettingBindingsDS scanSettingB
 		reportManager:                   reportManager,
 		notifierDS:                      notifierDS,
 		profileDS:                       profileDS,
-		benchmarkDS:                     benchmarkDS,
 		clusterDS:                       clusterDS,
 		snapshotDS:                      snapshotDS,
 		blobDS:                          blobDS,
@@ -97,7 +96,6 @@ type serviceImpl struct {
 	reportManager                   complianceReportManager.Manager
 	notifierDS                      notifierDS.DataStore
 	profileDS                       profileDS.DataStore
-	benchmarkDS                     benchmarksDS.DataStore
 	clusterDS                       clusterDatastore.DataStore
 	snapshotDS                      snapshotDS.DataStore
 	blobDS                          blobDS.Datastore
@@ -128,7 +126,6 @@ func (s *serviceImpl) CreateComplianceScanConfiguration(ctx context.Context, req
 	}
 
 	validName := configNameRegexp.MatchString(req.GetScanName())
-
 	if !validName {
 		return nil, errors.Wrapf(errox.InvalidArgs, "Scan configuration name %q is not a valid name", req.GetScanName())
 	}
@@ -140,14 +137,10 @@ func (s *serviceImpl) CreateComplianceScanConfiguration(ctx context.Context, req
 	// Convert to storage type
 	scanConfig := convertV2ScanConfigToStorage(ctx, req)
 
-	// grab clusters
-	var clusterIDs []string
-	clusterIDs = append(clusterIDs, req.GetClusters()...)
-
 	// Process scan request, config may be updated in the event of errors from sensor.
-	scanConfig, err := s.manager.ProcessScanRequest(ctx, scanConfig, clusterIDs)
+	scanConfig, err := s.manager.ProcessScanRequest(ctx, scanConfig, req.GetClusters())
 	if err != nil {
-		return nil, errors.Wrapf(errox.InvalidArgs, "Unable to process scan config. %v", err)
+		return nil, errox.InvalidArgs.CausedBy(err)
 	}
 
 	return convertStorageScanConfigToV2(ctx, scanConfig, s.scanConfigDS)
@@ -165,14 +158,10 @@ func (s *serviceImpl) UpdateComplianceScanConfiguration(ctx context.Context, req
 	// Convert to storage type
 	scanConfig := convertV2ScanConfigToStorage(ctx, req)
 
-	// grab clusters
-	var clusterIDs []string
-	clusterIDs = append(clusterIDs, req.GetClusters()...)
-
 	// Update scan request, config may be updated in the event of errors from sensor.
-	_, err := s.manager.UpdateScanRequest(ctx, scanConfig, clusterIDs)
+	_, err := s.manager.UpdateScanRequest(ctx, scanConfig, req.GetClusters())
 	if err != nil {
-		return nil, errors.Wrapf(errox.InvalidArgs, "Unable to process scan config. %v", err)
+		return nil, errox.InvalidArgs.CausedBy(err)
 	}
 
 	return &v2.Empty{}, nil
@@ -215,7 +204,7 @@ func (s *serviceImpl) DeleteComplianceScanConfiguration(ctx context.Context, req
 
 	err = s.manager.DeleteScan(ctx, req.GetId())
 	if err != nil {
-		return nil, errors.Wrapf(errox.InvalidArgs, "Unable to delete scan config: %v", err)
+		return nil, errox.InvalidArgs.CausedBy(err)
 	}
 
 	return &v2.Empty{}, nil
@@ -533,16 +522,16 @@ func validateScanConfiguration(req *v2.ComplianceScanConfiguration) error {
 	return nil
 }
 
-func (s *serviceImpl) getBenchmarks(ctx context.Context, profileNames []string) (map[string][]*storage.ComplianceOperatorBenchmarkV2, error) {
+func (s *serviceImpl) getBenchmarks(ctx context.Context, profiles []*storage.ComplianceOperatorProfileV2) (map[string][]*storage.ComplianceOperatorBenchmarkV2, error) {
 	// Get the benchmarks
-	benchmarkMap := make(map[string][]*storage.ComplianceOperatorBenchmarkV2, len(profileNames))
-	for _, profileName := range profileNames {
-		if _, found := benchmarkMap[profileName]; !found {
-			benchmarks, err := s.benchmarkDS.GetBenchmarksByProfileName(ctx, profileName)
+	benchmarkMap := make(map[string][]*storage.ComplianceOperatorBenchmarkV2, len(profiles))
+	for _, profile := range profiles {
+		if _, found := benchmarkMap[profile.GetName()]; !found {
+			profileBenchmark, err := benchmark.GetBenchmarkFromProfile(profile)
 			if err != nil {
-				return nil, errors.Wrapf(err, "failed to retrieve benchmarks for profile %q.", profileName)
+				return nil, errors.Wrapf(err, "failed to retrieve benchmarks for profile %q.", profile.GetName())
 			}
-			benchmarkMap[profileName] = benchmarks
+			benchmarkMap[profile.GetName()] = []*storage.ComplianceOperatorBenchmarkV2{profileBenchmark}
 		}
 	}
 
@@ -554,6 +543,9 @@ func (s *serviceImpl) getProfiles(ctx context.Context, query *v1.Query, countQue
 	if err != nil {
 		return nil, 0, errors.Wrapf(errox.InvalidArgs, "Unable to retrieve scan configurations for query %v", query)
 	}
+	if len(profileNames) == 0 {
+		return nil, 0, nil
+	}
 
 	// Build query to get the filtered list by profile names
 	profileQuery := search.NewQueryBuilder().AddSelectFields().AddExactMatches(search.ComplianceOperatorProfileName, profileNames...).ProtoQuery()
@@ -563,15 +555,15 @@ func (s *serviceImpl) getProfiles(ctx context.Context, query *v1.Query, countQue
 	}
 
 	// Get the benchmarks
-	benchmarkMap, err := s.getBenchmarks(ctx, profileNames)
+	benchmarkMap, err := s.getBenchmarks(ctx, profiles)
 	if err != nil {
 		return nil, 0, err
 	}
 
-	profileCount, err := s.scanConfigDS.CountDistinctProfiles(ctx, countQuery)
+	profileCounts, err := s.scanConfigDS.DistinctProfiles(ctx, countQuery)
 	if err != nil {
 		return nil, 0, errors.Wrap(errox.NotFound, err.Error())
 	}
 
-	return storagetov2.ComplianceProfileSummary(profiles, benchmarkMap), profileCount, nil
+	return storagetov2.ComplianceProfileSummary(profiles, benchmarkMap), len(profileCounts), nil
 }

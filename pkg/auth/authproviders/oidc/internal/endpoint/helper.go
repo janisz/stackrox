@@ -34,8 +34,8 @@ func (h *Helper) Issuer() string {
 // does not.
 func (h *Helper) URLsForDiscovery() []string {
 	var modifiedURL string
-	if strings.HasSuffix(h.urlForDiscovery, "/") {
-		modifiedURL = strings.TrimSuffix(h.urlForDiscovery, "/")
+	if before, ok := strings.CutSuffix(h.urlForDiscovery, "/"); ok {
+		modifiedURL = before
 	} else {
 		modifiedURL = h.urlForDiscovery + "/"
 	}
@@ -96,7 +96,7 @@ func NewHelper(issuer string) (*Helper, error) {
 	if stringutils.ConsumeSuffix(&urlForDiscovery.Scheme, "+insecure") {
 		httpClient = insecureHTTPClient
 	} else {
-		httpClient = http.DefaultClient
+		httpClient = defaultHTTPClient
 	}
 
 	h := &Helper{

@@ -16,9 +16,11 @@ import (
 	"github.com/stackrox/rox/pkg/administration/events/codes"
 	"github.com/stackrox/rox/pkg/administration/events/option"
 	"github.com/stackrox/rox/pkg/httputil/proxy"
+	"github.com/stackrox/rox/pkg/images/types"
 	"github.com/stackrox/rox/pkg/logging"
 	mitreDS "github.com/stackrox/rox/pkg/mitre/datastore"
 	"github.com/stackrox/rox/pkg/notifiers"
+	"github.com/stackrox/rox/pkg/protoconv"
 	"github.com/stackrox/rox/pkg/retry"
 	"github.com/stackrox/rox/pkg/urlfmt"
 	"github.com/stackrox/rox/pkg/utils"
@@ -43,10 +45,26 @@ type slack struct {
 	mitreStore     mitreDS.AttackReadOnlyDataStore
 }
 
-// notification json struct for richly-formatted notifications
+// notification json struct for richly-formatted notifications.
+// Flat top-level fields are included alongside attachments so that Slack
+// workflow webhooks (which only support flat key-value pairs) can extract
+// individual alert properties as workflow variables.
 type notification struct {
-	Attachments []attachment `json:"attachments"`
+	Attachments []attachment `json:"attachments,omitempty"`
 	Text        string       `json:"text"`
+
+	Summary     string `json:"summary,omitempty"`
+	AlertID     string `json:"alert_id,omitempty"`
+	AlertURL    string `json:"alert_url,omitempty"`
+	Severity    string `json:"severity,omitempty"`
+	Time        string `json:"time,omitempty"`
+	Policy      string `json:"policy,omitempty"`
+	Cluster     string `json:"cluster,omitempty"`
+	Namespace   string `json:"namespace,omitempty"`
+	Entity      string `json:"entity,omitempty"`
+	EntityType  string `json:"entity_type,omitempty"`
+	Violations  string `json:"violations,omitempty"`
+	Description string `json:"description,omitempty"`
 }
 
 // attachment json struct for attachments
@@ -98,7 +116,7 @@ func (s *slack) getDescription(alert *storage.Alert) (string, error) {
 				opString = " AND "
 			}
 
-			var valueStrings []string
+			valueStrings := make([]string, 0, len(values))
 			for _, value := range values {
 				codeString := fmt.Sprintf("`%s`", value.GetValue())
 				valueStrings = append(valueStrings, codeString)
@@ -114,12 +132,61 @@ func (s *slack) getDescription(alert *storage.Alert) (string, error) {
 			return valuesString
 		},
 	}
-	alertLink := notifiers.AlertLink(s.Notifier.UiEndpoint, alert)
+	alertLink := notifiers.AlertLink(s.Notifier.GetUiEndpoint(), alert)
 	return notifiers.FormatAlert(alert, alertLink, funcMap, s.mitreStore)
 }
 
 func (*slack) Close(_ context.Context) error {
 	return nil
+}
+
+type entityMetadata struct {
+	name       string
+	entityType string
+	cluster    string
+	namespace  string
+}
+
+func getEntityMetadata(alert *storage.Alert) entityMetadata {
+	switch entity := alert.GetEntity().(type) {
+	case *storage.Alert_Deployment_:
+		return entityMetadata{
+			name:       entity.Deployment.GetName(),
+			entityType: "Deployment",
+			cluster:    entity.Deployment.GetClusterName(),
+			namespace:  entity.Deployment.GetNamespace(),
+		}
+	case *storage.Alert_Image:
+		return entityMetadata{
+			name:       types.Wrapper{GenericImage: entity.Image}.FullName(),
+			entityType: "Image",
+		}
+	case *storage.Alert_Resource_:
+		return entityMetadata{
+			name:       entity.Resource.GetName(),
+			entityType: "Resource",
+			cluster:    entity.Resource.GetClusterName(),
+			namespace:  entity.Resource.GetNamespace(),
+		}
+	case *storage.Alert_Node_:
+		return entityMetadata{
+			name:       entity.Node.GetName(),
+			entityType: "Node",
+			cluster:    entity.Node.GetClusterName(),
+		}
+	}
+	return entityMetadata{}
+}
+
+func violationMessages(alert *storage.Alert) string {
+	var msgs []string
+	for _, v := range alert.GetViolations() {
+		msgs = append(msgs, v.GetMessage())
+	}
+	if pv := alert.GetProcessViolation(); pv != nil {
+		msgs = append(msgs, pv.GetMessage())
+	}
+	return strings.Join(msgs, "\n")
 }
 
 // AlertNotify takes in an alert and generates the Slack message
@@ -128,21 +195,38 @@ func (s *slack) AlertNotify(ctx context.Context, alert *storage.Alert) error {
 	if err != nil {
 		return err
 	}
+	summary := notifiers.SummaryForAlert(alert)
 	attachments := []attachment{
 		{
 			FallBack:       body,
 			Color:          notifiers.GetAttachmentColor(alert.GetPolicy().GetSeverity()),
-			Pretext:        fmt.Sprintf("*%s*", notifiers.SummaryForAlert(alert)),
+			Pretext:        fmt.Sprintf("*%s*", summary),
 			Text:           body,
 			MarkDownFields: []string{"pretext", "text", "fields"},
 		},
 	}
+
+	meta := getEntityMetadata(alert)
+	alertLink := notifiers.AlertLink(s.Notifier.GetUiEndpoint(), alert)
+
 	notification := notification{
 		Attachments: attachments,
+		Summary:     summary,
+		AlertID:     alert.GetId(),
+		AlertURL:    alertLink,
+		Severity:    notifiers.SeverityString(alert.GetPolicy().GetSeverity()),
+		Time:        protoconv.ReadableTime(alert.GetTime()),
+		Policy:      alert.GetPolicy().GetName(),
+		Cluster:     meta.cluster,
+		Namespace:   meta.namespace,
+		Entity:      meta.name,
+		EntityType:  meta.entityType,
+		Violations:  violationMessages(alert),
+		Description: body,
 	}
 	jsonPayload, err := json.Marshal(&notification)
 	if err != nil {
-		return errors.Errorf("Could not marshal notification for alert %v", alert.Id)
+		return errors.Errorf("Could not marshal notification for alert %v", alert.GetId())
 	}
 
 	webhookURL := s.metadataGetter.GetAnnotationValue(ctx, alert, s.GetLabelKey(), s.GetLabelDefault())
@@ -194,6 +278,8 @@ func (s *slack) NetworkPolicyYAMLNotify(ctx context.Context, yaml string, cluste
 	}
 	notification := notification{
 		Attachments: attachments,
+		Cluster:     clusterName,
+		Description: body,
 	}
 	jsonPayload, err := json.Marshal(&notification)
 	if err != nil {
@@ -263,7 +349,7 @@ func (s *slack) Test(ctx context.Context) *notifiers.NotifierError {
 }
 
 func (s *slack) postMessage(ctx context.Context, url string, jsonPayload []byte) error {
-	req, err := http.NewRequest("POST", url, bytes.NewBuffer(jsonPayload))
+	req, err := http.NewRequest(http.MethodPost, url, bytes.NewBuffer(jsonPayload))
 	if err != nil {
 		return err
 	}

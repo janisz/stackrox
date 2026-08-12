@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/pkg/errors"
 	"github.com/stackrox/rox/pkg/contextutil"
 	"github.com/stackrox/rox/pkg/env"
@@ -15,9 +16,6 @@ import (
 )
 
 const (
-	pruneActiveComponentsStmt = `DELETE FROM active_components child WHERE NOT EXISTS
-		(SELECT 1 from deployments parent WHERE child.deploymentid = parent.id)`
-
 	pruneClusterHealthStatusesStmt = `DELETE FROM cluster_health_statuses child WHERE NOT EXISTS
 		(SELECT 1 FROM clusters parent WHERE
 		child.Id = parent.Id)`
@@ -75,7 +73,7 @@ const (
 			AND (snapshots.reportstatus_completedat < now() AT time zone 'utc' - INTERVAL '%d MINUTES')
 		)`
 
-	// (snapshots.reportstatus_runstate = 2 OR snapshots.reportstatus_runstate = 3 OR snapshots.reportstatus_runstate = 4)
+	// (snapshots.reportstatus_runstate = 2 OR snapshots.reportstatus_runstate = 3 OR snapshots.reportstatus_runstate = 4 OR snapshots.reportstatus_runstate = 5 OR snapshots.reportstatus_runstate = 6 OR snapshots.reportstatus_runstate = 7)
 	// ...gives us the report jobs that are in final state.
 	//
 	// (SELECT MAX(latest.reportstatus_completedat) FROM ` + schema.ReportSnapshotsTableName + ` latest
@@ -94,7 +92,7 @@ const (
 	pruneOldComplianceReportHistory = `DELETE FROM ` + schema.ComplianceOperatorReportSnapshotV2TableName + ` WHERE reportid IN
 		(
 			SELECT snapshots.reportid FROM ` + schema.ComplianceOperatorReportSnapshotV2TableName + ` snapshots
-			WHERE (snapshots.reportstatus_runstate = 2 OR snapshots.reportstatus_runstate = 3 OR snapshots.reportstatus_runstate = 4)
+			WHERE (snapshots.reportstatus_runstate IN (2, 3, 4, 5, 6, 7))
 			AND snapshots.reportstatus_completedat NOT IN
 			(
 				SELECT MAX(latest.reportstatus_completedat) FROM ` + schema.ComplianceOperatorReportSnapshotV2TableName + ` latest
@@ -117,6 +115,20 @@ const (
 	pruneAdministrationEvents = `DELETE FROM %s WHERE lastoccurredat < now() at time zone 'utc' - INTERVAL '%d MINUTES'`
 
 	pruneDiscoveredClusters = `DELETE FROM %s WHERE lastupdatedat < now() at time zone 'utc' - INTERVAL '%d MINUTES'`
+
+	pruneInvalidAPITokens = `DELETE FROM %s WHERE
+		(
+			revoked = TRUE OR
+			expiration < now() at time zone 'utc' - INTERVAL '%d MINUTES'
+		)` // #nosec G101
+
+	inactiveImageIdentifiersQuery = `SELECT img.id, img.digest, img.name_fullname
+		FROM images_v2 img
+		WHERE img.lastupdated < now() AT TIME ZONE 'utc' - INTERVAL '%d DAYS'
+		AND NOT EXISTS (
+			SELECT 1 FROM deployments_containers dc
+			WHERE dc.image_idv2 = img.id
+		)`
 )
 
 var (
@@ -126,17 +138,6 @@ var (
 
 	log = logging.LoggerForModule()
 )
-
-// PruneActiveComponents - prunes active components.
-// TODO (ROX-12710):  This will no longer be necessary when the foreign keys are added back
-func PruneActiveComponents(ctx context.Context, pool postgres.DB) {
-	pruneCtx, cancel := contextutil.ContextWithTimeoutIfNotExists(ctx, pruningTimeout)
-	defer cancel()
-
-	if _, err := pool.Exec(pruneCtx, pruneActiveComponentsStmt); err != nil {
-		log.Errorf("failed to prune active components: %v", err)
-	}
-}
 
 // PruneClusterHealthStatuses - prunes cluster health statuses.
 // TODO (ROX-12711):  This will no longer be necessary when the foreign keys are added back
@@ -150,20 +151,11 @@ func PruneClusterHealthStatuses(ctx context.Context, pool postgres.DB) {
 }
 
 func getOrphanedIDs(ctx context.Context, pool postgres.DB, query string) ([]string, error) {
-	var ids []string
 	rows, err := pool.Query(ctx, query)
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to get orphaned alerts")
 	}
-	defer rows.Close()
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			return nil, errors.Wrap(err, "getting ids from orphaned alerts query")
-		}
-		ids = append(ids, id)
-	}
-	return ids, rows.Err()
+	return pgutils.ScanStrings(rows)
 }
 
 // GetOrphanedAlertIDs returns the alert IDs for alerts that are orphaned, so they can be resolved.
@@ -271,4 +263,47 @@ func PruneDiscoveredClusters(ctx context.Context, pool postgres.DB, retentionDur
 	if _, err := pool.Exec(pruneCtx, query); err != nil {
 		log.Errorf("failed to prune discovered clusters: %v", err)
 	}
+}
+
+// PruneInvalidAPITokens prunes expired or revoked API tokens.
+func PruneInvalidAPITokens(ctx context.Context, pool postgres.DB, retentionDuration time.Duration) {
+	pruneCtx, cancel := contextutil.ContextWithTimeoutIfNotExists(ctx, pruningTimeout)
+	defer cancel()
+
+	query := fmt.Sprintf(pruneInvalidAPITokens,
+		schema.APITokensTableName,
+		int(retentionDuration.Minutes()),
+	)
+	if _, err := pool.Exec(pruneCtx, query); err != nil {
+		log.Errorf("failed to prune invalid api tokens: %v", err)
+	}
+}
+
+// ImageIdentifier holds the id, digest, and full name of an image.
+type ImageIdentifier struct {
+	ID       string
+	Digest   string
+	FullName string
+}
+
+// GetInactiveImageIdentifiers returns images that are older than retentionDays and have no
+// deployment container referencing them.
+func GetInactiveImageIdentifiers(ctx context.Context, pool postgres.DB, retentionDays int) ([]*ImageIdentifier, error) {
+	return pgutils.Retry2(ctx, func() ([]*ImageIdentifier, error) {
+		ctx, cancel := context.WithTimeout(ctx, orphanedQueryTimeout)
+		defer cancel()
+
+		query := fmt.Sprintf(inactiveImageIdentifiersQuery, retentionDays)
+		rows, err := pool.Query(ctx, query)
+		if err != nil {
+			return nil, errors.Wrap(err, "failed to get inactive image identifiers")
+		}
+		return pgx.CollectRows(rows, func(row pgx.CollectableRow) (*ImageIdentifier, error) {
+			var img ImageIdentifier
+			if err := row.Scan(&img.ID, &img.Digest, &img.FullName); err != nil {
+				return nil, errors.Wrap(err, "scanning image identifier")
+			}
+			return &img, nil
+		})
+	})
 }

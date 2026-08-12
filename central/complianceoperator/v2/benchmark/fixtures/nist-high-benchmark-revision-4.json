@@ -1,0 +1,13 @@
+{
+  "name": "NIST 800-53 High-Impact Baseline",
+  "provider": "NIST",
+  "shortName": "NIST-800-53",
+  "profiles": [
+    { "profileName": "ocp4-high" },
+    { "profileName": "ocp4-high-node" },
+    { "profileName": "rhcos4-high" },
+    { "profileName": "ocp4-high-rev-4" },
+    { "profileName": "ocp4-high-node-rev-4" },
+    { "profileName": "rhcos4-high-rev-4" }
+  ]
+}

@@ -3,28 +3,39 @@ package datastore
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/pkg/errors"
-	"github.com/stackrox/rox/central/alert/datastore/internal/search"
 	"github.com/stackrox/rox/central/alert/datastore/internal/store"
 	alertutils "github.com/stackrox/rox/central/alert/utils"
+	alertviews "github.com/stackrox/rox/central/alert/views"
 	"github.com/stackrox/rox/central/metrics"
 	platformmatcher "github.com/stackrox/rox/central/platform/matcher"
 	v1 "github.com/stackrox/rox/generated/api/v1"
 	"github.com/stackrox/rox/generated/storage"
 	"github.com/stackrox/rox/pkg/alert/convert"
 	"github.com/stackrox/rox/pkg/concurrency"
+	"github.com/stackrox/rox/pkg/env"
 	"github.com/stackrox/rox/pkg/errorhelpers"
 	"github.com/stackrox/rox/pkg/features"
 	"github.com/stackrox/rox/pkg/logging"
+	"github.com/stackrox/rox/pkg/postgres"
 	"github.com/stackrox/rox/pkg/postgres/pgutils"
+	"github.com/stackrox/rox/pkg/postgres/schema"
 	"github.com/stackrox/rox/pkg/protocompat"
 	"github.com/stackrox/rox/pkg/sac"
 	"github.com/stackrox/rox/pkg/sac/resources"
+	"github.com/stackrox/rox/pkg/search"
 	searchCommon "github.com/stackrox/rox/pkg/search"
+	"github.com/stackrox/rox/pkg/search/paginated"
+	pgSearch "github.com/stackrox/rox/pkg/search/postgres"
 	"github.com/stackrox/rox/pkg/sync"
+	"golang.org/x/text/cases"
+	"golang.org/x/text/language"
 )
+
+const whenUnlimited = 100
 
 var (
 	log = logging.LoggerForModule()
@@ -35,8 +46,10 @@ var (
 // datastoreImpl is a transaction script with methods that provide the domain logic for CRUD uses cases for Alert
 // objects.
 type datastoreImpl struct {
-	storage         store.Store
-	searcher        search.Searcher
+	storage store.Store
+	// TODO(ROX-31142): No way to call RunSelectRequestForSchemaFn via
+	// the store so we have to allow for access to the DB here.
+	db              postgres.DB
 	keyedMutex      *concurrency.KeyedMutex
 	keyFence        concurrency.KeyFence
 	platformMatcher platformmatcher.PlatformMatcher
@@ -45,34 +58,262 @@ type datastoreImpl struct {
 func (ds *datastoreImpl) Search(ctx context.Context, q *v1.Query, excludeResolved bool) ([]searchCommon.Result, error) {
 	defer metrics.SetDatastoreFunctionDuration(time.Now(), "Alert", "Search")
 
-	return ds.searcher.Search(ctx, q, excludeResolved)
+	if excludeResolved {
+		q = applyDefaultState(q)
+	}
+	return ds.storage.Search(ctx, q)
 }
 
 // Count returns the number of search results from the query
 func (ds *datastoreImpl) Count(ctx context.Context, q *v1.Query, excludeResolved bool) (int, error) {
 	defer metrics.SetDatastoreFunctionDuration(time.Now(), "Alert", "Count")
 
-	return ds.searcher.Count(ctx, q, excludeResolved)
+	if excludeResolved {
+		q = applyDefaultState(q)
+	}
+	return ds.storage.Count(ctx, q)
 }
 
 func (ds *datastoreImpl) SearchListAlerts(ctx context.Context, q *v1.Query, excludeResolved bool) ([]*storage.ListAlert, error) {
 	defer metrics.SetDatastoreFunctionDuration(time.Now(), "Alert", "SearchListAlerts")
 
-	return ds.searcher.SearchListAlerts(ctx, q, excludeResolved)
+	if q == nil {
+		q = search.EmptyQuery()
+	}
+
+	if excludeResolved {
+		q = applyDefaultState(q)
+	}
+
+	if env.ListAlertUseLegacyQuery.BooleanSetting() {
+		return ds.searchListAlertsLegacy(ctx, q)
+	}
+
+	cloned := q.CloneVT()
+	cloned.Selects = alertviews.ListAlertSelectProtos
+
+	var sc alertviews.ListAlertScanner
+	listAlerts := make([]*storage.ListAlert, 0, paginated.GetLimit(cloned.GetPagination().GetLimit(), whenUnlimited))
+	err := pgSearch.RunSelectDirectFn(ctx, ds.db, schema.AlertsSchema, cloned, alertviews.ListAlertArrayFields,
+		&pgSearch.DirectScanConfig{
+			ScanDests: sc.Dests,
+			OnRow: func() error {
+				listAlerts = append(listAlerts, sc.Build())
+				return nil
+			},
+		})
+	if err != nil {
+		return nil, err
+	}
+	return listAlerts, nil
+}
+
+// searchListAlertsLegacy is the original SearchListAlerts implementation that
+// deserializes the full alert blob. Used as a fallback via ROX_LIST_ALERT_LEGACY_QUERY.
+func (ds *datastoreImpl) searchListAlertsLegacy(ctx context.Context, q *v1.Query) ([]*storage.ListAlert, error) {
+	listAlerts := make([]*storage.ListAlert, 0, paginated.GetLimit(q.GetPagination().GetLimit(), whenUnlimited))
+	err := ds.storage.GetByQueryFn(ctx, q, func(alert *storage.Alert) error {
+		listAlerts = append(listAlerts, convert.AlertToListAlert(alert))
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return listAlerts, nil
+}
+
+// SearchAlertPolicyNamesAndSeverities returns lightweight policy name and severity pairs
+// for matching alerts.
+func (ds *datastoreImpl) SearchAlertPolicyNamesAndSeverities(ctx context.Context, q *v1.Query, excludeResolved bool) ([]*alertviews.PolicyNameAndSeverity, error) {
+	defer metrics.SetDatastoreFunctionDuration(time.Now(), "Alert", "SearchAlertPolicyNamesAndSeverities")
+
+	if excludeResolved {
+		q = applyDefaultState(q)
+	}
+	clonedQuery := q.CloneVT()
+	clonedQuery.Selects = []*v1.QuerySelect{
+		search.NewQuerySelect(search.PolicyName).Proto(),
+		search.NewQuerySelect(search.Severity).Proto(),
+	}
+
+	var results []*alertviews.PolicyNameAndSeverity
+	err := pgSearch.RunSelectRequestForSchemaFn(ctx, ds.db, schema.AlertsSchema, clonedQuery, func(r *alertviews.PolicyNameAndSeverity) error {
+		results = append(results, r)
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return results, nil
+}
+
+// SearchAlertPolicySeverityCounts returns the count of distinct policies per severity level
+// for matching alerts. Uses a SQL aggregate query to avoid deserializing alert blobs.
+func (ds *datastoreImpl) SearchAlertPolicySeverityCounts(ctx context.Context, q *v1.Query, excludeResolved bool) (*alertviews.PolicySeverityCounts, error) {
+	defer metrics.SetDatastoreFunctionDuration(time.Now(), "Alert", "SearchAlertPolicySeverityCounts")
+
+	if excludeResolved {
+		q = applyDefaultState(q)
+	}
+	countQuery := alertviews.WithPolicySeverityCountQuery(q)
+
+	result, err := pgSearch.RunSelectOneForSchema[alertviews.PolicySeverityCounts](ctx, ds.db, schema.AlertsSchema, countQuery)
+	if err != nil {
+		return &alertviews.PolicySeverityCounts{}, err
+	}
+	if result == nil {
+		return &alertviews.PolicySeverityCounts{}, nil
+	}
+	return result, nil
+}
+
+// SearchAlertPolicyGroups returns alerts grouped by policy with a count per group.
+// Uses a SQL aggregate query to avoid deserializing alert blobs.
+func (ds *datastoreImpl) SearchAlertPolicyGroups(ctx context.Context, q *v1.Query, excludeResolved bool) ([]*alertviews.AlertPolicyGroup, error) {
+	defer metrics.SetDatastoreFunctionDuration(time.Now(), "Alert", "SearchAlertPolicyGroups")
+
+	if excludeResolved {
+		q = applyDefaultState(q)
+	}
+	groupQuery := alertviews.WithAlertPolicyGroupQuery(q)
+
+	var results []*alertviews.AlertPolicyGroup
+	err := pgSearch.RunSelectRequestForSchemaFn(ctx, ds.db, schema.AlertsSchema, groupQuery, func(r *alertviews.AlertPolicyGroup) error {
+		results = append(results, r)
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return results, nil
+}
+
+// SearchAlertTimeseriesEvents returns lightweight alert event data for timeseries display.
+// Uses a SQL projection query to avoid deserializing full alert protobuf blobs.
+func (ds *datastoreImpl) SearchAlertTimeseriesEvents(ctx context.Context, q *v1.Query, excludeResolved bool) ([]*alertviews.AlertTimeseriesEvent, error) {
+	defer metrics.SetDatastoreFunctionDuration(time.Now(), "Alert", "SearchAlertTimeseriesEvents")
+
+	if excludeResolved {
+		q = applyDefaultState(q)
+	}
+	timeseriesQuery := alertviews.WithAlertTimeseriesQuery(q)
+
+	var results []*alertviews.AlertTimeseriesEvent
+	err := pgSearch.RunSelectRequestForSchemaFn(ctx, ds.db, schema.AlertsSchema, timeseriesQuery, func(r *alertviews.AlertTimeseriesEvent) error {
+		results = append(results, r)
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return results, nil
+}
+
+// SearchAlertDeploymentIDs returns distinct deployment IDs from alerts matching the query.
+// Uses a SQL projection to avoid deserializing full alert protobuf blobs.
+func (ds *datastoreImpl) SearchAlertDeploymentIDs(ctx context.Context, q *v1.Query, excludeResolved bool) ([]string, error) {
+	defer metrics.SetDatastoreFunctionDuration(time.Now(), "Alert", "SearchAlertDeploymentIDs")
+
+	if excludeResolved {
+		q = applyDefaultState(q)
+	}
+	clonedQuery := q.CloneVT()
+	clonedQuery.Selects = []*v1.QuerySelect{
+		search.NewQuerySelect(search.DeploymentID).Distinct().Proto(),
+	}
+	// No sorting needed — we only collect unique IDs.
+	clonedQuery.Pagination = nil
+
+	var ids []string
+	err := pgSearch.RunSelectRequestForSchemaFn(ctx, ds.db, schema.AlertsSchema, clonedQuery, func(r *alertviews.DeploymentIDResult) error {
+		if id := r.GetDeploymentID(); id != "" {
+			ids = append(ids, id)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return ids, nil
+}
+
+// SearchAlertMatchKeys returns lightweight alert match keys for the given query.
+// Projects only inline columns needed for alert matching, avoiding TOAST I/O.
+func (ds *datastoreImpl) SearchAlertMatchKeys(ctx context.Context, q *v1.Query, excludeResolved bool) ([]*alertviews.AlertMatchKey, error) {
+	defer metrics.SetDatastoreFunctionDuration(time.Now(), "Alert", "SearchAlertMatchKeys")
+
+	if excludeResolved {
+		q = applyDefaultState(q)
+	}
+	matchKeyQuery := alertviews.WithAlertMatchKeyQuery(q)
+
+	var results []*alertviews.AlertMatchKey
+	err := pgSearch.RunSelectRequestForSchemaFn(ctx, ds.db, schema.AlertsSchema, matchKeyQuery, func(r *alertviews.AlertMatchKey) error {
+		results = append(results, r)
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return results, nil
 }
 
 // SearchAlerts returns search results for the given request. This will exclude resolved alerts by default unless Violation State = Resolved is explicitly specified in the query
 func (ds *datastoreImpl) SearchAlerts(ctx context.Context, q *v1.Query) ([]*v1.SearchResult, error) {
 	defer metrics.SetDatastoreFunctionDuration(time.Now(), "Alert", "SearchAlerts")
 
-	return ds.searcher.SearchAlerts(ctx, q)
+	if q == nil {
+		q = search.EmptyQuery()
+	}
+
+	// Clone the query and add select fields for SearchResult construction
+	clonedQuery := q.CloneVT()
+	selectSelects := []*v1.QuerySelect{
+		search.NewQuerySelect(search.PolicyName).Proto(),
+		search.NewQuerySelect(search.Cluster).Proto(),
+		search.NewQuerySelect(search.Namespace).Proto(),
+		search.NewQuerySelect(search.DeploymentName).Proto(),
+		search.NewQuerySelect(search.EntityType).Proto(),
+		search.NewQuerySelect(search.ResourceName).Proto(),
+		search.NewQuerySelect(search.ResourceType).Proto(),
+	}
+	clonedQuery.Selects = append(clonedQuery.GetSelects(), selectSelects...)
+
+	results, err := ds.Search(ctx, clonedQuery, false)
+	if err != nil {
+		return nil, err
+	}
+
+	// Populate Name and Location fields from FieldValues for each result
+	for i := range results {
+
+		if results[i].FieldValues != nil {
+			if nameVal, ok := results[i].FieldValues[strings.ToLower(search.PolicyName.String())]; ok {
+				results[i].Name = nameVal
+			}
+		}
+	}
+
+	return search.ResultsToSearchResultProtos(results, &AlertSearchResultConverter{}), nil
 }
 
 // SearchRawAlerts returns search results for the given request in the form of a slice of alerts.
 func (ds *datastoreImpl) SearchRawAlerts(ctx context.Context, q *v1.Query, excludeResolved bool) ([]*storage.Alert, error) {
 	defer metrics.SetDatastoreFunctionDuration(time.Now(), "Alert", "SearchRawAlerts")
 
-	return ds.searcher.SearchRawAlerts(ctx, q, excludeResolved)
+	if excludeResolved {
+		q = applyDefaultState(q)
+	}
+
+	alerts := make([]*storage.Alert, 0, paginated.GetLimit(q.GetPagination().GetLimit(), whenUnlimited))
+	err := ds.storage.GetByQueryFn(ctx, q, func(alert *storage.Alert) error {
+		alerts = append(alerts, alert)
+		return nil
+	})
+	if err != nil {
+		return nil, errors.Wrap(err, "failed to search alerts")
+	}
+	return alerts, nil
 }
 
 // GetAlert returns an alert by id.
@@ -133,7 +374,7 @@ func (ds *datastoreImpl) UpdateAlertBatch(ctx context.Context, alert *storage.Al
 			return
 		}
 
-		if !hasSameScope(getNSScopedObjectFromAlert(alert), getNSScopedObjectFromAlert(oldAlert)) {
+		if !hasSameScope(alert, oldAlert) {
 			c <- fmt.Errorf("cannot change the cluster or namespace of an existing alert %q", alert.GetId())
 			return
 		}
@@ -239,25 +480,19 @@ func (ds *datastoreImpl) PruneAlerts(ctx context.Context, ids ...string) error {
 }
 
 func sacKeyForAlert(alert *storage.Alert) []sac.ScopeKey {
-	scopedObj := getNSScopedObjectFromAlert(alert)
-	if scopedObj == nil {
-		return sac.GlobalScopeKey()
-	}
-	return sac.KeyForNSScopedObj(scopedObj)
-}
-
-func getNSScopedObjectFromAlert(alert *storage.Alert) sac.NamespaceScopedObject {
 	switch alert.GetEntity().(type) {
 	case *storage.Alert_Deployment_:
-		return alert.GetDeployment()
+		return sac.KeyForNSScopedObj(alert.GetDeployment())
 	case *storage.Alert_Resource_:
-		return alert.GetResource()
+		return sac.KeyForNSScopedObj(alert.GetResource())
 	case *storage.Alert_Image:
-		return nil // This is theoretically possible even though image doesn't have a ns/cluster
+		return sac.GlobalScopeKey() // This is theoretically possible even though image doesn't have a ns/cluster
+	case *storage.Alert_Node_:
+		return sac.ClusterScopeKeys(alert.GetClusterId())
 	default:
 		log.Errorf("UNEXPECTED: Alert Entity %s unknown", alert.GetEntity())
 	}
-	return nil
+	return sac.GlobalScopeKey()
 }
 
 func (ds *datastoreImpl) updateAlertNoLock(ctx context.Context, alerts ...*storage.Alert) error {
@@ -265,8 +500,12 @@ func (ds *datastoreImpl) updateAlertNoLock(ctx context.Context, alerts ...*stora
 		return nil
 	}
 
-	if features.PlatformComponents.Enabled() {
-		for _, alert := range alerts {
+	for _, alert := range alerts {
+		// Compute and cache enforcement count so it can be queried directly
+		// from the column without deserializing the full alert blob.
+		alert.EnforcementCount = convert.EnforcementCount(alert)
+
+		if features.PlatformComponents.Enabled() {
 			alert.EntityType = alertutils.GetEntityType(alert)
 			match, err := ds.platformMatcher.MatchAlert(alert)
 			if err != nil {
@@ -279,16 +518,22 @@ func (ds *datastoreImpl) updateAlertNoLock(ctx context.Context, alerts ...*stora
 	return ds.storage.UpsertMany(ctx, alerts)
 }
 
-func hasSameScope(o1, o2 sac.NamespaceScopedObject) bool {
-	return o1 != nil && o2 != nil && o1.GetClusterId() == o2.GetClusterId() && o1.GetNamespace() == o2.GetNamespace()
-}
+func hasSameScope(alert1, alert2 *storage.Alert) bool {
+	if alert1.GetClusterId() != alert2.GetClusterId() {
+		return false
+	}
 
-func (ds *datastoreImpl) GetByQuery(ctx context.Context, q *v1.Query) ([]*storage.Alert, error) {
-	return ds.storage.GetByQuery(ctx, q)
+	// For namespace-scoped entities, also check namespace
+	switch alert1.GetEntity().(type) {
+	case *storage.Alert_Deployment_, *storage.Alert_Resource_:
+		return alert1.GetNamespace() == alert2.GetNamespace()
+	}
+
+	return true
 }
 
 func (ds *datastoreImpl) WalkByQuery(ctx context.Context, q *v1.Query, fn func(alert *storage.Alert) error) error {
-	return ds.storage.WalkByQuery(ctx, q, fn)
+	return ds.storage.GetByQueryFn(ctx, q, fn)
 }
 
 func (ds *datastoreImpl) WalkAll(ctx context.Context, fn func(*storage.ListAlert) error) error {
@@ -298,10 +543,29 @@ func (ds *datastoreImpl) WalkAll(ctx context.Context, fn func(*storage.ListAlert
 		return sac.ErrResourceAccessDenied
 	}
 
+	if env.ListAlertUseLegacyQuery.BooleanSetting() {
+		return ds.walkAllLegacy(ctx, fn)
+	}
+
+	q := searchCommon.EmptyQuery()
+	q.Selects = alertviews.ListAlertSelectProtos
+
+	var sc alertviews.ListAlertScanner
+	return pgSearch.RunSelectDirectFn(ctx, ds.db, schema.AlertsSchema, q, alertviews.ListAlertArrayFields,
+		&pgSearch.DirectScanConfig{
+			ScanDests: sc.Dests,
+			OnRow: func() error {
+				return fn(sc.Build())
+			},
+		})
+}
+
+// walkAllLegacy is the original WalkAll implementation that deserializes the
+// full alert blob. Used as a fallback via ROX_LIST_ALERT_LEGACY_QUERY.
+func (ds *datastoreImpl) walkAllLegacy(ctx context.Context, fn func(*storage.ListAlert) error) error {
 	walkFn := func() error {
 		return ds.storage.Walk(ctx, func(alert *storage.Alert) error {
-			listAlert := convert.AlertToListAlert(alert)
-			return fn(listAlert)
+			return fn(convert.AlertToListAlert(alert))
 		})
 	}
 	return pgutils.RetryIfPostgres(ctx, walkFn)
@@ -318,4 +582,77 @@ func (ds *DefaultStateAlertDataStoreImpl) Search(ctx context.Context, q *v1.Quer
 
 func (ds *DefaultStateAlertDataStoreImpl) Count(ctx context.Context, q *v1.Query) (int, error) {
 	return (*ds.DataStore).Count(ctx, q, true)
+}
+
+func applyDefaultState(q *v1.Query) *v1.Query {
+	// By default, set stale to false.
+	querySpecifiesStateField := false
+	searchCommon.ApplyFnToAllBaseQueries(q, func(bq *v1.BaseQuery) {
+		matchFieldQuery, ok := bq.GetQuery().(*v1.BaseQuery_MatchFieldQuery)
+		if !ok {
+			return
+		}
+		if matchFieldQuery.MatchFieldQuery.GetField() == searchCommon.ViolationState.String() {
+			querySpecifiesStateField = true
+		}
+	})
+
+	if !querySpecifiesStateField {
+		cq := searchCommon.ConjunctionQuery(q, searchCommon.NewQueryBuilder().AddExactMatches(
+			searchCommon.ViolationState,
+			storage.ViolationState_ACTIVE.String(),
+			storage.ViolationState_ATTEMPTED.String()).ProtoQuery())
+		cq.Pagination = q.GetPagination()
+		cq.Selects = q.GetSelects()
+		return cq
+	}
+	return q
+}
+
+// AlertSearchResultConverter implements search.SearchResultConverter for alert search results.
+// This enables single-pass query construction for SearchResult protos.
+type AlertSearchResultConverter struct{}
+
+func (c *AlertSearchResultConverter) BuildName(result *search.Result) string {
+	return result.Name
+}
+
+func (c *AlertSearchResultConverter) BuildLocation(result *search.Result) string {
+	fv := result.FieldValues
+	clusterName := fv[strings.ToLower(search.Cluster.String())]
+	namespace := fv[strings.ToLower(search.Namespace.String())]
+	deploymentName := fv[strings.ToLower(search.DeploymentName.String())]
+	entityType := fv[strings.ToLower(search.EntityType.String())]
+	resourceName := fv[strings.ToLower(search.ResourceName.String())]
+	resourceType := fv[strings.ToLower(search.ResourceType.String())]
+
+	nodeName := fv[strings.ToLower(search.Node.String())]
+
+	var entityName string
+	switch entityType {
+	case "DEPLOYMENT":
+		entityName = deploymentName
+		resourceType = entityType
+	case "RESOURCE":
+		entityName = resourceName
+	case "NODE":
+		entityName = nodeName
+		resourceType = entityType
+	}
+
+	var location string
+
+	casePkg := cases.Title(language.English)
+	if namespace != "" {
+		location = fmt.Sprintf("/%s/%s/%s/%s",
+			clusterName, namespace, casePkg.String(resourceType), entityName)
+	} else {
+		location = fmt.Sprintf("/%s/%s/%s",
+			clusterName, casePkg.String(resourceType), entityName)
+	}
+	return location
+}
+
+func (c *AlertSearchResultConverter) GetCategory() v1.SearchCategory {
+	return v1.SearchCategory_ALERTS
 }

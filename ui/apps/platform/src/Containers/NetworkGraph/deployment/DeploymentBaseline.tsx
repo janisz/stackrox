@@ -1,4 +1,4 @@
-import React from 'react';
+import { useState } from 'react';
 import {
     Alert,
     Bullseye,
@@ -19,9 +19,10 @@ import {
 import { HelpIcon } from '@patternfly/react-icons';
 
 import download from 'utils/download';
-import { Deployment } from 'types/deployment.proto';
-import { NetworkPolicyModification } from 'types/networkPolicy.proto';
-import { AdvancedFlowsFilterType } from '../common/AdvancedFlowsFilter/types';
+import usePermissions from 'hooks/usePermissions';
+import type { Deployment } from 'types/deployment.proto';
+import type { NetworkPolicyModification } from 'types/networkPolicy.proto';
+import type { AdvancedFlowsFilterType } from '../common/AdvancedFlowsFilter/types';
 import { filterNetworkFlows, getAllUniquePorts, getNumFlows } from '../utils/flowUtils';
 
 import AdvancedFlowsFilter, {
@@ -32,24 +33,27 @@ import FlowsTable from '../common/FlowsTable';
 import FlowsTableHeaderText from '../common/FlowsTableHeaderText';
 import FlowsBulkActions from '../common/FlowsBulkActions';
 import useFetchNetworkBaselines from '../api/useFetchNetworkBaselines';
-import { Flow } from '../types/flow.type';
+import type { Flow } from '../types/flow.type';
 import useModifyBaselineStatuses from '../api/useModifyBaselineStatuses';
 import useToggleAlertingOnBaselineViolation from '../api/useToggleAlertingOnBaselineViolation';
 import useFetchBaselineNetworkPolicy from '../api/useFetchBaselineNetworkPolicy';
 
-type DeploymentBaselinesProps = {
+type DeploymentBaselineProps = {
     deployment: Deployment;
     deploymentId: string;
     onNodeSelect: (id: string) => void;
 };
 
-function DeploymentBaselines({ deployment, deploymentId, onNodeSelect }: DeploymentBaselinesProps) {
+function DeploymentBaseline({ deployment, deploymentId, onNodeSelect }: DeploymentBaselineProps) {
+    const { hasReadWriteAccess } = usePermissions();
+    const hasWriteAccessForActions = hasReadWriteAccess('DeploymentExtension');
+
     // component state
     const [isExcludingPortsAndProtocols, setIsExcludingPortsAndProtocols] =
-        React.useState<boolean>(false);
+        useState<boolean>(false);
 
-    const [entityNameFilter, setEntityNameFilter] = React.useState<string>('');
-    const [advancedFilters, setAdvancedFilters] = React.useState<AdvancedFlowsFilterType>(
+    const [entityNameFilter, setEntityNameFilter] = useState<string>('');
+    const [advancedFilters, setAdvancedFilters] = useState<AdvancedFlowsFilterType>(
         defaultAdvancedFlowsFilters
     );
     const {
@@ -86,8 +90,8 @@ function DeploymentBaselines({ deployment, deploymentId, onNodeSelect }: Deploym
     const initialExpandedRows = filteredNetworkBaselines
         .filter((row) => row.children && !!row.children.length)
         .map((row) => row.id); // Default to all expanded
-    const [expandedRows, setExpandedRows] = React.useState<string[]>(initialExpandedRows);
-    const [selectedRows, setSelectedRows] = React.useState<string[]>([]);
+    const [expandedRows, setExpandedRows] = useState<string[]>(initialExpandedRows);
+    const [selectedRows, setSelectedRows] = useState<string[]>([]);
 
     // derived data
     const numBaselines = getNumFlows(filteredNetworkBaselines);
@@ -146,18 +150,18 @@ function DeploymentBaselines({ deployment, deploymentId, onNodeSelect }: Deploym
     }
 
     return (
-        <div className="pf-v5-u-h-100 pf-v5-u-p-md">
+        <div className="pf-v6-u-h-100 pf-v6-u-p-md">
             {errorMessage && (
                 <Alert
                     isInline
                     variant="danger"
                     title={errorMessage}
                     component="p"
-                    className="pf-v5-u-mb-sm"
+                    className="pf-v6-u-mb-sm"
                 />
             )}
             <Stack>
-                <StackItem className="pf-v5-u-pb-md">
+                <StackItem className="pf-v6-u-pb-md">
                     <Flex alignItems={{ default: 'alignItemsCenter' }}>
                         <FlexItem>
                             <Switch
@@ -179,7 +183,7 @@ function DeploymentBaselines({ deployment, deploymentId, onNodeSelect }: Deploym
                                     </div>
                                 }
                             >
-                                <HelpIcon className="pf-v5-u-color-200" />
+                                <HelpIcon className="pf-v6-u-color-200" />
                             </Tooltip>
                         </FlexItem>
                     </Flex>
@@ -201,22 +205,24 @@ function DeploymentBaselines({ deployment, deploymentId, onNodeSelect }: Deploym
                         </FlexItem>
                     </Flex>
                 </StackItem>
-                <Divider component="hr" className="pf-v5-u-py-md" />
-                <StackItem className="pf-v5-u-pb-md">
-                    <Toolbar className="pf-v5-u-p-0">
-                        <ToolbarContent className="pf-v5-u-px-0">
+                <Divider component="hr" className="pf-v6-u-py-md" />
+                <StackItem className="pf-v6-u-pb-md">
+                    <Toolbar className="pf-v6-u-p-0">
+                        <ToolbarContent className="pf-v6-u-px-0">
                             <ToolbarItem>
                                 <FlowsTableHeaderText type="baseline" numFlows={numBaselines} />
                             </ToolbarItem>
-                            <ToolbarItem align={{ default: 'alignRight' }}>
-                                <FlowsBulkActions
-                                    type="baseline"
-                                    selectedRows={selectedRows}
-                                    onClearSelectedRows={() => setSelectedRows([])}
-                                    markSelectedAsAnomalous={markSelectedAsAnomalous}
-                                    addSelectedToBaseline={addSelectedToBaseline}
-                                />
-                            </ToolbarItem>
+                            {hasWriteAccessForActions && (
+                                <ToolbarItem align={{ default: 'alignEnd' }}>
+                                    <FlowsBulkActions
+                                        type="baseline"
+                                        selectedRows={selectedRows}
+                                        onClearSelectedRows={() => setSelectedRows([])}
+                                        markSelectedAsAnomalous={markSelectedAsAnomalous}
+                                        addSelectedToBaseline={addSelectedToBaseline}
+                                    />
+                                </ToolbarItem>
+                            )}
                         </ToolbarContent>
                     </Toolbar>
                 </StackItem>
@@ -231,13 +237,13 @@ function DeploymentBaselines({ deployment, deploymentId, onNodeSelect }: Deploym
                         setSelectedRows={setSelectedRows}
                         addToBaseline={addToBaseline}
                         markAsAnomalous={markAsAnomalous}
-                        isEditable
+                        isEditable={hasWriteAccessForActions}
                         onSelectFlow={onSelectFlow}
                     />
                 </StackItem>
-                <StackItem className="pf-v5-u-pt-md">
+                <StackItem className="pf-v6-u-pt-md">
                     <Flex
-                        className="pf-v5-u-pb-md"
+                        className="pf-v6-u-pb-md"
                         direction={{ default: 'column' }}
                         spaceItems={{ default: 'spaceItemsMd' }}
                         alignItems={{ default: 'alignItemsCenter' }}
@@ -267,4 +273,4 @@ function DeploymentBaselines({ deployment, deploymentId, onNodeSelect }: Deploym
     );
 }
 
-export default DeploymentBaselines;
+export default DeploymentBaseline;

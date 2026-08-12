@@ -1,11 +1,10 @@
-import React from 'react';
-import { useParams } from 'react-router-dom';
+import { useParams } from 'react-router-dom-v5-compat';
 
 import relatedEntitySVG from 'images/network-graph/related-entity.svg';
 import filteredEntitySVG from 'images/network-graph/filtered-entity.svg';
 
 import NetworkGraph from './NetworkGraph';
-import {
+import type {
     CIDRBlockData,
     CustomEdgeModel,
     CustomModel,
@@ -15,15 +14,15 @@ import {
     NamespaceData,
     NetworkPolicyState,
 } from './types/topology.type';
-import { Simulation } from './utils/getSimulation';
+import type { Simulation } from './utils/getSimulation';
 import { getNodeById } from './utils/networkGraphUtils';
-import { EdgeState } from './components/EdgeStateSelect';
-import { DisplayOption } from './components/DisplayOptionsSelect';
+import type { EdgeState } from './components/EdgeStateSelect';
+import type { DisplayOption } from './components/DisplayOptionsSelect';
 import {
-    createExtraneousNodes,
     createExtraneousEdges,
-    graphModel,
+    createExtraneousNodes,
     getConnectedNodeIds,
+    graphModel,
 } from './utils/modelUtils';
 import {
     cidrBlockBadgeColor,
@@ -34,7 +33,7 @@ import {
     namespaceBadgeText,
 } from './common/NetworkGraphIcons';
 import useNetworkPolicySimulator from './hooks/useNetworkPolicySimulator';
-import { NetworkScopeHierarchy } from './types/networkScopeHierarchy';
+import type { NetworkScopeHierarchy } from './types/networkScopeHierarchy';
 
 export type Models = {
     activeModel: CustomModel;
@@ -243,7 +242,7 @@ function fadeOutUnconnectedNodes(
             selectedNode.children.reduce((acc, currId) => {
                 const connectedNodeIds = getConnectedNodeIds(edges, currId);
                 return [...acc, ...connectedNodeIds];
-            }, [] as string[]) || [];
+            }, [] as string[]) ?? [];
         // we include the child nodes so that they aren't faded out
         emphasizedNodeIds = [...emphasizedNodeIds, ...selectedNode.children];
     } else {
@@ -314,7 +313,7 @@ function NetworkGraphContainer({
 
     // 2. selectedNode/edgeState data model filtering ------------------------------------
     // selected node state is stored in the URL
-    const { nodeId: encodedNodeId } = useParams();
+    const { nodeId: encodedNodeId } = useParams() as { nodeId: string };
     const nodeId = decodeURIComponent(encodedNodeId);
     const selectedNode = getNodeById(baseModel?.nodes, nodeId);
     // extraneous catch-all in/egress flows nodes to add/remove from extraneous nodes model

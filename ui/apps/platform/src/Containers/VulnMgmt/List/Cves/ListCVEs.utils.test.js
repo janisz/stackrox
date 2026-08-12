@@ -1,10 +1,3 @@
-/**
- * @jest-environment node
- *
- * Reference Error: TextEncoder is not defined
- * Maybe because of ReactDOMRenderer.renderToString in pdfUtils.js file.
- */
-
 import entityTypes from 'constants/entityTypes';
 import useCases from 'constants/useCaseTypes';
 import WorkflowEntity from 'utils/WorkflowEntity';
@@ -13,10 +6,7 @@ import { WorkflowState } from 'utils/WorkflowState';
 import { getCveTableColumns } from './VulnMgmtListCves';
 import { getFilteredCVEColumns, parseCveNamesFromIds } from './ListCVEs.utils';
 
-function mockIsFeatureFlagEnabled(flag) {
-    if (flag === 'ROX_ACTIVE_VULN_MGMT') {
-        return true;
-    }
+function mockIsFeatureFlagEnabled() {
     return false;
 }
 

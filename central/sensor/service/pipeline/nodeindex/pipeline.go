@@ -89,8 +89,13 @@ func (p *pipelineImpl) Run(ctx context.Context, _ string, msg *central.MsgFromSe
 		log.Warn("Removal of node index is unsupported action")
 		return nil
 	}
-	log.Debugf("Received node index report for node %s with %d packages from %d content sets",
-		event.GetId(), len(report.GetContents().Packages), len(report.GetContents().Repositories))
+	log.Debugf("Received node index report for node %s with %d packages (%d deprecated) from %d (%d deprecated) content sets",
+		event.GetId(),
+		len(report.GetContents().GetPackages()),
+		len(report.GetContents().GetPackagesDEPRECATED()),
+		len(report.GetContents().GetRepositories()),
+		len(report.GetContents().GetRepositoriesDEPRECATED()),
+	)
 	report = report.CloneVT()
 
 	// Query storage for the node this report comes from
@@ -125,23 +130,16 @@ func sendComplianceAck(ctx context.Context, node *storage.Node, injector common.
 	if injector == nil {
 		return
 	}
-	reply := replyCompliance(node.GetClusterId(), node.GetName(), central.NodeInventoryACK_ACK)
-	if err := injector.InjectMessage(ctx, reply); err != nil {
-		log.Warnf("Failed sending node-indexing-ACK to Sensor for %s: %v", nodeDatastore.NodeString(node), err)
-	} else {
-		log.Debugf("Sent node-indexing-ACK for %s", nodeDatastore.NodeString(node))
-	}
-}
+	common.SendSensorACK(ctx, central.SensorACK_ACK, central.SensorACK_NODE_INDEX_REPORT, node.GetName(), "", injector)
 
-func replyCompliance(clusterID, nodeName string, t central.NodeInventoryACK_Action) *central.MsgToSensor {
-	return &central.MsgToSensor{
-		Msg: &central.MsgToSensor_NodeInventoryAck{
-			NodeInventoryAck: &central.NodeInventoryACK{
-				ClusterId:   clusterID,
-				NodeName:    nodeName,
-				Action:      t,
-				MessageType: central.NodeInventoryACK_NodeIndexer,
-			},
-		},
-	}
+	common.SendLegacyNodeInventoryACK(
+		ctx,
+		node.GetClusterId(),
+		node.GetName(),
+		central.NodeInventoryACK_ACK,
+		central.NodeInventoryACK_NodeIndexer,
+		injector,
+	)
+
+	log.Debugf("Sent node-indexing ACKs for node %s in cluster %s", node.GetName(), node.GetClusterId())
 }

@@ -80,52 +80,85 @@ func NewQueue[T comparable](opts ...OptionFunc[T]) *Queue[T] {
 // Pull will pull an item from the queue. If the queue is empty, the default value of T will be returned.
 // Note that his does not wait for items to be available in the queue, use PullBlocking instead.
 func (q *Queue[T]) Pull() T {
-	q.mutex.Lock()
-	defer q.mutex.Unlock()
-
-	if q.queue.Len() == 0 {
-		var nilT T
-		return nilT
-	}
-
-	item := q.queue.Remove(q.queue.Front()).(T)
-
-	if q.counterMetric != nil {
-		q.counterMetric.With(prometheus.Labels{"Operation": metrics.Remove.String()}).Inc()
-	}
-
-	if q.queue.Len() == 0 {
-		q.notEmptySignal.Reset()
-	}
-
+	item, _ := q.pull()
 	return item
 }
 
 // PullBlocking will pull an item from the queue, potentially waiting until one is available.
 // In case the waitable signals done, the default value of T will be returned.
 func (q *Queue[T]) PullBlocking(waitable concurrency.Waitable) T {
-	var item T
+	item, ok := q.pull()
 	// In case multiple go routines are pull blocking, we have to ensure that the result of pull
-	// is non-zero, hence the additional for loop here.
-	for item == *new(T) {
+	// is valid, hence the additional for loop here.
+	for ; !ok; item, ok = q.pull() {
 		select {
 		case <-waitable.Done():
 			return item
 		case <-q.notEmptySignal.Done():
-			item = q.Pull()
 		}
 	}
 	return item
 }
 
-// Push adds an item to the queue.
-// Note that in case the queue is full, no error will be returned but rather only a log emitted.
-func (q *Queue[T]) Push(item T) {
+// Seq returns a iterator function that yields items from the queue as they become available.
+// The iterator will continue until the provided waitable signals done.
+func (q *Queue[T]) Seq(waitable concurrency.Waitable) func(yield func(T) bool) {
+	return func(yield func(T) bool) {
+		for {
+			select {
+			case <-waitable.Done():
+				return
+			case <-q.notEmptySignal.Done():
+				if item, ok := q.pull(); ok && !yield(item) {
+					return
+				}
+			}
+		}
+	}
+}
+
+func (q *Queue[T]) innerPull() (T, bool) {
+	q.mutex.Lock()
+	defer q.mutex.Unlock()
+
+	if q.queue.Len() == 0 {
+		var nilT T
+		return nilT, false
+	}
+
+	item := q.queue.Remove(q.queue.Front()).(T)
+	if q.queue.Len() == 0 {
+		q.notEmptySignal.Reset()
+	}
+
+	return item, true
+}
+
+func (q *Queue[T]) pull() (T, bool) {
+	item, ok := q.innerPull()
+	if ok && q.counterMetric != nil {
+		// Using `WithLabelValues` instead of `With` to avoid extra memory allocations.
+		q.counterMetric.WithLabelValues(metrics.Remove.String()).Inc()
+	}
+	return item, ok
+}
+
+func (q *Queue[T]) innerPush(item T) bool {
 	q.mutex.Lock()
 	defer q.mutex.Unlock()
 
 	if q.maxSize != 0 && q.queue.Len() >= q.maxSize {
+		return false
+	}
 
+	q.queue.PushBack(item)
+	return true
+}
+
+// Push adds an item to the queue.
+// Note that in case the queue is full, no error will be returned but rather only a log emitted.
+func (q *Queue[T]) Push(item T) {
+	if !q.innerPush(item) {
 		logging.GetRateLimitedLogger().WarnL(loggingRateLimiter, "Queue (%s) size limit reached (%d). New items added to the queue will be dropped.", q.name, q.maxSize)
 		if q.droppedMetric != nil {
 			q.droppedMetric.Inc()
@@ -133,11 +166,11 @@ func (q *Queue[T]) Push(item T) {
 		return
 	}
 
-	defer q.notEmptySignal.Signal()
+	q.notEmptySignal.Signal()
 	if q.counterMetric != nil {
-		q.counterMetric.With(prometheus.Labels{"Operation": metrics.Add.String()}).Inc()
+		// Using `WithLabelValues` instead of `With` to avoid extra memory allocations.
+		q.counterMetric.WithLabelValues(metrics.Add.String()).Inc()
 	}
-	q.queue.PushBack(item)
 }
 
 // Len returns the number of elements in the queue.

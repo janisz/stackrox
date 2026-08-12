@@ -5,16 +5,15 @@ import "time"
 // These environment variables are used in the deployment file.
 // Please check the files before deleting.
 var (
-	// CentralEndpoint is used to provide Central's reachable endpoint to a sensor.
-	CentralEndpoint = RegisterSetting("ROX_CENTRAL_ENDPOINT", WithDefault("central.stackrox.svc:443"),
+	// AdvertisedEndpoint is deprecated; use SensorEndpointSetting() or SensorEndpoint instead.
+	// Kept for backward compatibility with manual installs and Central kubectl bundle rendering.
+	AdvertisedEndpoint = RegisterSetting("ROX_ADVERTISED_ENDPOINT", WithDefault("sensor.stackrox.svc:443"),
 		StripAnyPrefix("https://", "http://"))
 
-	// AdvertisedEndpoint is used to provide the Sensor with the endpoint it
-	// should advertise to services that need to contact it, within its own cluster.
-	AdvertisedEndpoint = RegisterSetting("ROX_ADVERTISED_ENDPOINT", WithDefault("sensor.stackrox.svc:443"))
-
 	// SensorEndpoint is used to communicate the sensor endpoint to other services in the same cluster.
-	SensorEndpoint = RegisterSetting("ROX_SENSOR_ENDPOINT", WithDefault("sensor.stackrox.svc:443"))
+	// Prefer SensorEndpointSetting() for the effective endpoint (legacy fallback and namespace derivation).
+	SensorEndpoint = RegisterSetting("ROX_SENSOR_ENDPOINT", WithDefault("sensor.stackrox.svc:443"),
+		StripAnyPrefix("https://", "http://"))
 
 	// ScannerSlimGRPCEndpoint is used to communicate the scanner endpoint to other services in the same cluster.
 	// This is typically used for Sensor to communicate with a local Scanner-slim's gRPC server.
@@ -40,9 +39,6 @@ var (
 	// in the event the delegated scanning capabilities are causing unforeseen issues.
 	DelegatedScanningDisabled = RegisterBooleanSetting("ROX_DELEGATED_SCANNING_DISABLED", false)
 
-	// RegistryTLSCheckTTL will set the duration for which registry TLS checks will be cached.
-	RegistryTLSCheckTTL = registerDurationSetting("ROX_SENSOR_REGISTRY_TLS_CHECK_CACHE_TTL", 15*time.Minute)
-
 	// DeduperStateSyncTimeout defines the maximum time Sensor will wait for the expected deduper state coming from Central.
 	DeduperStateSyncTimeout = registerDurationSetting("ROX_DEDUPER_STATE_TIMEOUT", 30*time.Second)
 
@@ -50,6 +46,10 @@ var (
 	// 1 Item in the buffer = ~100 bytes per flow
 	// 100 (per flow) * 1000 (flows) * 100 (buffer size) = 10 MB
 	NetworkFlowBufferSize = RegisterIntegerSetting("ROX_SENSOR_NETFLOW_OFFLINE_BUFFER_SIZE", 100)
+
+	// NetworkFlowClosedConnRememberDuration controls how long the categorized update computer will track
+	// timestamps for closed connections to handle late-arriving updates.
+	NetworkFlowClosedConnRememberDuration = registerDurationSetting("ROX_NETFLOW_CLOSED_CONN_REMEMBER_DURATION", 6*time.Minute)
 
 	// ProcessIndicatorBufferSize indicates how many process indicators will be kept in Sensor while offline.
 	// 1 Item in the buffer = ~300 bytes
@@ -75,7 +75,14 @@ var (
 	// 20000 * 1000 = 20 MB
 	// Notice: the actual size of each item is ~40 bytes since it holds pointers to the actual objects.
 	// Multiple items can hold a pointer to the same object (e.g. same Deployment) so these numbers are pessimistic because we assume all items hold different objects.
-	DetectorDeploymentBufferSize = RegisterIntegerSetting("ROX_SENSOR_DETECTOR_DEPLOYMENT_BUFFER_SIZE", 0)
+	DetectorDeploymentBufferSize = RegisterIntegerSetting("ROX_SENSOR_DETECTOR_DEPLOYMENT_BUFFER_SIZE", 20000)
+
+	// DetectorFileAccessBufferSize size indicates how many file access will be kept in Sensor while offline in the detector.
+	// 1 Item in the buffer = ~1000 bytes
+	// 20000 * 1000 = 20 MB
+	// Notice: the actual size of each item is ~40 bytes since it holds pointers to the actual objects.
+	// Multiple items can hold a pointer to the same object (e.g. same Deployment) so these numbers are pessimistic because we assume all items hold different objects.
+	DetectorFileAccessBufferSize = RegisterIntegerSetting("ROX_SENSOR_DETECTOR_FILE_ACCESS_BUFFER_SIZE", 20000)
 
 	// BufferScaleCeiling sets the upper limit queue.ScaleSize will scale buffers and queues to.
 	// In its default, the ceiling is defined as triple the relative size.
@@ -91,5 +98,53 @@ var (
 
 	// ResponsesChannelBufferSize defines how many messages to central are we buffering before dropping messages
 	// Setting this variable to zero will disable this feature.
-	ResponsesChannelBufferSize = RegisterIntegerSetting("ROX_RESPONSES_CHANNEL_BUFFER_SIZE", 0)
+	ResponsesChannelBufferSize = RegisterIntegerSetting("ROX_RESPONSES_CHANNEL_BUFFER_SIZE", 100000)
+
+	// RequestsChannelBufferSize defines how many messages from central are we buffering before dropping messages
+	// Setting this variable to zero will create an unlimited size queue..
+	// TODO: discover the better value
+	RequestsChannelBufferSize = RegisterIntegerSetting("ROX_REQUESTS_CHANNEL_BUFFER_SIZE", 100000)
+
+	// EnrichmentPurgerTickerMaxAge controls the max age of collector updates (network flows & container endpoints)
+	// for keeping them in  Sensor's memory. Entries that has not been enriched (due to a bug or error)
+	// will stay in Sensors memory until restart. Purger cleans all those entries based on rules.
+	// The max-age is a rule of last resort (when all other rules do not apply) and is used to protect Sensor from OOM kills.
+	// Set to zero to not purge based on max-age (other purger rules will be executed).
+	// Disabled (set to 0), because removing items from the enrichment queue (hostConnections) causes
+	// unintended messages being sent to central about endpoints listening on ports being closed, whereas in fact
+	// they are not closed but only removed from the queue. To enable this, we need a refactor
+	// to decouple the enrichment queue from the mechanism that sends updates to Central.
+	EnrichmentPurgerTickerMaxAge = registerDurationSetting("ROX_ENRICHMENT_PURGER_MAX_AGE", 0, WithDurationZeroAllowed())
+	// EnrichmentPurgerTickerCycle controls how frequently purger is run to check for collector updates
+	// (network flows & container endpoints) that stuck in Sensor's memory. Set to zero to completely disable the purger.
+	EnrichmentPurgerTickerCycle = registerDurationSetting("ROX_ENRICHMENT_PURGER_UPDATE_CYCLE", 30*time.Minute, WithDurationZeroAllowed())
+	// PastSensorsMaxEntries sets the limit of entries that Sensor stores about its past instances in the `sensor-past-instances` configmap.
+	// Set to 0 to disable the feature - Sensor data about past instances won't be read nor written in the configmap.
+	PastSensorsMaxEntries = RegisterIntegerSetting("ROX_PAST_SENSORS_MAX_ENTRIES", 20).WithMinimum(2).AllowExplicitly(0)
+	// PastSensorsConfigmapName defines the name of the configmap where Sensor's metadata about past instances are stored
+	PastSensorsConfigmapName = RegisterSetting("ROX_PAST_SENSORS_CONFIG_MAP_NAME", WithDefault("sensor-past-instances"))
+
+	// ContainerIDResolutionGracePeriod defines a time period in which it is "okay" to not find the container ID in
+	// cluster entities store in Sensor. The enrichment will be retried while we are within this period. After
+	// this period, the connection will be marked as rotten and removed from the enrichment queue.
+	ContainerIDResolutionGracePeriod = registerDurationSetting("ROX_CONTAINER_ID_RESOLUTION_GRACE_PERIOD", 2*time.Minute)
+
+	// ClusterEntityResolutionWaitPeriod defines a time period in which we tolerate failed endpoint and IP lookups in the clusterEntitiesStore.
+	// All failures that happen within this period are considered "okay" and will be retried later.
+	ClusterEntityResolutionWaitPeriod = registerDurationSetting("ROX_CLUSTER_ENTITY_RESOLUTION_WAIT_PERIOD", 10*time.Second)
+
+	// NetworkFlowMaxUpdateSize is maximum number of connections and endpoints to be sent in one update.
+	NetworkFlowMaxUpdateSize = RegisterIntegerSetting("ROX_NETFLOW_MAX_UPDATE_SIZE", 150000)
+	// NetworkFlowMaxCacheSize is the maximum number of connections and endpoints sensor holds in cache.
+	NetworkFlowMaxCacheSize = RegisterIntegerSetting("ROX_NETFLOW_MAX_CACHE_SIZE", 800000)
+
+	// ClusterEntitiesSlowRecordTickLogThreshold controls the minimum RecordTick duration
+	// that triggers an Info-level log line. Ticks faster than this threshold are silently
+	// ignored (unless debug logging is enabled). Set to 0 to log every tick at Info level.
+	ClusterEntitiesSlowRecordTickLogThreshold = registerDurationSetting("ROX_CLUSTER_ENTITIES_SLOW_RECORD_TICK_LOG_THRESHOLD", 5*time.Second, WithDurationZeroAllowed())
+
+	// NetworkFlowBatching enables batching of network flow updates to smooth out data spikes.
+	NetworkFlowBatching = RegisterBooleanSetting("ROX_NETFLOW_BATCHING", false)
+	// NetworkFlowCacheLimiting enables limiting the network flow cache size to prevent memory issues.
+	NetworkFlowCacheLimiting = RegisterBooleanSetting("ROX_NETFLOW_CACHE_LIMITING", false)
 )

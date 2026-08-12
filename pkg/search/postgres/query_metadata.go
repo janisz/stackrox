@@ -4,8 +4,7 @@ import (
 	"math"
 	"strconv"
 
-	"github.com/jackc/pgtype"
-	"github.com/stackrox/rox/pkg/pointers"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/stackrox/rox/pkg/postgres"
 	"github.com/stackrox/rox/pkg/readable"
 )
@@ -25,7 +24,7 @@ var (
 	dataTypesToMetadata = map[postgres.DataType]dataTypeQueryMetadata{
 		postgres.String: {
 			alloc: func() interface{} {
-				return pointers.String("")
+				return new("")
 			},
 			printer: func(val interface{}) []string {
 				return []string{*(val.(*string))}
@@ -33,7 +32,7 @@ var (
 		},
 		postgres.Bool: {
 			alloc: func() interface{} {
-				return pointers.Bool(false)
+				return new(false)
 			},
 			printer: func(val interface{}) []string {
 				return []string{strconv.FormatBool(*(val.(*bool)))}
@@ -62,9 +61,21 @@ var (
 				return []string{readable.Time(ts.Time)}
 			},
 		},
+		postgres.DateTimeTZ: {
+			alloc: func() interface{} {
+				return &pgtype.Timestamptz{}
+			},
+			printer: func(val interface{}) []string {
+				ts, _ := val.(*pgtype.Timestamptz)
+				if ts == nil {
+					return nil
+				}
+				return []string{readable.Time(ts.Time)}
+			},
+		},
 		postgres.Enum: {
 			alloc: func() interface{} {
-				return pointers.Int(0)
+				return new(0)
 			},
 			printer: func(val interface{}) []string {
 				// The post transform func converts the enum to its string representation,
@@ -74,7 +85,7 @@ var (
 		},
 		postgres.Integer: {
 			alloc: func() interface{} {
-				return pointers.Int(0)
+				return new(0)
 			},
 			printer: func(val interface{}) []string {
 				return []string{strconv.Itoa(*val.(*int))}
@@ -82,7 +93,7 @@ var (
 		},
 		postgres.BigInteger: {
 			alloc: func() interface{} {
-				return pointers.Int64(0)
+				return new(int64(0))
 			},
 			printer: func(val interface{}) []string {
 				return []string{strconv.FormatInt(*val.(*int64), 10)}
@@ -94,7 +105,7 @@ var (
 			},
 			printer: func(val interface{}) []string {
 				asNumeric := val.(*pgtype.Numeric)
-				if asNumeric.Status != pgtype.Present {
+				if !asNumeric.Valid {
 					return nil
 				}
 				switch asNumeric.InfinityModifier {
@@ -142,7 +153,7 @@ var (
 		},
 		postgres.UUID: {
 			alloc: func() interface{} {
-				return pointers.String("")
+				return new("")
 			},
 			printer: func(val interface{}) []string {
 				return []string{*(val.(*string))}

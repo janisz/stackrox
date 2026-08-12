@@ -14,6 +14,7 @@ import (
 	"github.com/stackrox/rox/pkg/concurrency"
 	"github.com/stackrox/rox/pkg/fixtures/fixtureconsts"
 	"github.com/stackrox/rox/pkg/sensor/hash"
+	"github.com/stackrox/rox/pkg/testutils/goleak"
 	"github.com/stackrox/rox/sensor/common"
 	configMocks "github.com/stackrox/rox/sensor/common/config/mocks"
 	mocksDetector "github.com/stackrox/rox/sensor/common/detector/mocks"
@@ -60,8 +61,8 @@ func (c *centralCommunicationSuite) SetupTest() {
 	// Setup Mocks:
 	c.mockHandler.EXPECT().GetDeploymentIdentification().AnyTimes().Return(nil)
 	c.mockHandler.EXPECT().GetHelmManagedConfig().AnyTimes().Return(nil)
-	c.mockHandler.EXPECT().ProcessMessage(gomock.Any()).AnyTimes().Return(nil)
-	c.mockDetector.EXPECT().ProcessMessage(gomock.Any()).AnyTimes().Return(nil)
+	c.mockHandler.EXPECT().ProcessMessage(gomock.Any(), gomock.Any()).AnyTimes().Return(nil)
+	c.mockDetector.EXPECT().ProcessMessage(gomock.Any(), gomock.Any()).AnyTimes().Return(nil)
 	c.mockDetector.EXPECT().ProcessPolicySync(gomock.Any(), gomock.Any()).AnyTimes().Return(nil)
 }
 
@@ -105,6 +106,7 @@ func (c *centralCommunicationSuite) Test_StartCentralCommunication() {
 	syncDone := concurrency.NewSignal()
 	// Start the go routine with the mocked client
 	c.comm.Start(c.mockService, &reachable, &syncDone, c.mockHandler, c.mockDetector)
+	c.T().Cleanup(c.comm.Stop)
 	c.mockService.connected.Wait()
 
 	// Pretend that a component (listener) is sending the sync event
@@ -118,7 +120,49 @@ func (c *centralCommunicationSuite) Test_StartCentralCommunication() {
 	}
 }
 
+func (c *centralCommunicationSuite) Test_HelloMissingSensorHelloKey() {
+	testCases := map[string]struct {
+		recvMsg *central.MsgToSensor
+		recvErr error
+		wantMsg string
+	}{
+		"PermissionDenied error returns wrapped gRPC error": {
+			recvErr: status.Error(codes.PermissionDenied, "not authorized: no authorizer could authorize this request"),
+			wantMsg: "permission denied by central",
+		},
+		"Other gRPC error returns raw gRPC error": {
+			recvErr: status.Error(codes.Internal, "unexpected HTTP status code received from server"),
+			wantMsg: "unexpected HTTP status code",
+		},
+		"No error from Recv returns SensorHello not acknowledged": {
+			recvMsg: &central.MsgToSensor{},
+			recvErr: nil,
+			wantMsg: "central did not acknowledge SensorHello",
+		},
+	}
+
+	for name, tc := range testCases {
+		c.Run(name, func() {
+			_, closeFn := c.createCentralCommunication(false)
+			defer closeFn()
+
+			// Return empty headers (no SensorHello key)
+			c.mockService.client.EXPECT().Header().Return(metadata.MD{}, nil)
+			// Probe Recv returns the test error
+			c.mockService.client.EXPECT().Recv().Return(tc.recvMsg, tc.recvErr)
+
+			comm := c.comm.(*centralCommunicationImpl)
+			err := comm.hello(c.mockService.client, &central.SensorHello{})
+
+			c.Require().Error(err)
+			c.Assert().Contains(err.Error(), tc.wantMsg)
+		})
+	}
+}
+
 func (c *centralCommunicationSuite) Test_StopCentralCommunication() {
+	goleak.AssertNoGoroutineLeaks(c.T())
+
 	_, closeFn := c.createCentralCommunication(false)
 	defer closeFn()
 	expectSyncMessagesNoBlockRecv(centralSyncMessages, c.mockService)
@@ -135,7 +179,7 @@ func (c *centralCommunicationSuite) Test_StopCentralCommunication() {
 	c.mockService.connected.Wait()
 
 	// Stop CentralCommunication
-	c.comm.Stop(nil)
+	c.comm.Stop()
 	select {
 	case <-ch:
 		break
@@ -251,6 +295,7 @@ func (c *centralCommunicationSuite) Test_ClientReconciliation() {
 			syncDone := concurrency.NewSignal()
 			// Start the go routine with the mocked client
 			c.comm.Start(c.mockService, &reachable, &syncDone, c.mockHandler, c.mockDetector)
+			c.T().Cleanup(c.comm.Stop)
 			c.mockService.connected.Wait()
 
 			for _, msg := range tc.componentMessages {
@@ -317,6 +362,7 @@ func (c *centralCommunicationSuite) Test_FailuresWaitingForDeduperState() {
 			}
 			// Start the go routine with the mocked client
 			c.comm.Start(c.mockService, &reachable, &syncDone, c.mockHandler, c.mockDetector)
+			c.T().Cleanup(c.comm.Stop)
 			c.mockService.connected.Wait()
 
 			select {
@@ -388,10 +434,18 @@ func newMessagesMatcher(errorMsg string, msgs ...*central.MsgFromSensor) *messag
 	return ret
 }
 
+type fakeClusterIDPeekSetter struct{}
+
+func (f *fakeClusterIDPeekSetter) Set(_ string) {}
+
+func (f *fakeClusterIDPeekSetter) GetNoWait() string {
+	return "fake-cluster-id"
+}
+
 func (c *centralCommunicationSuite) createCentralCommunication(clientReconcile bool) (chan *message.ExpiringMessage, func()) {
 	// Create a CentralCommunication with a fake SensorComponent
 	ret := make(chan *message.ExpiringMessage)
-	c.comm = NewCentralCommunication(false, clientReconcile, NewFakeSensorComponent(ret))
+	c.comm = NewCentralCommunication(&fakeClusterIDPeekSetter{}, false, clientReconcile, NewFakeSensorComponent(ret))
 	// Initialize the gRPC mocked service
 	c.mockService = &MockSensorServiceClient{
 		connected: concurrency.NewSignal(),
@@ -508,6 +562,10 @@ type fakeSensorComponent struct {
 	responsesC chan *message.ExpiringMessage
 }
 
+func (f fakeSensorComponent) Name() string {
+	return "sensor.fakeSensorComponent"
+}
+
 func (f fakeSensorComponent) Notify(common.SensorComponentEvent) {
 	panic("implement me")
 }
@@ -516,7 +574,7 @@ func (f fakeSensorComponent) Start() error {
 	panic("implement me")
 }
 
-func (f fakeSensorComponent) Stop(error) {
+func (f fakeSensorComponent) Stop() {
 	panic("implement me")
 }
 
@@ -524,7 +582,11 @@ func (f fakeSensorComponent) Capabilities() []centralsensor.SensorCapability {
 	return []centralsensor.SensorCapability{}
 }
 
-func (f fakeSensorComponent) ProcessMessage(*central.MsgToSensor) error {
+func (f fakeSensorComponent) Accepts(*central.MsgToSensor) bool {
+	return false
+}
+
+func (f fakeSensorComponent) ProcessMessage(context.Context, *central.MsgToSensor) error {
 	return nil
 }
 

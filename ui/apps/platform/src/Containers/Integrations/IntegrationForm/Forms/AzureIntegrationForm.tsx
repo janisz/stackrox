@@ -1,11 +1,10 @@
-import React, { ReactElement } from 'react';
-import { Text, TextInput, PageSection, Form, Checkbox } from '@patternfly/react-core';
+import type { ReactElement } from 'react';
+import { Checkbox, Content, Form, PageSection, TextInput } from '@patternfly/react-core';
 import * as yup from 'yup';
 import merge from 'lodash/merge';
 
-import { ImageIntegrationBase } from 'services/ImageIntegrationsService';
+import type { ImageIntegrationBase } from 'services/ImageIntegrationsService';
 
-import usePageState from 'Containers/Integrations/hooks/usePageState';
 import useMetadata from 'hooks/useMetadata';
 import ExternalLink from 'Components/PatternFly/IconText/ExternalLink';
 import FormMessage from 'Components/PatternFly/FormMessage';
@@ -13,12 +12,15 @@ import FormTestButton from 'Components/PatternFly/FormTestButton';
 import FormSaveButton from 'Components/PatternFly/FormSaveButton';
 import FormCancelButton from 'Components/PatternFly/FormCancelButton';
 import { getVersionedDocs } from 'utils/versioning';
-import IntegrationHelpIcon from './Components/IntegrationHelpIcon';
+
+import usePageState from '../../hooks/usePageState';
 import useIntegrationForm from '../useIntegrationForm';
-import { IntegrationFormProps } from '../integrationFormTypes';
+import type { IntegrationFormProps } from '../integrationFormTypes';
 
 import IntegrationFormActions from '../IntegrationFormActions';
 import FormLabelGroup from '../FormLabelGroup';
+
+import IntegrationHelpIcon from './Components/IntegrationHelpIcon';
 
 export type AzureIntegration = {
     categories: 'REGISTRY'[];
@@ -185,7 +187,7 @@ function AzureIntegrationForm({
 
     return (
         <>
-            <PageSection variant="light" isFilled hasOverflowScroll>
+            <PageSection isFilled hasOverflowScroll>
                 <FormMessage message={message} />
                 <Form isWidthLimited>
                     <FormLabelGroup
@@ -209,7 +211,7 @@ function AzureIntegrationForm({
                     <FormLabelGroup
                         label="Endpoint"
                         isRequired
-                        labelIcon={
+                        labelHelp={
                             <IntegrationHelpIcon
                                 helpTitle="Endpoint"
                                 helpText={
@@ -238,18 +240,18 @@ function AzureIntegrationForm({
                     </FormLabelGroup>
                     <FormLabelGroup
                         label="Short-lived tokens"
-                        labelIcon={
+                        labelHelp={
                             <IntegrationHelpIcon
                                 helpTitle="Use workload identity"
                                 helpText={
                                     <>
-                                        <Text>
+                                        <Content component="p">
                                             Enables authentication with short-lived tokens using
                                             Azure managed identities or Azure workload identities.
                                             The associated identity requires permission to pull
                                             images from the registry.
-                                        </Text>
-                                        <Text>
+                                        </Content>
+                                        <Content component="p">
                                             For more information, see{' '}
                                             <ExternalLink>
                                                 <a
@@ -263,7 +265,7 @@ function AzureIntegrationForm({
                                                     RHACS documentation
                                                 </a>
                                             </ExternalLink>
-                                        </Text>
+                                        </Content>
                                     </>
                                 }
                                 ariaLabel="Help for short-lived tokens"
@@ -303,7 +305,7 @@ function AzureIntegrationForm({
                     )}
                     <FormLabelGroup
                         label="Username"
-                        labelIcon={
+                        labelHelp={
                             <IntegrationHelpIcon
                                 helpTitle="Username"
                                 helpText={
@@ -336,7 +338,7 @@ function AzureIntegrationForm({
                     </FormLabelGroup>
                     <FormLabelGroup
                         label="Password"
-                        labelIcon={
+                        labelHelp={
                             <IntegrationHelpIcon
                                 helpTitle="Password"
                                 helpText={

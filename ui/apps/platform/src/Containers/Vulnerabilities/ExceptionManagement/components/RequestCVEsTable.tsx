@@ -1,24 +1,21 @@
-import React from 'react';
 import {
+    Content,
     Flex,
     PageSection,
     Pagination,
-    Text,
-    Title,
     Toolbar,
-    ToolbarContent,
     ToolbarItem,
 } from '@patternfly/react-core';
 import { ExpandableRowContent, Table, Tbody, Td, Th, Thead, Tr } from '@patternfly/react-table';
-import { useQuery } from '@apollo/client';
-import { Link } from 'react-router-dom';
+import { gql, useQuery } from '@apollo/client';
+import { Link } from 'react-router-dom-v5-compat';
 import pluralize from 'pluralize';
 
-import { vulnerabilitiesWorkloadCvesPath } from 'routePaths';
-import { SetResult } from 'hooks/useSet';
+import { vulnerabilitiesAllImagesPath } from 'routePaths';
+import type { SetResult } from 'hooks/useSet';
 import useURLPagination from 'hooks/useURLPagination';
 import useURLSort from 'hooks/useURLSort';
-import {
+import type {
     VulnerabilityExceptionScope,
     VulnerabilityState,
 } from 'services/VulnerabilityExceptionService';
@@ -33,21 +30,25 @@ import {
     aggregateByCreatedTime,
     aggregateByDistinctCount,
     getScoreVersionsForTopCVSS,
-    sortCveDistroList,
-    getWorkloadCveOverviewSortFields,
-    getWorkloadCveOverviewDefaultSortOption,
     getSeveritySortOptions,
+    getWorkloadCveOverviewDefaultSortOption,
+    getWorkloadCveOverviewSortFields,
+    sortCveDistroList,
 } from '../../utils/sortUtils';
-import {
-    CVEListQueryResult,
-    cveListQuery,
-} from '../../WorkloadCves/Tables/WorkloadCVEOverviewTable';
-import { VulnerabilitySeverityLabel } from '../../types';
+import { cveListQuery } from '../../WorkloadCves/Tables/WorkloadCVEOverviewTable';
+import type { CVEListQueryResult } from '../../WorkloadCves/Tables/WorkloadCVEOverviewTable';
+import type { VulnerabilitySeverityLabel } from '../../types';
 import { DEFAULT_VM_PAGE_SIZE } from '../../constants';
 import { getWorkloadEntityPagePath } from '../../utils/searchUtils';
 import SeverityCountLabels from '../../components/SeverityCountLabels';
 
 import { getImageScopeSearchValue } from '../utils';
+
+const imageCVECountQuery = gql`
+    query getImageCVECount($query: String) {
+        imageCVECount(query: $query)
+    }
+`;
 
 type RequestCVEsTableProps = {
     cves: string[];
@@ -76,6 +77,10 @@ function RequestCVEsTable({
 
     const query = getRequestQueryStringForSearchFilter(queryObject);
 
+    const countQuery = useQuery<{ imageCVECount: number }>(imageCVECountQuery, {
+        variables: { query },
+    });
+
     const {
         error,
         loading: isLoading,
@@ -97,34 +102,25 @@ function RequestCVEsTable({
     const colSpan = 6;
 
     return (
-        <PageSection variant="light">
+        <PageSection>
             <Flex direction={{ default: 'column' }}>
                 <Toolbar>
-                    <ToolbarContent className="pf-v5-u-justify-content-space-between">
-                        <ToolbarItem variant="label">
-                            <Title headingLevel="h2">
-                                {data?.imageCVECount || 0} results found
-                            </Title>
-                        </ToolbarItem>
-                        <ToolbarItem variant="pagination">
-                            <Pagination
-                                itemCount={data?.imageCVECount}
-                                perPage={perPage}
-                                page={page}
-                                onSetPage={(_, newPage) => setPage(newPage)}
-                                onPerPageSelect={(_, newPerPage) => {
-                                    setPerPage(newPerPage);
-                                }}
-                            />
-                        </ToolbarItem>
-                    </ToolbarContent>
+                    <ToolbarItem variant="pagination">
+                        <Pagination
+                            itemCount={countQuery.data?.imageCVECount}
+                            perPage={perPage}
+                            page={page}
+                            onSetPage={(_, newPage) => setPage(newPage)}
+                            onPerPageSelect={(_, newPerPage) => {
+                                setPerPage(newPerPage);
+                            }}
+                        />
+                    </ToolbarItem>
                 </Toolbar>
                 <Table variant="compact">
                     <Thead noWrap>
                         <Tr>
-                            <Th>
-                                <span className="pf-v5-screen-reader">Row expansion</span>
-                            </Th>
+                            <Th screenReaderText="Row expansion" />
                             <Th sort={getSortParams('CVE')}>CVE</Th>
                             <Th
                                 sort={getSortParams(
@@ -166,11 +162,13 @@ function RequestCVEsTable({
                                 const importantCount = affectedImageCountBySeverity.important.total;
                                 const moderateCount = affectedImageCountBySeverity.moderate.total;
                                 const lowCount = affectedImageCountBySeverity.low.total;
+                                const unknownCount = affectedImageCountBySeverity.unknown.total;
                                 const filteredSeverities: VulnerabilitySeverityLabel[] = [
                                     'Critical',
                                     'Important',
                                     'Moderate',
                                     'Low',
+                                    'Unknown',
                                 ];
                                 const prioritizedDistros = sortCveDistroList(distroTuples);
                                 const scoreVersions = getScoreVersionsForTopCVSS(
@@ -188,7 +186,7 @@ function RequestCVEsTable({
                                     },
                                 };
 
-                                const cveURL = `${vulnerabilitiesWorkloadCvesPath}/${getWorkloadEntityPagePath(
+                                const cveURL = `${vulnerabilitiesAllImagesPath}/${getWorkloadEntityPagePath(
                                     'CVE',
                                     cve,
                                     vulnerabilityState,
@@ -214,6 +212,7 @@ function RequestCVEsTable({
                                                     importantCount={importantCount}
                                                     moderateCount={moderateCount}
                                                     lowCount={lowCount}
+                                                    unknownCount={unknownCount}
                                                     filteredSeverities={filteredSeverities}
                                                 />
                                             </Td>
@@ -240,7 +239,7 @@ function RequestCVEsTable({
                                             <Td colSpan={colSpan - 1}>
                                                 <ExpandableRowContent>
                                                     {prioritizedDistros.length > 0 && (
-                                                        <Text>{summary}</Text>
+                                                        <Content component="p">{summary}</Content>
                                                     )}
                                                 </ExpandableRowContent>
                                             </Td>

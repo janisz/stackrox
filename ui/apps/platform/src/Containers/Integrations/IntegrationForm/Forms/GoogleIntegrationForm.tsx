@@ -1,10 +1,10 @@
-import React, { ReactElement } from 'react';
+import type { ReactElement } from 'react';
 import {
     Alert,
     Checkbox,
+    Content,
     Form,
     PageSection,
-    Text,
     TextArea,
     TextInput,
     ToggleGroup,
@@ -13,16 +13,17 @@ import {
 import * as yup from 'yup';
 import merge from 'lodash/merge';
 
-import { GoogleImageIntegration } from 'types/imageIntegration.proto';
+import type { GoogleImageIntegration } from 'types/imageIntegration.proto';
 
-import usePageState from 'Containers/Integrations/hooks/usePageState';
 import FormMessage from 'Components/PatternFly/FormMessage';
 import FormTestButton from 'Components/PatternFly/FormTestButton';
 import FormSaveButton from 'Components/PatternFly/FormSaveButton';
 import FormCancelButton from 'Components/PatternFly/FormCancelButton';
 import ExternalLink from 'Components/PatternFly/IconText/ExternalLink';
+
+import usePageState from '../../hooks/usePageState';
 import useIntegrationForm from '../useIntegrationForm';
-import { IntegrationFormProps } from '../integrationFormTypes';
+import type { IntegrationFormProps } from '../integrationFormTypes';
 
 import IntegrationFormActions from '../IntegrationFormActions';
 import FormLabelGroup from '../FormLabelGroup';
@@ -50,7 +51,7 @@ export const validationSchema = yup.object().shape({
             .required('A category is required'),
         google: yup.object().shape({
             endpoint: yup.string().trim().required('An endpoint is required'),
-            project: yup.string().trim().required('A project is required'),
+            project: yup.string().trim(),
             wifEnabled: yup.boolean(),
             serviceAccount: yup
                 .string()
@@ -150,20 +151,22 @@ function GoogleIntegrationForm({
 
     return (
         <>
-            <PageSection variant="light" isFilled hasOverflowScroll>
+            <PageSection isFilled hasOverflowScroll>
                 <Alert
                     title="Deprecation notice"
                     component="p"
                     variant={'warning'}
                     isInline
-                    className="pf-v5-u-mb-lg"
+                    className="pf-v6-u-mb-lg"
                 >
-                    <Text>Google Container Registry will be removed in a future release.</Text>
-                    <Text>
+                    <Content component="p">
+                        Google Container Registry will be removed in a future release.
+                    </Content>
+                    <Content component="p">
                         It is recommended to use Google Artifact Registry as a registry replacement
                         and Scanner V4 as a scanner replacement.
-                    </Text>
-                    <Text>
+                    </Content>
+                    <Content component="p">
                         See the{' '}
                         <ExternalLink>
                             <a
@@ -175,7 +178,7 @@ function GoogleIntegrationForm({
                             </a>
                         </ExternalLink>
                         for more information.
-                    </Text>
+                    </Content>
                 </Alert>
                 <FormMessage message={message} />
                 <Form isWidthLimited>
@@ -246,8 +249,8 @@ function GoogleIntegrationForm({
                     </FormLabelGroup>
                     <FormLabelGroup
                         label="Project"
-                        isRequired
                         fieldId="config.google.project"
+                        helperText="Match images by the project of the registry. Leave empty to match all projects."
                         touched={touched}
                         errors={errors}
                     >

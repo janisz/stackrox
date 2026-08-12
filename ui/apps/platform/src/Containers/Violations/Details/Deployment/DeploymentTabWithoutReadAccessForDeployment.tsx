@@ -1,7 +1,7 @@
-import React, { ReactElement } from 'react';
+import type { ReactElement } from 'react';
 import { Card, CardBody, CardTitle, Flex, FlexItem } from '@patternfly/react-core';
 
-import { AlertDeployment } from 'types/alert.proto';
+import type { AlertDeployment } from 'types/alert.proto';
 
 import DeploymentOverview from './DeploymentOverview';
 
@@ -21,7 +21,7 @@ function DeploymentTabWithoutReadAccessForDeployment({
             <Flex flex={{ default: 'flex_1' }}>
                 <Flex direction={{ default: 'column' }} flex={{ default: 'flex_1' }}>
                     <FlexItem>
-                        <Card isFlat>
+                        <Card>
                             <CardTitle component="h3">Deployment overview</CardTitle>
                             <CardBody>
                                 <DeploymentOverview

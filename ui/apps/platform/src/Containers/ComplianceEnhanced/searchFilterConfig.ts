@@ -1,17 +1,49 @@
-import { clusterAttributes } from 'Components/CompoundSearchFilter/attributes/cluster';
+import {
+    clusterIdAttribute,
+    clusterLabelAttribute,
+    clusterNameAttribute,
+} from 'Components/CompoundSearchFilter/attributes/cluster';
+import { profileName, profileType } from 'Components/CompoundSearchFilter/attributes/profile';
 import { profileCheckAttributes } from 'Components/CompoundSearchFilter/attributes/profileCheck';
-import { CompoundSearchFilterEntity } from 'Components/CompoundSearchFilter/types';
+import type {
+    CompoundSearchFilterEntity,
+    SelectSearchFilterAttribute,
+} from 'Components/CompoundSearchFilter/types';
 
-const profileCheckSearchFilterConfig: CompoundSearchFilterEntity = {
+import { CHECK_STATUS_QUERY } from './Coverage/compliance.coverage.constants';
+
+export const profileSearchFilterConfig: CompoundSearchFilterEntity = {
+    displayName: 'Profile',
+    searchCategory: 'COMPLIANCE',
+    attributes: [profileName, profileType],
+};
+
+export const profileCheckSearchFilterConfig: CompoundSearchFilterEntity = {
     displayName: 'Profile check',
     searchCategory: 'COMPLIANCE',
     attributes: profileCheckAttributes,
 };
 
-const clusterSearchFilterConfig: CompoundSearchFilterEntity = {
+export const clusterSearchFilterConfig: CompoundSearchFilterEntity = {
     displayName: 'Cluster',
     searchCategory: 'CLUSTERS',
-    attributes: clusterAttributes,
+    attributes: [clusterIdAttribute, clusterLabelAttribute, clusterNameAttribute],
 };
 
-export { profileCheckSearchFilterConfig, clusterSearchFilterConfig };
+export const attributeForComplianceCheckStatus: SelectSearchFilterAttribute = {
+    displayName: 'Compliance status',
+    filterChipLabel: 'Compliance status',
+    searchTerm: CHECK_STATUS_QUERY,
+    inputType: 'select',
+    inputProps: {
+        options: [
+            { label: 'Pass', value: 'Pass' },
+            { label: 'Fail', value: 'Fail' },
+            { label: 'Error', value: 'Error' },
+            { label: 'Info', value: 'Info' },
+            { label: 'Manual', value: 'Manual' },
+            { label: 'Not Applicable', value: 'Not Applicable' },
+            { label: 'Inconsistent', value: 'Inconsistent' },
+        ],
+    },
+};

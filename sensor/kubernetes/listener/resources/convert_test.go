@@ -1,18 +1,22 @@
 package resources
 
 import (
+	"fmt"
 	"testing"
 	"time"
 
 	"github.com/stackrox/rox/generated/internalapi/central"
 	"github.com/stackrox/rox/generated/storage"
+	"github.com/stackrox/rox/pkg/centralsensor"
 	"github.com/stackrox/rox/pkg/features"
+	"github.com/stackrox/rox/pkg/images/utils"
 	imageUtils "github.com/stackrox/rox/pkg/images/utils"
 	"github.com/stackrox/rox/pkg/kubernetes"
 	"github.com/stackrox/rox/pkg/protoassert"
 	"github.com/stackrox/rox/pkg/protocompat"
 	"github.com/stackrox/rox/pkg/set"
 	"github.com/stackrox/rox/pkg/testutils"
+	"github.com/stackrox/rox/sensor/common/centralcaps"
 	"github.com/stackrox/rox/sensor/kubernetes/listener/resources/references"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -87,7 +91,7 @@ func TestPopulateNonStaticFieldWithPod(t *testing.T) {
 			expectedAction: central.ResourceAction_REMOVE_RESOURCE,
 		},
 	}
-	storeProvider := InitializeStore()
+	storeProvider := InitializeStore(nil)
 	for _, c := range cases {
 		ph := references.NewParentHierarchy()
 		newDeploymentEventFromResource(c.inputObj, &c.action, "Pod", testClusterID, nil,
@@ -195,6 +199,48 @@ func TestPopulateImageMetadata(t *testing.T) {
 				{
 					expectedID:          "sha256:88c7e66e637f46e6bc0b95ddb1e755d616d9d76568b89af7c75c4b4aa7cfa4e3",
 					expectedNotPullable: true,
+				},
+			},
+		},
+		{
+			name: "Image with latest tag, empty status, pullable",
+			wrap: []wrapContainer{
+				{
+					image: "stackrox.io/main:latest",
+				},
+			},
+			pods: []pod{
+				{
+					images: []string{"stackrox.io/main:latest"},
+					imageIDsInStatus: []string{
+						"",
+					},
+				},
+			},
+			expectedMetadata: []metadata{
+				{
+					expectedID: "",
+				},
+			},
+		},
+		{
+			name: "Image with ID, empty status, pullable",
+			wrap: []wrapContainer{
+				{
+					image: "stackrox.io/main@sha256:88c7e66e637f46e6bc0b95ddb1e755d616d9d76568b89af7c75c4b4aa7cfa4e3",
+				},
+			},
+			pods: []pod{
+				{
+					images: []string{"stackrox.io/main:latest"},
+					imageIDsInStatus: []string{
+						"",
+					},
+				},
+			},
+			expectedMetadata: []metadata{
+				{
+					expectedID: "sha256:88c7e66e637f46e6bc0b95ddb1e755d616d9d76568b89af7c75c4b4aa7cfa4e3",
 				},
 			},
 		},
@@ -347,23 +393,27 @@ func TestPopulateImageMetadata(t *testing.T) {
 			wrap := deploymentWrap{
 				Deployment: &storage.Deployment{},
 			}
-			for _, container := range c.wrap {
+			for i, container := range c.wrap {
+				name := fmt.Sprintf("container-%d", i)
 				img, err := imageUtils.GenerateImageFromString(container.image)
 				require.NoError(t, err)
 				wrap.Containers = append(wrap.Containers, &storage.Container{
+					Name:  name,
 					Image: img,
 				})
-
 			}
 
 			pods := make([]*v1.Pod, 0, len(c.pods))
 			for _, pod := range c.pods {
 				k8sPod := &v1.Pod{}
-				for _, img := range pod.images {
-					k8sPod.Spec.Containers = append(k8sPod.Spec.Containers, v1.Container{Image: img})
+				for i, img := range pod.images {
+					name := fmt.Sprintf("container-%d", i)
+					k8sPod.Spec.Containers = append(k8sPod.Spec.Containers, v1.Container{Name: name, Image: img})
 				}
-				for _, imageID := range pod.imageIDsInStatus {
+				for i, imageID := range pod.imageIDsInStatus {
+					name := fmt.Sprintf("container-%d", i)
 					k8sPod.Status.ContainerStatuses = append(k8sPod.Status.ContainerStatuses, v1.ContainerStatus{
+						Name:    name,
 						ImageID: imageID,
 					})
 				}
@@ -372,12 +422,112 @@ func TestPopulateImageMetadata(t *testing.T) {
 
 			wrap.populateImageMetadata(localImages, pods...)
 			for i, m := range c.expectedMetadata {
-				assert.Equal(t, m.expectedID, wrap.Deployment.Containers[i].Image.Id)
-				assert.Equal(t, m.expectedNotPullable, wrap.Deployment.Containers[i].Image.NotPullable)
-				assert.Equal(t, m.expectedIsClusterLocal, wrap.Deployment.Containers[i].Image.IsClusterLocal)
+				assert.Equal(t, m.expectedID, wrap.GetDeployment().GetContainers()[i].GetImage().GetId())
+				assert.Equal(t, m.expectedNotPullable, wrap.GetDeployment().GetContainers()[i].GetImage().GetNotPullable())
+				assert.Equal(t, m.expectedIsClusterLocal, wrap.GetDeployment().GetContainers()[i].GetImage().GetIsClusterLocal())
 			}
 		})
 	}
+}
+
+func TestPopulateImageMetadataWithInitContainers(t *testing.T) {
+	// Simulates a deployment with init containers in deployment.Containers that do not
+	// appear in pod.Status.ContainerStatuses. Name-based matching should skip the init
+	// containers and correctly assign digests to the regular containers.
+	wrap := deploymentWrap{
+		Deployment: &storage.Deployment{},
+	}
+
+	initImg, err := imageUtils.GenerateImageFromString("docker.io/library/busybox:latest")
+	require.NoError(t, err)
+	nginxImg, err := imageUtils.GenerateImageFromString("docker.io/library/nginx:latest")
+	require.NoError(t, err)
+	redisImg, err := imageUtils.GenerateImageFromString("docker.io/library/redis:latest")
+	require.NoError(t, err)
+
+	wrap.Containers = []*storage.Container{
+		{Name: "init-setup", Image: initImg},
+		{Name: "nginx", Image: nginxImg},
+		{Name: "redis", Image: redisImg},
+	}
+
+	pod := &v1.Pod{
+		Spec: v1.PodSpec{
+			Containers: []v1.Container{
+				{Name: "nginx", Image: "docker.io/library/nginx:latest"},
+				{Name: "redis", Image: "docker.io/library/redis:latest"},
+			},
+		},
+		Status: v1.PodStatus{
+			ContainerStatuses: []v1.ContainerStatus{
+				{
+					Name:    "nginx",
+					ImageID: "docker-pullable://docker.io/library/nginx@sha256:abc123",
+				},
+				{
+					Name:    "redis",
+					ImageID: "docker-pullable://docker.io/library/redis@sha256:def456",
+				},
+			},
+		},
+	}
+
+	wrap.populateImageMetadata(nil, pod)
+
+	// Init container should have no digest (not in pod status).
+	assert.Empty(t, wrap.GetDeployment().GetContainers()[0].GetImage().GetId())
+	// Regular containers should have correct digests matched by name.
+	assert.Equal(t, "sha256:abc123", wrap.GetDeployment().GetContainers()[1].GetImage().GetId())
+	assert.Equal(t, "sha256:def456", wrap.GetDeployment().GetContainers()[2].GetImage().GetId())
+}
+
+func TestPopulateImageMetadataWithInitContainerStatuses(t *testing.T) {
+	t.Setenv(features.InitContainerSupport.EnvVar(), "true")
+	// Verifies that init container image digests are populated from
+	// pod.Status.InitContainerStatuses.
+	wrap := deploymentWrap{
+		Deployment: &storage.Deployment{},
+	}
+
+	initImg, err := imageUtils.GenerateImageFromString("docker.io/library/busybox:latest")
+	require.NoError(t, err)
+	nginxImg, err := imageUtils.GenerateImageFromString("docker.io/library/nginx:latest")
+	require.NoError(t, err)
+
+	wrap.Containers = []*storage.Container{
+		{Name: "init-setup", Image: initImg, Type: storage.ContainerType_INIT},
+		{Name: "nginx", Image: nginxImg},
+	}
+
+	pod := &v1.Pod{
+		Spec: v1.PodSpec{
+			InitContainers: []v1.Container{
+				{Name: "init-setup", Image: "docker.io/library/busybox:latest"},
+			},
+			Containers: []v1.Container{
+				{Name: "nginx", Image: "docker.io/library/nginx:latest"},
+			},
+		},
+		Status: v1.PodStatus{
+			InitContainerStatuses: []v1.ContainerStatus{
+				{
+					Name:    "init-setup",
+					ImageID: "docker-pullable://docker.io/library/busybox@sha256:initdigest123",
+				},
+			},
+			ContainerStatuses: []v1.ContainerStatus{
+				{
+					Name:    "nginx",
+					ImageID: "docker-pullable://docker.io/library/nginx@sha256:abc123",
+				},
+			},
+		},
+	}
+
+	wrap.populateImageMetadata(nil, pod)
+
+	assert.Equal(t, "sha256:initdigest123", wrap.GetDeployment().GetContainers()[0].GetImage().GetId())
+	assert.Equal(t, "sha256:abc123", wrap.GetDeployment().GetContainers()[1].GetImage().GetId())
 }
 
 func TestPopulateImageMetadataWithUnqualified(t *testing.T) {
@@ -502,23 +652,27 @@ func TestPopulateImageMetadataWithUnqualified(t *testing.T) {
 			wrap := deploymentWrap{
 				Deployment: &storage.Deployment{},
 			}
-			for _, container := range c.wrap {
+			for i, container := range c.wrap {
+				name := fmt.Sprintf("container-%d", i)
 				img, err := imageUtils.GenerateImageFromString(container.image)
 				require.NoError(t, err)
 				wrap.Containers = append(wrap.Containers, &storage.Container{
+					Name:  name,
 					Image: img,
 				})
-
 			}
 
 			pods := make([]*v1.Pod, 0, len(c.pods))
 			for _, pod := range c.pods {
 				k8sPod := &v1.Pod{}
-				for _, img := range pod.images {
-					k8sPod.Spec.Containers = append(k8sPod.Spec.Containers, v1.Container{Image: img})
+				for i, img := range pod.images {
+					name := fmt.Sprintf("container-%d", i)
+					k8sPod.Spec.Containers = append(k8sPod.Spec.Containers, v1.Container{Name: name, Image: img})
 				}
-				for _, imageID := range pod.imageIDsInStatus {
+				for i, imageID := range pod.imageIDsInStatus {
+					name := fmt.Sprintf("container-%d", i)
 					k8sPod.Status.ContainerStatuses = append(k8sPod.Status.ContainerStatuses, v1.ContainerStatus{
+						Name:    name,
 						ImageID: imageID,
 					})
 				}
@@ -527,15 +681,14 @@ func TestPopulateImageMetadataWithUnqualified(t *testing.T) {
 
 			wrap.populateImageMetadata(localImages, pods...)
 			for i, m := range c.expectedMetadata {
-				assert.Equal(t, m.expectedID, wrap.Deployment.Containers[i].Image.Id)
-				protoassert.Equal(t, m.expectedImageName, wrap.Deployment.Containers[i].Image.Name)
+				assert.Equal(t, m.expectedID, wrap.GetDeployment().GetContainers()[i].GetImage().GetId())
+				protoassert.Equal(t, m.expectedImageName, wrap.GetDeployment().GetContainers()[i].GetImage().GetName())
 			}
 		})
 	}
 }
 
 func TestConvert(t *testing.T) {
-	t.Parallel()
 
 	cases := []struct {
 		name               string
@@ -837,6 +990,7 @@ func TestConvert(t *testing.T) {
 							},
 						},
 						SecurityContext: &storage.SecurityContext{
+							AllowPrivilegeEscalation: true,
 							Selinux: &storage.SecurityContext_SELinux{
 								User:  "user",
 								Role:  "role",
@@ -1200,6 +1354,7 @@ func TestConvert(t *testing.T) {
 							},
 						},
 						SecurityContext: &storage.SecurityContext{
+							AllowPrivilegeEscalation: true,
 							Selinux: &storage.SecurityContext_SELinux{
 								User:  "user",
 								Role:  "role",
@@ -1290,9 +1445,14 @@ func TestConvert(t *testing.T) {
 		},
 	}
 
-	storeProvider := InitializeStore()
+	storeProvider := InitializeStore(nil)
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
+			if features.FlattenImageData.Enabled() {
+				for _, container := range c.expectedDeployment.GetContainers() {
+					container.GetImage().IdV2 = utils.NewImageV2ID(container.GetImage().GetName(), container.GetImage().GetId())
+				}
+			}
 			actual := newDeploymentEventFromResource(c.inputObj, &c.action, c.deploymentType, testClusterID,
 				c.podLister, mockNamespaceStore, hierarchyFromPodLister(c.podLister), "",
 				storeProvider.orchestratorNamespaces).GetDeployment()
@@ -1300,6 +1460,47 @@ func TestConvert(t *testing.T) {
 				actual.StateTimestamp = 0
 			}
 			protoassert.Equal(t, c.expectedDeployment, actual)
+		})
+	}
+}
+
+func TestToEventInitContainerCompatibility(t *testing.T) {
+	cases := map[string]struct {
+		caps               []centralsensor.CentralCapability
+		expectedContainers []string
+	}{
+		"filters init containers when Central lacks capability": {
+			caps:               []centralsensor.CentralCapability{},
+			expectedContainers: []string{"main-app"},
+		},
+		"includes init containers when Central has capability": {
+			caps:               []centralsensor.CentralCapability{centralsensor.InitContainerSupport},
+			expectedContainers: []string{"init-setup", "main-app"},
+		},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Setenv(features.InitContainerSupport.EnvVar(), "true")
+			centralcaps.Set(tc.caps)
+			t.Cleanup(func() { centralcaps.Set(nil) })
+
+			wrap := &deploymentWrap{
+				Deployment: &storage.Deployment{
+					Id: "test-deploy",
+					Containers: []*storage.Container{
+						{Name: "init-setup", Type: storage.ContainerType_INIT},
+						{Name: "main-app", Type: storage.ContainerType_REGULAR},
+					},
+				},
+			}
+
+			event := wrap.toEvent(central.ResourceAction_CREATE_RESOURCE)
+			dep := event.GetDeployment()
+			require.Len(t, dep.GetContainers(), len(tc.expectedContainers))
+			for i, name := range tc.expectedContainers {
+				assert.Equal(t, name, dep.GetContainers()[i].GetName())
+			}
 		})
 	}
 }
@@ -1316,4 +1517,109 @@ func (l *mockPodLister) List(_ labels.Selector) ([]*v1.Pod, error) {
 
 func (l *mockPodLister) Pods(_ string) v1listers.PodNamespaceLister {
 	return l
+}
+
+type selectorAwarePodLister struct {
+	v1listers.PodLister
+	v1listers.PodNamespaceLister
+	pods []*v1.Pod
+}
+
+func (l *selectorAwarePodLister) List(sel labels.Selector) ([]*v1.Pod, error) {
+	var matched []*v1.Pod
+	for _, p := range l.pods {
+		if sel.Matches(labels.Set(p.Labels)) {
+			matched = append(matched, p)
+		}
+	}
+	return matched, nil
+}
+
+func (l *selectorAwarePodLister) Pods(_ string) v1listers.PodNamespaceLister {
+	return l
+}
+
+func TestGetPodsOwnershipFallback(t *testing.T) {
+	dcUID := "dc-uid-123"
+	rcUID := "rc-uid-456"
+
+	hierarchy := references.NewParentHierarchy()
+	// RC is child of DC
+	hierarchy.AddManually(rcUID, dcUID)
+
+	ownedPod := &v1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "pod-owned",
+			Namespace: "namespace",
+			UID:       "pod-uid-1",
+			Labels:    map[string]string{"app": "test", "deploymentconfig": "actual-dc-name"},
+			OwnerReferences: []metav1.OwnerReference{
+				{
+					APIVersion: "v1",
+					Kind:       "ReplicationController",
+					Name:       "test-rc",
+					UID:        types.UID(rcUID),
+				},
+			},
+		},
+	}
+	hierarchy.Add(ownedPod)
+
+	unownedPod := &v1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "pod-unowned",
+			Namespace: "namespace",
+			UID:       "pod-uid-2",
+			Labels:    map[string]string{"app": "unrelated"},
+		},
+	}
+
+	cases := map[string]struct {
+		selector     *metav1.LabelSelector
+		pods         []*v1.Pod
+		expectedPods []string
+	}{
+		"labels match - finds pod by selector": {
+			selector: &metav1.LabelSelector{
+				MatchLabels: map[string]string{"app": "test", "deploymentconfig": "actual-dc-name"},
+			},
+			pods:         []*v1.Pod{ownedPod, unownedPod},
+			expectedPods: []string{"pod-owned"},
+		},
+		"labels mismatch - falls back to ownership": {
+			selector: &metav1.LabelSelector{
+				MatchLabels: map[string]string{"app": "test", "deploymentconfig": "wrong-name"},
+			},
+			pods:         []*v1.Pod{ownedPod, unownedPod},
+			expectedPods: []string{"pod-owned"},
+		},
+		"no owned pods at all - returns empty": {
+			selector: &metav1.LabelSelector{
+				MatchLabels: map[string]string{"app": "test", "deploymentconfig": "wrong-name"},
+			},
+			pods:         []*v1.Pod{unownedPod},
+			expectedPods: nil,
+		},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			wrap := &deploymentWrap{
+				Deployment: &storage.Deployment{
+					Id:        dcUID,
+					Namespace: "namespace",
+				},
+			}
+			lister := &selectorAwarePodLister{pods: tc.pods}
+
+			pods, err := wrap.getPods(hierarchy, tc.selector, lister)
+			require.NoError(t, err)
+
+			var podNames []string
+			for _, p := range pods {
+				podNames = append(podNames, p.Name)
+			}
+			assert.Equal(t, tc.expectedPods, podNames)
+		})
+	}
 }

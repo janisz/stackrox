@@ -19,6 +19,9 @@ const (
 	// RegexPrefix is the prefix for regex queries.
 	RegexPrefix = "r/"
 
+	// ContainsPrefix is the prefix for regex contained queries.
+	ContainsPrefix = "c/"
+
 	// WildcardString represents the string we use for wildcard queries.
 	WildcardString = "*"
 
@@ -36,6 +39,9 @@ const (
 
 	// TimeRangePrefix is the prefix for a time range query
 	TimeRangePrefix = "tr/"
+
+	// GlobPrefix is the prefix for a path glob query
+	GlobPrefix = "g/"
 
 	// MaxQueryParameters is the maximum number of query parameters for a single statement
 	MaxQueryParameters = math.MaxUint16
@@ -266,6 +272,17 @@ func (qb *QueryBuilder) AddSelectFields(selects ...*Select) *QueryBuilder {
 	return qb
 }
 
+// ForSearchResults is a convenience method that adds select fields commonly needed for
+// constructing SearchResult protos (name and location fields).
+// This enables single-pass queries instead of the traditional 2-pass pattern.
+// Example: qb.ForSearchResults(search.ImageName, search.ImageRegistry)
+func (qb *QueryBuilder) ForSearchResults(fields ...FieldLabel) *QueryBuilder {
+	for _, field := range fields {
+		qb.AddSelectFields(NewQuerySelect(field))
+	}
+	return qb
+}
+
 // WithGroupBy sets query group by.
 func (qb *QueryBuilder) WithGroupBy(grpBy *GroupBy) *QueryBuilder {
 	qb.groupBy = grpBy
@@ -476,7 +493,7 @@ func (qb *QueryBuilder) ProtoQuery() *v1.Query {
 	// Sort the queries by field value, to ensure consistency of output.
 	fields := qb.getSortedFields()
 
-	var qSelects []*v1.QuerySelect
+	qSelects := make([]*v1.QuerySelect, 0, len(qb.selectFields))
 	for _, sf := range qb.selectFields {
 		qSelects = append(qSelects, sf.qs)
 	}
@@ -491,7 +508,7 @@ func (qb *QueryBuilder) ProtoQuery() *v1.Query {
 	}
 
 	cq := ConjunctionQuery(queries...)
-	if qSelects != nil {
+	if len(qSelects) > 0 {
 		cq.Selects = qSelects
 	}
 

@@ -1,5 +1,13 @@
-import { ClientPolicy, Policy } from 'types/policy.proto';
-import { getClientWizardPolicy, getPolicyOriginLabel, getServerPolicy } from './policies.utils';
+import type { ClientPolicy, Policy } from 'types/policy.proto';
+import {
+    getClientWizardPolicy,
+    getLifeCyclesUpdates,
+    getPolicyOriginLabel,
+    getServerPolicy,
+    initialExcludedDeployment,
+    initialScope,
+    isExcludedDeploymentScopeEmpty,
+} from './policies.utils';
 
 describe('policies.utils', () => {
     describe('getClientWizardPolicy', () => {
@@ -23,6 +31,8 @@ describe('policies.utils', () => {
                                 cluster: '5c5c9aae-9c92-4648-88a2-9e593c225fa1',
                                 namespace: 'kube-*',
                                 label: { key: 'app', value: 'archlinux' },
+                                namespaceLabel: { key: 'namespace-key', value: 'namespace-value' },
+                                clusterLabel: { key: 'cluster-key', value: 'cluster-value' },
                             },
                         },
                         image: null,
@@ -46,11 +56,15 @@ describe('policies.utils', () => {
                         cluster: '5c5c9aae-9c92-4648-88a2-9e593c225fa1',
                         namespace: 'ui-testing',
                         label: { key: 'app', value: 'include1' },
+                        namespaceLabel: { key: 'namespace-key', value: 'namespace-value1' },
+                        clusterLabel: { key: 'cluster-key', value: 'cluster-value1' },
                     },
                     {
                         cluster: '5c5c9aae-9c92-4648-88a2-9e593c225fa1',
                         namespace: 'ui-testing2',
                         label: { key: 'app', value: 'include2' },
+                        namespaceLabel: { key: 'namespace-key', value: 'namespace-value2' },
+                        clusterLabel: { key: 'cluster-key', value: 'cluster-value2' },
                     },
                 ],
                 severity: 'LOW_SEVERITY',
@@ -69,7 +83,7 @@ describe('policies.utils', () => {
                                 fieldName: 'Dockerfile Line',
                                 booleanOperator: 'OR',
                                 negate: false,
-                                values: [{ value: 'ENV=ENV=myapp=test' }, { value: 'USER=root' }],
+                                values: [{ value: 'ENV=myapp=test' }, { value: 'USER=root' }],
                             },
                             {
                                 fieldName: 'Image Signature Verified By',
@@ -78,6 +92,19 @@ describe('policies.utils', () => {
                                 values: [
                                     {
                                         value: 'io.stackrox.signatureintegration.bef8ab45-2f06-4937-9a97-5c8b5b049f54',
+                                    },
+                                ],
+                            },
+                            {
+                                fieldName: 'Environment Variable',
+                                booleanOperator: 'OR',
+                                negate: false,
+                                values: [
+                                    {
+                                        value: 'RAW=SOMEVAR=val_with=equals',
+                                    },
+                                    {
+                                        value: 'RAW=OTHERVAR=normal_value',
                                     },
                                 ],
                             },
@@ -109,6 +136,7 @@ describe('policies.utils', () => {
                 mitreVectorsLocked: false,
                 isDefault: false,
                 source: 'IMPERATIVE',
+                evaluationFilter: null,
             };
 
             const clientPolicy: ClientPolicy = {
@@ -130,6 +158,8 @@ describe('policies.utils', () => {
                                 cluster: '5c5c9aae-9c92-4648-88a2-9e593c225fa1',
                                 namespace: 'kube-*',
                                 label: { key: 'app', value: 'archlinux' },
+                                namespaceLabel: { key: 'namespace-key', value: 'namespace-value' },
+                                clusterLabel: { key: 'cluster-key', value: 'cluster-value' },
                             },
                         },
                         image: null,
@@ -153,11 +183,15 @@ describe('policies.utils', () => {
                         cluster: '5c5c9aae-9c92-4648-88a2-9e593c225fa1',
                         namespace: 'ui-testing',
                         label: { key: 'app', value: 'include1' },
+                        namespaceLabel: { key: 'namespace-key', value: 'namespace-value1' },
+                        clusterLabel: { key: 'cluster-key', value: 'cluster-value1' },
                     },
                     {
                         cluster: '5c5c9aae-9c92-4648-88a2-9e593c225fa1',
                         namespace: 'ui-testing2',
                         label: { key: 'app', value: 'include2' },
+                        namespaceLabel: { key: 'namespace-key', value: 'namespace-value2' },
+                        clusterLabel: { key: 'cluster-key', value: 'cluster-value2' },
                     },
                 ],
                 severity: 'LOW_SEVERITY',
@@ -177,7 +211,7 @@ describe('policies.utils', () => {
                                 booleanOperator: 'OR',
                                 negate: false,
                                 values: [
-                                    { value: 'ENV=ENV=myapp=test' },
+                                    { key: 'ENV', value: 'myapp=test' },
                                     { key: 'USER', value: 'root' },
                                 ],
                             },
@@ -190,6 +224,23 @@ describe('policies.utils', () => {
                                         arrayValue: [
                                             'io.stackrox.signatureintegration.bef8ab45-2f06-4937-9a97-5c8b5b049f54',
                                         ],
+                                    },
+                                ],
+                            },
+                            {
+                                fieldName: 'Environment Variable',
+                                booleanOperator: 'OR',
+                                negate: false,
+                                values: [
+                                    {
+                                        source: 'RAW',
+                                        key: 'SOMEVAR',
+                                        value: 'val_with=equals',
+                                    },
+                                    {
+                                        source: 'RAW',
+                                        key: 'OTHERVAR',
+                                        value: 'normal_value',
                                     },
                                 ],
                             },
@@ -231,6 +282,8 @@ describe('policies.utils', () => {
                             cluster: '5c5c9aae-9c92-4648-88a2-9e593c225fa1',
                             namespace: 'kube-*',
                             label: { key: 'app', value: 'archlinux' },
+                            namespaceLabel: { key: 'namespace-key', value: 'namespace-value' },
+                            clusterLabel: { key: 'cluster-key', value: 'cluster-value' },
                         },
                     },
                 ],
@@ -242,7 +295,7 @@ describe('policies.utils', () => {
                                 fieldName: 'Dockerfile Line',
                                 booleanOperator: 'OR',
                                 negate: false,
-                                values: [{ value: 'ENV=ENV=myapp=test' }, { value: 'USER=root' }],
+                                values: [{ value: 'ENV=myapp=test' }, { value: 'USER=root' }],
                             },
                             {
                                 fieldName: 'Image Signature Verified By',
@@ -251,6 +304,19 @@ describe('policies.utils', () => {
                                 values: [
                                     {
                                         value: 'io.stackrox.signatureintegration.bef8ab45-2f06-4937-9a97-5c8b5b049f54',
+                                    },
+                                ],
+                            },
+                            {
+                                fieldName: 'Environment Variable',
+                                booleanOperator: 'OR',
+                                negate: false,
+                                values: [
+                                    {
+                                        value: 'RAW=SOMEVAR=val_with=equals',
+                                    },
+                                    {
+                                        value: 'RAW=OTHERVAR=normal_value',
                                     },
                                 ],
                             },
@@ -275,6 +341,7 @@ describe('policies.utils', () => {
                     },
                 ],
                 source: 'IMPERATIVE',
+                evaluationFilter: null,
             };
 
             expect(getClientWizardPolicy(serverPolicy)).toEqual(clientPolicy);
@@ -301,6 +368,8 @@ describe('policies.utils', () => {
                                 cluster: '5c5c9aae-9c92-4648-88a2-9e593c225fa1',
                                 namespace: 'kube-*',
                                 label: { key: 'app', value: 'archlinux' },
+                                namespaceLabel: { key: 'namespace-key', value: 'namespace-value' },
+                                clusterLabel: { key: 'cluster-key', value: 'cluster-value' },
                             },
                         },
                         image: null,
@@ -321,11 +390,15 @@ describe('policies.utils', () => {
                         cluster: '5c5c9aae-9c92-4648-88a2-9e593c225fa1',
                         namespace: 'ui-testing',
                         label: { key: 'app', value: 'include1' },
+                        namespaceLabel: { key: 'namespace-key', value: 'namespace-value1' },
+                        clusterLabel: { key: 'cluster-key', value: 'cluster-value1' },
                     },
                     {
                         cluster: '5c5c9aae-9c92-4648-88a2-9e593c225fa1',
                         namespace: 'ui-testing2',
                         label: { key: 'app', value: 'include2' },
+                        namespaceLabel: { key: 'namespace-key', value: 'namespace-value2' },
+                        clusterLabel: { key: 'cluster-key', value: 'cluster-value2' },
                     },
                 ],
                 severity: 'LOW_SEVERITY',
@@ -344,7 +417,7 @@ describe('policies.utils', () => {
                                 fieldName: 'Dockerfile Line',
                                 booleanOperator: 'OR',
                                 negate: false,
-                                values: [{ value: 'ENV=ENV=myapp=test' }, { value: 'USER=root' }],
+                                values: [{ value: 'ENV=myapp=test' }, { value: 'USER=root' }],
                             },
                             {
                                 fieldName: 'Image Signature Verified By',
@@ -353,6 +426,19 @@ describe('policies.utils', () => {
                                 values: [
                                     {
                                         value: 'io.stackrox.signatureintegration.bef8ab45-2f06-4937-9a97-5c8b5b049f54',
+                                    },
+                                ],
+                            },
+                            {
+                                fieldName: 'Environment Variable',
+                                booleanOperator: 'OR',
+                                negate: false,
+                                values: [
+                                    {
+                                        value: 'RAW=SOMEVAR=val_with=equals',
+                                    },
+                                    {
+                                        value: 'RAW=OTHERVAR=normal_value',
                                     },
                                 ],
                             },
@@ -384,6 +470,7 @@ describe('policies.utils', () => {
                 mitreVectorsLocked: false,
                 isDefault: false,
                 source: 'IMPERATIVE',
+                evaluationFilter: null,
             };
 
             const clientPolicy: ClientPolicy = {
@@ -405,6 +492,8 @@ describe('policies.utils', () => {
                                 cluster: '5c5c9aae-9c92-4648-88a2-9e593c225fa1',
                                 namespace: 'kube-*',
                                 label: { key: 'app', value: 'archlinux' },
+                                namespaceLabel: { key: 'namespace-key', value: 'namespace-value' },
+                                clusterLabel: { key: 'cluster-key', value: 'cluster-value' },
                             },
                         },
                         image: null,
@@ -428,11 +517,15 @@ describe('policies.utils', () => {
                         cluster: '5c5c9aae-9c92-4648-88a2-9e593c225fa1',
                         namespace: 'ui-testing',
                         label: { key: 'app', value: 'include1' },
+                        namespaceLabel: { key: 'namespace-key', value: 'namespace-value1' },
+                        clusterLabel: { key: 'cluster-key', value: 'cluster-value1' },
                     },
                     {
                         cluster: '5c5c9aae-9c92-4648-88a2-9e593c225fa1',
                         namespace: 'ui-testing2',
                         label: { key: 'app', value: 'include2' },
+                        namespaceLabel: { key: 'namespace-key', value: 'namespace-value2' },
+                        clusterLabel: { key: 'cluster-key', value: 'cluster-value2' },
                     },
                 ],
                 severity: 'LOW_SEVERITY',
@@ -452,7 +545,7 @@ describe('policies.utils', () => {
                                 booleanOperator: 'OR',
                                 negate: false,
                                 values: [
-                                    { value: 'ENV=ENV=myapp=test' },
+                                    { key: 'ENV', value: 'myapp=test' },
                                     { key: 'USER', value: 'root' },
                                 ],
                             },
@@ -465,6 +558,23 @@ describe('policies.utils', () => {
                                         arrayValue: [
                                             'io.stackrox.signatureintegration.bef8ab45-2f06-4937-9a97-5c8b5b049f54',
                                         ],
+                                    },
+                                ],
+                            },
+                            {
+                                fieldName: 'Environment Variable',
+                                booleanOperator: 'OR',
+                                negate: false,
+                                values: [
+                                    {
+                                        source: 'RAW',
+                                        key: 'SOMEVAR',
+                                        value: 'val_with=equals',
+                                    },
+                                    {
+                                        source: 'RAW',
+                                        key: 'OTHERVAR',
+                                        value: 'normal_value',
                                     },
                                 ],
                             },
@@ -506,6 +616,8 @@ describe('policies.utils', () => {
                             cluster: '5c5c9aae-9c92-4648-88a2-9e593c225fa1',
                             namespace: 'kube-*',
                             label: { key: 'app', value: 'archlinux' },
+                            namespaceLabel: { key: 'namespace-key', value: 'namespace-value' },
+                            clusterLabel: { key: 'cluster-key', value: 'cluster-value' },
                         },
                     },
                 ],
@@ -517,7 +629,7 @@ describe('policies.utils', () => {
                                 fieldName: 'Dockerfile Line',
                                 booleanOperator: 'OR',
                                 negate: false,
-                                values: [{ value: 'ENV=ENV=myapp=test' }, { value: 'USER=root' }],
+                                values: [{ value: 'ENV=myapp=test' }, { value: 'USER=root' }],
                             },
                             {
                                 fieldName: 'Image Signature Verified By',
@@ -526,6 +638,19 @@ describe('policies.utils', () => {
                                 values: [
                                     {
                                         value: 'io.stackrox.signatureintegration.bef8ab45-2f06-4937-9a97-5c8b5b049f54',
+                                    },
+                                ],
+                            },
+                            {
+                                fieldName: 'Environment Variable',
+                                booleanOperator: 'OR',
+                                negate: false,
+                                values: [
+                                    {
+                                        value: 'RAW=SOMEVAR=val_with=equals',
+                                    },
+                                    {
+                                        value: 'RAW=OTHERVAR=normal_value',
                                     },
                                 ],
                             },
@@ -550,9 +675,138 @@ describe('policies.utils', () => {
                     },
                 ],
                 source: 'IMPERATIVE',
+                evaluationFilter: null,
             };
 
             expect(getServerPolicy(clientPolicy)).toEqual(serverPolicy);
+        });
+
+        test('normalizes all-empty exclusion deployment scope to null for server policy', () => {
+            const clientPolicy = {
+                id: 'e73359bd-68d0-48d6-8e3c-f81cf85e2574',
+                name: 'Test policy',
+                description: 'a description',
+                rationale: 'Rationale here',
+                remediation: 'Guidance here',
+                disabled: false,
+                categories: ['Cryptocurrency Mining'],
+                lifecycleStages: ['DEPLOY'] as const,
+                eventSource: 'NOT_APPLICABLE' as const,
+                exclusions: [],
+                scope: [],
+                excludedImageNames: [],
+                excludedDeploymentScopes: [
+                    {
+                        name: 'nginx',
+                        scope: initialExcludedDeployment.scope,
+                    },
+                ],
+                serverPolicySections: [],
+                policySections: [],
+                severity: 'LOW_SEVERITY' as const,
+                enforcementActions: [],
+                notifiers: [],
+                lastUpdated: null,
+                SORTName: '',
+                SORTLifecycleStage: '',
+                SORTEnforcement: false,
+                mitreAttackVectors: [],
+                criteriaLocked: false,
+                mitreVectorsLocked: false,
+                isDefault: false,
+                policyVersion: '1.1',
+                source: 'IMPERATIVE' as const,
+                evaluationFilter: null,
+            } satisfies ClientPolicy;
+
+            const serverPolicy = getServerPolicy(clientPolicy);
+
+            expect(serverPolicy.exclusions?.[0]?.deployment?.scope).toBeNull();
+            expect(serverPolicy.exclusions?.[0]?.deployment?.name).toBe('nginx');
+        });
+
+        test('trims exclusion scope label key/value so whitespace-only becomes null scope', () => {
+            const clientPolicy = {
+                id: 'e73359bd-68d0-48d6-8e3c-f81cf85e2574',
+                name: 'Test policy',
+                description: 'a description',
+                rationale: 'Rationale here',
+                remediation: 'Guidance here',
+                disabled: false,
+                categories: ['Cryptocurrency Mining'],
+                lifecycleStages: ['DEPLOY'] as const,
+                eventSource: 'NOT_APPLICABLE' as const,
+                exclusions: [],
+                scope: [],
+                excludedImageNames: [],
+                excludedDeploymentScopes: [
+                    {
+                        name: 'nginx',
+                        scope: {
+                            cluster: '',
+                            clusterLabel: null,
+                            namespace: '',
+                            namespaceLabel: null,
+                            label: { key: '   ', value: '  ' },
+                        },
+                    },
+                ],
+                serverPolicySections: [],
+                policySections: [],
+                severity: 'LOW_SEVERITY' as const,
+                enforcementActions: [],
+                notifiers: [],
+                lastUpdated: null,
+                SORTName: '',
+                SORTLifecycleStage: '',
+                SORTEnforcement: false,
+                mitreAttackVectors: [],
+                criteriaLocked: false,
+                mitreVectorsLocked: false,
+                isDefault: false,
+                policyVersion: '1.1',
+                source: 'IMPERATIVE' as const,
+                evaluationFilter: null,
+            } satisfies ClientPolicy;
+
+            expect(getServerPolicy(clientPolicy).exclusions?.[0]?.deployment?.scope).toBeNull();
+        });
+    });
+
+    describe('isExcludedDeploymentScopeEmpty', () => {
+        test('returns true for null and initialScope (empty PolicyScope)', () => {
+            expect(isExcludedDeploymentScopeEmpty(null)).toBe(true);
+            expect(isExcludedDeploymentScopeEmpty(initialScope)).toBe(true);
+        });
+
+        test('returns false when cluster, namespace, or label is set', () => {
+            expect(
+                isExcludedDeploymentScopeEmpty({
+                    cluster: 'id',
+                    clusterLabel: null,
+                    namespace: '',
+                    namespaceLabel: null,
+                    label: null,
+                })
+            ).toBe(false);
+            expect(
+                isExcludedDeploymentScopeEmpty({
+                    cluster: '',
+                    clusterLabel: null,
+                    namespace: 'ns',
+                    namespaceLabel: null,
+                    label: null,
+                })
+            ).toBe(false);
+            expect(
+                isExcludedDeploymentScopeEmpty({
+                    cluster: '',
+                    clusterLabel: null,
+                    namespace: '',
+                    namespaceLabel: null,
+                    label: { key: 'k', value: '' },
+                })
+            ).toBe(false);
         });
     });
 
@@ -570,6 +824,65 @@ describe('policies.utils', () => {
             expect(
                 getPolicyOriginLabel({ isDefault: false, source: 'DECLARATIVE' } as const)
             ).toEqual('Externally managed');
+        });
+    });
+
+    describe('getLifeCyclesUpdates', () => {
+        it('should add another lifecycle without modifying other values', () => {
+            expect(
+                getLifeCyclesUpdates(
+                    {
+                        lifecycleStages: ['BUILD'],
+                        eventSource: 'NOT_APPLICABLE',
+                        enforcementActions: ['FAIL_BUILD_ENFORCEMENT'],
+                        excludedImageNames: ['docker.io/library/archlinux:latest'],
+                    },
+                    ['BUILD', 'DEPLOY']
+                )
+            ).toEqual({
+                lifecycleStages: ['BUILD', 'DEPLOY'],
+                eventSource: 'NOT_APPLICABLE',
+                enforcementActions: ['FAIL_BUILD_ENFORCEMENT'],
+                excludedImageNames: ['docker.io/library/archlinux:latest'],
+            });
+        });
+
+        it('should clear the excluded image names and build enforcement action when the build lifecycle is removed', () => {
+            expect(
+                getLifeCyclesUpdates(
+                    {
+                        lifecycleStages: ['BUILD', 'DEPLOY'],
+                        eventSource: 'NOT_APPLICABLE',
+                        excludedImageNames: ['docker.io/library/archlinux:latest'],
+                        enforcementActions: ['FAIL_BUILD_ENFORCEMENT', 'SCALE_TO_ZERO_ENFORCEMENT'],
+                    },
+                    ['DEPLOY']
+                )
+            ).toEqual({
+                lifecycleStages: ['DEPLOY'],
+                eventSource: 'NOT_APPLICABLE',
+                enforcementActions: ['SCALE_TO_ZERO_ENFORCEMENT'],
+                excludedImageNames: [],
+            });
+        });
+
+        it('should clear the deployment enforcement actions when the deploy lifecycle is removed', () => {
+            expect(
+                getLifeCyclesUpdates(
+                    {
+                        lifecycleStages: ['BUILD', 'DEPLOY'],
+                        eventSource: 'NOT_APPLICABLE',
+                        enforcementActions: ['FAIL_BUILD_ENFORCEMENT', 'SCALE_TO_ZERO_ENFORCEMENT'],
+                        excludedImageNames: ['docker.io/library/archlinux:latest'],
+                    },
+                    ['BUILD']
+                )
+            ).toEqual({
+                lifecycleStages: ['BUILD'],
+                eventSource: 'NOT_APPLICABLE',
+                enforcementActions: ['FAIL_BUILD_ENFORCEMENT'],
+                excludedImageNames: ['docker.io/library/archlinux:latest'],
+            });
         });
     });
 });

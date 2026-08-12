@@ -41,10 +41,6 @@ func (s *ComplianceOperatorScanSettingBindingsStoreSuite) SetupTest() {
 	s.NoError(err)
 }
 
-func (s *ComplianceOperatorScanSettingBindingsStoreSuite) TearDownSuite() {
-	s.testDB.Teardown(s.T())
-}
-
 func (s *ComplianceOperatorScanSettingBindingsStoreSuite) TestStore() {
 	ctx := sac.WithAllAccess(context.Background())
 
@@ -96,6 +92,11 @@ func (s *ComplianceOperatorScanSettingBindingsStoreSuite) TestStore() {
 	}
 
 	s.NoError(store.UpsertMany(ctx, complianceOperatorScanSettingBindings))
+
+	foundComplianceOperatorScanSettingBindings, missing, err := store.GetMany(ctx, complianceOperatorScanSettingBindingIDs)
+	s.NoError(err)
+	s.Empty(missing)
+	protoassert.ElementsMatch(s.T(), complianceOperatorScanSettingBindings, foundComplianceOperatorScanSettingBindings)
 
 	complianceOperatorScanSettingBindingCount, err = store.Count(ctx, search.EmptyQuery())
 	s.NoError(err)

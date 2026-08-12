@@ -4,8 +4,9 @@ import (
 	"github.com/ComplianceAsCode/compliance-operator/pkg/apis/compliance/v1alpha1"
 	"github.com/stackrox/rox/generated/internalapi/central"
 	"github.com/stackrox/rox/generated/storage"
+	"github.com/stackrox/rox/pkg/centralsensor"
 	"github.com/stackrox/rox/pkg/set"
-	"github.com/stackrox/rox/pkg/stringutils"
+	"github.com/stackrox/rox/sensor/common/centralcaps"
 	"github.com/stackrox/rox/sensor/kubernetes/eventpipeline/component"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -44,38 +45,64 @@ func (c *TailoredProfileDispatcher) ProcessEvent(obj, _ interface{}, action cent
 		return nil
 	}
 
-	profileObj, err := c.profileLister.ByNamespace(tailoredProfile.GetNamespace()).Get(tailoredProfile.Spec.Extends)
-	if err != nil {
-		log.Errorf("error getting profile %s: %v", tailoredProfile.Spec.Extends, err)
-		return nil
-	}
-	unstructuredObject, ok = profileObj.(*unstructured.Unstructured)
-	if !ok {
-		log.Errorf("Fetched profile not of type 'unstructured': %T", obj)
-		return nil
+	var baseProfile v1alpha1.Profile
+	if tailoredProfile.Spec.Extends != "" {
+		profileObj, err := c.profileLister.ByNamespace(tailoredProfile.GetNamespace()).Get(tailoredProfile.Spec.Extends)
+		if err != nil {
+			log.Errorf("error getting profile %s: %v", tailoredProfile.Spec.Extends, err)
+			return nil
+		}
+		unstructuredObject, ok = profileObj.(*unstructured.Unstructured)
+		if !ok {
+			log.Errorf("Fetched profile not of type 'unstructured': %T", profileObj)
+			return nil
+		}
+
+		if err := runtime.DefaultUnstructuredConverter.FromUnstructured(unstructuredObject.Object, &baseProfile); err != nil {
+			log.Errorf("error converting unstructured to compliance profile: %v", err)
+			return nil
+		}
 	}
 
-	var complianceProfile v1alpha1.Profile
-	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(unstructuredObject.Object, &complianceProfile); err != nil {
-		log.Errorf("error converting unstructured to compliance profile: %v", err)
-		return nil
+	// The compliance operator sets ComplianceScan.Spec.Profile to the tailored profile's
+	// k8s name (not its XCCDF Status.ID) for any CEL-based tailored profile
+	// (annotation compliance.openshift.io/scanner-type=CEL). This covers:
+	//   - TPs with CustomRules (also have CustomRuleProfileAnnotation=true)
+	//   - TPs with CEL-typed rules but no CustomRules (ScannerTypeAnnotation only)
+	//   - TPs extending a CEL base profile (inherit ScannerTypeAnnotation from base)
+	// See https://github.com/ComplianceAsCode/compliance-operator/pull/19214 for the
+	// original CustomRuleProfileAnnotation-based fix and the PR that introduced the
+	// broader ScannerTypeAnnotation check in CO's scansettingbinding controller.
+	// We must use the same value as ProfileId so that BuildProfileRefID produces
+	// matching UUIDs on both the profile and the scan sides.
+	var profileID string
+	switch scannerType := tailoredProfile.GetAnnotations()[v1alpha1.ScannerTypeAnnotation]; scannerType {
+	case string(v1alpha1.ScannerTypeCEL):
+		profileID = tailoredProfile.GetName()
+	case string(v1alpha1.ScannerTypeOpenSCAP), "":
+		profileID = tailoredProfile.Status.ID
+	default:
+		profileID = tailoredProfile.Status.ID
+		log.Warnf("Tailored profile %s has unrecognised scanner-type annotation %q: using XCCDF ID %q as ProfileId; "+
+			"if compliance coverage shows 0 results, this scanner type may need handling here",
+			tailoredProfile.GetName(), scannerType, profileID)
 	}
 
 	protoProfile := &storage.ComplianceOperatorProfile{
-		Id:        string(tailoredProfile.UID),
-		ProfileId: tailoredProfile.Status.ID,
-		Name:      tailoredProfile.Name,
-		// We want to use the original compliance profiles labels and annotations as they hold data about the type of profile
-		Labels:      complianceProfile.Labels,
-		Annotations: complianceProfile.Annotations,
-		Description: stringutils.FirstNonEmpty(tailoredProfile.Spec.Description, complianceProfile.Description),
+		Id:          string(tailoredProfile.GetUID()),
+		ProfileId:   profileID,
+		Name:        tailoredProfile.GetName(),
+		Labels:      tailoredProfile.GetLabels(),
+		Annotations: tailoredProfile.GetAnnotations(),
+		Description: tailoredProfile.Spec.Description,
 	}
+
 	removedRules := set.NewStringSet()
 	for _, rule := range tailoredProfile.Spec.DisableRules {
 		removedRules.Add(rule.Name)
 	}
 
-	for _, r := range complianceProfile.Rules {
+	for _, r := range baseProfile.Rules {
 		if removedRules.Contains(string(r)) {
 			continue
 		}
@@ -98,5 +125,31 @@ func (c *TailoredProfileDispatcher) ProcessEvent(obj, _ interface{}, action cent
 			},
 		},
 	}
+
+	if centralcaps.Has(centralsensor.ComplianceV2TailoredProfiles) {
+		protoProfileV2 := &central.ComplianceOperatorProfileV2{
+			Id:           protoProfile.GetId(),
+			ProfileId:    protoProfile.GetProfileId(),
+			Name:         protoProfile.GetName(),
+			Labels:       protoProfile.GetLabels(),
+			Annotations:  protoProfile.GetAnnotations(),
+			Description:  protoProfile.GetDescription(),
+			Title:        tailoredProfile.Spec.Title,
+			OperatorKind: central.ComplianceOperatorProfileV2_TAILORED_PROFILE,
+		}
+
+		for _, rule := range protoProfile.GetRules() {
+			protoProfileV2.Rules = append(protoProfileV2.Rules, &central.ComplianceOperatorProfileV2_Rule{RuleName: rule.GetName()})
+		}
+
+		events = append(events, &central.SensorEvent{
+			Id:     protoProfileV2.GetId(),
+			Action: action,
+			Resource: &central.SensorEvent_ComplianceOperatorProfileV2{
+				ComplianceOperatorProfileV2: protoProfileV2,
+			},
+		})
+	}
+
 	return component.NewEvent(events...)
 }

@@ -2,11 +2,11 @@ import isEqual from 'lodash/isEqual';
 import set from 'lodash/set';
 import pluralize from 'pluralize';
 
-import { IntegrationBase } from 'services/IntegrationsService';
-import { IntegrationSource, IntegrationType } from 'types/integration';
-import { ImageIntegrationCategory } from 'types/imageIntegration.proto';
+import type { IntegrationBase } from 'services/IntegrationsService';
+import type { IntegrationSource, IntegrationType } from 'types/integration';
+import type { ImageIntegrationCategory } from 'types/imageIntegration.proto';
 
-import { Traits } from 'types/traits.proto';
+import type { Traits } from 'types/traits.proto';
 
 export type { IntegrationSource, IntegrationType };
 
@@ -19,10 +19,6 @@ export type Integration = {
 
 export function getIsAPIToken(source: IntegrationSource, type: IntegrationType): boolean {
     return source === 'authProviders' && type === 'apitoken';
-}
-
-export function getIsClusterInitBundle(source: IntegrationSource, type: IntegrationType): boolean {
-    return source === 'authProviders' && type === 'clusterInitBundle';
 }
 
 export function getIsMachineAccessConfig(
@@ -38,6 +34,18 @@ export function getIsSignatureIntegration(source: IntegrationSource): boolean {
 
 export function getIsScannerV4(source: IntegrationSource, type: IntegrationType): boolean {
     return source === 'imageIntegrations' && type === 'scannerv4';
+}
+
+export function getIsGCR(source: IntegrationSource, type: IntegrationType): boolean {
+    return source === 'imageIntegrations' && type === 'google';
+}
+
+export function getIsS3(source: IntegrationSource, type: IntegrationType): boolean {
+    return source === 'backups' && type === 's3';
+}
+
+export function getIsS3Compatible(source: IntegrationSource, type: IntegrationType): boolean {
+    return source === 'backups' && type === 's3compatible';
 }
 
 export function getIsCloudSource(source: IntegrationSource): boolean {
@@ -77,11 +85,8 @@ export function clearStoredCredentials<I extends IntegrationBase>(
 }
 
 export function getEditDisabledMessage(type) {
-    if (type === 'clusterInitBundle') {
-        return 'This Cluster Init Bundle can not be edited. Create a new Cluster Init Bundle or delete an existing one';
-    }
     if (type === 'apitoken') {
-        return 'This API Token can not be edited. Create a new API Token or delete an existing one.';
+        return 'This API Token cannot be edited. Create a new API Token or delete an existing one.';
     }
     return '';
 }
@@ -133,20 +138,6 @@ export const timesOfDay = new Array(24)
     .fill(1)
     .map((_, t) => `${t.toString().padStart(2, '0')}:00`);
 
-export function backupScheduleDescriptor() {
-    return {
-        accessor: ({ schedule }) => {
-            if (schedule.intervalType === 'WEEKLY') {
-                return `Weekly on ${daysOfWeek[schedule.weekly.day]} at ${
-                    timesOfDay[schedule.hour]
-                } UTC`;
-            }
-            return `Daily at ${timesOfDay[schedule.hour]} UTC`;
-        },
-        Header: 'Schedule',
-    };
-}
-
 // Utilities for image integrations which can have either or both of two categories.
 
 // Categories alternatives correspond to mutually exclusive toggle group items.
@@ -180,7 +171,6 @@ function getCategoriesUtils<
     ];
 
     // For robust behavior in case of unexpected response, provide ternary fallback even though categories limited to Category0 and Category1.
-    /* eslint-disable no-nested-ternary */
     return {
         categoriesAlternatives,
 
@@ -201,7 +191,6 @@ function getCategoriesUtils<
 
         validCategories: [category0, category1],
     };
-    /* eslint-enable no-nested-ternary */
 }
 
 export const categoriesUtilsForClairifyScanner = getCategoriesUtils(

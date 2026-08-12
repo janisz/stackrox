@@ -5,7 +5,6 @@ package tests
 import (
 	"context"
 	_ "embed"
-	"encoding/json"
 	"fmt"
 	"os"
 	"regexp"
@@ -13,8 +12,8 @@ import (
 	"time"
 
 	"github.com/stackrox/rox/generated/storage"
-	"github.com/stackrox/rox/pkg/docker/config"
 	"github.com/stackrox/rox/pkg/namespaces"
+	"github.com/stackrox/rox/tests/logmatchers"
 	"github.com/stretchr/testify/suite"
 	appsV1 "k8s.io/api/apps/v1"
 	v1 "k8s.io/api/core/v1"
@@ -67,7 +66,7 @@ func (ts *TLSChallengeSuite) SetupSuite() {
 func (ts *TLSChallengeSuite) TearDownSuite() {
 	ts.cleanupProxy(ts.cleanupCtx, proxyNs)
 	if ts.originalCentralEndpoint != "" {
-		ts.mustSetDeploymentEnvVal(ts.cleanupCtx, s, sensorDeployment, sensorContainer, centralEndpointVar, ts.originalCentralEndpoint)
+		_ = ts.mustSetDeploymentEnvVal(ts.cleanupCtx, s, sensorDeployment, sensorContainer, centralEndpointVar, ts.originalCentralEndpoint)
 	}
 	// Check sanity after test.
 	waitUntilCentralSensorConnectionIs(ts.T(), ts.cleanupCtx, storage.ClusterHealthStatus_HEALTHY)
@@ -93,14 +92,15 @@ func (ts *TLSChallengeSuite) TestTLSChallenge() {
 	)
 
 	ts.logf("Pointing sensor at the proxy...")
-	ts.mustSetDeploymentEnvVal(ts.ctx, s, sensorDeployment, sensorContainer, centralEndpointVar, proxyEndpoint)
+	patchedDeploy := ts.mustSetDeploymentEnvVal(ts.ctx, s, sensorDeployment, sensorContainer, centralEndpointVar, proxyEndpoint)
+	ts.waitUntilK8sDeploymentGenerationReady(ts.ctx, s, sensorDeployment, patchedDeploy.GetGeneration())
 	ts.logf("Sensor will now attempt connecting via the nginx proxy.")
 
 	ts.waitUntilLog(ts.ctx, s, map[string]string{"app": "sensor"}, sensorContainer, "contain info about successful connection",
-		containsLineMatching(regexp.MustCompile("Info: Add central CA cert with CommonName: 'Custom Root'")),
-		containsLineMatching(regexp.MustCompile("Info: Connecting to Central server "+proxyEndpoint)),
-		containsLineMatching(regexp.MustCompile("Info: Established connection to Central.")),
-		containsLineMatching(regexp.MustCompile("Info: Communication with central started.")),
+		logmatchers.ContainsLineMatching(regexp.MustCompile("Info: Add central CA cert with CommonName: 'Custom Root'")),
+		logmatchers.ContainsLineMatching(regexp.MustCompile("Info: Connecting to Central server "+proxyEndpoint)),
+		logmatchers.ContainsLineMatching(regexp.MustCompile("Info: Established connection to Central.")),
+		logmatchers.ContainsLineMatching(regexp.MustCompile("Info: Communication with central started.")),
 	)
 	waitUntilCentralSensorConnectionIs(ts.T(), ts.ctx, storage.ClusterHealthStatus_HEALTHY)
 }
@@ -117,6 +117,7 @@ func (ts *TLSChallengeSuite) setupProxy(centralEndpoint string) {
 	ts.createProxyConfigMap(centralEndpoint, nginxConfigName)
 	ts.createService(ts.ctx, proxyNs, name, nginxLabels, map[int32]int32{443: 8443})
 	ts.createProxyDeployment(name, nginxLabels, nginxConfigName, nginxTLSSecretName)
+	ts.waitUntilK8sDeploymentReady(ts.ctx, proxyNs, name)
 	ts.logf("Nginx proxy is now set up in namespace %q.", proxyNs)
 }
 
@@ -129,16 +130,7 @@ func (ts *TLSChallengeSuite) createProxyNamespace() {
 }
 
 func (ts *TLSChallengeSuite) installImagePullSecret() {
-	configBytes, err := json.Marshal(config.DockerConfigJSON{
-		Auths: map[string]config.DockerConfigEntry{
-			"https://quay.io": {
-				Username: mustGetEnv(ts.T(), "REGISTRY_USERNAME"),
-				Password: mustGetEnv(ts.T(), "REGISTRY_PASSWORD"),
-			},
-		},
-	})
-	ts.Require().NoError(err, "cannot serialize docker config for image pull secret %q in namespace %q", proxyImagePullSecretName, proxyNs)
-	ts.ensureSecretExists(ts.ctx, proxyNs, proxyImagePullSecretName, v1.SecretTypeDockerConfigJson, map[string][]byte{v1.DockerConfigJsonKey: configBytes})
+	ts.ensureQuayImagePullSecretExists(ts.ctx, proxyNs, proxyImagePullSecretName)
 }
 
 func (ts *TLSChallengeSuite) createProxyTLSSecret(nginxTLSSecretName string) {

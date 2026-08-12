@@ -2,8 +2,8 @@ package datastore
 
 import (
 	"context"
+	"strings"
 
-	"github.com/stackrox/rox/central/imageintegration/search"
 	"github.com/stackrox/rox/central/imageintegration/store"
 	v1 "github.com/stackrox/rox/generated/api/v1"
 	"github.com/stackrox/rox/generated/storage"
@@ -21,16 +21,15 @@ var (
 )
 
 type datastoreImpl struct {
-	storage           store.Store
-	formattedSearcher search.Searcher
+	storage store.Store
 }
 
 func (ds *datastoreImpl) Count(ctx context.Context, q *v1.Query) (int, error) {
-	return ds.formattedSearcher.Count(ctx, q)
+	return ds.storage.Count(ctx, q)
 }
 
 func (ds *datastoreImpl) Search(ctx context.Context, q *v1.Query) ([]searchPkg.Result, error) {
-	return ds.formattedSearcher.Search(ctx, q)
+	return ds.storage.Search(ctx, q)
 }
 
 // GetImageIntegration is pass-through to the underlying store.
@@ -52,20 +51,19 @@ func (ds *datastoreImpl) GetImageIntegrations(ctx context.Context, request *v1.G
 		return nil, nil
 	}
 
-	integrations, err := ds.storage.GetAll(ctx)
-	if err != nil {
-		return nil, err
+	if request.GetCluster() != "" {
+		return nil, nil
 	}
 
-	integrationSlice := integrations[:0]
-	for _, integration := range integrations {
-		if request.GetCluster() != "" {
-			continue
+	var integrationSlice []*storage.ImageIntegration
+	err := ds.storage.Walk(ctx, func(integration *storage.ImageIntegration) error {
+		if request.GetName() == "" || request.GetName() == integration.GetName() {
+			integrationSlice = append(integrationSlice, integration)
 		}
-		if request.GetName() != "" && request.GetName() != integration.GetName() {
-			continue
-		}
-		integrationSlice = append(integrationSlice, integration)
+		return nil
+	})
+	if err != nil {
+		return nil, err
 	}
 	return integrationSlice, nil
 }
@@ -90,7 +88,7 @@ func (ds *datastoreImpl) AddImageIntegration(ctx context.Context, integration *s
 	if err != nil {
 		return "", err
 	}
-	return integration.Id, nil
+	return integration.GetId(), nil
 }
 
 // UpdateImageIntegration is pass-through to the underlying store.
@@ -116,5 +114,41 @@ func (ds *datastoreImpl) RemoveImageIntegration(ctx context.Context, id string) 
 
 // SearchImageIntegrations
 func (ds *datastoreImpl) SearchImageIntegrations(ctx context.Context, q *v1.Query) ([]*v1.SearchResult, error) {
-	return ds.formattedSearcher.SearchImageIntegrations(ctx, q)
+	// Clone the query and ensure it includes IntegrationName in select fields to populate result names
+	if q == nil {
+		q = searchPkg.EmptyQuery()
+	}
+	qClone := q.CloneVT()
+	qClone.Selects = append(qClone.GetSelects(), searchPkg.NewQuerySelect(searchPkg.IntegrationName).Proto())
+
+	results, err := ds.storage.Search(ctx, qClone)
+	if err != nil {
+		return nil, err
+	}
+	searchTag := strings.ToLower(searchPkg.IntegrationName.String())
+	for i := range results {
+		if results[i].FieldValues != nil {
+			if nameVal, ok := results[i].FieldValues[searchTag]; ok {
+				results[i].Name = nameVal
+			}
+		}
+	}
+
+	return searchPkg.ResultsToSearchResultProtos(results, &ImageIntegrationSearchResultConverter{}), nil
+}
+
+// ImageIntegrationSearchResultConverter converts image integration search results to proto search results
+type ImageIntegrationSearchResultConverter struct{}
+
+func (c *ImageIntegrationSearchResultConverter) BuildName(result *searchPkg.Result) string {
+	return result.Name
+}
+
+func (c *ImageIntegrationSearchResultConverter) BuildLocation(result *searchPkg.Result) string {
+	// Image integrations do not have a location
+	return ""
+}
+
+func (c *ImageIntegrationSearchResultConverter) GetCategory() v1.SearchCategory {
+	return v1.SearchCategory_IMAGE_INTEGRATIONS
 }

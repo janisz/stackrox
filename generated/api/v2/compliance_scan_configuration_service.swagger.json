@@ -823,9 +823,22 @@
             "type": "object",
             "$ref": "#/definitions/v2ComplianceBenchmark"
           }
+        },
+        "operatorKind": {
+          "$ref": "#/definitions/v2ComplianceProfileSummaryOperatorKind"
         }
       },
-      "title": "Next Tag: 8"
+      "title": "Next Tag: 9"
+    },
+    "v2ComplianceProfileSummaryOperatorKind": {
+      "type": "string",
+      "enum": [
+        "OPERATOR_KIND_UNSPECIFIED",
+        "PROFILE",
+        "TAILORED_PROFILE"
+      ],
+      "default": "OPERATOR_KIND_UNSPECIFIED",
+      "description": "OperatorKind is the kind of the Compliance Operator resource that this\n`ComplianceProfileSummary` was sourced from. ACS represents both Compliance\nOperator `Profiles` and `TailoredProfiles` as compliance profiles.\n\n - OPERATOR_KIND_UNSPECIFIED: The kind is unspecified.\n - PROFILE: The kind is `Profile`.\n - TAILORED_PROFILE: The kind is `TailoredProfile`."
     },
     "v2ComplianceReportHistoryResponse": {
       "type": "object",
@@ -890,6 +903,13 @@
         },
         "reportNotificationMethod": {
           "$ref": "#/definitions/v2NotificationMethod"
+        },
+        "failedClusters": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/v2FailedCluster"
+          }
         }
       }
     },
@@ -908,7 +928,10 @@
         "PREPARING",
         "GENERATED",
         "DELIVERED",
-        "FAILURE"
+        "FAILURE",
+        "PARTIAL_ERROR",
+        "PARTIAL_SCAN_ERROR_DOWNLOAD",
+        "PARTIAL_SCAN_ERROR_EMAIL"
       ],
       "default": "WAITING"
     },
@@ -1027,6 +1050,23 @@
     },
     "v2Empty": {
       "type": "object"
+    },
+    "v2FailedCluster": {
+      "type": "object",
+      "properties": {
+        "clusterId": {
+          "type": "string"
+        },
+        "clusterName": {
+          "type": "string"
+        },
+        "reason": {
+          "type": "string"
+        },
+        "operatorVersion": {
+          "type": "string"
+        }
+      }
     },
     "v2ListComplianceScanConfigsClusterProfileResponse": {
       "type": "object",

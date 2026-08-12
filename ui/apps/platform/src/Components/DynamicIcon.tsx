@@ -1,18 +1,17 @@
-import React from 'react';
 import { Icon, Label, Tooltip } from '@patternfly/react-core';
 import { FilterIcon } from '@patternfly/react-icons';
-import { SVGIconProps } from '@patternfly/react-icons/dist/esm/createIcon';
+import type { SVGIconProps } from '@patternfly/react-icons/dist/esm/createIcon';
 
 export function DynamicIcon(props: SVGIconProps) {
     return (
         <Icon>
-            <FilterIcon color="var(--pf-v5-global--palette--blue-300)" {...props} />
+            <FilterIcon color="var(--pf-t--color--blue--30)" {...props} />
         </Icon>
     );
 }
 
 export function DynamicColumnIcon() {
-    return <DynamicIcon className="pf-v5-u-display-inline pf-v5-u-ml-sm" />;
+    return <DynamicIcon className="pf-v6-u-display-inline pf-v6-u-ml-sm" />;
 }
 
 export function DynamicTableLabel() {

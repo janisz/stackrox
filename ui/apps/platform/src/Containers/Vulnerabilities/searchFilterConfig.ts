@@ -1,84 +1,297 @@
-import { CompoundSearchFilterEntity } from 'Components/CompoundSearchFilter/types';
-import { clusterAttributes } from 'Components/CompoundSearchFilter/attributes/cluster';
-import { deploymentAttributes } from 'Components/CompoundSearchFilter/attributes/deployment';
+/*
+ * Search filter configurations for vulnerability views.
+ *
+ * If you add a new filter config that should be available in any of the following
+ * scheduled reports
+ * view-based reports
+ * workload vulnerability results
+ * add it to either searchFilterConfigForWhatever array near the end of this file.
+ */
+
+import type {
+    CompoundSearchFilterEntity,
+    SelectExclusiveSingleSearchFilterAttribute,
+    SelectSearchFilterAttribute,
+    SelectSearchFilterOption,
+} from 'Components/CompoundSearchFilter/types';
+import {
+    clusterIdAttribute,
+    clusterLabelAttribute,
+    clusterNameAttribute,
+    clusterPlatformTypeAttribute,
+    clusterTypeAttribute,
+} from 'Components/CompoundSearchFilter/attributes/cluster';
+import {
+    Annotation,
+    ContainerType,
+    ID,
+    Label,
+    Name,
+} from 'Components/CompoundSearchFilter/attributes/deployment';
 import { imageAttributes } from 'Components/CompoundSearchFilter/attributes/image';
 import { imageCVEAttributes } from 'Components/CompoundSearchFilter/attributes/imageCVE';
 import { imageComponentAttributes } from 'Components/CompoundSearchFilter/attributes/imageComponent';
-import { namespaceAttributes } from 'Components/CompoundSearchFilter/attributes/namespace';
+import {
+    Name as namespaceName,
+    namespaceAttributes,
+} from 'Components/CompoundSearchFilter/attributes/namespace';
 import { nodeAttributes } from 'Components/CompoundSearchFilter/attributes/node';
 import { nodeCVEAttributes } from 'Components/CompoundSearchFilter/attributes/nodeCVE';
 import { nodeComponentAttributes } from 'Components/CompoundSearchFilter/attributes/nodeComponent';
 import { platformCVEAttributes } from 'Components/CompoundSearchFilter/attributes/platformCVE';
+import {
+    VirtualMachineCVEName,
+    VirtualMachineComponentName,
+    VirtualMachineComponentSource,
+    VirtualMachineComponentVersion,
+    VirtualMachineID,
+    VirtualMachineName,
+} from 'Components/CompoundSearchFilter/attributes/virtualMachine';
+import { vulnerabilitySeverityLabels } from 'messages/common';
 
-const nodeSearchFilterConfig: CompoundSearchFilterEntity = {
+import { fixableStatusToFixability } from './utils/searchUtils';
+import { fixableStatuses } from './types';
+
+export const nodeSearchFilterConfig: CompoundSearchFilterEntity = {
     displayName: 'Node',
     searchCategory: 'NODES',
     attributes: nodeAttributes,
 };
 
-const nodeCVESearchFilterConfig: CompoundSearchFilterEntity = {
+export const nodeCVESearchFilterConfig: CompoundSearchFilterEntity = {
     displayName: 'CVE',
     searchCategory: 'NODE_VULNERABILITIES',
     attributes: nodeCVEAttributes,
 };
 
-const nodeComponentSearchFilterConfig: CompoundSearchFilterEntity = {
+export const nodeComponentSearchFilterConfig: CompoundSearchFilterEntity = {
     displayName: 'Node component',
     searchCategory: 'NODE_COMPONENTS',
     attributes: nodeComponentAttributes,
 };
 
-const imageSearchFilterConfig: CompoundSearchFilterEntity = {
+export const imageSearchFilterConfig: CompoundSearchFilterEntity = {
     displayName: 'Image',
     searchCategory: 'IMAGES',
     attributes: imageAttributes,
 };
 
-const imageCVESearchFilterConfig: CompoundSearchFilterEntity = {
+export const imageCVESearchFilterConfig: CompoundSearchFilterEntity = {
     displayName: 'CVE',
-    searchCategory: 'IMAGE_VULNERABILITIES',
+    searchCategory: 'IMAGE_VULNERABILITIES_V2', // flat CVE data model
     attributes: imageCVEAttributes,
 };
 
-const imageComponentSearchFilterConfig: CompoundSearchFilterEntity = {
+export const imageComponentSearchFilterConfig: CompoundSearchFilterEntity = {
     displayName: 'Image component',
-    searchCategory: 'IMAGE_COMPONENTS',
+    searchCategory: 'IMAGE_COMPONENTS_V2', // flat CVE data model
     attributes: imageComponentAttributes,
 };
 
-const deploymentSearchFilterConfig: CompoundSearchFilterEntity = {
+export const deploymentSearchFilterConfig: CompoundSearchFilterEntity = {
     displayName: 'Deployment',
     searchCategory: 'DEPLOYMENTS',
-    attributes: deploymentAttributes,
+    attributes: [Annotation, ContainerType, ID, Label, Name],
 };
 
-const namespaceSearchFilterConfig: CompoundSearchFilterEntity = {
+export const namespaceSearchFilterConfig: CompoundSearchFilterEntity = {
     displayName: 'Namespace',
     searchCategory: 'NAMESPACES',
     attributes: namespaceAttributes,
 };
 
-const clusterSearchFilterConfig: CompoundSearchFilterEntity = {
+export const clusterSearchFilterConfig: CompoundSearchFilterEntity = {
     displayName: 'Cluster',
     searchCategory: 'CLUSTERS',
-    attributes: clusterAttributes,
+    attributes: [
+        clusterIdAttribute,
+        clusterLabelAttribute,
+        clusterNameAttribute,
+        clusterPlatformTypeAttribute,
+        clusterTypeAttribute,
+    ],
 };
 
-const platformCVESearchFilterConfig: CompoundSearchFilterEntity = {
+export const platformCVESearchFilterConfig: CompoundSearchFilterEntity = {
     displayName: 'CVE',
     searchCategory: 'CLUSTER_VULNERABILITIES',
     attributes: platformCVEAttributes,
 };
 
-export {
-    nodeSearchFilterConfig,
-    nodeCVESearchFilterConfig,
-    nodeComponentSearchFilterConfig,
-    imageSearchFilterConfig,
-    imageCVESearchFilterConfig,
-    imageComponentSearchFilterConfig,
-    deploymentSearchFilterConfig,
-    namespaceSearchFilterConfig,
-    clusterSearchFilterConfig,
-    platformCVESearchFilterConfig,
+export const virtualMachinesSearchFilterConfig: CompoundSearchFilterEntity = {
+    displayName: 'Virtual machine',
+    searchCategory: 'VIRTUAL_MACHINES',
+    attributes: [VirtualMachineID, VirtualMachineName],
 };
+
+export const virtualMachineCVESearchFilterConfig: CompoundSearchFilterEntity = {
+    displayName: 'CVE',
+    searchCategory: 'SEARCH_UNSET', // we don't have autocomplete for virtual machines
+    attributes: [VirtualMachineCVEName],
+};
+
+export const virtualMachineComponentLegacySearchFilterConfig: CompoundSearchFilterEntity = {
+    displayName: 'Virtual machine component',
+    searchCategory: 'SEARCH_UNSET', // we don't have autocomplete for virtual machines
+    attributes: [VirtualMachineComponentName, VirtualMachineComponentVersion],
+};
+
+export const virtualMachineComponentSearchFilterConfig: CompoundSearchFilterEntity = {
+    displayName: 'Virtual machine component',
+    searchCategory: 'SEARCH_UNSET',
+    attributes: [
+        VirtualMachineComponentName,
+        VirtualMachineComponentVersion,
+        VirtualMachineComponentSource,
+    ],
+};
+
+export const virtualMachinesClusterSearchFilterConfig: CompoundSearchFilterEntity = {
+    displayName: 'Cluster',
+    searchCategory: 'CLUSTERS',
+    attributes: [clusterIdAttribute, clusterNameAttribute],
+};
+
+export const virtualMachinesNamespaceSearchFilterConfig: CompoundSearchFilterEntity = {
+    displayName: 'Namespace',
+    searchCategory: 'SEARCH_UNSET', // virtual machine pipeline doesn't add namespace
+    attributes: [namespaceName],
+};
+
+// attributes for separate search filter elements in AdvancedFiltersToolbar.tsx file
+
+export const attributeForSnoozed: SelectExclusiveSingleSearchFilterAttribute = {
+    displayName: 'CVE snoozed', // corresponds to Show snoozed CVEs
+    filterChipLabel: 'CVE snoozed',
+    searchTerm: 'CVE Snoozed',
+    inputType: 'select-exclusive-single', // placeholder because interaction is Show snoozed CVEs button
+    inputProps: {
+        options: [
+            { label: 'true', value: 'true' }, // Snoozed
+            { label: 'false', value: 'false' }, // Observed
+        ],
+    },
+};
+
+const optionsForFixableInFrontendAndLocalStorage: SelectSearchFilterOption[] = [
+    { label: 'Fixable', value: 'Fixable' },
+    { label: 'Not fixable', value: 'Not fixable' },
+];
+
+export const attributeForClusterCveFixableInFrontend: SelectSearchFilterAttribute = {
+    displayName: 'CVE status',
+    filterChipLabel: 'CVE status',
+    searchTerm: 'Cluster CVE Fixable',
+    inputType: 'select',
+    inputProps: {
+        options: optionsForFixableInFrontendAndLocalStorage,
+    },
+};
+
+export const attributeForFixableInFrontendAndLocalStorage: SelectSearchFilterAttribute = {
+    displayName: 'CVE status',
+    filterChipLabel: 'CVE status',
+    searchTerm: 'Fixable',
+    inputType: 'select',
+    inputProps: {
+        options: optionsForFixableInFrontendAndLocalStorage,
+    },
+};
+
+export const attributeForFixableInBackendAndViewBasedReport: SelectSearchFilterAttribute = {
+    displayName: 'CVE status',
+    filterChipLabel: 'CVE status',
+    searchTerm: 'Fixable',
+    inputType: 'select',
+    inputProps: {
+        options: fixableStatuses.map((label) => ({
+            label,
+            value: fixableStatusToFixability(label),
+        })),
+    },
+};
+
+export const attributeForSeverityInFrontendAndLocalStorage: SelectSearchFilterAttribute = {
+    displayName: 'CVE severity',
+    filterChipLabel: 'CVE severity',
+    searchTerm: 'Severity',
+    inputType: 'select',
+    inputProps: {
+        options: [
+            { label: 'Critical', value: 'Critical' },
+            { label: 'Important', value: 'Important' },
+            { label: 'Moderate', value: 'Moderate' },
+            { label: 'Low', value: 'Low' },
+            { label: 'Unknown', value: 'Unknown' },
+        ],
+    },
+};
+export const attributeForSeverityInBackendAndViewBasedReport: SelectSearchFilterAttribute = {
+    displayName: 'CVE severity',
+    filterChipLabel: 'CVE severity',
+    searchTerm: 'Severity',
+    inputType: 'select',
+    inputProps: {
+        options: Object.entries(vulnerabilitySeverityLabels).map(([value, label]) => ({
+            label,
+            value,
+        })),
+    },
+};
+
+// Scheduled report has resources instead of cluster, deployment, namespace.
+export const searchFilterConfigForImageVulnerabilityReport = [
+    {
+        ...imageCVESearchFilterConfig,
+        attributes: imageCVESearchFilterConfig.attributes.filter(
+            ({ searchTerm }) => searchTerm !== 'CVE Created Time'
+        ),
+    },
+    imageSearchFilterConfig,
+    imageComponentSearchFilterConfig,
+];
+
+export const searchFilterConfigForWorkloadVulnerabilityResultsAndViewBasedReport = [
+    clusterSearchFilterConfig,
+    imageCVESearchFilterConfig,
+    deploymentSearchFilterConfig,
+    imageSearchFilterConfig,
+    imageComponentSearchFilterConfig,
+    namespaceSearchFilterConfig,
+];
+
+export const attributeForPlatformComponent: SelectSearchFilterAttribute = {
+    displayName: 'Area of concern', // corresponds to horizontal navigation
+    filterChipLabel: 'Area of concern',
+    searchTerm: 'Platform Component',
+    inputType: 'select',
+    inputProps: {
+        options: [
+            { label: 'User workload', value: 'false' },
+            { label: 'Platform', value: 'true' },
+            { label: 'Inactive', value: '-' }, // for All vulnerable images
+        ],
+    },
+};
+
+export const attributeForVulnerabilityState: SelectSearchFilterAttribute = {
+    displayName: 'Vulnerability state', // corresponds to tabs
+    filterChipLabel: 'Vulnerability state',
+    searchTerm: 'Vulnerability State',
+    inputType: 'select',
+    inputProps: {
+        options: [
+            { label: 'Observed', value: 'OBSERVED' },
+            { label: 'Deferred', value: 'DEFERRED' },
+            { label: 'False positives', value: 'FALSE_POSITIVE' },
+        ],
+    },
+};
+
+// For scheduled and view-based report.
+export const attributesSeparateFromConfigForImageVulnerabilityReport = [
+    attributeForPlatformComponent,
+    attributeForVulnerabilityState,
+    attributeForSeverityInBackendAndViewBasedReport, // Formerly under Vulnerability parameters
+    attributeForFixableInBackendAndViewBasedReport,
+];

@@ -1,15 +1,23 @@
+import type { GraphQLSortOption } from 'types/search';
 import {
-    getViewStateFromSearch,
-    filterAllowedSearch,
-    convertToRestSearch,
+    applyRegexSearchModifiers,
     convertSortToGraphQLFormat,
     convertSortToRestFormat,
-    searchOptionsToSearchFilter,
+    convertToExactMatch,
+    convertToRestSearch,
+    deleteKeysCaseInsensitive,
+    formatKeyValue,
     getListQueryParams,
     getPaginationParams,
+    getSearchFilterFromSearchString,
+    getViewStateFromSearch,
+    hasSearchKeyValue,
+    isKeyValueSearchTerm,
+    removeRegexSearchModifiers,
     searchValueAsArray,
-    convertToExactMatch,
+    wrapInQuotes,
 } from './searchUtils';
+import type { NonEmptyArray } from './type.utils';
 
 describe('searchUtils', () => {
     describe('getViewStateFromSearch', () => {
@@ -56,78 +64,6 @@ describe('searchUtils', () => {
             const containsKey = getViewStateFromSearch(searchObj, key);
 
             expect(containsKey).toEqual(false);
-        });
-    });
-
-    describe('filterAllowedSearch', () => {
-        it('should return an empty object for an empty object', () => {
-            const allowedOptions = [
-                'Annotation',
-                'Deployment',
-                'Image',
-                'Image Created Time',
-                'Label',
-                'Namespace',
-                'Priority',
-                'Secret',
-                'Service Account',
-            ];
-            const pageSearch = {};
-
-            const allowedSearch = filterAllowedSearch(allowedOptions, pageSearch);
-
-            expect(allowedSearch).toEqual({});
-        });
-
-        it('should pass through all terms when allowed', () => {
-            const allowedOptions = [
-                'Annotation',
-                'Deployment',
-                'Image',
-                'Image Created Time',
-                'Label',
-                'Namespace',
-                'Priority',
-                'Secret',
-                'Service Account',
-            ];
-            const pageSearch = {
-                Deployment: 'nginx',
-                Label: 'web',
-                Namespace: 'production',
-            };
-
-            const allowedSearch = filterAllowedSearch(allowedOptions, pageSearch);
-
-            expect(allowedSearch).toEqual(pageSearch);
-        });
-
-        it('should filter out unallowed terms', () => {
-            const allowedOptions = [
-                'Annotation',
-                'Deployment',
-                'Image',
-                'Image Created Time',
-                'Label',
-                'Namespace',
-                'Priority',
-                'Secret',
-                'Service Account',
-            ];
-            const pageSearch = {
-                Deployment: 'nginx',
-                Label: 'web',
-                Marco: 'polo',
-                Namespace: 'production',
-            };
-
-            const allowedSearch = filterAllowedSearch(allowedOptions, pageSearch);
-
-            expect(allowedSearch).toEqual({
-                Deployment: 'nginx',
-                Label: 'web',
-                Namespace: 'production',
-            });
         });
     });
 
@@ -253,7 +189,7 @@ describe('searchUtils', () => {
 
     describe('convertSortToRestFormat', () => {
         it('should return an object the keys of the other object converted', () => {
-            const restSort = [
+            const restSort: NonEmptyArray<GraphQLSortOption> = [
                 {
                     id: 'Priority',
                     desc: true,
@@ -266,52 +202,6 @@ describe('searchUtils', () => {
                 field: 'Priority',
                 reversed: true,
             });
-        });
-    });
-
-    describe('searchOptionsToSearchFilter', () => {
-        it('should translate an array of SearchEntries to a SearchFilter object', () => {
-            expect(
-                searchOptionsToSearchFilter([
-                    { type: 'categoryOption', value: 'Image', label: 'Image' },
-                    { value: 'nginx:latest', label: 'nginx:latest' },
-                    { type: 'categoryOption', value: 'Status', label: 'Status' },
-                    { type: 'categoryOption', value: 'Severity', label: 'Severity' },
-                    { value: 'LOW_SEVERITY', label: 'LOW_SEVERITY' },
-                    { value: 'HIGH_SEVERITY', label: 'HIGH_SEVERITY' },
-                ])
-            ).toEqual({
-                Image: 'nginx:latest',
-                Status: '',
-                Severity: ['LOW_SEVERITY', 'HIGH_SEVERITY'],
-            });
-        });
-
-        it('should return an empty string value when no search options is provided for a category', () => {
-            expect(
-                searchOptionsToSearchFilter([
-                    { type: 'categoryOption', value: 'Status', label: 'Status' },
-                ])
-            ).toEqual({ Status: '' });
-        });
-
-        it('should return a string value when a single search options is provided for a category', () => {
-            expect(
-                searchOptionsToSearchFilter([
-                    { type: 'categoryOption', value: 'Image', label: 'Image' },
-                    { value: 'nginx:latest', label: 'nginx:latest' },
-                ])
-            ).toEqual({ Image: 'nginx:latest' });
-        });
-
-        it('should return an array value when multiple search options are provided for a category', () => {
-            expect(
-                searchOptionsToSearchFilter([
-                    { type: 'categoryOption', value: 'Severity', label: 'Severity' },
-                    { value: 'LOW_SEVERITY', label: 'LOW_SEVERITY' },
-                    { value: 'HIGH_SEVERITY', label: 'HIGH_SEVERITY' },
-                ])
-            ).toEqual({ Severity: ['LOW_SEVERITY', 'HIGH_SEVERITY'] });
         });
     });
 
@@ -471,6 +361,399 @@ describe('searchUtils', () => {
 
         it('returns a string value wrapped in bespoke regex for exact match', () => {
             expect(convertToExactMatch('cluster')).toEqual('r/^cluster$');
+        });
+    });
+
+    describe('hasSearchKeyValue', () => {
+        it('returns true when the key and value are present in the search string regardless of encoding', () => {
+            expect(hasSearchKeyValue('?key=a value', 'key', 'a value')).toBe(true);
+            expect(hasSearchKeyValue('?key=a%20value', 'key', 'a value')).toBe(true);
+            expect(hasSearchKeyValue('?key=a+value', 'key', 'a value')).toBe(true);
+            // negative cases
+            expect(hasSearchKeyValue('?key=a value', 'key', 'a')).toBe(false);
+            expect(hasSearchKeyValue('?key=a%20value', 'key', 'a')).toBe(false);
+            expect(hasSearchKeyValue('?key=a+value', 'key', 'a')).toBe(false);
+        });
+
+        it('returns true when the key and value are present with other key-value pairs', () => {
+            expect(hasSearchKeyValue('?a=s&key=a value&b=t', 'key', 'a value')).toBe(true);
+            expect(hasSearchKeyValue('?a=s%20s&key=a%20value&b=t%20x', 'key', 'a value')).toBe(
+                true
+            );
+            expect(hasSearchKeyValue('?a=s+s&key=a+value&b=t+x', 'key', 'a value')).toBe(true);
+        });
+    });
+
+    describe('getSearchFilterFromSearchString', () => {
+        it('handles empty/null inputs', () => {
+            expect(getSearchFilterFromSearchString('')).toEqual({});
+            // Test invalid inputs that might occur at runtime.
+            expect(getSearchFilterFromSearchString(null as unknown as string)).toEqual({});
+            // Test invalid inputs that might occur at runtime.
+            expect(getSearchFilterFromSearchString(undefined as unknown as string)).toEqual({});
+        });
+
+        it('parses a single filter with a single value', () => {
+            const result = getSearchFilterFromSearchString('Severity:Critical');
+            expect(result).toEqual({ Severity: 'Critical' });
+        });
+
+        it('parses a single filter with multiple values', () => {
+            const result = getSearchFilterFromSearchString('Severity:Critical,Important');
+            expect(result).toEqual({ Severity: ['Critical', 'Important'] });
+        });
+
+        it('parses multiple filters', () => {
+            const query = 'Severity:Critical,Important+Image CVE Count:>0';
+            const result = getSearchFilterFromSearchString(query);
+            expect(result).toEqual({
+                Severity: ['Critical', 'Important'],
+                'Image CVE Count': '>0',
+            });
+        });
+
+        it('ignores malformed pairs', () => {
+            const result = getSearchFilterFromSearchString(
+                'Severity:Critical+:BadValue+NoColon+Key:'
+            );
+            expect(result).toEqual({ Severity: 'Critical' });
+        });
+    });
+
+    describe('deleteKeysFromSearchFilter', () => {
+        it('deletes the keys from the search filter regardless of case', () => {
+            const searchFilter = { Namespace: 'test', Cluster: 'test', cluster: 'test' };
+            const keysToDelete = ['Namespace', 'cluster'];
+            const result = deleteKeysCaseInsensitive(searchFilter, keysToDelete);
+            expect(result).toEqual({});
+        });
+
+        it('does not delete the keys that are not in the search filter', () => {
+            const searchFilter = { Namespace: 'test', Cluster: 'test' };
+            const keysToDelete = ['Deployment'];
+            const result = deleteKeysCaseInsensitive(searchFilter, keysToDelete);
+            expect(result).toEqual({ Namespace: 'test', Cluster: 'test' });
+        });
+    });
+
+    describe('isKeyValueSearchTerm', () => {
+        it('returns true for label search terms', () => {
+            expect(isKeyValueSearchTerm('Deployment Label')).toBe(true);
+            expect(isKeyValueSearchTerm('Image Label')).toBe(true);
+            expect(isKeyValueSearchTerm('Node Label')).toBe(true);
+            expect(isKeyValueSearchTerm('Namespace Label')).toBe(true);
+            expect(isKeyValueSearchTerm('Cluster Label')).toBe(true);
+        });
+
+        it('returns true for label search terms in any case', () => {
+            expect(isKeyValueSearchTerm('deployment label')).toBe(true);
+            expect(isKeyValueSearchTerm('DEPLOYMENT LABEL')).toBe(true);
+            expect(isKeyValueSearchTerm('dEpLoYmEnT lAbEl')).toBe(true);
+        });
+
+        it('returns false for non-label search terms', () => {
+            expect(isKeyValueSearchTerm('Cluster')).toBe(false);
+            expect(isKeyValueSearchTerm('Deployment')).toBe(false);
+            expect(isKeyValueSearchTerm('Image')).toBe(false);
+        });
+    });
+
+    describe('formatKeyValue', () => {
+        it('splits on first equals sign and applies formatter to each part', () => {
+            expect(formatKeyValue('app=reporting', wrapInQuotes)).toEqual(['"app"="reporting"']);
+            expect(formatKeyValue('app=reporting', (v) => `r/${v}`)).toEqual(['r/app=r/reporting']);
+        });
+
+        it('handles values with multiple equals signs by splitting on the first', () => {
+            expect(formatKeyValue('key=val=extra', wrapInQuotes)).toEqual(['"key"="val=extra"']);
+        });
+
+        it('returns two entries for key OR value matching when no equals sign is present', () => {
+            expect(formatKeyValue('visa', wrapInQuotes)).toEqual(['"visa"=r/.*', 'r/.*="visa"']);
+            expect(formatKeyValue('visa', (v) => `r/${v}`)).toEqual(['r/visa=r/.*', 'r/.*=r/visa']);
+        });
+
+        it('wraps key and value with internal double quotes', () => {
+            expect(formatKeyValue('k"ey=v"al', wrapInQuotes)).toEqual(['"k"ey"="v"al"']);
+        });
+
+        it('uses wildcard for empty key or value around equals sign', () => {
+            expect(formatKeyValue('=value', (v) => `r/${v}`)).toEqual(['r/.*=r/value']);
+            expect(formatKeyValue('key=', (v) => `r/${v}`)).toEqual(['r/key=r/.*']);
+            expect(formatKeyValue('=value', wrapInQuotes)).toEqual(['r/.*="value"']);
+            expect(formatKeyValue('key=', wrapInQuotes)).toEqual(['"key"=r/.*']);
+        });
+    });
+
+    describe('wrapInQuotes', () => {
+        it('wraps a string in double quotes', () => {
+            expect(wrapInQuotes('hello')).toBe('"hello"');
+            expect(wrapInQuotes('test value')).toBe('"test value"');
+        });
+
+        it('does not escape internal double quotes', () => {
+            expect(wrapInQuotes('hello"world')).toBe('"hello"world"');
+            expect(wrapInQuotes('say "hello"')).toBe('"say "hello""');
+        });
+
+        it('handles empty string', () => {
+            expect(wrapInQuotes('')).toBe('""');
+        });
+    });
+
+    describe('applyRegexSearchModifiers', () => {
+        it('wraps text search values with regex modifier', () => {
+            const searchFilter = { Cluster: 'production' };
+            const result = applyRegexSearchModifiers(searchFilter);
+            expect(result).toEqual({ Cluster: ['r/production'] });
+        });
+
+        it('does not wrap quoted strings with regex modifier', () => {
+            const searchFilter = { Cluster: '"production"' };
+            const result = applyRegexSearchModifiers(searchFilter);
+            expect(result).toEqual({ Cluster: ['"production"'] });
+        });
+
+        it('handles mixed quoted and unquoted values', () => {
+            const searchFilter = {
+                Cluster: [
+                    'production',
+                    '"exact-match"',
+                    'staging',
+                    '"exact-w-\\"quote"',
+                    'regex-w-"quote',
+                ],
+            };
+            const result = applyRegexSearchModifiers(searchFilter);
+            expect(result).toEqual({
+                Cluster: [
+                    'r/production',
+                    '"exact-match"',
+                    'r/staging',
+                    '"exact-w-\\"quote"',
+                    'r/regex-w-"quote',
+                ],
+            });
+        });
+
+        it('handles quoted strings with escaped quotes', () => {
+            const searchFilter = { Cluster: '"cluster\\"name"' };
+            const result = applyRegexSearchModifiers(searchFilter);
+            expect(result).toEqual({ Cluster: ['"cluster\\"name"'] });
+        });
+
+        it('only applies to text and autocomplete input types', () => {
+            const searchFilter = {
+                Cluster: 'production', // autocomplete field
+                'Random Field': 'value', // not in regexSearchOptions
+            };
+            const result = applyRegexSearchModifiers(searchFilter);
+            expect(result.Cluster).toEqual(['r/production']);
+            expect(result['Random Field']).toEqual('value'); // should not be modified
+        });
+
+        it('formats label regex values with equals sign by prefixing both sides', () => {
+            const searchFilter = { 'Deployment Label': 'app=reporting' };
+            const result = applyRegexSearchModifiers(searchFilter);
+            expect(result).toEqual({ 'Deployment Label': ['r/app=r/reporting'] });
+        });
+
+        it('formats label regex values without equals sign as two entries for key OR value match', () => {
+            const searchFilter = { 'Deployment Label': 'visa' };
+            const result = applyRegexSearchModifiers(searchFilter);
+            expect(result).toEqual({ 'Deployment Label': ['r/visa=r/.*', 'r/.*=r/visa'] });
+        });
+
+        it('formats quoted label values with equals sign by quoting each side separately', () => {
+            const searchFilter = { 'Deployment Label': '"app=reporting"' };
+            const result = applyRegexSearchModifiers(searchFilter);
+            expect(result).toEqual({ 'Deployment Label': ['"app"="reporting"'] });
+        });
+
+        it('formats quoted label values without equals sign as two entries for key OR value match', () => {
+            const searchFilter = { 'Deployment Label': '"visa"' };
+            const result = applyRegexSearchModifiers(searchFilter);
+            expect(result).toEqual({ 'Deployment Label': ['"visa"=r/.*', 'r/.*="visa"'] });
+        });
+
+        it('applies label formatting to all label search terms', () => {
+            const searchFilter = {
+                'Image Label': 'env=prod',
+                'Node Label': 'role=worker',
+                'Cluster Label': 'team=platform',
+                'Namespace Label': 'app=web',
+            };
+            const result = applyRegexSearchModifiers(searchFilter);
+            expect(result).toEqual({
+                'Image Label': ['r/env=r/prod'],
+                'Node Label': ['r/role=r/worker'],
+                'Cluster Label': ['r/team=r/platform'],
+                'Namespace Label': ['r/app=r/web'],
+            });
+        });
+
+        it('does not apply label formatting to non-label search terms', () => {
+            const searchFilter = {
+                Cluster: 'production',
+                'Deployment Label': 'app=reporting',
+            };
+            const result = applyRegexSearchModifiers(searchFilter);
+            expect(result).toEqual({
+                Cluster: ['r/production'],
+                'Deployment Label': ['r/app=r/reporting'],
+            });
+        });
+    });
+
+    describe('removeRegexSearchModifiers', () => {
+        it('strips regex prefix from text search values', () => {
+            const searchFilter = { Cluster: ['r/production'] };
+            const result = removeRegexSearchModifiers(searchFilter);
+            expect(result).toEqual({ Cluster: ['production'] });
+        });
+
+        it('preserves quoted exact-match values', () => {
+            const searchFilter = { Cluster: ['"production"'] };
+            const result = removeRegexSearchModifiers(searchFilter);
+            expect(result).toEqual({ Cluster: ['"production"'] });
+        });
+
+        it('handles mixed quoted and unquoted values', () => {
+            const searchFilter = {
+                Cluster: ['r/production', '"exact-match"', 'r/staging'],
+            };
+            const result = removeRegexSearchModifiers(searchFilter);
+            expect(result).toEqual({
+                Cluster: ['production', '"exact-match"', 'staging'],
+            });
+        });
+
+        it('does not modify fields not in regexSearchOptions', () => {
+            const searchFilter = {
+                Cluster: ['r/production'],
+                'Random Field': 'value',
+            };
+            const result = removeRegexSearchModifiers(searchFilter);
+            expect(result.Cluster).toEqual(['production']);
+            expect(result['Random Field']).toEqual('value');
+        });
+
+        it('reverses label regex values with equals sign', () => {
+            const searchFilter = { 'Deployment Label': ['r/app=r/reporting'] };
+            const result = removeRegexSearchModifiers(searchFilter);
+            expect(result).toEqual({ 'Deployment Label': ['app=reporting'] });
+        });
+
+        it('collapses label regex no-equals pair back to single value', () => {
+            const searchFilter = { 'Deployment Label': ['r/visa=r/.*', 'r/.*=r/visa'] };
+            const result = removeRegexSearchModifiers(searchFilter);
+            expect(result).toEqual({ 'Deployment Label': ['visa'] });
+        });
+
+        it('reverses quoted label values with equals sign', () => {
+            const searchFilter = { 'Deployment Label': ['"app"="reporting"'] };
+            const result = removeRegexSearchModifiers(searchFilter);
+            expect(result).toEqual({ 'Deployment Label': ['"app=reporting"'] });
+        });
+
+        it('collapses quoted label no-equals pair back to single value', () => {
+            const searchFilter = { 'Deployment Label': ['"visa"=r/.*', 'r/.*="visa"'] };
+            const result = removeRegexSearchModifiers(searchFilter);
+            expect(result).toEqual({ 'Deployment Label': ['"visa"'] });
+        });
+
+        it('reverses label values with multiple unrelated regex pairs', () => {
+            const searchFilter = {
+                'Deployment Label': [
+                    '"visa"=r/.*',
+                    '"key"="val"',
+                    'r/.*=r/mastercard',
+                    'r/.*="visa"',
+                    'r/mastercard=r/.*',
+                ],
+            };
+            const result = removeRegexSearchModifiers(searchFilter);
+            expect(result).toEqual({
+                'Deployment Label': ['"visa"', '"key=val"', 'mastercard'],
+            });
+        });
+
+        it('reverses all label search terms', () => {
+            const searchFilter = {
+                'Image Label': ['r/env=r/prod'],
+                'Node Label': ['r/role=r/worker'],
+                'Cluster Label': ['r/team=r/platform'],
+                'Namespace Label': ['r/app=r/web'],
+            };
+            const result = removeRegexSearchModifiers(searchFilter);
+            expect(result).toEqual({
+                'Image Label': ['env=prod'],
+                'Node Label': ['role=worker'],
+                'Cluster Label': ['team=platform'],
+                'Namespace Label': ['app=web'],
+            });
+        });
+    });
+
+    describe('applyRegexSearchModifiers and removeRegexSearchModifiers round-trip', () => {
+        it('round-trips plain text values', () => {
+            const original = { Cluster: ['production', 'staging'] };
+            expect(removeRegexSearchModifiers(applyRegexSearchModifiers(original))).toEqual(
+                original
+            );
+        });
+
+        it('round-trips exact-match values', () => {
+            const original = { Cluster: ['"production"'] };
+            expect(removeRegexSearchModifiers(applyRegexSearchModifiers(original))).toEqual(
+                original
+            );
+        });
+
+        it('round-trips mixed quoted and unquoted values', () => {
+            const original = { Cluster: ['production', '"exact-match"', 'staging'] };
+            expect(removeRegexSearchModifiers(applyRegexSearchModifiers(original))).toEqual(
+                original
+            );
+        });
+
+        it('round-trips label key=value regex', () => {
+            const original = { 'Deployment Label': ['app=reporting'] };
+            expect(removeRegexSearchModifiers(applyRegexSearchModifiers(original))).toEqual(
+                original
+            );
+        });
+
+        it('round-trips label no-equals regex', () => {
+            const original = { 'Deployment Label': ['visa'] };
+            expect(removeRegexSearchModifiers(applyRegexSearchModifiers(original))).toEqual(
+                original
+            );
+        });
+
+        it('round-trips label key=value exact', () => {
+            const original = { 'Deployment Label': ['"app=reporting"'] };
+            expect(removeRegexSearchModifiers(applyRegexSearchModifiers(original))).toEqual(
+                original
+            );
+        });
+
+        it('round-trips label no-equals exact', () => {
+            const original = { 'Deployment Label': ['"visa"'] };
+            expect(removeRegexSearchModifiers(applyRegexSearchModifiers(original))).toEqual(
+                original
+            );
+        });
+
+        it('round-trips a complex mixed filter', () => {
+            const original = {
+                Cluster: ['production', '"exact-cluster"'],
+                'Deployment Label': ['app=reporting', 'visa', '"env=prod"', '"team"'],
+                'Random Field': 'untouched',
+            };
+            expect(removeRegexSearchModifiers(applyRegexSearchModifiers(original))).toEqual(
+                original
+            );
         });
     });
 });

@@ -3,7 +3,7 @@ values:
     allowNone: true
 server:
   availableSchemas:
-  - openshift-4.1.0
+  - openshift-4.12
   - com.coreos
 tests:
 - name: "When enabled (legacy)"
@@ -16,9 +16,15 @@ tests:
         .roles["secured-cluster-prometheus-k8s"] | assertThat(. != null)
         .rolebindings["secured-cluster-prometheus-k8s"] | assertThat(. != null)
         .rolebindings["rhacs-sensor-auth-reader-stackrox"] | assertThat(. != null)
+        .rolebindings["rhacs-admission-control-auth-reader-stackrox"] | assertThat(. != null)
         .servicemonitors["sensor-monitor-stackrox"] | [
             assertThat(.metadata.namespace == "openshift-monitoring"),
             assertThat(.spec.endpoints[].port == "monitoring-tls")
+          ]
+        .servicemonitors["admission-control-monitor-stackrox"] | [
+            assertThat(.metadata.namespace == "openshift-monitoring"),
+            assertThat(.spec.endpoints[].port == "monitoring-tls"),
+            assertThat(.spec.selector.matchLabels["app.kubernetes.io/component"] == "admission-control")
           ]
 
     - name: "secure metrics endpoint is enabled"
@@ -34,6 +40,17 @@ tests:
             assertThat(.port == 9091)
           ]
         .networkpolicys["sensor-monitoring-tls"] | assertThat(. != null)
+        .deployments["admission-control"].spec.template.spec.containers[0].env[] |
+          select(.name == "ROX_ENABLE_SECURE_METRICS") | assertThat(.value == "true")
+        .deployments["admission-control"].spec.template.spec.containers[0].ports[] |
+          select(.name == "monitoring-tls") | assertThat(.containerPort == 9091)
+        .deployments["admission-control"].spec.template.spec.containers[0].volumeMounts[] |
+          select(.name == "monitoring-tls") | assertThat(.mountPath == "/run/secrets/stackrox.io/monitoring-tls")
+        .services["admission-control"].spec.ports[] | select(.name == "monitoring-tls") | [
+            assertThat(.targetPort == "monitoring-tls"),
+            assertThat(.port == 9091)
+          ]
+        .networkpolicys["admission-control-monitoring-tls"] | assertThat(. != null)
 
 - name: "When enabled"
   set:
@@ -53,9 +70,15 @@ tests:
         .roles["secured-cluster-prometheus-k8s"] | assertThat(. != null)
         .rolebindings["secured-cluster-prometheus-k8s"] | assertThat(. != null)
         .rolebindings["rhacs-sensor-auth-reader-stackrox"] | assertThat(. != null)
+        .rolebindings["rhacs-admission-control-auth-reader-stackrox"] | assertThat(. != null)
         .servicemonitors["sensor-monitor-stackrox"] | [
             assertThat(.metadata.namespace == "openshift-monitoring"),
             assertThat(.spec.endpoints[].port == "monitoring-tls")
+          ]
+        .servicemonitors["admission-control-monitor-stackrox"] | [
+            assertThat(.metadata.namespace == "openshift-monitoring"),
+            assertThat(.spec.endpoints[].port == "monitoring-tls"),
+            assertThat(.spec.selector.matchLabels["app.kubernetes.io/component"] == "admission-control")
           ]
         .rolebindings["rhacs-scanner-v4-auth-reader-stackrox"] | assertThat(. != null)
         .servicemonitors["scanner-v4-monitor-stackrox"] | [
@@ -76,6 +99,17 @@ tests:
             assertThat(.port == 9091)
           ]
         .networkpolicys["sensor-monitoring-tls"] | assertThat(. != null)
+        .deployments["admission-control"].spec.template.spec.containers[0].env[] |
+          select(.name == "ROX_ENABLE_SECURE_METRICS") | assertThat(.value == "true")
+        .deployments["admission-control"].spec.template.spec.containers[0].ports[] |
+          select(.name == "monitoring-tls") | assertThat(.containerPort == 9091)
+        .deployments["admission-control"].spec.template.spec.containers[0].volumeMounts[] |
+          select(.name == "monitoring-tls") | assertThat(.mountPath == "/run/secrets/stackrox.io/monitoring-tls")
+        .services["admission-control"].spec.ports[] | select(.name == "monitoring-tls") | [
+            assertThat(.targetPort == "monitoring-tls"),
+            assertThat(.port == 9091)
+          ]
+        .networkpolicys["admission-control-monitoring-tls"] | assertThat(. != null)
         .deployments["scanner-v4-indexer"].spec.template.spec.containers[0].env[] |
           select(.name == "ROX_ENABLE_SECURE_METRICS") | assertThat(.value == "true")
         .deployments["scanner-v4-indexer"].spec.template.spec.containers[0].env[] |
@@ -105,11 +139,14 @@ tests:
         .roles["secured-cluster-prometheus-k8s"] | assertThat(. == null)
         .rolebindings["secured-cluster-prometheus-k8s"] | assertThat(. == null)
         .rolebindings["rhacs-sensor-auth-reader-stackrox"] | assertThat(. == null)
+        .rolebindings["rhacs-admission-control-auth-reader-stackrox"] | assertThat(. == null)
         .servicemonitors["sensor-monitor-stackrox"] | assertThat(. == null)
+        .servicemonitors["admission-control-monitor-stackrox"] | assertThat(. == null)
 
     - name: "secure metrics endpoint is disabled"
       expect: |
         .networkpolicys["sensor-monitoring-tls"] | assertThat(. == null)
+        .networkpolicys["admission-control-monitoring-tls"] | assertThat(. == null)
 
 - name: "Disable override when on non-OpenShift environment"
   set:
@@ -117,49 +154,10 @@ tests:
     env.openshift: false
   tests: *disabled-test
 
-- name: "Disable override when on explicit OpenShift 3 environment"
-  set:
-    monitoring.openshift.enabled: true
-    env.openshift: 3
-  tests: *disabled-test
-
-- name: "Disable override with default value when on explicit OpenShift 3 environment"
-  set:
-    env.openshift: 3
-  tests: *disabled-test
-
-- name: "Disable override when on auto-detected OpenShift 3 environment"
-  set:
-    monitoring.openshift.enabled: true
-  server:
-    visibleSchemas:
-      - openshift-3.11.0
-  capabilities:
-    kubeVersion:
-      version: "v1.11.0"
-  tests: *disabled-test
-
 - name: "Disable override when on non-OpenShift environment (legacy)"
   set:
     enableOpenShiftMonitoring: true
     env.openshift: false
-  tests: *disabled-test
-
-- name: "Disable override when on explicit OpenShift 3 environment (legacy)"
-  set:
-    enableOpenShiftMonitoring: true
-    env.openshift: 3
-  tests: *disabled-test
-
-- name: "Disable override when on auto-detected OpenShift 3 environment (legacy)"
-  set:
-    enableOpenShiftMonitoring: true
-  server:
-    visibleSchemas:
-      - openshift-3.11.0
-  capabilities:
-    kubeVersion:
-      version: "v1.11.0"
   tests: *disabled-test
 
 - name: "Network policy is enabled"
@@ -170,6 +168,7 @@ tests:
     network.enableNetworkPolicies: true
   expect: |
     .networkpolicys["sensor-monitoring-tls"] | assertThat(. != null)
+    .networkpolicys["admission-control-monitoring-tls"] | assertThat(. != null)
     .networkpolicys["scanner-v4-indexer-monitoring-tls"] | assertThat(. != null)
 
 - name: "Network policy is disabled"
@@ -180,4 +179,5 @@ tests:
     network.enableNetworkPolicies: false
   expect: |
     .networkpolicys["sensor-monitoring-tls"] | assertThat(. == null)
+    .networkpolicys["admission-control-monitoring-tls"] | assertThat(. == null)
     .networkpolicys["scanner-v4-indexer-monitoring-tls"] | assertThat(. == null)

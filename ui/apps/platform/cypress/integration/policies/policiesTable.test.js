@@ -1,16 +1,16 @@
 import * as api from '../../constants/apiEndpoints';
-import { selectors, url } from '../../constants/PoliciesPage';
 import withAuth from '../../helpers/basicAuth';
+import { addCheckboxSelectFilter } from '../../helpers/compoundFilters';
 import { generateNameWithDate } from '../../helpers/formHelpers';
 import {
     changePolicyStatusInTable,
     cloneFirstPolicyFromTable,
     deletePolicyInTable,
     editFirstPolicyFromTable,
-    searchPolicies,
     visitPolicies,
     visitPoliciesFromLeftNav,
-} from '../../helpers/policies';
+} from './Policies.helpers';
+import { selectors, url } from './Policies.selectors';
 import {
     assertSortedItems,
     callbackForPairOfAscendingPolicySeverityValuesFromElements,
@@ -18,6 +18,7 @@ import {
 } from '../../helpers/sort';
 import { visit } from '../../helpers/visit';
 import navSelectors from '../../selectors/navigation';
+import pf6 from '../../selectors/pf6';
 
 describe('Policy Management URL redirect', () => {
     withAuth();
@@ -80,7 +81,7 @@ describe('Policies table', () => {
         const tdSelector = 'td[data-label="Severity"]';
 
         // 0. Initial table state is sorted by the Policy column.
-        cy.get(thSelector).should('have.attr', 'aria-sort', 'none');
+        cy.get(thSelector).should('not.have.attr', 'aria-sort');
 
         // 1. Sort descending by the Severity column.
         cy.get(thSelector).click();
@@ -138,7 +139,7 @@ describe('Policies table', () => {
     it('should filter policies by disabled status', () => {
         visitPolicies();
 
-        searchPolicies('Disabled', 'true');
+        addCheckboxSelectFilter('Policy', 'Status', 'Disabled');
         cy.get(`${selectors.table.statusCell}:contains("Disabled")`);
         cy.get(`${selectors.table.statusCell}:contains("Enabled")`).should('not.exist');
     });
@@ -146,7 +147,7 @@ describe('Policies table', () => {
     it('should filter policies by enabled status', () => {
         visitPolicies();
 
-        searchPolicies('Disabled', 'false');
+        addCheckboxSelectFilter('Policy', 'Status', 'Enabled');
         cy.get(`${selectors.table.statusCell}:contains("Disabled")`).should('not.exist');
         cy.get(`${selectors.table.statusCell}:contains("Enabled")`);
     });
@@ -164,7 +165,7 @@ describe('Policies table', () => {
     it('should filter policies by severity', () => {
         visitPolicies();
 
-        searchPolicies('Severity', 'LOW_SEVERITY');
+        addCheckboxSelectFilter('Policy', 'Severity', 'Low');
         cy.get(`${selectors.table.severityCell}:contains("Low")`);
         cy.get(`${selectors.table.severityCell}:contains("Medium")`).should('not.exist');
         cy.get(`${selectors.table.severityCell}:contains("High")`).should('not.exist');
@@ -183,13 +184,16 @@ describe('Policies table', () => {
     it('should enable bulk actions dropdown button if checkbox is selected in table head', () => {
         visitPolicies();
 
+        // Wait for table rows to load before interacting with header checkbox
+        cy.get(`tbody ${selectors.table.selectCheckbox}`).should('exist');
+
         cy.get(selectors.table.bulkActionsDropdownButton).should('be.disabled');
 
         cy.get(`thead ${selectors.table.selectCheckbox}`).should('not.be.checked').click();
         cy.get(selectors.table.bulkActionsDropdownButton).should('be.enabled').click();
-        cy.get(`${selectors.table.bulkActionsDropdownItem}:contains("Enable policies")`);
-        cy.get(`${selectors.table.bulkActionsDropdownItem}:contains("Disable policies")`);
-        cy.get(`${selectors.table.bulkActionsDropdownItem}:contains("Delete policies")`);
+        cy.get(`${pf6.dropdownItem}:contains("Enable policies")`);
+        cy.get(`${pf6.dropdownItem}:contains("Disable policies")`);
+        cy.get(`${pf6.dropdownItem}:contains("Delete policies")`);
 
         cy.get(`thead ${selectors.table.selectCheckbox}`).click();
         cy.get(selectors.table.bulkActionsDropdownButton).should('be.disabled');
@@ -222,8 +226,8 @@ describe('Policies table', () => {
 
         // Policy table
         cy.location('search').should('eq', '');
-        cy.get(`.pf-v5-c-title:contains('Policy management')`);
-        cy.get(`.pf-v5-c-nav__link.pf-m-current:contains("Policies")`);
+        cy.get(`.pf-v6-c-title:contains('Policy management')`);
+        cy.get(`${pf6.tabButton}[aria-selected="true"]:contains("Policies")`);
     });
 
     it('should have row action to clone policy and then cancel', () => {
@@ -233,8 +237,8 @@ describe('Policies table', () => {
 
         // Policy table
         cy.location('search').should('eq', '');
-        cy.get(`.pf-v5-c-title:contains('Policy management')`);
-        cy.get(`.pf-v5-c-nav__link.pf-m-current:contains("Policies")`);
+        cy.get(`.pf-v6-c-title:contains('Policy management')`);
+        cy.get(`${pf6.tabButton}[aria-selected="true"]:contains("Policies")`);
     });
 
     it('should have row action to disable policy that has enabled status and then enable it again', () => {
@@ -268,9 +272,11 @@ describe('Policies table', () => {
         const trSelector = `tr:has('td[data-label="Policy"] a:contains("${name}")')`;
 
         cy.get(`${trSelector} ${selectors.table.actionsToggleButton}`).click();
-        cy.get(
-            `${trSelector} ${selectors.table.actionsItemButton}:contains("Cannot delete a default policy")`
-        ).should('have.attr', 'disabled', 'disabled');
+        cy.get(`${pf6.dropdownItem}:contains("Cannot delete a default policy") button`).should(
+            'have.attr',
+            'disabled',
+            'disabled'
+        );
     });
 
     it('should have enabled row action to delete user generated policy', () => {
@@ -293,16 +299,16 @@ describe('Policies table', () => {
 
         deletePolicyInTable({ policyName, actionText: 'Delete policy' });
 
-        cy.get(`.pf-v5-c-title:contains('Policy management')`);
-        cy.get(`.pf-v5-c-nav__link.pf-m-current:contains("Policies")`);
+        cy.get(`.pf-v6-c-title:contains('Policy management')`);
+        cy.get(`${pf6.tabButton}[aria-selected="true"]:contains("Policies")`);
         cy.get(`${selectors.table.policyLink}:contains("${policyName}")`).should('not.exist');
     });
 
     it('should have no detectable accessibility violations', () => {
         visitPolicies();
 
-        cy.get('table .pf-v5-c-table__toggle-icon').first().click();
-        cy.get('table .pf-v5-c-menu-toggle').first().click();
+        cy.get('table .pf-v6-c-table__toggle-icon').first().click();
+        cy.get('table .pf-v6-c-menu-toggle').first().click();
 
         cy.checkAccessibility();
     });

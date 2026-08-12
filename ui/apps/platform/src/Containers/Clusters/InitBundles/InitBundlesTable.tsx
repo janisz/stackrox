@@ -1,8 +1,8 @@
-import React, { ReactElement } from 'react';
-import { Link } from 'react-router-dom';
+import type { ReactElement } from 'react';
+import { Link } from 'react-router-dom-v5-compat';
 import { ActionsColumn, Table, Tbody, Td, Th, Thead, Tr } from '@patternfly/react-table';
 
-import { ClusterInitBundle } from 'services/ClustersService';
+import type { ClusterInitBundle } from 'services/ClustersService';
 import { clustersInitBundlesPath } from 'routePaths';
 
 export type InitBundlesTableProps = {
@@ -24,11 +24,7 @@ function InitBundlesTable({
                     <Th>Created by</Th>
                     <Th>Created at</Th>
                     <Th>Expires at</Th>
-                    {hasWriteAccessForInitBundles && (
-                        <Th>
-                            <span className="pf-v5-screen-reader">Row actions</span>
-                        </Th>
-                    )}
+                    {hasWriteAccessForInitBundles && <Th screenReaderText="Row actions" />}
                 </Tr>
             </Thead>
             <Tbody>

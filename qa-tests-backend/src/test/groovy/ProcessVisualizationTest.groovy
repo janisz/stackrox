@@ -23,6 +23,9 @@ class ProcessVisualizationTest extends BaseSpecification {
     // ldconfig process
     static final private String LDCONFIG = "/sbin/ldconfig"
 
+    // processes, originating from this namespace, will not be persisted
+    static final private String NO_PERSISTENCE_NS = "namespace-without-persistence"
+
     static final private List<Deployment> DEPLOYMENTS = [
             new Deployment()
                 .setName (NGINXDEPLOYMENT)
@@ -30,6 +33,7 @@ class ProcessVisualizationTest extends BaseSpecification {
                 .addLabel ( "app", "test" ),
             new Deployment()
                 .setName (STRUTSDEPLOYMENT)
+                .setImagePrefetcherAffinity()
                 .setImage("quay.io/rhacs-eng/qa-multi-arch:struts-app")
                 .addLabel ("app", "test" ),
             new Deployment()
@@ -39,27 +43,37 @@ class ProcessVisualizationTest extends BaseSpecification {
                 .addLabel ("app", "test" ),
             new Deployment()
                 .setName (FEDORADEPLOYMENT)
+                .setImagePrefetcherAffinity()
                 .setImage ("quay.io/rhacs-eng/qa-multi-arch:fedora-"+
                            "6fb84ba634fe68572a2ac99741062695db24b921d0aa72e61ee669902f88c187")
                 .setCommand(["/bin/sh", "-c", "/bin/sleep 600"])
                 .addLabel ("app", "test" ),
             new Deployment()
                 .setName (ELASTICDEPLOYMENT)
+                .setImagePrefetcherAffinity()
                 .setImage ("quay.io/rhacs-eng/qa-multi-arch:elasticsearch-"+
                            "cdeb134689bb0318a773e03741f4414b3d1d0ee443b827d5954f957775db57eb")
                 .addLabel ("app", "test" ),
             new Deployment()
                 .setName (MONGODEPLOYMENT)
+                .setImagePrefetcherAffinity()
                 .setImage ("quay.io/rhacs-eng/qa-multi-arch:mongodb")
                 .addLabel ("app", "test" ),
             new Deployment()
                 .setName (ROX4751DEPLOYMENT)
+                .setImagePrefetcherAffinity()
                 .setImage ("quay.io/rhacs-eng/qa-multi-arch:ROX4751")
                 .addLabel ("app", "test" ),
             new Deployment()
                 .setName (ROX4979DEPLOYMENT)
+                .setImagePrefetcherAffinity()
                 .setImage ("quay.io/rhacs-eng/qa-multi-arch:ROX4979")
                 .addLabel ("app", "test" ),
+            new Deployment()
+                .setName (NGINXDEPLOYMENT)
+                .setNamespace (NO_PERSISTENCE_NS)
+                .setImage (TEST_IMAGE)
+                .addLabel ( "app", "test" ),
      ]
 
     static final private MAX_SLEEP_TIME = 240000
@@ -76,6 +90,7 @@ class ProcessVisualizationTest extends BaseSpecification {
         for (Deployment deployment : DEPLOYMENTS) {
             orchestrator.deleteDeployment(deployment)
         }
+        orchestrator.deleteNamespace(NO_PERSISTENCE_NS)
     }
 
     @Tag("BAT")
@@ -327,6 +342,34 @@ class ProcessVisualizationTest extends BaseSpecification {
             ["/usr/bin/grep", "^- /etc/elasticsearch/jvm.options"],
             ["/sbin/ldconfig", "-p"],
         ] | ELASTICDEPLOYMENT
+    }
+
+    @Tag("BAT")
+    @Tag("RUNTIME")
+    def "Verify process visualization on the excluded namespace"()  {
+        when:
+        "Get Process IDs running on deployment without persistence"
+        String uid = DEPLOYMENTS.find { it.namespace == NO_PERSISTENCE_NS }.deploymentUid
+        assert uid != null
+
+        // It's hard to prove we didn't receive a process on purpose, it may
+        // just not arrived yet. Instead wait for maximum allowed time, and
+        // verify afterwards.
+        Set<String> receivedProcessPaths
+        int retries = MAX_SLEEP_TIME / SLEEP_INCREMENT
+        int delaySeconds = SLEEP_INCREMENT / 1000
+        Timer t = new Timer(retries, delaySeconds)
+        while (t.IsValid()) {
+            receivedProcessPaths = ProcessService.getUniqueProcessPaths(uid)
+            if (receivedProcessPaths.size() > 0) {
+                break
+            }
+            log.info "Didn't find all the expected processes, retrying..."
+        }
+
+        then:
+        "Verify no processes in the deployment without persistence"
+        assert receivedProcessPaths.size() == 0
     }
 
     // Returns true if received contains all the (path,UIDGIDSet) pairs found in expected

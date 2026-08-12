@@ -1,21 +1,30 @@
 /* eslint-disable no-void */
-import React, { ReactElement, useState } from 'react';
-import { Alert, Checkbox, Form, PageSection, TextInput, Popover } from '@patternfly/react-core';
-import { SelectOption } from '@patternfly/react-core/deprecated';
+import { useState } from 'react';
+import type { ReactElement } from 'react';
+import {
+    Alert,
+    Checkbox,
+    Form,
+    PageSection,
+    Popover,
+    SelectOption,
+    TextInput,
+} from '@patternfly/react-core';
 import { HelpIcon } from '@patternfly/react-icons';
 import * as yup from 'yup';
 import merge from 'lodash/merge';
 
-import { NotifierIntegrationBase } from 'services/NotifierIntegrationsService';
+import type { NotifierIntegrationBase } from 'services/NotifierIntegrationsService';
 
 import SelectSingle from 'Components/SelectSingle';
-import usePageState from 'Containers/Integrations/hooks/usePageState';
 import FormMessage from 'Components/PatternFly/FormMessage';
 import FormCancelButton from 'Components/PatternFly/FormCancelButton';
 import FormTestButton from 'Components/PatternFly/FormTestButton';
 import FormSaveButton from 'Components/PatternFly/FormSaveButton';
+
+import usePageState from '../../hooks/usePageState';
 import useIntegrationForm from '../useIntegrationForm';
-import { IntegrationFormProps } from '../integrationFormTypes';
+import type { IntegrationFormProps } from '../integrationFormTypes';
 
 import IntegrationFormActions from '../IntegrationFormActions';
 import FormLabelGroup from '../FormLabelGroup';
@@ -29,8 +38,10 @@ export type EmailIntegration = {
         from: string;
         sender: string;
         disableTLS: boolean;
+        skipTLSVerify: boolean;
         startTLSAuthMethod: 'DISABLED' | 'PLAIN' | 'LOGIN';
         allowUnauthenticatedSmtp: boolean;
+        hostnameHeloEhlo: string;
     };
     type: 'email';
 } & NotifierIntegrationBase;
@@ -121,8 +132,10 @@ export const defaultValues: EmailIntegrationFormValues = {
             from: '',
             sender: '',
             disableTLS: false,
+            skipTLSVerify: false,
             startTLSAuthMethod: 'DISABLED',
             allowUnauthenticatedSmtp: false,
+            hostnameHeloEhlo: '',
         },
         labelDefault: '',
         labelKey: '',
@@ -198,7 +211,7 @@ function EmailIntegrationForm({
 
     return (
         <>
-            <PageSection variant="light" isFilled hasOverflowScroll>
+            <PageSection isFilled hasOverflowScroll>
                 <FormMessage message={message} />
                 <Form isWidthLimited>
                     <FormLabelGroup
@@ -243,7 +256,7 @@ function EmailIntegrationForm({
                         errors={errors}
                     >
                         <>
-                            <div className="pf-v5-u-display-flex pf-v5-u-align-items-flex-start">
+                            <div className="pf-v6-u-display-flex pf-v6-u-align-items-flex-start">
                                 <Checkbox
                                     label="Enable unauthenticated SMTP"
                                     id="notifier.email.unauthenticated"
@@ -262,7 +275,7 @@ function EmailIntegrationForm({
                                         type="button"
                                         aria-label="More info on unauthenticated SMTP field"
                                         onClick={(e) => e.preventDefault()}
-                                        className="pf-v5-c-form__group-label-help"
+                                        className="pf-v6-c-form__group-label-help"
                                     >
                                         <HelpIcon />
                                     </button>
@@ -270,7 +283,7 @@ function EmailIntegrationForm({
                             </div>
                             {allowUnauthenticatedSmtp && (
                                 <Alert
-                                    className="pf-v5-u-mt-md"
+                                    className="pf-v6-u-mt-md"
                                     title="Security Warning"
                                     component="p"
                                     variant="warning"
@@ -352,7 +365,7 @@ function EmailIntegrationForm({
                         touched={touched}
                         errors={errors}
                         helperText={
-                            <span className="pf-v5-u-font-size-sm">
+                            <span className="pf-v6-u-font-size-sm">
                                 Specifies the email FROM header
                             </span>
                         }
@@ -374,7 +387,7 @@ function EmailIntegrationForm({
                         touched={touched}
                         errors={errors}
                         helperText={
-                            <span className="pf-v5-u-font-size-sm">
+                            <span className="pf-v6-u-font-size-sm">
                                 Specifies the email SENDER header
                             </span>
                         }
@@ -410,7 +423,7 @@ function EmailIntegrationForm({
                     </FormLabelGroup>
                     <FormLabelGroup
                         label="Annotation key for recipient"
-                        labelIcon={<AnnotationKeyLabelIcon />}
+                        labelHelp={<AnnotationKeyLabelIcon />}
                         fieldId="notifier.labelKey"
                         touched={touched}
                         errors={errors}
@@ -426,7 +439,7 @@ function EmailIntegrationForm({
                     </FormLabelGroup>
                     <FormLabelGroup label="" fieldId="notifier.email.disableTLS" errors={errors}>
                         <Checkbox
-                            label="Disable TLS certificate validation (insecure)"
+                            label="Disable TLS (insecure)"
                             id="notifier.email.disableTLS"
                             isChecked={values.notifier.email.disableTLS}
                             onChange={(event, value) =>
@@ -454,6 +467,41 @@ function EmailIntegrationForm({
                                 </SelectOption>
                             ))}
                         </SelectSingle>
+                    </FormLabelGroup>
+                    <FormLabelGroup label="" fieldId="notifier.email.skipTLSVerify" errors={errors}>
+                        <Checkbox
+                            label="Skip TLS verification"
+                            id="notifier.email.skipTLSVerify"
+                            isChecked={values.notifier.email.skipTLSVerify}
+                            onBlur={handleBlur}
+                            onChange={(event, value) => onChange(value, event)}
+                            isDisabled={
+                                !isEditable ||
+                                (values.notifier.email.disableTLS &&
+                                    values.notifier.email.startTLSAuthMethod === 'DISABLED')
+                            }
+                        />
+                    </FormLabelGroup>
+                    <FormLabelGroup
+                        label="Hostname for SMTP HELO/EHLO"
+                        fieldId="notifier.email.hostnameHeloEhlo"
+                        helperText={
+                            <span className="pf-v6-u-font-size-sm">
+                                If left blank, localhost will be used
+                            </span>
+                        }
+                        touched={touched}
+                        errors={errors}
+                    >
+                        <TextInput
+                            type="text"
+                            id="notifier.email.hostnameHeloEhlo"
+                            value={values.notifier.email.hostnameHeloEhlo}
+                            placeholder="example, smtp.client.com"
+                            onChange={(event, value) => onChange(value, event)}
+                            onBlur={handleBlur}
+                            isDisabled={!isEditable}
+                        />
                     </FormLabelGroup>
                 </Form>
             </PageSection>

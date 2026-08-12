@@ -4,7 +4,6 @@ package tests
 
 import (
 	"context"
-	"os"
 	"testing"
 	"time"
 
@@ -29,7 +28,8 @@ func allIntsZero(ints ...int) bool {
 }
 
 func (a *allCounts) AllZero() bool {
-	return allIntsZero(a.PodCount, a.ClusterCount, a.NodeCount, a.ViolationCount, a.DeploymentCount, a.SecretCount)
+	// Runtime violations persist for days due to retention policies, so we only check infrastructure cleanup
+	return allIntsZero(a.PodCount, a.ClusterCount, a.NodeCount, a.DeploymentCount, a.SecretCount)
 }
 
 type summaryCountsResp struct {
@@ -65,9 +65,6 @@ func getAllCounts(t *testing.T) allCounts {
 }
 
 func TestClusterDeletion(t *testing.T) {
-	if os.Getenv("ORCHESTRATOR_FLAVOR") == "openshift" {
-		t.Skip("temporarily skipped on OCP. TODO(ROX-25171)")
-	}
 	counts := getAllCounts(t)
 	assert.NotZero(t, counts.ClusterCount)
 	// ROX-6391: NodeCount starts at zero
@@ -76,7 +73,7 @@ func TestClusterDeletion(t *testing.T) {
 	assert.NotZero(t, counts.DeploymentCount)
 	assert.NotZero(t, counts.SecretCount)
 	assert.NotZero(t, counts.PodCount)
-	log.Infof("the initial counts are: %+v", counts)
+	t.Logf("the initial counts are: %+v", counts)
 
 	conn := centralgrpc.GRPCConnectionToCentral(t)
 	service := v1.NewClustersServiceClient(conn)
@@ -100,12 +97,12 @@ func TestClusterDeletion(t *testing.T) {
 		counts := getAllCounts(t)
 		if counts.DeploymentCount == 0 {
 			if counts.AllZero() {
-				log.Infof("objects have all drained to 0")
+				t.Logf("objects have all drained to 0")
 				return
 			}
-			log.Infof("resp still has non zero values: %+v", counts)
+			t.Logf("resp still has non zero values: %+v", counts)
 		} else {
-			log.Infof("deployment count is still not zero: %d", counts.DeploymentCount)
+			t.Logf("deployment count is still not zero: %d", counts.DeploymentCount)
 		}
 
 		if previous.DeploymentCount > 0 && previous.DeploymentCount > counts.DeploymentCount {

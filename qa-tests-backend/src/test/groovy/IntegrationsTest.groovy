@@ -3,7 +3,6 @@ import static util.Helpers.withRetry
 import io.grpc.StatusRuntimeException
 
 import io.stackrox.proto.storage.ClusterOuterClass
-import io.stackrox.proto.storage.ExternalBackupOuterClass.S3URLStyle
 import io.stackrox.proto.storage.NotifierOuterClass
 import io.stackrox.proto.storage.PolicyOuterClass
 import io.stackrox.proto.storage.ScopeOuterClass
@@ -14,10 +13,10 @@ import objects.ClairScannerIntegration
 import objects.Deployment
 import objects.ECRRegistryIntegration
 import objects.EmailNotifier
-import objects.GHCRImageIntegration
-import objects.GoogleArtifactRegistry
 import objects.GCRImageIntegration
+import objects.GHCRImageIntegration
 import objects.GenericNotifier
+import objects.GoogleArtifactRegistry
 import objects.NetworkPolicy
 import objects.NetworkPolicyTypes
 import objects.Notifier
@@ -27,9 +26,9 @@ import objects.SplunkNotifier
 import objects.StackroxScannerIntegration
 import objects.SyslogNotifier
 import services.ClusterService
-import services.ExternalBackupService
 import services.ImageIntegrationService
 import services.NetworkPolicyService
+import services.NotifierService
 import services.PolicyService
 import util.Env
 import util.MailServer
@@ -48,6 +47,7 @@ class IntegrationsTest extends BaseSpecification {
     static final private List<Deployment> DEPLOYMENTS = [
             new Deployment()
                     .setName(NOTIFIERDEPLOYMENT)
+                    .setImagePrefetcherAffinity()
                     .setImage("quay.io/rhacs-eng/qa-multi-arch-nginx:latest")
                     .addLabel("app", NOTIFIERDEPLOYMENT),
     ]
@@ -265,6 +265,12 @@ class IntegrationsTest extends BaseSpecification {
         "validate notification"
         for (Notifier notifier : notifierTypes) {
             notifier.validateNetpolNotification(orchestrator.generateYaml(policy), strictIntegrationTesting)
+        }
+
+        and:
+        "check notifier is scrubbed"
+        NotifierService.getNotifiers().notifiersList.each {
+            it.getNotifierSecret() == "******"
         }
 
         cleanup:
@@ -488,94 +494,6 @@ class IntegrationsTest extends BaseSpecification {
     }
 
     @Unroll
-    @Tag("Integration")
-    def "Verify AWS S3 Integration: #integrationName"() {
-        when:
-        "the integration is tested"
-        def backup = ExternalBackupService.getS3IntegrationConfig(integrationName, bucket, region, endpoint,
-                accessKeyId, accesskey)
-
-        then:
-        "verify test integration"
-        // Test integration for S3 performs test backup (and rollback).
-        withRetry(3, 10) {
-            assert ExternalBackupService.getExternalBackupClient().testExternalBackup(backup)
-        }
-
-        where:
-        "configurations are:"
-
-        integrationName       | bucket                       | region                         |
-                endpoint                                             | accessKeyId            |
-                accesskey
-        "S3 with endpoint"    | Env.mustGetAWSS3BucketName() | Env.mustGetAWSS3BucketRegion() |
-                "s3.${Env.mustGetAWSS3BucketRegion()}.amazonaws.com" | Env.mustGetAWSAccessKeyID() |
-                Env.mustGetAWSSecretAccessKey()
-        "S3 without endpoint" | Env.mustGetAWSS3BucketName() | Env.mustGetAWSS3BucketRegion() |
-                ""                                                   | Env.mustGetAWSAccessKeyID() |
-                Env.mustGetAWSSecretAccessKey()
-        "GCS"                 | Env.mustGetGCSBucketName()   | "us-east-1"                    |
-                "storage.googleapis.com"                             | Env.mustGetGCPAccessKeyID() |
-                Env.mustGetGCPAccessKey()
-    }
-
-    @Unroll
-    @Tag("Integration")
-    def "Verify S3 Compatible Integration: #integrationName"() {
-        when:
-        "the integration is tested"
-        def backup = ExternalBackupService.getS3CompatibleIntegrationConfig(integrationName, endpoint, urlStyle)
-
-        then:
-        "verify test integration"
-        // Test integration for S3 compatible performs test backup (and rollback).
-        withRetry(3, 10) {
-            assert ExternalBackupService.getExternalBackupClient().testExternalBackup(backup)
-        }
-
-        where:
-        "configurations are:"
-
-        // Cloudflare R2 requires an active credit card subscription to access the buckets.
-        // See BitWarden item `06917dbc-17be-40f9-b8e1-b1a1015ce473` for the account details.
-        integrationName                          | endpoint
-        | urlStyle
-        "Cloudflare R2/path-based/no-prefix"     | Env.mustGetCloudflareR2Endpoint()
-        | S3URLStyle.S3_URL_STYLE_PATH
-        "Cloudflare R2/path-based/https"         | "https://${Env.mustGetCloudflareR2Endpoint()}"
-        | S3URLStyle.S3_URL_STYLE_PATH
-        "Cloudflare R2/virtual-hosted/no-prefix" | Env.mustGetCloudflareR2Endpoint()
-        | S3URLStyle.S3_URL_STYLE_VIRTUAL_HOSTED
-        "Cloudflare R2/virtual-hosted/https"     | "https://${Env.mustGetCloudflareR2Endpoint()}"
-        | S3URLStyle.S3_URL_STYLE_VIRTUAL_HOSTED
-    }
-
-    @Unroll
-    @Tag("Integration")
-    def "Verify GCS Integration: #integrationName"() {
-        setup:
-        Assume.assumeTrue(!useWorkloadId || Env.HAS_WORKLOAD_IDENTITIES)
-
-        when:
-        "the integration is tested"
-        def backup = ExternalBackupService.getGCSIntegrationConfig(integrationName, useWorkloadId)
-
-        then:
-        "verify test integration"
-        // Test integration for GCS performs test backup (and rollback).
-        withRetry(3, 10) {
-            assert ExternalBackupService.getExternalBackupClient().testExternalBackup(backup)
-        }
-
-        where:
-        "configurations are:"
-
-        integrationName                | bucket                     | useWorkloadId
-        "GCS with service account key" | Env.mustGetGCSBucketName() | false
-        "GCS with workload identity"   | Env.mustGetGCSBucketName() | true
-    }
-
-    @Unroll
     @Tag("BAT")
     @Tag("Notifiers")
     def "Verify Policy Violation Notifications Destination Overrides: #type"() {
@@ -703,7 +621,7 @@ class IntegrationsTest extends BaseSpecification {
 
         when:
         "the integration is tested"
-        def outcome = ImageIntegrationService.getImageIntegrationClient().testImageIntegration(
+        def outcome = ImageIntegrationService.testImageIntegration(
                 imageIntegration.getCustomBuilder(customArgs).build()
         )
 
@@ -725,9 +643,6 @@ class IntegrationsTest extends BaseSpecification {
         new GoogleArtifactRegistry()     | [:]                | "default config"
         new GoogleArtifactRegistry()     | [wifEnabled: true]
                                                               | "requires workload identity"
-        new GCRImageIntegration()        | [:]                | "default config"
-        new GCRImageIntegration()        | [includeScanner: false, wifEnabled: true]
-                                                              | "requires workload identity"
         new AzureRegistryIntegration()   | [configSchema: "AzureConfig"]
                                                               | "default config with AzureConfig"
         new AzureRegistryIntegration()   | [configSchema: "DockerConfig"]
@@ -746,7 +661,7 @@ class IntegrationsTest extends BaseSpecification {
 
         when:
         "the integration is tested"
-        ImageIntegrationService.getImageIntegrationClient().testImageIntegration(
+        ImageIntegrationService.testImageIntegration(
                 imageIntegration.getCustomBuilder(getCustomArgs()).build()
         )
 
@@ -810,14 +725,20 @@ class IntegrationsTest extends BaseSpecification {
         /invalid endpoint: endpoint cannot reference the cluster metadata service/ | "invalid endpoint"
         new QuayImageIntegration()      | { [oauthToken: "EnFzYsRVC4TIBjRenrKt9193KSz9o7vkoWiIGX86",]
         }       | StatusRuntimeException | /INVALID_ARGUMENT/ | "incorrect token"
-        new GCRImageIntegration() | { [endpoint: "http://127.0.0.1/nowhere",]
-        }       | StatusRuntimeException |
-        /invalid endpoint: endpoint cannot reference localhost/ |
-        "invalid endpoint"
-        new GCRImageIntegration() | { [serviceAccount: Env.mustGetGCRNoAccessServiceAccount(),]
-        }       | StatusRuntimeException | /PermissionDenied/ | "account without access"
-        new GCRImageIntegration() | { [project: "not-a-project",]
-        }       | StatusRuntimeException | /PermissionDenied/ | "incorrect project"
+    }
+
+    @Tag("Integration")
+    def "Verify GCR integration creation is blocked due to deprecation"() {
+        when:
+        "attempting to create a GCR integration"
+        ImageIntegrationService.getImageIntegrationClient().postImageIntegration(
+                GCRImageIntegration.getCustomBuilder([skipTestIntegration: true]).build()
+        )
+
+        then:
+        "creation is rejected"
+        def error = thrown(StatusRuntimeException)
+        error.message =~ /deprecated/
     }
 
     @Tag("Integration")

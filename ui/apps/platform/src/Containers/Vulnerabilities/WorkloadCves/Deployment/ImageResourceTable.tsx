@@ -1,8 +1,7 @@
-import React from 'react';
-import { Table, Thead, Tr, Th, Tbody, Td } from '@patternfly/react-table';
+import { Table, Tbody, Td, Th, Thead, Tr } from '@patternfly/react-table';
 import { gql } from '@apollo/client';
 
-import { UseURLSortResult } from 'hooks/useURLSort';
+import type { UseURLSortResult } from 'hooks/useURLSort';
 import DateDistance from 'Components/DateDistance';
 import EmptyTableResults from '../components/EmptyTableResults';
 import ImageNameLink from '../components/ImageNameLink';
@@ -11,6 +10,7 @@ export type ImageResources = {
     imageCount: number;
     images: {
         id: string;
+        digest: string;
         name: {
             registry: string;
             remote: string;
@@ -27,6 +27,7 @@ export const imageResourcesFragment = gql`
         imageCount(query: $query)
         images(query: $query, pagination: $pagination) {
             id
+            digest
             name {
                 registry
                 remote
@@ -46,7 +47,7 @@ export type ImageResourceTableProps = {
 
 function ImageResourceTable({ data, getSortParams }: ImageResourceTableProps) {
     return (
-        <Table borders={false} variant="compact">
+        <Table variant="compact">
             <Thead noWrap>
                 <Tr>
                     <Th sort={getSortParams('Image')}>Name</Th>
@@ -56,17 +57,16 @@ function ImageResourceTable({ data, getSortParams }: ImageResourceTableProps) {
                 </Tr>
             </Thead>
             {data.images.length === 0 && <EmptyTableResults colSpan={4} />}
-            {data.images.map(({ id, name, deploymentCount, operatingSystem, scanTime }) => {
+            {data.images.map(({ id, digest, name, deploymentCount, operatingSystem, scanTime }) => {
                 return (
-                    <Tbody
-                        key={id}
-                        style={{
-                            borderBottom: '1px solid var(--pf-v5-c-table--BorderColor)',
-                        }}
-                    >
+                    <Tbody key={id}>
                         <Tr>
                             <Td dataLabel="Name" width={50}>
-                                {name ? <ImageNameLink id={id} name={name} /> : 'NAME UNKNOWN'}
+                                {name ? (
+                                    <ImageNameLink id={id} name={name} digest={digest} />
+                                ) : (
+                                    'NAME UNKNOWN'
+                                )}
                             </Td>
                             {/* Given that this is in the context of a deployment, when would `deploymentCount` ever be less than zero? */}
                             <Td dataLabel="Image status">

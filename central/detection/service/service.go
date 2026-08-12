@@ -9,6 +9,7 @@ import (
 	"github.com/stackrox/rox/central/detection/deploytime"
 	"github.com/stackrox/rox/central/enrichment"
 	imageDatastore "github.com/stackrox/rox/central/image/datastore"
+	namespaceDatastore "github.com/stackrox/rox/central/namespace/datastore"
 	networkPolicyDS "github.com/stackrox/rox/central/networkpolicies/datastore"
 	"github.com/stackrox/rox/central/risk/manager"
 	"github.com/stackrox/rox/central/role/sachelper"
@@ -32,7 +33,9 @@ type Service interface {
 // New returns a new Service instance using the given DataStore.
 func New(
 	clusters clusterDatastore.DataStore,
+	namespaces namespaceDatastore.DataStore,
 	imageEnricher enricher.ImageEnricher,
+	imageEnricherV2 enricher.ImageEnricherV2,
 	imageDatastore imageDatastore.DataStore,
 	riskManager manager.Manager,
 	deploymentEnricher enrichment.Enricher,
@@ -47,7 +50,9 @@ func New(
 ) Service {
 	return &serviceImpl{
 		clusters:           clusters,
+		namespaces:         namespaces,
 		imageEnricher:      imageEnricher,
+		imageEnricherV2:    imageEnricherV2,
 		imageDatastore:     imageDatastore,
 		riskManager:        riskManager,
 		deploymentEnricher: deploymentEnricher,

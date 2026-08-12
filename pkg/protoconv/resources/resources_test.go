@@ -7,9 +7,12 @@ import (
 	"testing"
 
 	"github.com/stackrox/rox/generated/storage"
+	"github.com/stackrox/rox/pkg/features"
 	"github.com/stackrox/rox/pkg/kubernetes"
 	"github.com/stackrox/rox/pkg/protoconv/resources/volumes"
+	"github.com/stackrox/rox/pkg/testutils"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	appsV1 "k8s.io/api/apps/v1"
 	appsV1beta2 "k8s.io/api/apps/v1beta2"
 	batchV1 "k8s.io/api/batch/v1"
@@ -20,7 +23,6 @@ import (
 )
 
 func TestGetVolumeSourceMap(t *testing.T) {
-	t.Parallel()
 
 	secretVol := v1.Volume{
 		Name: "secret",
@@ -124,7 +126,7 @@ func TestCronJobPopulateSpec(t *testing.T) {
 		},
 	}
 	deploymentWrap.populateFields(cronJob1)
-	assert.Equal(t, deploymentWrap.Containers[0].Name, "container1")
+	assert.Equal(t, deploymentWrap.Containers[0].GetName(), "container1")
 
 	cronJob2 := &batchV1beta1.CronJob{
 		Spec: batchV1beta1.CronJobSpec{
@@ -138,7 +140,7 @@ func TestCronJobPopulateSpec(t *testing.T) {
 		},
 	}
 	deploymentWrap.populateFields(cronJob2)
-	assert.Equal(t, deploymentWrap.Containers[0].Name, "container2")
+	assert.Equal(t, deploymentWrap.Containers[0].GetName(), "container2")
 }
 
 func TestNewDeploymentFromStaticResourcePopulatesPodLabels(t *testing.T) {
@@ -236,7 +238,7 @@ func TestContainerLivenessProbePopulation(t *testing.T) {
 			deploymentWrap.populateProbes(spec)
 
 			livenessProbe := deploymentWrap.GetContainers()[0].GetLivenessProbe()
-			assert.Equal(t, livenessProbe.Defined, testCase.livenessProbeDefined)
+			assert.Equal(t, livenessProbe.GetDefined(), testCase.livenessProbeDefined)
 		})
 	}
 }
@@ -270,7 +272,7 @@ func TestContainerLivenessProbeFromJSON(t *testing.T) {
 
 			assert.NoError(t, err)
 			livenessProbe := deploymentWrap.GetContainers()[0].GetLivenessProbe()
-			assert.Equal(t, livenessProbe.Defined, testCase.livenessProbeDefined)
+			assert.Equal(t, livenessProbe.GetDefined(), testCase.livenessProbeDefined)
 		})
 	}
 }
@@ -306,7 +308,7 @@ func TestContainerReadinessProbePopulation(t *testing.T) {
 			deploymentWrap.populateProbes(spec)
 
 			readinessProbe := deploymentWrap.GetContainers()[0].GetReadinessProbe()
-			assert.Equal(t, readinessProbe.Defined, testCase.readinessProbeDefined)
+			assert.Equal(t, readinessProbe.GetDefined(), testCase.readinessProbeDefined)
 		})
 	}
 }
@@ -340,7 +342,156 @@ func TestContainerReadinessProbeFromJSON(t *testing.T) {
 
 			assert.NoError(t, err)
 			readinessProbe := deploymentWrap.GetContainers()[0].GetReadinessProbe()
-			assert.Equal(t, readinessProbe.Defined, testCase.readinessProbeDefined)
+			assert.Equal(t, readinessProbe.GetDefined(), testCase.readinessProbeDefined)
 		})
 	}
+}
+
+func TestSecurityContext(t *testing.T) {
+
+	trueBool := true
+	falseBool := false
+	for _, testCase := range []struct {
+		caseName        string
+		securityContext *v1.SecurityContext
+		result          bool
+	}{
+		{
+			caseName: "Allow privilege escalation explicitly set to true",
+			securityContext: &v1.SecurityContext{
+				AllowPrivilegeEscalation: &trueBool,
+			},
+			result: true,
+		},
+		{
+			caseName: "Allow privilege escalation explicitly set to false",
+			securityContext: &v1.SecurityContext{
+				AllowPrivilegeEscalation: &falseBool,
+			},
+			result: false,
+		},
+		{
+			caseName:        "Allow privilege escalation is nil, defaults to true",
+			securityContext: &v1.SecurityContext{},
+			result:          true,
+		},
+		{
+			caseName:        "SecurityContext is nil, Allow privilege escalation defaults to true",
+			securityContext: nil,
+			result:          true,
+		},
+	} {
+
+		t.Run(testCase.caseName, func(t *testing.T) {
+
+			emptyContainer := &storage.Container{}
+			containers := []*storage.Container{emptyContainer}
+			deploymentWrap := &DeploymentWrap{Deployment: &storage.Deployment{Containers: containers}}
+			spec := v1.PodSpec{Containers: []v1.Container{{SecurityContext: testCase.securityContext}}}
+			if testCase.securityContext != nil && testCase.securityContext.AllowPrivilegeEscalation != nil {
+				spec.Containers[0].SecurityContext.AllowPrivilegeEscalation = testCase.securityContext.AllowPrivilegeEscalation
+			}
+			deploymentWrap.populateSecurityContext(spec)
+			actualAllowPrivilegeEscalationValue := deploymentWrap.GetContainers()[0].GetSecurityContext().GetAllowPrivilegeEscalation()
+			assert.Equal(t, testCase.result, actualAllowPrivilegeEscalationValue)
+		})
+	}
+}
+
+func TestPopulateContainersInitContainerExtraction(t *testing.T) {
+	type expectedContainer struct {
+		name          string
+		containerType storage.ContainerType
+		imageSubstr   string
+	}
+
+	cases := map[string]struct {
+		flagEnabled bool
+		expected    []expectedContainer
+	}{
+		"flag enabled extracts init and regular containers": {
+			flagEnabled: true,
+			expected: []expectedContainer{
+				{name: "init-setup", containerType: storage.ContainerType_INIT, imageSubstr: "busybox"},
+				{name: "nginx", containerType: storage.ContainerType_REGULAR, imageSubstr: "nginx"},
+				{name: "redis", containerType: storage.ContainerType_REGULAR, imageSubstr: "redis"},
+			},
+		},
+		"flag disabled ignores init containers": {
+			flagEnabled: false,
+			expected: []expectedContainer{
+				{name: "nginx", containerType: storage.ContainerType_REGULAR, imageSubstr: "nginx"},
+				{name: "redis", containerType: storage.ContainerType_REGULAR, imageSubstr: "redis"},
+			},
+		},
+	}
+
+	podSpec := v1.PodSpec{
+		InitContainers: []v1.Container{
+			{Name: "init-setup", Image: "busybox:latest", Command: []string{"sh", "-c", "echo init"}},
+		},
+		Containers: []v1.Container{
+			{Name: "nginx", Image: "nginx:latest"},
+			{Name: "redis", Image: "redis:latest"},
+		},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			testutils.MustUpdateFeature(t, features.InitContainerSupport, tc.flagEnabled)
+
+			wrap := &DeploymentWrap{
+				Deployment: &storage.Deployment{Id: "test-deploy"},
+			}
+			wrap.populateContainers(podSpec)
+
+			require.Len(t, wrap.GetContainers(), len(tc.expected))
+			for i, exp := range tc.expected {
+				assert.Equal(t, exp.name, wrap.GetContainers()[i].GetName())
+				assert.Equal(t, exp.containerType, wrap.GetContainers()[i].GetType())
+				assert.Contains(t, wrap.GetContainers()[i].GetImage().GetName().GetFullName(), exp.imageSubstr)
+			}
+		})
+	}
+}
+
+func TestPopulateContainersInitContainerFieldsPopulated(t *testing.T) {
+	testutils.MustUpdateFeature(t, features.InitContainerSupport, true)
+
+	wrap := &DeploymentWrap{
+		Deployment: &storage.Deployment{Id: "test-deploy"},
+	}
+
+	podSpec := v1.PodSpec{
+		InitContainers: []v1.Container{
+			{
+				Name:    "init-setup",
+				Image:   "busybox:latest",
+				Command: []string{"sh", "-c", "echo init"},
+				Args:    []string{"arg1"},
+				SecurityContext: &v1.SecurityContext{
+					Privileged: new(true),
+				},
+				LivenessProbe: &v1.Probe{TimeoutSeconds: 5},
+			},
+		},
+		Containers: []v1.Container{
+			{
+				Name:  "nginx",
+				Image: "nginx:latest",
+			},
+		},
+	}
+
+	wrap.populateContainers(podSpec)
+
+	require.Len(t, wrap.GetContainers(), 2)
+
+	initContainer := wrap.GetContainers()[0]
+	assert.Equal(t, "init-setup", initContainer.GetName())
+	assert.Equal(t, storage.ContainerType_INIT, initContainer.GetType())
+	assert.Equal(t, []string{"sh", "-c", "echo init"}, initContainer.GetConfig().GetCommand())
+	assert.Equal(t, []string{"arg1"}, initContainer.GetConfig().GetArgs())
+	assert.True(t, initContainer.GetSecurityContext().GetPrivileged())
+	assert.True(t, initContainer.GetLivenessProbe().GetDefined())
 }

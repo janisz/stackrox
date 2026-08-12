@@ -1,17 +1,20 @@
-import React from 'react';
+import type { ReactElement, ReactNode } from 'react';
 import { ScreenIcon } from '@patternfly/react-icons';
 
 import { Flex, FlexItem } from '@patternfly/react-core';
 
 type SimulationFrameProps = {
     isSimulating: boolean;
-    children: React.ReactNode;
+    children: ReactNode;
 };
 
-function SimulationFrame({ isSimulating, children }: SimulationFrameProps) {
+function SimulationFrame({ isSimulating, children }: SimulationFrameProps): ReactElement {
     let style = {};
     if (isSimulating) {
-        style = { position: 'relative', border: '5px solid var(--pf-v5-global--info-color--100' };
+        style = {
+            position: 'relative',
+            border: '5px solid var(--pf-t--global--border--color--status--info--default)',
+        };
     } else {
         style = {};
     }
@@ -24,7 +27,7 @@ function SimulationFrame({ isSimulating, children }: SimulationFrameProps) {
             {children}
             {isSimulating && (
                 <Flex
-                    className="pf-v5-u-p-sm pf-v5-u-background-color-info"
+                    className="pf-v6-u-p-sm pf-v6-u-background-color-info"
                     style={{
                         position: 'absolute',
                         left: '0',
@@ -35,7 +38,7 @@ function SimulationFrame({ isSimulating, children }: SimulationFrameProps) {
                     spaceItems={{ default: 'spaceItemsSm' }}
                 >
                     <FlexItem>
-                        <ScreenIcon className="pf-v5-u-info-color-100" />
+                        <ScreenIcon className="pf-v6-u-info-color-100" />
                     </FlexItem>
                     <FlexItem>Simulated view</FlexItem>
                 </Flex>

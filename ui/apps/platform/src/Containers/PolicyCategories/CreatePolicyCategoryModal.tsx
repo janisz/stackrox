@@ -1,23 +1,21 @@
-import React from 'react';
+import type { FormEvent, ReactElement } from 'react';
 import * as yup from 'yup';
 import {
-    Modal,
-    ModalBoxBody,
-    ModalBoxFooter,
     Button,
     Form,
     FormGroup,
-    TextInput,
     FormHelperText,
     HelperText,
     HelperTextItem,
+    TextInput,
 } from '@patternfly/react-core';
+import { Modal, ModalBoxBody, ModalBoxFooter } from '@patternfly/react-core/deprecated';
 import { FormikProvider, useFormik } from 'formik';
 
-import { PolicyCategory } from 'types/policy.proto';
+import type { PolicyCategory } from 'types/policy.proto';
 import { postPolicyCategory } from 'services/PolicyCategoriesService';
 
-type CreatePolicyCategoryModalType = {
+type CreatePolicyCategoryModalProps = {
     isOpen: boolean;
     onClose: () => void;
     addToast: (toast) => void;
@@ -35,7 +33,7 @@ function CreatePolicyCategoryModal({
     onClose,
     addToast,
     refreshPolicyCategories,
-}: CreatePolicyCategoryModalType) {
+}: CreatePolicyCategoryModalProps): ReactElement {
     const formik = useFormik({
         initialValues: emptyPolicyCategory as PolicyCategory,
         onSubmit: (values, { setSubmitting, resetForm }) => {
@@ -66,7 +64,7 @@ function CreatePolicyCategoryModal({
 
     const { values, handleChange, handleSubmit, resetForm, isValid } = formik;
 
-    function onChange(event: React.FormEvent) {
+    function onChange(event: FormEvent) {
         handleChange(event);
     }
 

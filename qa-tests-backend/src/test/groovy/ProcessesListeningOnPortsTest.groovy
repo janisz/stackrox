@@ -1,12 +1,13 @@
-import static util.Helpers.evaluateWithRetry
-
 import objects.Deployment
+import objects.DaemonSet
+import objects.Pagination
 import util.Env
 
 import spock.lang.IgnoreIf
 import spock.lang.Shared
 import spock.lang.Tag
 import spock.lang.Stepwise
+import spock.lang.Unroll
 
 import services.ProcessesListeningOnPortsService
 
@@ -22,6 +23,12 @@ class ProcessesListeningOnPortsTest extends BaseSpecification {
     static final private String TCPCONNECTIONTARGET2 = "tcp-connection-target-2"
     static final private String TCPCONNECTIONTARGET3 = "tcp-connection-target-3"
 
+    // Ports
+    static final private int PORT1 = 8079
+    static final private int PORT2 = 8080
+    static final private int PORT3 = 8081
+    static final private int PORT4 = 8082
+
     // Other namespace
     static final private String TEST_NAMESPACE = "qa-plop"
 
@@ -33,32 +40,35 @@ class ProcessesListeningOnPortsTest extends BaseSpecification {
             new Deployment()
                     .setName(TCPCONNECTIONTARGET1)
                     .setNamespace(TEST_NAMESPACE)
+                    .setImagePrefetcherAffinity()
                     .setImage("quay.io/rhacs-eng/qa-multi-arch:socat")
-                    .addPort(80)
-                    .addPort(8080)
+                    .addPort(PORT1)
+                    .addPort(PORT2)
                     .addLabel("app", TCPCONNECTIONTARGET1)
                     .setExposeAsService(true)
                     .setCommand(["/bin/sh", "-c",])
-                    .setArgs(["(socat "+SOCAT_DEBUG+" TCP-LISTEN:80,fork STDOUT & " +
-                                      "socat "+SOCAT_DEBUG+" TCP-LISTEN:8080,fork STDOUT)" as String,]),
+                    .setArgs(["(socat "+SOCAT_DEBUG+" TCP-LISTEN:"+PORT1+",fork STDOUT & " +
+                                      "socat "+SOCAT_DEBUG+" TCP-LISTEN:"+PORT2+",fork STDOUT)" as String,]),
             new Deployment()
                     .setName(TCPCONNECTIONTARGET2)
                     .setNamespace(TEST_NAMESPACE)
+                    .setImagePrefetcherAffinity()
                     .setImage("quay.io/rhacs-eng/qa-multi-arch:socat")
-                    .addPort(8081, "TCP")
+                    .addPort(PORT3, "TCP")
                     .addLabel("app", TCPCONNECTIONTARGET2)
                     .setExposeAsService(true)
                     .setCommand(["/bin/sh", "-c",])
-                    .setArgs(["(socat "+SOCAT_DEBUG+" TCP-LISTEN:8081,fork STDOUT)" as String,]),
+                    .setArgs(["(socat "+SOCAT_DEBUG+" TCP-LISTEN:"+PORT3+",fork STDOUT)" as String,]),
             new Deployment()
                     .setName(TCPCONNECTIONTARGET3)
                     .setNamespace(TEST_NAMESPACE)
+                    .setImagePrefetcherAffinity()
                     .setImage("quay.io/rhacs-eng/qa-multi-arch:socat")
-                    .addPort(8082, "TCP")
+                    .addPort(PORT4, "TCP")
                     .addLabel("app", TCPCONNECTIONTARGET3)
                     .setExposeAsService(true)
                     .setCommand(["/bin/sh", "-c",])
-                    .setArgs(["(socat "+SOCAT_DEBUG+" TCP-LISTEN:8082,fork STDOUT & " +
+                    .setArgs(["(socat "+SOCAT_DEBUG+" TCP-LISTEN:"+PORT4+",fork STDOUT & " +
                             "sleep 90 && pkill socat && sleep 3600)" as String,]),
                     // The 8082 port is opened. 90 seconds later the process is killed. After that we sleep forever
         ]
@@ -110,32 +120,37 @@ class ProcessesListeningOnPortsTest extends BaseSpecification {
 
         def list = processesListeningOnPorts.listeningEndpointsList
         assert list.size() == 2
+        assert processesListeningOnPorts.totalListeningEndpoints == 2
 
-        def endpoint1 = list.find { it.endpoint.port == 80 }
+        def endpoint1 = list[0]
 
-        assert endpoint1
-        assert endpoint1.deploymentId
-        assert endpoint1.podId
-        assert endpoint1.podUid
-        assert endpoint1.clusterId
-        assert endpoint1.Namespace
-        assert endpoint1.containerName == TCPCONNECTIONTARGET1
-        assert endpoint1.signal.name == "socat"
-        assert endpoint1.signal.execFilePath == "/usr/bin/socat"
-        assert endpoint1.signal.args == "-d -d -v TCP-LISTEN:80,fork STDOUT"
+        verifyAll(endpoint1) {
+                deploymentId
+                podId
+                podUid
+                clusterId
+                Namespace
+                containerName == TCPCONNECTIONTARGET1
+                signal.name == "socat"
+                signal.execFilePath == "/usr/bin/socat"
+                signal.args == "-d -d -v TCP-LISTEN:"+PORT1+",fork STDOUT"
+                endpoint.port == PORT1
+        }
 
-        def endpoint2 = list.find { it.endpoint.port == 8080 }
+        def endpoint2 = list[1]
 
-        assert endpoint2
-        assert endpoint2.deploymentId
-        assert endpoint2.podId
-        assert endpoint2.podUid
-        assert endpoint2.clusterId
-        assert endpoint2.Namespace
-        assert endpoint2.containerName == TCPCONNECTIONTARGET1
-        assert endpoint2.signal.name == "socat"
-        assert endpoint2.signal.execFilePath == "/usr/bin/socat"
-        assert endpoint2.signal.args == "-d -d -v TCP-LISTEN:8080,fork STDOUT"
+        verifyAll(endpoint2) {
+                deploymentId
+                podId
+                podUid
+                clusterId
+                Namespace
+                containerName == TCPCONNECTIONTARGET1
+                signal.name == "socat"
+                signal.execFilePath == "/usr/bin/socat"
+                signal.args == "-d -d -v TCP-LISTEN:"+PORT2+",fork STDOUT"
+                endpoint.port == PORT2
+        }
 
         processesListeningOnPorts = waitForResponseToHaveNumElements(1, deploymentId2, 240)
 
@@ -143,19 +158,21 @@ class ProcessesListeningOnPortsTest extends BaseSpecification {
 
         list = processesListeningOnPorts.listeningEndpointsList
         assert list.size() == 1
+        assert processesListeningOnPorts.totalListeningEndpoints == 1
 
-        def endpoint = list.find { it.endpoint.port == 8081 }
+        def endpoint = list.find { it.endpoint.port == PORT3 }
 
-        assert endpoint
-        assert endpoint.deploymentId
-        assert endpoint.podId
-        assert endpoint.podUid
-        assert endpoint.clusterId
-        assert endpoint.Namespace
-        assert endpoint.containerName == TCPCONNECTIONTARGET2
-        assert endpoint.signal.name == "socat"
-        assert endpoint.signal.execFilePath == "/usr/bin/socat"
-        assert endpoint.signal.args == "-d -d -v TCP-LISTEN:8081,fork STDOUT"
+        verifyAll(endpoint) {
+                deploymentId
+                podId
+                podUid
+                clusterId
+                Namespace
+                containerName == TCPCONNECTIONTARGET2
+                signal.name == "socat"
+                signal.execFilePath == "/usr/bin/socat"
+                signal.args == "-d -d -v TCP-LISTEN:"+PORT3+",fork STDOUT"
+        }
     }
 
     def "Networking endpoints are no longer in the API when deployments are deleted"() {
@@ -171,6 +188,7 @@ class ProcessesListeningOnPortsTest extends BaseSpecification {
 
         def list2 = processesListeningOnPorts.listeningEndpointsList
         assert list2.size() == 0
+        assert processesListeningOnPorts.totalListeningEndpoints == 0
 
         processesListeningOnPorts = waitForResponseToHaveNumElements(0, deploymentId2, 240)
 
@@ -178,6 +196,7 @@ class ProcessesListeningOnPortsTest extends BaseSpecification {
 
         def list3 = processesListeningOnPorts.listeningEndpointsList
         assert list3.size() == 0
+        assert processesListeningOnPorts.totalListeningEndpoints == 0
     }
 
     def "Verify networking endpoints disappear when process is terminated"() {
@@ -193,19 +212,21 @@ class ProcessesListeningOnPortsTest extends BaseSpecification {
 
         def list = processesListeningOnPorts.listeningEndpointsList
         assert list.size() == 1
+        assert processesListeningOnPorts.totalListeningEndpoints == 1
 
-        def endpoint = list.find { it.endpoint.port == 8082 }
+        def endpoint = list.find { it.endpoint.port == PORT4 }
 
-        assert endpoint
-        assert endpoint.deploymentId
-        assert endpoint.podId
-        assert endpoint.podUid
-        assert endpoint.clusterId
-        assert endpoint.Namespace
-        assert endpoint.containerName == TCPCONNECTIONTARGET3
-        assert endpoint.signal.name == "socat"
-        assert endpoint.signal.execFilePath == "/usr/bin/socat"
-        assert endpoint.signal.args == "-d -d -v TCP-LISTEN:8082,fork STDOUT"
+        verifyAll(endpoint) {
+                deploymentId
+                podId
+                podUid
+                clusterId
+                Namespace
+                containerName == TCPCONNECTIONTARGET3
+                signal.name == "socat"
+                signal.execFilePath == "/usr/bin/socat"
+                signal.args == "-d -d -v TCP-LISTEN:"+PORT4+",fork STDOUT"
+        }
 
         // Allow enough time for the process and port to close and check that it is not in the API response
         processesListeningOnPorts = waitForResponseToHaveNumElements(0, deploymentId3, 180)
@@ -229,29 +250,99 @@ class ProcessesListeningOnPortsTest extends BaseSpecification {
         def list = processesListeningOnPorts.listeningEndpointsList
         assert list.size() == 1
 
-        def endpoint = list.find { it.endpoint.port == 8081 }
+        def endpoint = list.find { it.endpoint.port == PORT3 }
 
-        assert endpoint
-        assert endpoint.deploymentId
-        assert endpoint.podId
-        assert endpoint.podUid
-        assert endpoint.clusterId
-        assert endpoint.Namespace
-        assert endpoint.containerName == TCPCONNECTIONTARGET2
-        assert endpoint.signal.name == "socat"
-        assert endpoint.signal.execFilePath == "/usr/bin/socat"
-        assert endpoint.signal.args == "-d -d -v TCP-LISTEN:8081,fork STDOUT"
+        verifyAll(endpoint) {
+                deploymentId
+                podId
+                podUid
+                clusterId
+                Namespace
+                containerName == TCPCONNECTIONTARGET2
+                signal.name == "socat"
+                signal.execFilePath == "/usr/bin/socat"
+                signal.args == "-d -d -v TCP-LISTEN:"+PORT3+",fork STDOUT"
+        }
 
         sleep 65000 // Sleep for 65 seconds
-        processesListeningOnPorts = evaluateWithRetry(10, 10) {
-            ProcessesListeningOnPortsService.getProcessesListeningOnPortsResponse(deploymentId2)
-        }
+        processesListeningOnPorts = ProcessesListeningOnPortsService.getProcessesListeningOnPortsResponse(deploymentId2)
 
         // Confirm that the listening endpoint still appears in the API 65 seconds later
         list = processesListeningOnPorts.listeningEndpointsList
         assert list.size() == 1
+        assert processesListeningOnPorts.totalListeningEndpoints == 1
 
         destroyDeployments()
+    }
+
+    def "Verify listening endpoints for collector are reported"() {
+        given:
+
+        String collectorUid = orchestrator.getDaemonSetId(new DaemonSet(name: "collector", namespace: "stackrox"))
+
+        def processesListeningOnPorts = ProcessesListeningOnPortsService
+                                                .getProcessesListeningOnPortsResponse(collectorUid)
+
+        // First check that the listening endpoint appears in the API
+        assert processesListeningOnPorts
+
+        def list = processesListeningOnPorts.listeningEndpointsList
+        // The size of the list depends upon the number of colletors
+        // which can vary based upon the environment
+        assert list.size() > 1
+        assert processesListeningOnPorts.totalListeningEndpoints >= 2
+
+        def endpoint1 = list.find { it.endpoint.port == 8080 }
+
+        verifyAll(endpoint1) {
+                deploymentId
+                podId
+                podUid
+                clusterId
+                Namespace
+                containerName == "collector"
+                signal.name == "collector"
+                signal.execFilePath == "/usr/local/bin/collector"
+                endpoint.port == 8080
+        }
+
+        def endpoint2 = list.find { it.endpoint.port == 9090 }
+
+        verifyAll(endpoint2) {
+                deploymentId
+                podId
+                podUid
+                clusterId
+                Namespace
+                containerName == "collector"
+                signal.name == "collector"
+                signal.execFilePath == "/usr/local/bin/collector"
+                endpoint.port == 9090
+        }
+    }
+
+    @Unroll
+    def "Verify listening endpoints for collector are reported with pagination: #limit - #offset"() {
+        given:
+
+        String collectorUid = orchestrator.getDaemonSetId(new DaemonSet(name: "collector", namespace: "stackrox"))
+
+        def pagination = new Pagination(limit, offset)
+        def processesListeningOnPortsPaginated = ProcessesListeningOnPortsService
+                                                         .getProcessesListeningOnPortsResponse(collectorUid, pagination)
+
+        def listPaginated = processesListeningOnPortsPaginated.listeningEndpointsList
+        assert listPaginated.size() == limit
+        assert processesListeningOnPortsPaginated.totalListeningEndpoints >= 2
+
+        where:
+        "Data inputs are:"
+
+        limit | offset
+
+        1     | 0
+        1     | 1
+        2     | 0
     }
 
     private waitForResponseToHaveNumElements(int numElements,
@@ -261,11 +352,8 @@ class ProcessesListeningOnPortsTest extends BaseSpecification {
         int waitTime
 
         for (waitTime = 0; waitTime <= timeoutSeconds / intervalSeconds; waitTime++) {
-            def processesListeningOnPorts = evaluateWithRetry(10, 10) {
-                    def temp = ProcessesListeningOnPortsService
-                            .getProcessesListeningOnPortsResponse(deploymentId)
-                    return temp
-            }
+            def processesListeningOnPorts = ProcessesListeningOnPortsService
+                                                    .getProcessesListeningOnPortsResponse(deploymentId)
 
             def list = processesListeningOnPorts.listeningEndpointsList
 

@@ -8,11 +8,14 @@ import (
 	"testing"
 
 	"github.com/stackrox/rox/central/graphql/resolvers/loaders"
+	deploymentsView "github.com/stackrox/rox/central/views/deployments"
 	"github.com/stackrox/rox/central/views/imagecve"
+	"github.com/stackrox/rox/central/views/imagecveflat"
 	imagesView "github.com/stackrox/rox/central/views/images"
 	"github.com/stackrox/rox/generated/storage"
+	"github.com/stackrox/rox/pkg/features"
 	"github.com/stackrox/rox/pkg/grpc/authz/allow"
-	"github.com/stackrox/rox/pkg/pointers"
+	imageUtils "github.com/stackrox/rox/pkg/images/utils"
 	"github.com/stackrox/rox/pkg/postgres/pgtest"
 	"github.com/stackrox/rox/pkg/sac"
 	"github.com/stackrox/rox/pkg/set"
@@ -40,14 +43,31 @@ func (s *DeploymentResolversTestSuite) SetupSuite() {
 	s.ctx = loaders.WithLoaderContext(sac.WithAllAccess(context.Background()))
 	mockCtrl := gomock.NewController(s.T())
 	s.testDB = SetupTestPostgresConn(s.T())
-	imgDataStore := CreateTestImageDatastore(s.T(), s.testDB, mockCtrl)
-	resolver, _ := SetupTestResolver(s.T(),
-		CreateTestDeploymentDatastore(s.T(), s.testDB, mockCtrl, imgDataStore),
-		imagesView.NewImageView(s.testDB.DB),
-		imgDataStore,
-		CreateTestImageComponentDatastore(s.T(), s.testDB, mockCtrl),
-		imagecve.NewCVEView(s.testDB.DB),
-	)
+	// TODO(ROX-30117): Remove conditional when FlattenImageData feature flag is removed.
+	var resolver *Resolver
+	if features.FlattenImageData.Enabled() {
+		imgV2DataStore := CreateTestImageV2Datastore(s.T(), s.testDB, mockCtrl)
+		resolver, _ = SetupTestResolver(s.T(),
+			CreateTestDeploymentDatastoreWithImageV2(s.T(), s.testDB, mockCtrl, imgV2DataStore),
+			deploymentsView.NewDeploymentView(s.testDB.DB),
+			imagesView.NewImageView(s.testDB.DB),
+			imgV2DataStore,
+			CreateTestImageComponentV2Datastore(s.T(), s.testDB, mockCtrl),
+			imagecve.NewCVEView(s.testDB.DB),
+			imagecveflat.NewCVEFlatView(s.testDB.DB),
+		)
+	} else {
+		imgDataStore := CreateTestImageDatastore(s.T(), s.testDB, mockCtrl)
+		resolver, _ = SetupTestResolver(s.T(),
+			CreateTestDeploymentDatastore(s.T(), s.testDB, mockCtrl, imgDataStore),
+			deploymentsView.NewDeploymentView(s.testDB.DB),
+			imagesView.NewImageView(s.testDB.DB),
+			imgDataStore,
+			CreateTestImageComponentV2Datastore(s.T(), s.testDB, mockCtrl),
+			imagecve.NewCVEView(s.testDB.DB),
+			imagecveflat.NewCVEFlatView(s.testDB.DB),
+		)
+	}
 	s.resolver = resolver
 
 	// Add Test Data.
@@ -56,13 +76,16 @@ func (s *DeploymentResolversTestSuite) SetupSuite() {
 		s.NoError(s.resolver.DeploymentDataStore.UpsertDeployment(s.ctx, deployment))
 	}
 	s.testImages = testImages()
-	for _, image := range testImages() {
-		s.NoError(s.resolver.ImageDataStore.UpsertImage(s.ctx, image))
+	// TODO(ROX-30117): Remove conditional when FlattenImageData feature flag is removed.
+	if features.FlattenImageData.Enabled() {
+		for _, image := range s.testImages {
+			s.NoError(s.resolver.ImageV2DataStore.UpsertImage(s.ctx, imageUtils.ConvertToV2(image)))
+		}
+	} else {
+		for _, image := range s.testImages {
+			s.NoError(s.resolver.ImageDataStore.UpsertImage(s.ctx, image))
+		}
 	}
-}
-
-func (s *DeploymentResolversTestSuite) TearDownSuite() {
-	s.testDB.Teardown(s.T())
 }
 
 func (s *DeploymentResolversTestSuite) TestDeployments() {
@@ -84,7 +107,7 @@ func (s *DeploymentResolversTestSuite) TestDeployments() {
 		},
 		{
 			desc: "filter by namespace",
-			q:    PaginatedQuery{Query: pointers.String("Namespace:namespace1name")},
+			q:    PaginatedQuery{Query: new("Namespace:namespace1name")},
 			deploymentFiler: func(d *storage.Deployment) bool {
 				return strings.HasPrefix(d.GetNamespace(), "namespace1name")
 			},
@@ -93,7 +116,7 @@ func (s *DeploymentResolversTestSuite) TestDeployments() {
 		},
 		{
 			desc:            "filter by image",
-			q:               PaginatedQuery{Query: pointers.String("Image:reg1/img1")},
+			q:               PaginatedQuery{Query: new("Image:reg1/img1")},
 			deploymentFiler: func(d *storage.Deployment) bool { return true },
 			imageFilter: func(img *storage.Image) bool {
 				return strings.HasPrefix(img.GetName().GetFullName(), "reg1/img1")
@@ -102,7 +125,7 @@ func (s *DeploymentResolversTestSuite) TestDeployments() {
 		},
 		{
 			desc:            "filter by cve",
-			q:               PaginatedQuery{Query: pointers.String("CVE:cve-2019-2")},
+			q:               PaginatedQuery{Query: new("CVE:cve-2019-2")},
 			deploymentFiler: func(d *storage.Deployment) bool { return true },
 			imageFilter: func(img *storage.Image) bool {
 				for _, component := range img.GetScan().GetComponents() {
@@ -120,7 +143,7 @@ func (s *DeploymentResolversTestSuite) TestDeployments() {
 		},
 		{
 			desc: "filter by deployment+cve",
-			q:    PaginatedQuery{Query: pointers.String("Deployment:dep2name+CVE:cve-2019-2")},
+			q:    PaginatedQuery{Query: new("Deployment:dep2name+CVE:cve-2019-2")},
 			deploymentFiler: func(d *storage.Deployment) bool {
 				return strings.HasPrefix(d.GetName(), "dep2name")
 			},
@@ -140,7 +163,7 @@ func (s *DeploymentResolversTestSuite) TestDeployments() {
 		},
 		{
 			desc:            "filter by severity",
-			q:               PaginatedQuery{Query: pointers.String("Severity:CRITICAL_VULNERABILITY_SEVERITY")},
+			q:               PaginatedQuery{Query: new("Severity:CRITICAL_VULNERABILITY_SEVERITY")},
 			deploymentFiler: func(d *storage.Deployment) bool { return true },
 			imageFilter: func(img *storage.Image) bool {
 				for _, component := range img.GetScan().GetComponents() {
@@ -158,7 +181,7 @@ func (s *DeploymentResolversTestSuite) TestDeployments() {
 		},
 		{
 			desc:            "filter by severity+fixable",
-			q:               PaginatedQuery{Query: pointers.String("Severity:UNSET_VULNERABILITY_SEVERITY+Fixable:true")},
+			q:               PaginatedQuery{Query: new("Severity:UNSET_VULNERABILITY_SEVERITY+Fixable:true")},
 			deploymentFiler: func(d *storage.Deployment) bool { return true },
 			imageFilter: func(img *storage.Image) bool {
 				for _, component := range img.GetScan().GetComponents() {

@@ -1,16 +1,19 @@
-import React from 'react';
-import { Alert, Bullseye, Button, Modal, Spinner } from '@patternfly/react-core';
+import { useState } from 'react';
+import type { Dispatch, ReactElement, SetStateAction } from 'react';
+import { Alert, Bullseye, Button, Spinner } from '@patternfly/react-core';
+import { Modal } from '@patternfly/react-core/deprecated';
 
-import { NetworkPolicyModification } from 'types/networkPolicy.proto';
-import useFetchNotifiers from 'hooks/useFetchNotifiers';
+import type { NetworkPolicyModification } from 'types/networkPolicy.proto';
 import useTableSelection from 'hooks/useTableSelection';
 import { Table, Tbody, Td, Th, Thead, Tr } from '@patternfly/react-table';
 import { notifyNetworkPolicyModification } from 'services/NetworkService';
 import { getAxiosErrorMessage } from 'utils/responseErrorUtils';
 
+import useFetchNotifiers from './useFetchNotifiers';
+
 type NotifyYAMLModalProps = {
     isModalOpen: boolean;
-    setIsModalOpen: React.Dispatch<React.SetStateAction<boolean>>;
+    setIsModalOpen: Dispatch<SetStateAction<boolean>>;
     clusterId: string;
     modification: NetworkPolicyModification | null;
 };
@@ -20,9 +23,9 @@ function NotifyYAMLModal({
     setIsModalOpen,
     clusterId,
     modification,
-}: NotifyYAMLModalProps): React.ReactElement {
+}: NotifyYAMLModalProps): ReactElement {
     const { notifiers, isLoading, error } = useFetchNotifiers();
-    const [errorMessage, setErrorMessage] = React.useState(error);
+    const [errorMessage, setErrorMessage] = useState(error);
     const { selected, allRowsSelected, onSelect, onSelectAll, getSelectedIds, onClearAll } =
         useTableSelection(notifiers);
 
@@ -44,10 +47,10 @@ function NotifyYAMLModal({
     function onClose() {
         onClearAll();
         setErrorMessage(null);
-        setIsModalOpen(!isModalOpen);
+        setIsModalOpen((prev) => !prev);
     }
 
-    let content: React.ReactElement = <div />;
+    let content: ReactElement = <div />;
 
     if (isLoading) {
         content = (
@@ -112,7 +115,7 @@ function NotifyYAMLModal({
                     variant="danger"
                     title={errorMessage}
                     component="p"
-                    className="pf-v5-u-mb-lg"
+                    className="pf-v6-u-mb-lg"
                 />
             )}
             {content}

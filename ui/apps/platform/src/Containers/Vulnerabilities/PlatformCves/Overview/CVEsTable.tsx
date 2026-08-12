@@ -1,24 +1,23 @@
-import React from 'react';
-import { Link } from 'react-router-dom';
-import { Text } from '@patternfly/react-core';
+import { Link } from 'react-router-dom-v5-compat';
+import { Content } from '@patternfly/react-core';
 import {
     ActionsColumn,
     ExpandableRowContent,
-    IAction,
     Table,
-    Thead,
-    Tr,
-    Th,
     Tbody,
     Td,
+    Th,
+    Thead,
+    Tr,
 } from '@patternfly/react-table';
+import type { IAction } from '@patternfly/react-table';
 import { gql, useQuery } from '@apollo/client';
 
-import useURLPagination from 'hooks/useURLPagination';
-import useMap from 'hooks/useMap';
+import type useURLPagination from 'hooks/useURLPagination';
+import type useMap from 'hooks/useMap';
 import useSet from 'hooks/useSet';
-import { UseURLSortResult } from 'hooks/useURLSort';
-import { ApiSortOption } from 'types/search';
+import type { UseURLSortResult } from 'hooks/useURLSort';
+import type { ApiSortOption } from 'types/search';
 import VulnerabilityFixableIconText from 'Components/PatternFly/IconText/VulnerabilityFixableIconText';
 import { getTableUIState } from 'utils/getTableUIState';
 
@@ -33,7 +32,7 @@ import CVESelectionTh from '../../components/CVESelectionTh';
 import CVESelectionTd from '../../components/CVESelectionTd';
 import PartialCVEDataAlert from '../../components/PartialCVEDataAlert';
 import { getPlatformEntityPagePath } from '../../utils/searchUtils';
-import { QuerySearchFilter } from '../../types';
+import type { QuerySearchFilter } from '../../types';
 import usePlatformCves from './usePlatformCves';
 import { displayCveType } from '../utils/stringUtils';
 
@@ -125,11 +124,7 @@ function CVEsTable({
                         Affected clusters
                         {isFiltered && <DynamicColumnIcon />}
                     </TooltipTh>
-                    {canSelectRows && (
-                        <Th>
-                            <span className="pf-v5-screen-reader">Row actions</span>
-                        </Th>
-                    )}
+                    {canSelectRows && <Th screenReaderText="Row actions" />}
                 </Tr>
             </Thead>
             <TbodyUnified
@@ -197,7 +192,7 @@ function CVEsTable({
                                     <Td colSpan={colSpan - 1}>
                                         <ExpandableRowContent>
                                             {summary ? (
-                                                <Text>{summary}</Text>
+                                                <Content component="p">{summary}</Content>
                                             ) : (
                                                 <PartialCVEDataAlert />
                                             )}

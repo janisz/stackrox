@@ -13,6 +13,7 @@ end() {
 
     if [[ -f "${SHARED_DIR:-}/shared_env" ]]; then
         # shellcheck disable=SC1091
+        cat "${SHARED_DIR:-}"/shared_env
         source "${SHARED_DIR:-}/shared_env"
     fi
 
@@ -23,7 +24,15 @@ end() {
 
     generate_cluster_junit
 
-    update_job_record outcome "${OVERALL_JOB_OUTCOME}" stopped_at "CURRENT_TIMESTAMP()"
+    save_job_record "${JOB_NAME:-missing}" "prow" \
+        outcome "${OVERALL_JOB_OUTCOME}" \
+        started_at "${started_at:-0}" \
+        test_target "${test_target:-NULL}" \
+        cut_product_version "${cut_product_version:-NULL}" \
+        cut_k8s_version "${cut_k8s_version:-NULL}" \
+        cut_os_image "${cut_os_image:-NULL}" \
+        cut_kernel_version "${cut_kernel_version:-NULL}" \
+        cut_container_runtime_version "${cut_container_runtime_version:-NULL}"
 
     post_process_test_results "${END_SLACK_FAILURE_ATTACHMENTS}" "${END_JUNIT2JIRA_SUMMARY_FILE}"
 
@@ -110,7 +119,7 @@ generate_cluster_junit() {
 
     if [[ "${CREATE_CLUSTER_OUTCOME:-}" == "${OUTCOME_PASSED}" ]]; then
         save_junit_success "${_JUNIT_CLUSTER_CLASS}" "${_JUNIT_CLUSTER_CREATE_DESCRIPTION} ${cluster_flavor_variant}"
-    elif [[ "${CREATE_CLUSTER_OUTCOME:-}" == "${OUTCOME_FAILED}" ]]; then
+    else
         save_junit_failure "${_JUNIT_CLUSTER_CLASS}" "${_JUNIT_CLUSTER_CREATE_DESCRIPTION} ${cluster_flavor_variant}" \
             "${cluster_create_debug}"
     fi
@@ -124,7 +133,7 @@ generate_cluster_junit() {
 
     if [[ "${DESTROY_CLUSTER_OUTCOME:-}" == "${OUTCOME_PASSED}" ]]; then
         save_junit_success "${_JUNIT_CLUSTER_CLASS}" "${_JUNIT_CLUSTER_DESTROY_DESCRIPTION} ${cluster_flavor_variant}"
-    elif [[ "${DESTROY_CLUSTER_OUTCOME:-}" == "${OUTCOME_FAILED}" && "${CREATE_CLUSTER_OUTCOME:-}" == "${OUTCOME_PASSED}" ]]; then
+    elif [[ "${CREATE_CLUSTER_OUTCOME:-}" == "${OUTCOME_PASSED}" ]]; then
         # Only record cluster destroy failures when the create succeeded. Otherwise it is mostly noise.
         save_junit_failure "${_JUNIT_CLUSTER_CLASS}" "${_JUNIT_CLUSTER_DESTROY_DESCRIPTION} ${cluster_flavor_variant}" \
             "${cluster_destroy_debug}"

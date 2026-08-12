@@ -4,16 +4,19 @@ import (
 	"context"
 	"fmt"
 
+	baseImageMatcher "github.com/stackrox/rox/central/baseimage/matcher"
 	clusterDataStore "github.com/stackrox/rox/central/cluster/datastore"
 	"github.com/stackrox/rox/central/cve/fetcher"
-	imageCVEDataStore "github.com/stackrox/rox/central/cve/image/datastore"
+	cveInfoEnricher "github.com/stackrox/rox/central/cve/image/info/enricher"
 	nodeCVEDataStore "github.com/stackrox/rox/central/cve/node/datastore"
 	delegatedRegistryConfigDS "github.com/stackrox/rox/central/delegatedregistryconfig/datastore"
 	"github.com/stackrox/rox/central/delegatedregistryconfig/delegator"
 	"github.com/stackrox/rox/central/delegatedregistryconfig/scanwaiter"
+	"github.com/stackrox/rox/central/delegatedregistryconfig/scanwaiterv2"
 	"github.com/stackrox/rox/central/image/datastore"
 	"github.com/stackrox/rox/central/imageintegration"
 	imageIntegrationDS "github.com/stackrox/rox/central/imageintegration/datastore"
+	imageV2DataStore "github.com/stackrox/rox/central/imagev2/datastore"
 	"github.com/stackrox/rox/central/integrationhealth/reporter"
 	namespaceDataStore "github.com/stackrox/rox/central/namespace/datastore"
 	"github.com/stackrox/rox/central/role/sachelper"
@@ -27,7 +30,7 @@ import (
 	"github.com/stackrox/rox/pkg/images/cache"
 	imageEnricher "github.com/stackrox/rox/pkg/images/enricher"
 	"github.com/stackrox/rox/pkg/metrics"
-	nodeEnricher "github.com/stackrox/rox/pkg/nodes/enricher"
+	pkgNodeEnricher "github.com/stackrox/rox/pkg/nodes/enricher"
 	"github.com/stackrox/rox/pkg/openshift"
 	"github.com/stackrox/rox/pkg/sac"
 	"github.com/stackrox/rox/pkg/sync"
@@ -37,12 +40,13 @@ import (
 var (
 	once sync.Once
 
-	ie                    imageEnricher.ImageEnricher
-	ne                    nodeEnricher.NodeEnricher
-	en                    Enricher
-	cf                    fetcher.OrchestratorIstioCVEManager
-	manager               Manager
-	imageIntegrationStore imageIntegrationDS.DataStore
+	imgEnricher            imageEnricher.ImageEnricher
+	imgEnricherV2          imageEnricher.ImageEnricherV2
+	nodeEnricher           pkgNodeEnricher.NodeEnricher
+	depEnricher            Enricher
+	orchestratorCVEManager fetcher.OrchestratorIstioCVEManager
+	manager                Manager
+	imageIntegrationStore  imageIntegrationDS.DataStore
 )
 
 func initialize() {
@@ -50,21 +54,30 @@ func initialize() {
 		delegatedRegistryConfigDS.Singleton(),
 		connection.ManagerSingleton(),
 		scanwaiter.Singleton(),
+		scanwaiterv2.Singleton(),
+
 		sachelper.NewClusterNamespaceSacHelper(clusterDataStore.Singleton(), namespaceDataStore.Singleton()),
 	)
 
-	ie = imageEnricher.New(imageCVEDataStore.Singleton(), suppressor.Singleton(), imageintegration.Set(),
-		metrics.CentralSubsystem, cache.ImageMetadataCacheSingleton(), datastore.Singleton().GetImage, reporter.Singleton(),
-		signatureIntegrationDataStore.Singleton().GetAllSignatureIntegrations, scanDelegator)
-	ne = nodeEnricher.New(nodeCVEDataStore.Singleton(), metrics.CentralSubsystem)
-	en = New(datastore.Singleton(), ie)
-	cf = fetcher.SingletonManager()
+	if !features.FlattenImageData.Enabled() {
+		imgEnricher = imageEnricher.New(suppressor.Singleton(), cveInfoEnricher.Singleton(), imageintegration.Set(),
+			metrics.CentralSubsystem, cache.ImageMetadataCacheSingleton(), baseImageMatcher.Singleton().MatchWithBaseImages, datastore.Singleton().GetImage, reporter.Singleton(),
+			signatureIntegrationDataStore.Singleton().GetAllSignatureIntegrations, scanDelegator)
+	} else {
+		imgEnricherV2 = imageEnricher.NewV2(suppressor.Singleton(), cveInfoEnricher.Singleton(), imageintegration.Set(),
+			metrics.CentralSubsystem, cache.ImageMetadataCacheSingleton(), baseImageMatcher.Singleton().MatchWithBaseImages, imageV2DataStore.Singleton().GetImage, reporter.Singleton(),
+			signatureIntegrationDataStore.Singleton().GetAllSignatureIntegrations, scanDelegator)
+	}
+
+	nodeEnricher = pkgNodeEnricher.New(nodeCVEDataStore.Singleton(), metrics.CentralSubsystem)
+	depEnricher = New(datastore.Singleton(), imageV2DataStore.Singleton(), imgEnricher, imgEnricherV2)
+	orchestratorCVEManager = fetcher.SingletonManager()
 	initializeManager()
 }
 
 func initializeManager() {
 	ctx := sac.WithAllAccess(context.Background())
-	manager = newManager(imageintegration.Set(), ne, cf)
+	manager = newManager(imageintegration.Set(), nodeEnricher, orchestratorCVEManager)
 
 	imageIntegrationStore = imageIntegrationDS.Singleton()
 	integrations, err := imageIntegrationStore.GetImageIntegrations(ctx, &v1.GetImageIntegrationsRequest{})
@@ -115,19 +128,25 @@ func shouldUpsert(ii *storage.ImageIntegration) bool {
 // Singleton provides the singleton Enricher to use.
 func Singleton() Enricher {
 	once.Do(initialize)
-	return en
+	return depEnricher
 }
 
 // ImageEnricherSingleton provides the singleton ImageEnricher to use.
 func ImageEnricherSingleton() imageEnricher.ImageEnricher {
 	once.Do(initialize)
-	return ie
+	return imgEnricher
+}
+
+// ImageEnricherV2Singleton provides the singleton ImageEnricherV2 to use.
+func ImageEnricherV2Singleton() imageEnricher.ImageEnricherV2 {
+	once.Do(initialize)
+	return imgEnricherV2
 }
 
 // NodeEnricherSingleton provides the singleton NodeEnricher to use.
-func NodeEnricherSingleton() nodeEnricher.NodeEnricher {
+func NodeEnricherSingleton() pkgNodeEnricher.NodeEnricher {
 	once.Do(initialize)
-	return ne
+	return nodeEnricher
 }
 
 // ManagerSingleton returns the multiplexing manager

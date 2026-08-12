@@ -44,10 +44,6 @@ func (s *ProcessBaselinesStoreSuite) SetupTest() {
 	s.NoError(err)
 }
 
-func (s *ProcessBaselinesStoreSuite) TearDownSuite() {
-	s.testDB.Teardown(s.T())
-}
-
 func (s *ProcessBaselinesStoreSuite) TestStore() {
 	ctx := sac.WithAllAccess(context.Background())
 
@@ -99,6 +95,11 @@ func (s *ProcessBaselinesStoreSuite) TestStore() {
 	}
 
 	s.NoError(store.UpsertMany(ctx, processBaselines))
+
+	foundProcessBaselines, missing, err := store.GetMany(ctx, processBaselineIDs)
+	s.NoError(err)
+	s.Empty(missing)
+	protoassert.ElementsMatch(s.T(), processBaselines, foundProcessBaselines)
 
 	processBaselineCount, err = store.Count(ctx, search.EmptyQuery())
 	s.NoError(err)
@@ -276,6 +277,25 @@ func (s *ProcessBaselinesStoreSuite) TestSACWalk() {
 				return nil
 			}
 			err := s.store.Walk(testCase.context, getIDs)
+			assert.NoError(t, err)
+			assert.ElementsMatch(t, testCase.expectedIdentifiers, identifiers)
+		})
+	}
+}
+
+func (s *ProcessBaselinesStoreSuite) TestSACGetByQueryFn() {
+	objA, objB, testCases := s.getTestData(storage.Access_READ_ACCESS)
+	s.Require().NoError(s.store.Upsert(withAllAccessCtx, objA))
+	s.Require().NoError(s.store.Upsert(withAllAccessCtx, objB))
+
+	for name, testCase := range testCases {
+		s.T().Run(fmt.Sprintf("with %s", name), func(t *testing.T) {
+			identifiers := []string{}
+			getIDs := func(obj *storage.ProcessBaseline) error {
+				identifiers = append(identifiers, obj.GetId())
+				return nil
+			}
+			err := s.store.GetByQueryFn(testCase.context, nil, getIDs)
 			assert.NoError(t, err)
 			assert.ElementsMatch(t, testCase.expectedIdentifiers, identifiers)
 		})

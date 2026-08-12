@@ -1,8 +1,9 @@
 package effectiveaccessscope
 
 import (
+	"maps"
+
 	v1 "github.com/stackrox/rox/generated/api/v1"
-	"github.com/stackrox/rox/generated/storage"
 )
 
 // treeNodeAttributes stores additional information for a tree node.
@@ -14,9 +15,7 @@ type treeNodeAttributes struct {
 
 func (t *treeNodeAttributes) copy() *treeNodeAttributes {
 	labels := make(map[string]string, len(t.Labels))
-	for k, v := range t.Labels {
-		labels[k] = v
-	}
+	maps.Copy(labels, t.Labels)
 	return &treeNodeAttributes{
 		ID:     t.ID,
 		Name:   t.Name,
@@ -24,7 +23,7 @@ func (t *treeNodeAttributes) copy() *treeNodeAttributes {
 	}
 }
 
-func nodeAttributesForCluster(cluster *storage.Cluster, detail v1.ComputeEffectiveAccessScopeRequest_Detail) treeNodeAttributes {
+func nodeAttributesForCluster(cluster Cluster, detail v1.ComputeEffectiveAccessScopeRequest_Detail) treeNodeAttributes {
 	attributes := treeNodeAttributes{
 		ID: cluster.GetId(),
 	}
@@ -37,7 +36,7 @@ func nodeAttributesForCluster(cluster *storage.Cluster, detail v1.ComputeEffecti
 	return attributes
 }
 
-func nodeAttributesForNamespace(namespace *storage.NamespaceMetadata, detail v1.ComputeEffectiveAccessScopeRequest_Detail) treeNodeAttributes {
+func nodeAttributesForNamespace(namespace Namespace, detail v1.ComputeEffectiveAccessScopeRequest_Detail) treeNodeAttributes {
 	attributes := treeNodeAttributes{
 		ID: namespace.GetId(),
 	}

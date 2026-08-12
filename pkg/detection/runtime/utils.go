@@ -1,6 +1,8 @@
 package runtime
 
 import (
+	"slices"
+
 	"github.com/stackrox/rox/generated/storage"
 	"github.com/stackrox/rox/pkg/alert/convert"
 	"github.com/stackrox/rox/pkg/booleanpolicy"
@@ -25,6 +27,34 @@ func constructProcessAlert(policy *storage.Policy, deployment *storage.Deploymen
 	return alert
 }
 
+// constructFileAccessAlert constructs an alert for a FileAccess violation.
+// It assumes one of node or deployment is non-nil and constructs an alert based
+// on this.
+func constructFileAccessAlert(policy *storage.Policy, node *storage.Node, deployment *storage.Deployment, violations booleanpolicy.Violations) *storage.Alert {
+	if len(violations.AlertViolations) == 0 {
+		return nil
+	}
+
+	// file access alerts can be for node or for deployment but not both
+	if node != nil && deployment != nil {
+		return nil
+	}
+
+	var alert *storage.Alert
+	if node != nil {
+		alert = constructNodeRuntimeAlert(policy, node, violations.AlertViolations)
+	} else {
+		alert = constructGenericRuntimeAlert(policy, deployment, violations.AlertViolations)
+		if action, msg := buildEnforcement(policy); action != storage.EnforcementAction_UNSET_ENFORCEMENT {
+			alert.Enforcement = &storage.Alert_Enforcement{
+				Action:  action,
+				Message: msg,
+			}
+		}
+	}
+	return alert
+}
+
 func constructKubeEventAlert(
 	policy *storage.Policy,
 	kubeEvent *storage.KubernetesEvent,
@@ -38,7 +68,7 @@ func constructKubeEventAlert(
 	// NOTE: Most Kube Event alerts will have a Resource entity instead of a Deployment. However, there are a few exceptions
 	// such as pod exec/port forward policies that have deployment. To differentiate we will be using the policy event source
 	// Currently all audit log events have Resource
-	if policy.EventSource == storage.EventSource_AUDIT_LOG_EVENT {
+	if policy.GetEventSource() == storage.EventSource_AUDIT_LOG_EVENT {
 		return constructResourceRuntimeAlert(policy, kubeEvent, violations.AlertViolations)
 		// Audit Log event source policies cannot have enforcement (for now)
 	}
@@ -97,22 +127,29 @@ func constructResourceRuntimeAlert(
 	}
 }
 
+func constructNodeRuntimeAlert(policy *storage.Policy, node *storage.Node, violations []*storage.Alert_Violation) *storage.Alert {
+	return &storage.Alert{
+		Id:             uuid.NewV4().String(),
+		Policy:         policy.CloneVT(),
+		LifecycleStage: storage.LifecycleStage_RUNTIME,
+		Entity:         convert.ToAlertNode(node),
+		Violations:     violations,
+		Time:           protocompat.TimestampNow(),
+	}
+}
+
 func buildEnforcement(policy *storage.Policy) (enforcement storage.EnforcementAction, message string) {
-	for _, enforcementAction := range policy.GetEnforcementActions() {
-		if enforcementAction == storage.EnforcementAction_KILL_POD_ENFORCEMENT {
-			return storage.EnforcementAction_KILL_POD_ENFORCEMENT,
-				"StackRox killed pods in deployment in response to this policy violation."
-		}
+	if slices.Contains(policy.GetEnforcementActions(), storage.EnforcementAction_KILL_POD_ENFORCEMENT) {
+		return storage.EnforcementAction_KILL_POD_ENFORCEMENT,
+			"StackRox killed pods in deployment in response to this policy violation."
 	}
 	return storage.EnforcementAction_UNSET_ENFORCEMENT, ""
 }
 
 func buildKubeEventEnforcement(policy *storage.Policy) (enforcement storage.EnforcementAction, message string) {
-	for _, enforcementAction := range policy.GetEnforcementActions() {
-		if enforcementAction == storage.EnforcementAction_FAIL_KUBE_REQUEST_ENFORCEMENT {
-			return storage.EnforcementAction_FAIL_KUBE_REQUEST_ENFORCEMENT,
-				"StackRox failed Kubernetes request in response to this policy violation."
-		}
+	if slices.Contains(policy.GetEnforcementActions(), storage.EnforcementAction_FAIL_KUBE_REQUEST_ENFORCEMENT) {
+		return storage.EnforcementAction_FAIL_KUBE_REQUEST_ENFORCEMENT,
+			"StackRox failed Kubernetes request in response to this policy violation."
 	}
 	return storage.EnforcementAction_UNSET_ENFORCEMENT, ""
 }

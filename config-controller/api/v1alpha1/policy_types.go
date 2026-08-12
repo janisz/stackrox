@@ -30,7 +30,7 @@ import (
 // +kubebuilder:validation:Enum=DEPLOY;BUILD;RUNTIME
 type LifecycleStage string
 
-// +kubebuilder:validation:Enum=NOT_APPLICABLE;DEPLOYMENT_EVENT;AUDIT_LOG_EVENT
+// +kubebuilder:validation:Enum=NOT_APPLICABLE;DEPLOYMENT_EVENT;AUDIT_LOG_EVENT;NODE_EVENT
 type EventSource string
 
 // +kubebuilder:validation:Enum=UNSET_ENFORCEMENT;SCALE_TO_ZERO_ENFORCEMENT;UNSATISFIABLE_NODE_CONSTRAINT_ENFORCEMENT;KILL_POD_ENFORCEMENT;FAIL_BUILD_ENFORCEMENT;FAIL_KUBE_REQUEST_ENFORCEMENT;FAIL_DEPLOYMENT_CREATE_ENFORCEMENT;FAIL_DEPLOYMENT_UPDATE_ENFORCEMENT
@@ -75,12 +75,19 @@ type SecurityPolicySpec struct {
 	// PolicySections define the violation criteria for this policy.
 	PolicySections     []PolicySection      `json:"policySections"`
 	MitreAttackVectors []MitreAttackVectors `json:"mitreAttackVectors,omitempty"`
-	// Read-only field. If true, the policy's criteria fields are rendered read-only.
+
+	// EvaluationFilter pre-filters which entities the policy evaluates.
+	EvaluationFilter *EvaluationFilter `json:"evaluationFilter,omitempty"`
+
+	// +optional
+	// CriteriaLocked is unused and deprecated
 	CriteriaLocked bool `json:"criteriaLocked,omitempty"`
-	// Read-only field. If true, the policy's MITRE ATT&CK fields are rendered read-only.
-	MitreVectorsLocked bool `json:"mitreVectorsLocked,omitempty"`
-	// Read-only field. Indicates the policy is a default policy if true and a custom policy if false.
+	// +optional
+	// IsDefault is unused
 	IsDefault bool `json:"isDefault,omitempty"`
+	// +optional
+	// MitreVetorsLocked is unused and deprecated
+	MitreVectorsLocked bool `json:"mitreVectorsLocked,omitempty"`
 }
 
 type Exclusion struct {
@@ -102,9 +109,12 @@ type Image struct {
 }
 
 type Scope struct {
-	Cluster   string `json:"cluster,omitempty"`
-	Namespace string `json:"namespace,omitempty"`
-	Label     Label  `json:"label,omitempty"`
+	// Cluster is either the name or the ID of the cluster that this scope applies to
+	Cluster        string `json:"cluster,omitempty"`
+	Namespace      string `json:"namespace,omitempty"`
+	Label          Label  `json:"label,omitempty"`
+	ClusterLabel   Label  `json:"clusterLabel,omitempty"`
+	NamespaceLabel Label  `json:"namespaceLabel,omitempty"`
 }
 
 type Label struct {
@@ -142,18 +152,54 @@ type MitreAttackVectors struct {
 	Techniques []string `json:"techniques,omitempty"`
 }
 
-// SecurityPolicyStatus defines the observed state of SecurityPolicy
+// +kubebuilder:validation:Enum=REGULAR;INIT
+type ContainerType string
+
+type EvaluationFilter struct {
+	SkipContainerTypes []ContainerType `json:"skipContainerTypes,omitempty"`
+}
+
+type SecurityPolicyConditionType string
+
+const (
+	// CentralDataFresh indicates that all caches were successfully updated from Central
+	CentralDataFresh SecurityPolicyConditionType = "CentralDataFresh"
+	// PolicyValidated indicates that the policy was successfully validated and transformed into a protobuf, ready to
+	// be persisted to Central
+	PolicyValidated SecurityPolicyConditionType = "PolicyValidated"
+	// AcceptedByCentral indicates that the policy was persisted successfully in Central
+	AcceptedByCentral SecurityPolicyConditionType = "AcceptedByCentral"
+)
+
+// SecurityPolicyCondition defines the observed state of SecurityPolicy
+type SecurityPolicyCondition struct {
+	// +optional
+	Type SecurityPolicyConditionType `json:"type,omitempty"`
+	// +optional
+	Status string `json:"status,omitempty"`
+	// +optional
+	Message string `json:"message,omitempty"`
+	// +optional
+	LastTransitionTime metav1.Time `json:"lastTransitionTime,omitempty"`
+}
+
+type SecurityPolicyConditions []SecurityPolicyCondition
+
 type SecurityPolicyStatus struct {
-	Accepted bool   `json:"accepted"`
-	Message  string `json:"message"`
-	PolicyId string `json:"policyId"`
+	// +optional
+	Conditions SecurityPolicyConditions `json:"conditions,omitempty"`
+	// +optional
+	PolicyId string `json:"policyId,omitempty"`
+	// +optional
+	// Accepted is deprecated in favor of conditions
+	Accepted bool `json:"accepted,omitempty"`
+	// +optional
+	// Message is deprecated in favor of conditions
+	Message string `json:"message,omitempty"`
 }
 
 // IsValid runs validation checks against the SecurityPolicy spec
 func (p SecurityPolicySpec) IsValid() (bool, error) {
-	if p.IsDefault {
-		return false, errors.New("isDefault must be false")
-	}
 	return true, nil
 }
 
@@ -179,40 +225,55 @@ type SecurityPolicyList struct {
 	Items           []SecurityPolicy `json:"items"`
 }
 
+type CacheType int
+
+const (
+	Notifier CacheType = iota
+	Cluster
+)
+
 func init() {
 	SchemeBuilder.Register(&SecurityPolicy{}, &SecurityPolicyList{})
 }
 
+func getID(name string, cache map[string]string) (string, error) {
+	if _, err := uuid.FromString(name); err == nil {
+		return name, nil
+	} else if id, exists := cache[name]; exists {
+		return id, nil
+	} else {
+		return "", errors.New("Name not found in cache and passed string was not a valid UUID")
+	}
+}
+
+func getNotifierID(name string, caches map[CacheType]map[string]string) (string, error) {
+	return getID(name, caches[Notifier])
+}
+
+func getClusterID(name string, caches map[CacheType]map[string]string) (string, error) {
+	return getID(name, caches[Cluster])
+}
+
 // ToProtobuf converts the SecurityPolicy spec into policy proto
-func (p SecurityPolicySpec) ToProtobuf(notifiers map[string]string) (*storage.Policy, error) {
+func (p SecurityPolicySpec) ToProtobuf(caches map[CacheType]map[string]string) (*storage.Policy, error) {
 	proto := storage.Policy{
-		Name:               p.PolicyName,
-		Description:        p.Description,
-		Rationale:          p.Rationale,
-		Remediation:        p.Remediation,
-		Disabled:           p.Disabled,
-		Categories:         p.Categories,
-		PolicyVersion:      policyversion.CurrentVersion().String(),
-		CriteriaLocked:     p.CriteriaLocked,
-		MitreVectorsLocked: p.MitreVectorsLocked,
-		IsDefault:          p.IsDefault,
-		Source:             storage.PolicySource_DECLARATIVE,
+		Name:          p.PolicyName,
+		Description:   p.Description,
+		Rationale:     p.Rationale,
+		Remediation:   p.Remediation,
+		Disabled:      p.Disabled,
+		Categories:    p.Categories,
+		PolicyVersion: policyversion.CurrentVersion().String(),
+		Source:        storage.PolicySource_DECLARATIVE,
 	}
 
 	proto.Notifiers = make([]string, 0, len(p.Notifiers))
 	for _, notifier := range p.Notifiers {
-		_, err := uuid.FromString(notifier)
-		if err == nil {
-			proto.Notifiers = append(proto.Notifiers, notifier)
-			continue
+		id, err := getNotifierID(notifier, caches)
+		if err != nil {
+			return nil, errors.New(fmt.Sprintf("Notifier '%s' does not exist", notifier))
 		}
-		// spec has notifier names specified
-		id, exists := notifiers[notifier]
-		if exists {
-			proto.Notifiers = append(proto.Notifiers, id)
-			continue
-		}
-		return nil, errors.New(fmt.Sprintf("Notifier '%s' does not exist", notifier))
+		proto.Notifiers = append(proto.Notifiers, id)
 	}
 
 	for _, ls := range p.LifecycleStages {
@@ -243,8 +304,14 @@ func (p SecurityPolicySpec) ToProtobuf(notifiers map[string]string) (*storage.Po
 			scope := exclusion.Deployment.Scope
 			if scope != (Scope{}) {
 				protoExclusion.Deployment.Scope = &storage.Scope{
-					Cluster:   scope.Cluster,
 					Namespace: scope.Namespace,
+				}
+				if scope.Cluster != "" {
+					clusterID, err := getClusterID(scope.Cluster, caches)
+					if err != nil {
+						return nil, errors.New(fmt.Sprintf("Cluster '%s' does not exist", scope.Cluster))
+					}
+					protoExclusion.Deployment.Scope.Cluster = clusterID
 				}
 			}
 
@@ -255,6 +322,20 @@ func (p SecurityPolicySpec) ToProtobuf(notifiers map[string]string) (*storage.Po
 				}
 			}
 
+			if scope.ClusterLabel != (Label{}) {
+				protoExclusion.Deployment.Scope.ClusterLabel = &storage.Scope_Label{
+					Key:   scope.ClusterLabel.Key,
+					Value: scope.ClusterLabel.Value,
+				}
+			}
+
+			if scope.NamespaceLabel != (Label{}) {
+				protoExclusion.Deployment.Scope.NamespaceLabel = &storage.Scope_Label{
+					Key:   scope.NamespaceLabel.Key,
+					Value: scope.NamespaceLabel.Value,
+				}
+			}
+
 		}
 
 		proto.Exclusions = append(proto.Exclusions, &protoExclusion)
@@ -262,14 +343,34 @@ func (p SecurityPolicySpec) ToProtobuf(notifiers map[string]string) (*storage.Po
 
 	for _, scope := range p.Scope {
 		protoScope := &storage.Scope{
-			Cluster:   scope.Cluster,
 			Namespace: scope.Namespace,
+		}
+		if scope.Cluster != "" {
+			clusterID, err := getClusterID(scope.Cluster, caches)
+			if err != nil {
+				return nil, errors.New(fmt.Sprintf("Cluster '%s' does not exist", scope.Cluster))
+			}
+			protoScope.Cluster = clusterID
 		}
 
 		if scope.Label != (Label{}) {
 			protoScope.Label = &storage.Scope_Label{
 				Key:   scope.Label.Key,
 				Value: scope.Label.Value,
+			}
+		}
+
+		if scope.ClusterLabel != (Label{}) {
+			protoScope.ClusterLabel = &storage.Scope_Label{
+				Key:   scope.ClusterLabel.Key,
+				Value: scope.ClusterLabel.Value,
+			}
+		}
+
+		if scope.NamespaceLabel != (Label{}) {
+			protoScope.NamespaceLabel = &storage.Scope_Label{
+				Key:   scope.NamespaceLabel.Key,
+				Value: scope.NamespaceLabel.Value,
 			}
 		}
 
@@ -329,5 +430,51 @@ func (p SecurityPolicySpec) ToProtobuf(notifiers map[string]string) (*storage.Po
 		proto.MitreAttackVectors = append(proto.MitreAttackVectors, protoMitreAttackVetor)
 	}
 
+	if p.EvaluationFilter != nil && len(p.EvaluationFilter.SkipContainerTypes) > 0 {
+		protoFilter := &storage.EvaluationFilter{}
+		for _, ct := range p.EvaluationFilter.SkipContainerTypes {
+			val, found := storage.ContainerType_value[string(ct)]
+			if found {
+				protoFilter.SkipContainerTypes = append(protoFilter.SkipContainerTypes, storage.ContainerType(val))
+			}
+		}
+		proto.EvaluationFilter = protoFilter
+	}
+
 	return &proto, nil
+}
+
+func (s *SecurityPolicyConditions) UpdateCondition(newCondition SecurityPolicyCondition) {
+	for i, st := range *s {
+		if st.Type != newCondition.Type {
+			continue
+		}
+		newCondition.LastTransitionTime = st.LastTransitionTime
+		if st.Status != newCondition.Status {
+			newCondition.LastTransitionTime = metav1.Now()
+		}
+		(*s)[i] = newCondition
+		return
+	}
+}
+
+func (s *SecurityPolicyConditions) GetCondition(sType SecurityPolicyConditionType) *SecurityPolicyCondition {
+	for _, st := range *s {
+		if st.Type == sType {
+			return &st
+		}
+	}
+	return nil
+}
+
+func (s *SecurityPolicyConditions) IsCentralDataFresh() bool {
+	return s.GetCondition(CentralDataFresh).Status == "True"
+}
+
+func (s *SecurityPolicyConditions) IsPolicyValidated() bool {
+	return s.GetCondition(PolicyValidated).Status == "True"
+}
+
+func (s *SecurityPolicyConditions) IsAcceptedByCentral() bool {
+	return s.GetCondition(AcceptedByCentral).Status == "True"
 }

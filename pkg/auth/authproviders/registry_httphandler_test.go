@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -297,6 +298,75 @@ func (s *registryProviderCallbackTestSuite) TestAuthenticationIssuesTokenForUser
 		"callback activated for user with valid roles should issue a token")
 }
 
+func (s *registryProviderCallbackTestSuite) setupRoxctlAuthenticatedUser() {
+	authRsp := generateAuthResponse(testUserWithAdminRole, nil)
+	testAuthProviderBackend.registerProcessHTTPResponse(authRsp, nil)
+	adminRole := roletest.NewResolvedRoleWithDenyAll(testUserWithAdminRole, nil)
+	rolemapping := make(map[string][]perm.ResolvedRole)
+	rolemapping[testUserWithAdminRole] = []perm.ResolvedRole{adminRole}
+	testRoleMapper.registerRoleMapping(rolemapping)
+}
+
+func (s *registryProviderCallbackTestSuite) TestRoxctlRejectsNonLocalhostCallbackURL() {
+	urlPrefix := s.registry.providersURLPrefix()
+	req, err := http.NewRequest(http.MethodGet, urlPrefix+dummyProviderType+"/callback", strings.NewReader(""))
+	s.Require().NoError(err)
+
+	maliciousState := fmt.Sprintf("%s#%s", idputil.AuthorizeRoxctlClientState, "https://evil.com/steal")
+	testAuthProviderBackendFactory.registerProcessResponse(dummyProviderType, maliciousState, nil)
+	s.setupRoxctlAuthenticatedUser()
+	s.registry.providersHTTPHandler(s.writer, req)
+
+	s.Equal(http.StatusSeeOther, s.writer.Code)
+	redirectURL, err := url.Parse(s.writer.Header().Get("Location"))
+	s.Require().NoError(err)
+	s.Equal(s.registry.redirectURL, redirectURL.Path,
+		"must redirect to the safe error page, not the attacker-controlled host")
+	redirectURLFragments, err := url.ParseQuery(redirectURL.Fragment)
+	s.Require().NoError(err)
+	s.Empty(redirectURLFragments.Get("token"), "must not leak token to attacker-controlled host")
+	s.NotEmpty(redirectURLFragments.Get("error"), "should include an error message")
+}
+
+func (s *registryProviderCallbackTestSuite) TestRoxctlRejectsJavascriptScheme() {
+	urlPrefix := s.registry.providersURLPrefix()
+	req, err := http.NewRequest(http.MethodGet, urlPrefix+dummyProviderType+"/callback", strings.NewReader(""))
+	s.Require().NoError(err)
+
+	maliciousState := fmt.Sprintf("%s#%s", idputil.AuthorizeRoxctlClientState, "javascript://localhost/alert(1)")
+	testAuthProviderBackendFactory.registerProcessResponse(dummyProviderType, maliciousState, nil)
+	s.setupRoxctlAuthenticatedUser()
+	s.registry.providersHTTPHandler(s.writer, req)
+
+	s.Equal(http.StatusSeeOther, s.writer.Code)
+	redirectURL, err := url.Parse(s.writer.Header().Get("Location"))
+	s.Require().NoError(err)
+	s.Equal(s.registry.redirectURL, redirectURL.Path,
+		"must redirect to the safe error page, not execute javascript")
+	redirectURLFragments, err := url.ParseQuery(redirectURL.Fragment)
+	s.Require().NoError(err)
+	s.Empty(redirectURLFragments.Get("token"), "must not leak token via javascript scheme")
+	s.NotEmpty(redirectURLFragments.Get("error"), "should include an error message")
+}
+
+func (s *registryProviderCallbackTestSuite) TestRoxctlAllowsLocalhostCallbackURL() {
+	urlPrefix := s.registry.providersURLPrefix()
+	req, err := http.NewRequest(http.MethodGet, urlPrefix+dummyProviderType+"/callback", strings.NewReader(""))
+	s.Require().NoError(err)
+
+	localhostState := fmt.Sprintf("%s#%s", idputil.AuthorizeRoxctlClientState, "http://localhost:12345/callback")
+	testAuthProviderBackendFactory.registerProcessResponse(dummyProviderType, localhostState, nil)
+	s.setupRoxctlAuthenticatedUser()
+	s.registry.providersHTTPHandler(s.writer, req)
+
+	s.Equal(http.StatusSeeOther, s.writer.Code)
+	redirectURL, err := url.Parse(s.writer.Header().Get("Location"))
+	s.Require().NoError(err)
+	s.Equal("localhost:12345", redirectURL.Host, "should redirect to the localhost callback")
+	qp := redirectURL.Query()
+	s.Equal(testDummyTokenData, qp.Get("token"), "should include the token for valid localhost callback")
+}
+
 func (s *registryProviderCallbackTestSuite) TestAuthenticationVerifyRequiredAttributes() {
 	urlPrefix := s.registry.providersURLPrefix()
 	req, err := http.NewRequest(http.MethodGet, urlPrefix+dummyAttributeVerifierProviderType+"/callback", strings.NewReader(""))
@@ -533,8 +603,14 @@ func (s *tstAuthProviderStore) GetAuthProvider(_ context.Context, id string) (*s
 	return nil, false, nil
 }
 
-func (*tstAuthProviderStore) GetAllAuthProviders(_ context.Context) ([]*storage.AuthProvider, error) {
-	return []*storage.AuthProvider{mockAuthProvider, mockAuthProviderWithAttributes}, nil
+func (*tstAuthProviderStore) ForEachAuthProvider(_ context.Context, fn func(obj *storage.AuthProvider) error) error {
+	for _, p := range []*storage.AuthProvider{mockAuthProvider, mockAuthProviderWithAttributes} {
+		err := fn(p)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (*tstAuthProviderStore) GetAuthProvidersFiltered(_ context.Context, _ func(provider *storage.AuthProvider) bool) ([]*storage.AuthProvider, error) {
@@ -561,10 +637,10 @@ func (*tstAuthProviderStore) RemoveAuthProvider(_ context.Context, _ string, _ b
 
 type tstTokenIssuer struct{}
 
-func (*tstTokenIssuer) Issue(_ context.Context, _ tokens.RoxClaims, _ ...tokens.Option) (*tokens.TokenInfo, error) {
+func (*tstTokenIssuer) Issue(_ context.Context, roxClaims tokens.RoxClaims, _ ...tokens.Option) (*tokens.TokenInfo, error) {
 	token := &tokens.TokenInfo{
 		Token:   testDummyTokenData,
-		Claims:  nil,
+		Claims:  &tokens.Claims{RoxClaims: roxClaims},
 		Sources: []tokens.Source{},
 	}
 	return token, nil
@@ -686,12 +762,8 @@ func (*tstAuthProviderBackendFactory) RedactConfig(config map[string]string) map
 
 func (*tstAuthProviderBackendFactory) MergeConfig(newCfg, oldCfg map[string]string) map[string]string {
 	mergedCfg := make(map[string]string, len(newCfg))
-	for k, v := range oldCfg {
-		mergedCfg[k] = v
-	}
-	for k, v := range newCfg {
-		mergedCfg[k] = v
-	}
+	maps.Copy(mergedCfg, oldCfg)
+	maps.Copy(mergedCfg, newCfg)
 	return mergedCfg
 }
 

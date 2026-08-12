@@ -6,6 +6,10 @@
 - query: (sum(irate(container_cpu_usage_seconds_total{name!="",container!="POD",namespace="stackrox"}[2m]) * 100) by (container, pod, namespace))
   metricName: stackrox_container_cpu
 
+# Replacement for "stackrox_container_cpu".
+- query: (sum(irate(container_cpu_usage_seconds_total{name!="",container!="POD",namespace="stackrox"}[2m]) * 1000) by (container, pod, namespace))
+  metricName: stackrox_container_cpu_mcores
+
 - query: (sum(container_memory_rss{name!="",container!="POD",namespace="stackrox"}) by (container, pod, namespace))
   metricName: stackrox_container_memory
 
@@ -490,6 +494,27 @@
 
 - query: tar_matched_file_count_per_layer_sum{namespace="stackrox",container="central"}
   metricName: central_tar_matched_file_count_per_layer_sum
+
+- query: rox_central_cache_entries{namespace="stackrox",container="central"}
+  metricName: central_rox_central_cache_entries
+
+- query: rox_central_cache_population_duration_seconds_bucket{namespace="stackrox",container="central"}
+  metricName: central_rox_central_cache_population_duration_seconds_bucket
+
+- query: rox_central_cache_population_duration_seconds_count{namespace="stackrox",container="central"}
+  metricName: central_rox_central_cache_population_duration_seconds_count
+
+- query: rox_central_cache_population_duration_seconds_sum{namespace="stackrox",container="central"}
+  metricName: central_rox_central_cache_population_duration_seconds_sum
+
+- query: rox_central_cache_bypass_total{namespace="stackrox",container="central"}
+  metricName: central_rox_central_cache_bypass_total
+
+- query: rox_central_cache_hit_total{namespace="stackrox",container="central"}
+  metricName: central_rox_central_cache_hit_total
+
+- query: rox_central_cache_miss_total{namespace="stackrox",container="central"}
+  metricName: central_rox_central_cache_miss_total
 
 # File: metrics-acs-sensor.yml
 

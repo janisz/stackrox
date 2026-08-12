@@ -1,5 +1,5 @@
-import React, { ReactElement } from 'react';
-import { Link } from 'react-router-dom';
+import type { ReactElement } from 'react';
+import { Link } from 'react-router-dom-v5-compat';
 import { Flex, Icon } from '@patternfly/react-core';
 import { CheckIcon, TimesIcon } from '@patternfly/react-icons';
 
@@ -7,12 +7,18 @@ import { userBasePath } from 'routePaths';
 
 const forbiddenIcon = (
     <Icon size="sm">
-        <TimesIcon color="var(--pf-v5-global--danger-color--100)" aria-label="forbidden" />
+        <TimesIcon
+            color="var(--pf-t--global--icon--color--status--danger--default)"
+            aria-label="forbidden"
+        />
     </Icon>
 );
 const permittedIcon = (
     <Icon size="sm">
-        <CheckIcon color="var(--pf-v5-global--success-color--100)" aria-label="permitted" />
+        <CheckIcon
+            color="var(--pf-t--global--icon--color--status--success--default)"
+            aria-label="permitted"
+        />
     </Icon>
 );
 
@@ -27,7 +33,7 @@ function RolesForResourceAccess({ roleNames }: RolesForResourceAccessProps): Rea
         return (
             <Flex spaceItems={{ default: 'spaceItemsSm' }}>
                 {forbiddenIcon}
-                <span className="pf-v5-u-text-nowrap">No roles</span>
+                <span className="pf-v6-u-text-nowrap">No roles</span>
             </Flex>
         );
     }

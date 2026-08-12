@@ -2,13 +2,14 @@ package deployment
 
 import (
 	"context"
+	"strconv"
 	"strings"
 
 	"github.com/stackrox/rox/central/processbaseline/evaluator"
+	"github.com/stackrox/rox/central/processindicator/views"
 	"github.com/stackrox/rox/central/risk/multipliers"
 	"github.com/stackrox/rox/generated/storage"
 	"github.com/stackrox/rox/pkg/env"
-	"github.com/stackrox/rox/pkg/stringutils"
 )
 
 const (
@@ -55,13 +56,17 @@ func NewProcessBaselines(evaluator evaluator.Evaluator) Multiplier {
 	}
 }
 
-func formatProcess(process *storage.ProcessIndicator) string {
+func formatProcess(process *views.ProcessIndicatorRiskView) string {
 	sb := strings.Builder{}
-	stringutils.WriteStringf(&sb, "Detected execution of suspicious process %q", process.GetSignal().GetName())
-	if len(process.GetSignal().GetArgs()) > 0 {
-		stringutils.WriteStringf(&sb, " with args %q", process.GetSignal().GetArgs())
+	sb.Grow(128)
+	sb.WriteString("Detected execution of suspicious process ")
+	sb.WriteString(strconv.Quote(process.SignalName))
+	if len(process.SignalArgs) > 0 {
+		sb.WriteString(" with args ")
+		sb.WriteString(strconv.Quote(process.SignalArgs))
 	}
-	stringutils.WriteStrings(&sb, " in container ", process.GetContainerName())
+	sb.WriteString(" in container ")
+	sb.WriteString(process.ContainerName)
 	return sb.String()
 }
 

@@ -14,7 +14,7 @@ func submitDryRunJob(service v1.PolicyServiceClient, policy *storage.Policy, job
 	return func() error {
 		res, err := service.SubmitDryRunPolicyJob(common.Context(), policy)
 		if err == nil {
-			jobChan <- res.JobId
+			jobChan <- res.GetJobId()
 		}
 
 		return err
@@ -32,7 +32,7 @@ func queryJobTillCompletion(service v1.PolicyServiceClient, jobID string) func()
 				return err
 			}
 
-			if !res.Pending {
+			if !res.GetPending() {
 				break
 			}
 		}
@@ -56,7 +56,7 @@ func collectAndQuery(service v1.PolicyServiceClient, jobChan chan string) func()
 func submitJobs(service v1.PolicyServiceClient, jobChan chan string, policies []*storage.Policy) func() error {
 	return func() error {
 		wg := concurrency.NewWaitGroup(0)
-		for idx := 0; idx < len(policies); idx++ {
+		for idx := range policies {
 			asyncWithWaitGroup(submitDryRunJob(service, policies[idx], jobChan), &wg)
 		}
 
@@ -80,8 +80,7 @@ func BenchmarkDryRunPolicies(b *testing.B) {
 		log.Fatal(err)
 	}
 
-	b.ResetTimer()
-	for n := 0; n < b.N; n++ {
+	for b.Loop() {
 		jobChan := make(chan string, len(defPolicies))
 		wg := concurrency.NewWaitGroup(0)
 		// Consumer of submitted jobs.

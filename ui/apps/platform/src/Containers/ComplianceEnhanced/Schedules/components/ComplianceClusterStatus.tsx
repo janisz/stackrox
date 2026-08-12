@@ -1,5 +1,5 @@
-import React, { ReactElement } from 'react';
-import { Button, Icon, Popover } from '@patternfly/react-core';
+import type { ReactElement } from 'react';
+import { Button, Icon, List, ListItem, Popover } from '@patternfly/react-core';
 import { CheckCircleIcon, ExclamationCircleIcon } from '@patternfly/react-icons';
 
 import IconText from 'Components/PatternFly/IconText/IconText';
@@ -20,7 +20,7 @@ function ComplianceClusterStatus({ errors }: ComplianceClusterStatusProps) {
             ? {
                   icon: (
                       <Icon>
-                          <ExclamationCircleIcon color="var(--pf-v5-global--danger-color--100)" />
+                          <ExclamationCircleIcon color="var(--pf-t--global--icon--color--status--danger--default)" />
                       </Icon>
                   ),
                   statusText: 'Unhealthy',
@@ -28,11 +28,21 @@ function ComplianceClusterStatus({ errors }: ComplianceClusterStatusProps) {
             : {
                   icon: (
                       <Icon>
-                          <CheckCircleIcon color="var(--pf-v5-global--success-color--100)" />
+                          <CheckCircleIcon color="var(--pf-t--global--icon--color--status--success--default)" />
                       </Icon>
                   ),
                   statusText: 'Healthy',
               };
+    }
+
+    function getErrorsList(errors: string[]): ReactElement {
+        return (
+            <List isPlain>
+                {errors.map((error) => {
+                    return <ListItem key={error}>{error}</ListItem>;
+                })}
+            </List>
+        );
     }
 
     const statusObj = getClusterStatusObject(errors);
@@ -45,11 +55,11 @@ function ComplianceClusterStatus({ errors }: ComplianceClusterStatusProps) {
             bodyContent={
                 <PopoverBodyContent
                     headerContent={errors.length === 1 ? 'Error' : 'Errors'}
-                    bodyContent={errors.join(', ')}
+                    bodyContent={getErrorsList(errors)}
                 />
             }
         >
-            <Button variant="link" className="pf-v5-u-p-0">
+            <Button variant="link" className="pf-v6-u-p-0">
                 <IconText icon={statusObj.icon} text={statusObj.statusText} />
             </Button>
         </Popover>

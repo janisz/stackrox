@@ -1,6 +1,5 @@
-import React from 'react';
-import { CodeBlock, Flex, CodeBlockCode } from '@patternfly/react-core';
-import { TableDataRow } from '../Tables/table.utils';
+import { CodeBlock, CodeBlockCode, Flex } from '@patternfly/react-core';
+import type { TableDataRow } from '../Tables/table.utils';
 
 export type DockerfileLayerProps = {
     layer: TableDataRow['layer'];
@@ -10,10 +9,10 @@ function DockerfileLayer({ layer }: DockerfileLayerProps) {
     return layer ? (
         <CodeBlock>
             <Flex>
-                <CodeBlockCode className="pf-v5-u-flex-nowrap">
+                <CodeBlockCode className="pf-v6-u-flex-nowrap">
                     {layer.line} {layer.instruction}
                 </CodeBlockCode>
-                <CodeBlockCode className="pf-v5-u-flex-grow-1 pf-v5-u-flex-basis-0">
+                <CodeBlockCode className="pf-v6-u-flex-grow-1 pf-v6-u-flex-basis-0">
                     {layer.value}
                 </CodeBlockCode>
             </Flex>

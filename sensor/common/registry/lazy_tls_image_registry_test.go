@@ -15,6 +15,7 @@ import (
 	"github.com/stackrox/rox/pkg/registries/types"
 	regMocks "github.com/stackrox/rox/pkg/registries/types/mocks"
 	"github.com/stackrox/rox/pkg/sync"
+	"github.com/stackrox/rox/pkg/tlscheckcache"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
@@ -22,7 +23,7 @@ import (
 
 func TestNoPanics(t *testing.T) {
 	assert.NotPanics(t, func() {
-		failCache := newTLSCheckCache(alwaysFailCheckTLS)
+		failCache := tlscheckcache.New(tlscheckcache.WithTLSCheckFunc(alwaysFailCheckTLS))
 
 		lazyRegistry := &lazyTLSCheckRegistry{tlsCheckCache: failCache}
 		lazyRegistry.Config(context.Background())
@@ -41,7 +42,7 @@ func TestConfig(t *testing.T) {
 	creator := func(integration *storage.ImageIntegration, options ...types.CreatorOption) (types.Registry, error) {
 		cfg := integration.GetDocker()
 		mockReg.EXPECT().Config(ctx).Return(&types.Config{
-			Insecure: cfg.Insecure,
+			Insecure: cfg.GetInsecure(),
 		})
 
 		return mockReg, nil
@@ -217,7 +218,7 @@ func TestAttemptToTriggerRace(t *testing.T) {
 	require.NoError(t, err)
 
 	wg := sync.WaitGroup{}
-	for i := 0; i < 100000; i++ {
+	for i := range 100000 {
 		wg.Add(1)
 		go func(i int) {
 			if i%2 == 0 {
@@ -263,7 +264,7 @@ func genImageIntegration(endpoint string) *storage.ImageIntegration {
 	}
 }
 
-func createReg(source *storage.ImageIntegration, creator types.Creator, tlsCheckFunc CheckTLS, options ...types.CreatorOption) (*lazyTLSCheckRegistry, error) {
+func createReg(source *storage.ImageIntegration, creator types.Creator, tlsCheckFunc tlscheckcache.CheckTLSFunc, options ...types.CreatorOption) (*lazyTLSCheckRegistry, error) {
 	cfg := source.GetDocker()
 	host, url := docker.RegistryHostnameURL(cfg.GetEndpoint())
 	reg := &lazyTLSCheckRegistry{
@@ -277,7 +278,7 @@ func createReg(source *storage.ImageIntegration, creator types.Creator, tlsCheck
 			Id:   source.GetId(),
 			Name: source.GetName(),
 		},
-		tlsCheckCache: newTLSCheckCache(tlsCheckFunc),
+		tlsCheckCache: tlscheckcache.New(tlscheckcache.WithTLSCheckFunc(tlsCheckFunc)),
 	}
 
 	return reg, nil

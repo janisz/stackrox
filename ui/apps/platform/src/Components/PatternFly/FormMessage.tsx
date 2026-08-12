@@ -1,4 +1,4 @@
-import React, { ReactElement } from 'react';
+import type { ReactElement } from 'react';
 import { Alert } from '@patternfly/react-core';
 
 export type FormResponseMessage = {
@@ -17,7 +17,7 @@ function FormMessage({ message }: FormMessageProps): ReactElement {
         <div id="form-message-alert">
             {message && (
                 <Alert
-                    className="pf-v5-u-mt-md pf-v5-u-mb-md"
+                    className="pf-v6-u-mt-md pf-v6-u-mb-md"
                     title={title}
                     component="p"
                     variant={variant}

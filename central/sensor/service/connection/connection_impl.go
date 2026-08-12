@@ -7,6 +7,7 @@ import (
 
 	"github.com/pkg/errors"
 	compScanSetting "github.com/stackrox/rox/central/complianceoperator/v2/scanconfigurations/datastore"
+	"github.com/stackrox/rox/central/convert/internaltov2storage"
 	delegatedRegistryConfigConvert "github.com/stackrox/rox/central/delegatedregistryconfig/convert"
 	"github.com/stackrox/rox/central/delegatedregistryconfig/util/imageintegration"
 	hashManager "github.com/stackrox/rox/central/hash/manager"
@@ -23,6 +24,8 @@ import (
 	v1 "github.com/stackrox/rox/generated/api/v1"
 	"github.com/stackrox/rox/generated/internalapi/central"
 	"github.com/stackrox/rox/generated/storage"
+	"github.com/stackrox/rox/pkg/administration/events"
+	adminResources "github.com/stackrox/rox/pkg/administration/events/resources"
 	"github.com/stackrox/rox/pkg/booleanpolicy/policyversion"
 	"github.com/stackrox/rox/pkg/centralsensor"
 	"github.com/stackrox/rox/pkg/concurrency"
@@ -32,6 +35,7 @@ import (
 	"github.com/stackrox/rox/pkg/logging"
 	"github.com/stackrox/rox/pkg/postgres/pgutils"
 	"github.com/stackrox/rox/pkg/protoconv/schedule"
+	"github.com/stackrox/rox/pkg/rate"
 	"github.com/stackrox/rox/pkg/reflectutils"
 	"github.com/stackrox/rox/pkg/sac"
 	"github.com/stackrox/rox/pkg/safe"
@@ -81,6 +85,13 @@ type sensorConnection struct {
 	capabilities set.Set[centralsensor.SensorCapability]
 
 	hashDeduper hashManager.Deduper
+
+	rl                rateLimiter
+	adminEventsStream events.Stream
+}
+
+type rateLimiter interface {
+	TryConsume(clientID string, msg *central.MsgFromSensor) (allowed bool, reason string)
 }
 
 func newConnection(ctx context.Context,
@@ -97,6 +108,8 @@ func newConnection(ctx context.Context,
 	hashMgr hashManager.Manager,
 	complianceOperatorMgr common.ComplianceOperatorManager,
 	initSyncMgr *initSyncManager,
+	rl rateLimiter,
+	adminEventsStream events.Stream,
 ) *sensorConnection {
 
 	conn := &sensorConnection{
@@ -120,6 +133,8 @@ func newConnection(ctx context.Context,
 		sensorHello: sensorHello,
 		capabilities: set.NewSet(sliceutils.
 			FromStringSlice[centralsensor.SensorCapability](sensorHello.GetCapabilities()...)...),
+		rl:                rl,
+		adminEventsStream: adminEventsStream,
 	}
 
 	// Need a reference to conn for injector
@@ -161,7 +176,24 @@ func (c *sensorConnection) multiplexedPush(ctx context.Context, msg *central.Msg
 		return
 	}
 
-	typ := reflectutils.Type(msg.Msg)
+	allowed, reason := c.rl.TryConsume(c.clusterID, msg)
+	if !allowed {
+		logging.GetRateLimitedLogger().WarnL(
+			"vm_index_reports_rate_limiter",
+			"Request is rate-limited for cluster %s and event type %s. Reason: %s",
+			c.clusterID,
+			event.GetEventTypeWithoutPrefix(msg.GetEvent().GetResource()),
+			reason,
+		)
+		c.emitRateLimitedAdminEvent(c.clusterID, reason)
+		if vmReport := msg.GetEvent().GetVirtualMachineIndexReport(); vmReport != nil {
+			resourceID := common.VMIndexACKResourceID(vmReport.GetId(), vmReport.GetIndex().GetVsockCid())
+			common.SendSensorACK(ctx, central.SensorACK_NACK, central.SensorACK_VM_INDEX_REPORT, resourceID, centralsensor.SensorACKReasonRateLimited, c)
+		}
+		return
+	}
+
+	typ := reflectutils.Type(msg.GetMsg())
 	queue := queues[typ]
 	if queue == nil {
 		concurrency.WithLock(&c.queuesMutex, func() {
@@ -179,6 +211,31 @@ func (c *sensorConnection) multiplexedPush(ctx context.Context, msg *central.Msg
 		}
 	}
 	queue.Push(msg)
+}
+
+func (c *sensorConnection) emitRateLimitedAdminEvent(clusterID, reason string) {
+	if c.adminEventsStream == nil {
+		return
+	}
+	// The texts are tuned for the rate.ReasonRateLimitExceeded, so skip adding log entry if the reason is different.
+	if reason != rate.ReasonRateLimitExceeded {
+		return
+	}
+
+	c.adminEventsStream.Produce(&events.AdministrationEvent{
+		Type:         storage.AdministrationEventType_ADMINISTRATION_EVENT_TYPE_GENERIC,
+		Level:        storage.AdministrationEventLevel_ADMINISTRATION_EVENT_LEVEL_WARNING,
+		Domain:       events.DefaultDomain,
+		Message:      fmt.Sprintf("VM index reports from cluster %s are being rate limited: %s", clusterID, reason),
+		ResourceType: adminResources.Cluster,
+		ResourceID:   clusterID,
+		Hint: fmt.Sprintf("VM index reports are being rate limited to avoid overwhelming the system. "+
+			"Consider either: (1) scaling up the Scanner V4 deployments and increasing values of %s or %s, "+
+			"or (2) reducing the index-report frequency in roxagents running in the Virtual Machines.",
+			env.VMIndexReportRateLimit.EnvVar(),
+			env.VMIndexReportBucketCapacity.EnvVar(),
+		),
+	})
 }
 
 func getSensorMessageTypeString(msg *central.MsgFromSensor) string {
@@ -243,6 +300,7 @@ func (c *sensorConnection) runSend(server central.SensorService_CommunicateServe
 			return
 		case msg := <-c.sendC:
 			if err := wrappedStream.Send(msg); err != nil {
+				metrics.IncrementMsgToSensorNotSentCounter(c.clusterID, msg, metrics.NotSentError)
 				c.stopSig.SignalWithError(errors.Wrap(err, "send error"))
 				return
 			}
@@ -255,7 +313,7 @@ func (c *sensorConnection) Scrapes() scrape.Controller {
 }
 
 func (c *sensorConnection) InjectMessageIntoQueue(msg *central.MsgFromSensor) {
-	c.multiplexedPush(sac.WithAllAccess(withConnection(context.Background(), c)), msg, nil)
+	c.multiplexedPush(sac.WithAllAccess(WithConnection(context.Background(), c)), msg, nil)
 }
 
 func (c *sensorConnection) NetworkEntities() networkentities.Controller {
@@ -275,14 +333,19 @@ func (c *sensorConnection) InjectMessage(ctx concurrency.Waitable, msg *central.
 	case c.sendC <- msg:
 		return nil
 	case <-ctx.Done():
+		metrics.IncrementMsgToSensorNotSentCounter(c.clusterID, msg, metrics.NotSentSignal)
+		if errCtx, ok := ctx.(concurrency.ErrorWaitable); ok {
+			return errors.Wrap(errCtx.Err(), "context aborted")
+		}
 		return errors.New("context aborted")
 	case <-c.stopSig.Done():
+		metrics.IncrementMsgToSensorNotSentCounter(c.clusterID, msg, metrics.NotSentSignal)
 		return errors.Wrap(c.stopSig.Err(), "could not send message as sensor connection was stopped")
 	}
 }
 
 func (c *sensorConnection) handleMessage(ctx context.Context, msg *central.MsgFromSensor) error {
-	switch m := msg.Msg.(type) {
+	switch m := msg.GetMsg().(type) {
 	case *central.MsgFromSensor_ScrapeUpdate:
 		return c.scrapeCtrl.ProcessScrapeUpdate(m.ScrapeUpdate)
 	case *central.MsgFromSensor_NetworkPoliciesResponse:
@@ -319,7 +382,8 @@ func shallDedupe(msg *central.MsgFromSensor) bool {
 	// the vulnerabilities database in scanner may get updated and new vulnerabilities may affect those packages.
 	ev := msg.GetEvent()
 	if ev.GetAction() != central.ResourceAction_REMOVE_RESOURCE {
-		if ev.GetNodeInventory() != nil || ev.GetIndexReport() != nil {
+		if ev.GetNodeInventory() != nil || ev.GetIndexReport() != nil ||
+			ev.GetVirtualMachine() != nil || ev.GetVirtualMachineIndexReport() != nil {
 			return false
 		}
 	}
@@ -327,7 +391,7 @@ func shallDedupe(msg *central.MsgFromSensor) bool {
 }
 
 func (c *sensorConnection) processComplianceResponse(ctx context.Context, msg *central.ComplianceResponse) error {
-	switch m := msg.Response.(type) {
+	switch m := msg.GetResponse().(type) {
 	case *central.ComplianceResponse_ApplyComplianceScanConfigResponse_:
 		return c.complianceOperatorMgr.HandleScanRequestResponse(ctx, m.ApplyComplianceScanConfigResponse.GetId(), c.clusterID, m.ApplyComplianceScanConfigResponse.GetError())
 	case *central.ComplianceResponse_DeleteComplianceScanConfigResponse_:
@@ -336,7 +400,7 @@ func (c *sensorConnection) processComplianceResponse(ctx context.Context, msg *c
 	default:
 		log.Infof("Unimplemented compliance response  %T", m)
 	}
-	return errors.Errorf("Unimplemented compliance response  %T", msg.Response)
+	return errors.Errorf("Unimplemented compliance response  %T", msg.GetResponse())
 }
 
 func (c *sensorConnection) processIssueLocalScannerCertsRequest(ctx context.Context, request *central.IssueLocalScannerCertsRequest) error {
@@ -394,7 +458,9 @@ func (c *sensorConnection) processIssueSecuredClusterCertsRequest(ctx context.Co
 		err = errors.New("requestID is required to issue the certificates for a Secured Cluster")
 	} else {
 		var certificates *storage.TypedServiceCertificateSet
-		certificates, err = securedclustercertgen.IssueSecuredClusterCerts(namespace, clusterID)
+		sensorSupportsRotation := c.capabilities.Contains(centralsensor.SensorCARotationSupported)
+		caFingerprint := request.GetCaFingerprint()
+		certificates, err = securedclustercertgen.IssueSecuredClusterCerts(namespace, clusterID, sensorSupportsRotation, caFingerprint)
 		response = &central.IssueSecuredClusterCertsResponse{
 			RequestId: requestID,
 			Response: &central.IssueSecuredClusterCertsResponse_Certificates{
@@ -581,6 +647,7 @@ func (c *sensorConnection) getScanConfigurationMsg(ctx context.Context) (*centra
 		for _, profile := range scanConfig.GetProfiles() {
 			profiles = append(profiles, profile.GetProfileName())
 		}
+		profileRefs := internaltov2storage.ScanConfigRefsToCentral(scanConfig.GetProfileRefs())
 		cron, err := schedule.ConvertToCronTab(scanConfig.GetSchedule())
 		if err != nil {
 			return nil, err
@@ -591,6 +658,7 @@ func (c *sensorConnection) getScanConfigurationMsg(ctx context.Context) (*centra
 					ScanSettings: &central.ApplyComplianceScanConfigRequest_BaseScanSettings{
 						ScanName:               scanConfig.GetScanConfigName(),
 						Profiles:               profiles,
+						ProfileRefs:            profileRefs,
 						StrictNodeScan:         scanConfig.GetStrictNodeScan(),
 						AutoApplyRemediations:  scanConfig.GetAutoApplyRemediations(),
 						AutoUpdateRemediations: scanConfig.GetAutoUpdateRemediations(),
@@ -678,6 +746,9 @@ func (c *sensorConnection) getImageIntegrationMsg(ctx context.Context) (*central
 		Msg: &central.MsgToSensor_ImageIntegrations{
 			ImageIntegrations: &central.ImageIntegrations{
 				UpdatedIntegrations: imageIntegrations,
+				// On initial/repeat connections to Sensor any previous stored image integrations
+				// should be replaced by these (potentially) new ones.
+				Refresh: true,
 			},
 		},
 	}, nil
@@ -721,7 +792,7 @@ func (c *sensorConnection) Run(ctx context.Context, server central.SensorService
 
 	}
 
-	if features.SensorReconciliationOnReconnect.Enabled() && connectionCapabilities.Contains(centralsensor.SendDeduperStateOnReconnect) {
+	if connectionCapabilities.Contains(centralsensor.SendDeduperStateOnReconnect) {
 		// Sensor is capable of doing the reconciliation by itself if receives the hashes from central.
 		log.Infof("Sensor (%s) can do client reconciliation: sending deduper state", c.clusterID)
 

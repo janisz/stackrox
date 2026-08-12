@@ -15,8 +15,8 @@ const (
 
 // ComplianceOperatorRule converts message from sensor to V2 storage
 func ComplianceOperatorRule(sensorData *central.ComplianceOperatorRuleV2, clusterID string) *storage.ComplianceOperatorRuleV2 {
-	fixes := make([]*storage.ComplianceOperatorRuleV2_Fix, 0, len(sensorData.Fixes))
-	for _, fix := range sensorData.Fixes {
+	fixes := make([]*storage.ComplianceOperatorRuleV2_Fix, 0, len(sensorData.GetFixes()))
+	for _, fix := range sensorData.GetFixes() {
 		fixes = append(fixes, &storage.ComplianceOperatorRuleV2_Fix{
 			Platform:   fix.GetPlatform(),
 			Disruption: fix.GetDisruption(),
@@ -45,10 +45,10 @@ func ComplianceOperatorRule(sensorData *central.ComplianceOperatorRuleV2, cluste
 	standards := strings.Split(sensorData.GetAnnotations()[standardsKey], ",")
 	controls := make([]*storage.RuleControls, 0, len(standards))
 	for _, standard := range standards {
-		controlAnnotationValues := strings.Split(sensorData.GetAnnotations()[controlAnnotationBase+standard], ";")
+		controlAnnotationValues := strings.SplitSeq(sensorData.GetAnnotations()[controlAnnotationBase+standard], ";")
 
 		// Add a control entry for each Control + Standard. This data is intentionally denormalized for easier querying.
-		for _, controlValue := range controlAnnotationValues {
+		for controlValue := range controlAnnotationValues {
 			controls = append(controls, &storage.RuleControls{
 				Standard: standard,
 				Control:  controlValue,
@@ -56,7 +56,19 @@ func ComplianceOperatorRule(sensorData *central.ComplianceOperatorRuleV2, cluste
 		}
 	}
 
+	// parentRule is the DNS-friendly rule name shared between the rule and its check results,
+	// used as the input to BuildNameRefID (the join key between the two tables).
+	//
+	// For regular rules, CO sets compliance.openshift.io/rule on the Rule object to its own
+	// DNS-friendly name, so we read it from the annotation.
+	//
+	// For custom rules, CO does not set that annotation (CustomRule is a different CRD).
+	// CO derives the check result annotation from Spec.ID via IDToDNSFriendlyName, so we
+	// apply the same transformation here to produce a matching parentRule.
 	parentRule := sensorData.GetAnnotations()[v1alpha1.RuleIDAnnotationKey]
+	if sensorData.GetOperatorKind() == central.ComplianceOperatorRuleV2_CUSTOM_RULE {
+		parentRule = idToDNSFriendlyName(sensorData.GetRuleId())
+	}
 
 	return &storage.ComplianceOperatorRuleV2{
 		Id:           sensorData.GetId(),
@@ -76,5 +88,23 @@ func ComplianceOperatorRule(sensorData *central.ComplianceOperatorRuleV2, cluste
 		RuleRefId:    BuildNameRefID(clusterID, parentRule),
 		Instructions: sensorData.GetInstructions(),
 		ParentRule:   parentRule,
+		OperatorKind: centralToStorageRuleKind(sensorData.GetOperatorKind()),
+	}
+}
+
+func centralToStorageRuleKind(kind central.ComplianceOperatorRuleV2_OperatorKind) storage.ComplianceOperatorRuleV2_OperatorKind {
+	switch kind {
+	case central.ComplianceOperatorRuleV2_RULE:
+		return storage.ComplianceOperatorRuleV2_RULE
+	case central.ComplianceOperatorRuleV2_CUSTOM_RULE:
+		return storage.ComplianceOperatorRuleV2_CUSTOM_RULE
+	case central.ComplianceOperatorRuleV2_OPERATOR_KIND_UNSPECIFIED:
+		// Older sensors do not set OperatorKind for regular (non-custom) rules,
+		// so UNSPECIFIED is treated as RULE. This fallback can be removed when
+		// versions that don't set OperatorKind (<= 4.10) are not supported.
+		return storage.ComplianceOperatorRuleV2_RULE
+	default:
+		log.Errorf("Unexpected rule operator kind %v", kind)
+		return storage.ComplianceOperatorRuleV2_OPERATOR_KIND_UNSPECIFIED
 	}
 }

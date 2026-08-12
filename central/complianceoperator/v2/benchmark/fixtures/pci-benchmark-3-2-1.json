@@ -1,0 +1,11 @@
+{
+  "name": "PCI-DSS v3.2.1 Control Baseline",
+  "provider": "PCI",
+  "shortName": "PCI-DSS",
+  "profiles": [
+    { "profileName": "ocp4-pci-dss" },
+    { "profileName": "ocp4-pci-dss-node" },
+    { "profileName": "ocp4-pci-dss-3-2" },
+    { "profileName": "ocp4-pci-dss-node-3-2" }
+  ]
+}

@@ -14,7 +14,6 @@ import (
 	"github.com/stackrox/rox/sensor/kubernetes/client"
 	"github.com/stackrox/rox/sensor/kubernetes/eventpipeline/component"
 	"github.com/stackrox/rox/sensor/kubernetes/listener/resources"
-	"github.com/stackrox/rox/sensor/kubernetes/listener/watcher"
 )
 
 const (
@@ -27,12 +26,22 @@ const (
 	osImageDigestMirrorSetsResourceName = "imagedigestmirrorsets"
 	osImageTagMirrorSetsResourceName    = "imagetagmirrorsets"
 
+	osRouteGroupVersion  = "route.openshift.io/v1"
+	osRoutesResourceName = "routes"
+
+	osAppsGroupVersion              = "apps.openshift.io/v1"
+	osDeploymentConfigsResourceName = "deploymentconfigs"
+
 	osOperatorAlphaGroupVersion              = "operator.openshift.io/v1alpha1"
 	osImageContentSourcePoliciesResourceName = "imagecontentsourcepolicies"
 )
 
 type stoppable interface {
 	Shutdown()
+}
+
+type clusterIDWaiter interface {
+	Get() string
 }
 
 type listenerImpl struct {
@@ -45,10 +54,11 @@ type listenerImpl struct {
 	storeProvider             *resources.StoreProvider
 	mayCreateHandlers         concurrency.Signal
 	context                   context.Context
-	crdWatcherStatusC         chan *watcher.Status
 	pubSub                    *internalmessage.MessageSubscriber
+	pubSubDispatcher          pubSubPublisher
 	sifLock                   sync.Mutex
 	sharedInformersToShutdown []stoppable
+	clusterID                 clusterIDWaiter
 }
 
 func (k *listenerImpl) StartWithContext(ctx context.Context) error {
@@ -89,7 +99,7 @@ func (k *listenerImpl) Start() error {
 	return nil
 }
 
-func (k *listenerImpl) Stop(_ error) {
+func (k *listenerImpl) Stop() {
 	if k.credentialsManager != nil {
 		k.credentialsManager.Stop()
 	}
@@ -107,23 +117,4 @@ func (k *listenerImpl) shutdownSharedInformers() {
 		sif.Shutdown()
 	}
 	k.sharedInformersToShutdown = []stoppable{}
-}
-
-func (k *listenerImpl) handleWatcherStatus(fn func(*watcher.Status)) {
-	go func() {
-		for {
-			select {
-			case <-k.stopSig.Done():
-				return
-			case status, ok := <-k.crdWatcherStatusC:
-				if !ok {
-					log.Error("crdWatcherStatusC channel closed")
-					return
-				}
-				if fn != nil {
-					fn(status)
-				}
-			}
-		}
-	}()
 }

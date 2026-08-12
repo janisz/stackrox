@@ -3,6 +3,7 @@ package pgutils
 import (
 	"io"
 	"net"
+	"slices"
 	"syscall"
 
 	"github.com/jackc/pgx/v5"
@@ -51,14 +52,15 @@ var transientPGCodes = set.NewFrozenStringSet(
 
 // IsTransientError specifies if the passed error is transient and should be retried
 func IsTransientError(err error) bool {
+	if err == nil {
+		return false
+	}
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false
 	}
 	if multiError := (*errorhelpers.ErrorList)(nil); errors.As(err, &multiError) {
-		for _, err := range multiError.Errors() {
-			if IsTransientError(err) {
-				return true
-			}
+		if slices.ContainsFunc(multiError.Errors(), IsTransientError) {
+			return true
 		}
 	}
 	if pgErr := (*pgconn.PgError)(nil); errors.As(err, &pgErr) {

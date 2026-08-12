@@ -1,9 +1,9 @@
-import React, { useEffect, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { useEffect, useState } from 'react';
+import { Link } from 'react-router-dom-v5-compat';
 import {
+    Content,
+    ContentVariants,
     Pagination,
-    Text,
-    TextVariants,
     Toolbar,
     ToolbarContent,
     ToolbarGroup,
@@ -12,23 +12,29 @@ import {
 import { ExpandableRowContent, Table, Tbody, Td, Th, Thead, Tr } from '@patternfly/react-table';
 
 import CompoundSearchFilter from 'Components/CompoundSearchFilter/components/CompoundSearchFilter';
-import { CompoundSearchFilterConfig, OnSearchPayload } from 'Components/CompoundSearchFilter/types';
-import SearchFilterChips from 'Components/PatternFly/SearchFilterChips';
+import CompoundSearchFilterLabels from 'Components/CompoundSearchFilter/components/CompoundSearchFilterLabels';
+import SearchFilterSelectInclusive from 'Components/CompoundSearchFilter/components/SearchFilterSelectInclusive';
+import type { OnSearchCallback } from 'Components/CompoundSearchFilter/types';
 import TbodyUnified from 'Components/TableStateTemplates/TbodyUnified';
-import { UseURLPaginationResult } from 'hooks/useURLPagination';
-import { UseURLSortResult } from 'hooks/useURLSort';
-import { ComplianceCheckResult } from 'services/ComplianceResultsService';
-import { TableUIState } from 'utils/getTableUIState';
-import { SearchFilter } from 'types/search';
+import type { UseURLPaginationResult } from 'hooks/useURLPagination';
+import type { UseURLSortResult } from 'hooks/useURLSort';
+import type { ComplianceCheckResult } from 'services/ComplianceResultsService';
+import type { TableUIState } from 'utils/getTableUIState';
+import type { SearchFilter } from 'types/search';
 
 import { DETAILS_TAB, TAB_NAV_QUERY } from './CheckDetailsPage';
-import { CHECK_NAME_QUERY, CHECK_STATUS_QUERY } from './compliance.coverage.constants';
+import { CHECK_NAME_QUERY } from './compliance.coverage.constants';
 import { coverageCheckDetailsPath } from './compliance.coverage.routes';
 import { getClusterResultsStatusObject } from './compliance.coverage.utils';
-import CheckStatusDropdown from './components/CheckStatusDropdown';
 import ControlLabels from './components/ControlLabels';
 import StatusIcon from './components/StatusIcon';
 import useScanConfigRouter from './hooks/useScanConfigRouter';
+import {
+    attributeForComplianceCheckStatus,
+    profileCheckSearchFilterConfig,
+} from '../searchFilterConfig';
+
+const searchFilterConfig = [profileCheckSearchFilterConfig];
 
 export type ClusterDetailsTableProps = {
     checkResultsCount: number;
@@ -36,15 +42,9 @@ export type ClusterDetailsTableProps = {
     tableState: TableUIState<ComplianceCheckResult>;
     pagination: UseURLPaginationResult;
     getSortParams: UseURLSortResult['getSortParams'];
-    searchFilterConfig: CompoundSearchFilterConfig;
     searchFilter: SearchFilter;
     onFilterChange: (newFilter: SearchFilter) => void;
-    onSearch: (payload: OnSearchPayload) => void;
-    onCheckStatusSelect: (
-        filterType: 'Compliance Check Status',
-        checked: boolean,
-        selection: string
-    ) => void;
+    onSearch: OnSearchCallback;
     onClearFilters: () => void;
 };
 
@@ -54,14 +54,11 @@ function ClusterDetailsTable({
     tableState,
     pagination,
     getSortParams,
-    searchFilterConfig,
     searchFilter,
     onFilterChange,
     onSearch,
-    onCheckStatusSelect,
     onClearFilters,
 }: ClusterDetailsTableProps) {
-    /* eslint-disable no-nested-ternary */
     const { page, perPage, setPage, setPerPage } = pagination;
     const { generatePathWithScanConfig } = useScanConfigRouter();
     const [expandedRows, setExpandedRows] = useState<number[]>([]);
@@ -81,21 +78,27 @@ function ClusterDetailsTable({
         <>
             <Toolbar>
                 <ToolbarContent>
-                    <ToolbarGroup className="pf-v5-u-w-100">
-                        <ToolbarItem className="pf-v5-u-flex-1">
-                            <CompoundSearchFilter
-                                config={searchFilterConfig}
-                                searchFilter={searchFilter}
-                                onSearch={onSearch}
-                            />
-                        </ToolbarItem>
-                        <ToolbarItem>
-                            <CheckStatusDropdown
-                                searchFilter={searchFilter}
-                                onSelect={onCheckStatusSelect}
-                            />
-                        </ToolbarItem>
-                        <ToolbarItem variant="pagination" align={{ default: 'alignRight' }}>
+                    <CompoundSearchFilter
+                        config={searchFilterConfig}
+                        searchFilter={searchFilter}
+                        onSearch={onSearch}
+                    />
+                    <SearchFilterSelectInclusive
+                        attribute={attributeForComplianceCheckStatus}
+                        isSeparate
+                        onSearch={onSearch}
+                        searchFilter={searchFilter}
+                    />
+                    <ToolbarGroup className="pf-v6-u-w-100">
+                        <CompoundSearchFilterLabels
+                            attributesSeparateFromConfig={[attributeForComplianceCheckStatus]}
+                            config={searchFilterConfig}
+                            onFilterChange={onFilterChange}
+                            searchFilter={searchFilter}
+                        />
+                    </ToolbarGroup>
+                    <ToolbarGroup className="pf-v6-u-w-100">
+                        <ToolbarItem variant="pagination" align={{ default: 'alignEnd' }}>
                             <Pagination
                                 itemCount={checkResultsCount}
                                 page={page}
@@ -104,22 +107,6 @@ function ClusterDetailsTable({
                                 onPerPageSelect={(_, newPerPage) => setPerPage(newPerPage)}
                             />
                         </ToolbarItem>
-                    </ToolbarGroup>
-                    <ToolbarGroup className="pf-v5-u-w-100">
-                        <SearchFilterChips
-                            searchFilter={searchFilter}
-                            onFilterChange={onFilterChange}
-                            filterChipGroupDescriptors={[
-                                {
-                                    displayName: 'Profile Check',
-                                    searchFilterName: CHECK_NAME_QUERY,
-                                },
-                                {
-                                    displayName: 'Compliance Status',
-                                    searchFilterName: CHECK_STATUS_QUERY,
-                                },
-                            ]}
-                        />
                     </ToolbarGroup>
                 </ToolbarContent>
             </Toolbar>
@@ -179,12 +166,12 @@ function ClusterDetailsTable({
                                                     is not used here because it displays a tooltip on hover
                                                 */}
                                                 <div style={{ display: 'grid' }}>
-                                                    <Text
-                                                        component={TextVariants.small}
-                                                        className="pf-v5-u-color-200 pf-v5-u-text-truncate"
+                                                    <Content
+                                                        component={ContentVariants.small}
+                                                        className="pf-v6-u-color-200 pf-v6-u-text-truncate"
                                                     >
                                                         {rationale}
-                                                    </Text>
+                                                    </Content>
                                                 </div>
                                             </Td>
                                             <Td

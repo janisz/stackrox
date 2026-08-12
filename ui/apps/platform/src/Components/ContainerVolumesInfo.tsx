@@ -1,4 +1,3 @@
-import React, { useState } from 'react';
 import {
     Card,
     CardBody,
@@ -7,91 +6,90 @@ import {
     DescriptionListDescription,
     DescriptionListGroup,
     DescriptionListTerm,
+    Divider,
     EmptyState,
-    ExpandableSection,
+    Label,
     Stack,
     StackItem,
 } from '@patternfly/react-core';
 
-import { ContainerVolume } from 'types/deployment.proto';
+import type { ContainerVolume } from 'types/deployment.proto';
 
-type ContainerVolumeInfoProps = {
+type ContainerVolumesInfoProps = {
     volumes: ContainerVolume[];
 };
 
-function ContainerVolumeInfo({ volumes }: ContainerVolumeInfoProps) {
-    const initialToggleValues = Array.from({ length: volumes.length }, () => true);
-    const [volumeToggles, setVolumeToggles] = useState(initialToggleValues);
-
-    function setToggleAtIndex(i) {
-        const newToggles = [...volumeToggles];
-        newToggles[i] = !newToggles[i];
-
-        setVolumeToggles(newToggles);
-    }
-
+function ContainerVolumesInfo({ volumes }: ContainerVolumesInfoProps) {
     return (
         <Card>
             <CardTitle>Volumes</CardTitle>
             <CardBody>
-                <Stack hasGutter>
-                    {volumes.length > 0 ? (
-                        volumes.map((volume, index) => (
+                {volumes.length > 0 ? (
+                    <Stack hasGutter>
+                        {volumes.map((volume, index) => (
                             <StackItem key={volume.name}>
-                                <ExpandableSection
-                                    toggleText={volume.name}
-                                    onToggle={() => setToggleAtIndex(index)}
-                                    isExpanded={volumeToggles[index]}
-                                    className="pf-expandable-not-large"
-                                >
-                                    <DescriptionList
-                                        columnModifier={{ default: '2Col' }}
-                                        isCompact
-                                        className="pf-v5-u-background-color-200 pf-v5-u-p-md"
-                                    >
-                                        <DescriptionListGroup>
-                                            <DescriptionListTerm>Source</DescriptionListTerm>
-                                            <DescriptionListDescription>
-                                                {volume.source || '-'}
-                                            </DescriptionListDescription>
-                                        </DescriptionListGroup>
-                                        <DescriptionListGroup>
-                                            <DescriptionListTerm>Destination</DescriptionListTerm>
-                                            <DescriptionListDescription>
-                                                {volume.destination || '-'}
-                                            </DescriptionListDescription>
-                                        </DescriptionListGroup>
-                                        <DescriptionListGroup>
-                                            <DescriptionListTerm>Read only</DescriptionListTerm>
-                                            <DescriptionListDescription>
-                                                {volume.readOnly || 'false'}
-                                            </DescriptionListDescription>
-                                        </DescriptionListGroup>
-                                        <DescriptionListGroup>
-                                            <DescriptionListTerm>Type</DescriptionListTerm>
-                                            <DescriptionListDescription>
-                                                {volume.type}
-                                            </DescriptionListDescription>
-                                        </DescriptionListGroup>
-                                        <DescriptionListGroup>
-                                            <DescriptionListTerm>
-                                                Mount propagation
-                                            </DescriptionListTerm>
-                                            <DescriptionListDescription>
-                                                {volume.mountPropagation}
-                                            </DescriptionListDescription>
-                                        </DescriptionListGroup>
-                                    </DescriptionList>
-                                </ExpandableSection>
+                                <Stack hasGutter>
+                                    <StackItem>
+                                        <Label color="blue" isCompact variant="outline">
+                                            {volume.name}
+                                        </Label>
+                                    </StackItem>
+                                    <StackItem>
+                                        <DescriptionList
+                                            columnModifier={{ default: '2Col' }}
+                                            isCompact
+                                        >
+                                            <DescriptionListGroup>
+                                                <DescriptionListTerm>Source</DescriptionListTerm>
+                                                <DescriptionListDescription>
+                                                    {volume.source || '-'}
+                                                </DescriptionListDescription>
+                                            </DescriptionListGroup>
+                                            <DescriptionListGroup>
+                                                <DescriptionListTerm>
+                                                    Destination
+                                                </DescriptionListTerm>
+                                                <DescriptionListDescription>
+                                                    {volume.destination || '-'}
+                                                </DescriptionListDescription>
+                                            </DescriptionListGroup>
+                                            <DescriptionListGroup>
+                                                <DescriptionListTerm>Read only</DescriptionListTerm>
+                                                <DescriptionListDescription>
+                                                    {volume.readOnly ? 'true' : 'false'}
+                                                </DescriptionListDescription>
+                                            </DescriptionListGroup>
+                                            <DescriptionListGroup>
+                                                <DescriptionListTerm>Type</DescriptionListTerm>
+                                                <DescriptionListDescription>
+                                                    {volume.type}
+                                                </DescriptionListDescription>
+                                            </DescriptionListGroup>
+                                            <DescriptionListGroup>
+                                                <DescriptionListTerm>
+                                                    Mount propagation
+                                                </DescriptionListTerm>
+                                                <DescriptionListDescription>
+                                                    {volume.mountPropagation}
+                                                </DescriptionListDescription>
+                                            </DescriptionListGroup>
+                                        </DescriptionList>
+                                    </StackItem>
+                                    {index < volumes.length - 1 && (
+                                        <StackItem>
+                                            <Divider />
+                                        </StackItem>
+                                    )}
+                                </Stack>
                             </StackItem>
-                        ))
-                    ) : (
-                        <EmptyState>No volumes</EmptyState>
-                    )}
-                </Stack>
+                        ))}
+                    </Stack>
+                ) : (
+                    <EmptyState>No volumes</EmptyState>
+                )}
             </CardBody>
         </Card>
     );
 }
 
-export default ContainerVolumeInfo;
+export default ContainerVolumesInfo;

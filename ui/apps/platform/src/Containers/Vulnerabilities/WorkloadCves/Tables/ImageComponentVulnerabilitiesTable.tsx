@@ -1,22 +1,20 @@
-import React from 'react';
+import { Label } from '@patternfly/react-core';
 import { Table, Tbody, Td, Th, Thead, Tr } from '@patternfly/react-table';
 import { gql } from '@apollo/client';
 
 import useFeatureFlags from 'hooks/useFeatureFlags';
-import useTableSort from 'hooks/patternfly/useTableSort';
+import useTableSort from 'hooks/useTableSort';
 
+import AdvisoryLinkOrText from '../../components/AdvisoryLinkOrText';
 import {
-    ImageComponentVulnerability,
-    ImageMetadataContext,
     flattenImageComponentVulns,
     imageMetadataContextFragment,
     sortTableData,
 } from './table.utils';
-import FixedByVersion from '../components/FixedByVersion';
+import type { ImageComponentVulnerability, ImageMetadataContext } from './table.utils';
 import DockerfileLayer from '../components/DockerfileLayer';
 import ComponentLocation from '../components/ComponentLocation';
-
-import AdvisoryLinkOrText from './AdvisoryLinkOrText';
+import FixedByVersion from '../../components/FixedByVersion';
 
 export { imageMetadataContextFragment };
 export type { ImageMetadataContext, ImageComponentVulnerability };
@@ -28,9 +26,14 @@ export const imageComponentVulnerabilitiesFragment = gql`
         location
         source
         layerIndex
+        inBaseImageLayer
         imageVulnerabilities(query: $query) {
             severity
             fixedByVersion
+            advisory {
+                name
+                link
+            }
             pendingExceptionCount: exceptionCount(requestStatus: $statusesForExceptionCount)
         }
     }
@@ -50,9 +53,11 @@ function ImageComponentVulnerabilitiesTable({
     componentVulnerabilities,
 }: ImageComponentVulnerabilitiesTableProps) {
     const { isFeatureFlagEnabled } = useFeatureFlags();
-    const isAdvisoryColumnEnabled =
-        isFeatureFlagEnabled('ROX_SCANNER_V4') &&
-        isFeatureFlagEnabled('ROX_CVE_ADVISORY_SEPARATION');
+    const isAdvisoryColumnEnabled = isFeatureFlagEnabled('ROX_SCANNER_V4');
+    const isLayerTypeColumnEnabled = isFeatureFlagEnabled('ROX_BASE_IMAGE_DETECTION');
+
+    const colSpanForDockerfileLayer =
+        5 + (isAdvisoryColumnEnabled ? 1 : 0) + (isLayerTypeColumnEnabled ? 1 : 0);
 
     const { sortOption, getSortParams } = useTableSort({ sortFields, defaultSortOption });
     const componentVulns = flattenImageComponentVulns(
@@ -62,12 +67,7 @@ function ImageComponentVulnerabilitiesTable({
     const sortedComponentVulns = sortTableData(componentVulns, sortOption);
 
     return (
-        <Table
-            style={{
-                border: '1px solid var(--pf-v5-c-table--BorderColor)',
-            }}
-            borders={false}
-        >
+        <Table borders={false} variant="compact">
             <Thead noWrap>
                 <Tr>
                     <Th sort={getSortParams('Component')}>Component</Th>
@@ -75,21 +75,33 @@ function ImageComponentVulnerabilitiesTable({
                     <Th>CVE fixed in</Th>
                     {isAdvisoryColumnEnabled && <Th>Advisory</Th>}
                     <Th>Source</Th>
+                    {isLayerTypeColumnEnabled && <Th>Layer type</Th>}
                     <Th>Location</Th>
                 </Tr>
             </Thead>
             {sortedComponentVulns.map((componentVuln, index) => {
-                const { image, name, version, fixedByVersion, location, source, layer } =
-                    componentVuln;
-                const advisory = undefined; // placeholder until response includes property
+                const {
+                    image,
+                    name,
+                    version,
+                    fixedByVersion,
+                    advisory,
+                    location,
+                    source,
+                    layer,
+                    inBaseImageLayer = false,
+                } = componentVuln;
                 // No border on the last row
                 const style =
                     index !== componentVulns.length - 1
-                        ? { borderBottom: '1px solid var(--pf-v5-c-table--BorderColor)' }
+                        ? {
+                              borderBlockEnd:
+                                  '1px solid var(--pf-v6-c-table__tr--BorderBlockEndColor)',
+                          }
                         : {};
 
                 return (
-                    <Tbody key={`${image.id}:${name}:${version}`} style={style}>
+                    <Tbody key={`${image.id}:${name}:${version}`}>
                         <Tr>
                             <Td dataLabel="Component">{name}</Td>
                             <Td dataLabel="Version">{version}</Td>
@@ -102,12 +114,19 @@ function ImageComponentVulnerabilitiesTable({
                                 </Td>
                             )}
                             <Td dataLabel="Source">{source}</Td>
+                            {isLayerTypeColumnEnabled && (
+                                <Td dataLabel="Layer type">
+                                    <Label color={inBaseImageLayer ? 'blue' : 'grey'} isCompact>
+                                        {inBaseImageLayer ? 'Base image' : 'Application'}
+                                    </Label>
+                                </Td>
+                            )}
                             <Td dataLabel="Location">
                                 <ComponentLocation location={location} source={source} />
                             </Td>
                         </Tr>
-                        <Tr>
-                            <Td colSpan={5} className="pf-v5-u-pt-0">
+                        <Tr style={style}>
+                            <Td colSpan={colSpanForDockerfileLayer} className="pf-v6-u-pt-0">
                                 <DockerfileLayer layer={layer} />
                             </Td>
                         </Tr>

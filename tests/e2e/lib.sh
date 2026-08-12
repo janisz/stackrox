@@ -10,11 +10,22 @@ TEST_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")"/../.. && pwd)"
 source "$TEST_ROOT/scripts/lib.sh"
 # shellcheck source=../../scripts/ci/lib.sh
 source "$TEST_ROOT/scripts/ci/lib.sh"
+# shellcheck source=../../scripts/ci/sensor-wait.sh
+source "$TEST_ROOT/scripts/ci/sensor-wait.sh"
 # shellcheck source=../../scripts/ci/test_state.sh
 source "$TEST_ROOT/scripts/ci/test_state.sh"
+# shellcheck source=lib-yaml.sh
+source "$TEST_ROOT/tests/e2e/lib-yaml.sh"
+# shellcheck source=lib-compat.sh
+source "$TEST_ROOT/tests/e2e/lib-compat.sh"
 
+export SFA_AGENT="${SFA_AGENT:-false}"
 export QA_TEST_DEBUG_LOGS="/tmp/qa-tests-backend-logs"
 export QA_DEPLOY_WAIT_INFO="/tmp/wait-for-kubectl-object"
+
+# Scanner V4 default vuln bundle allow list, various sources are omitted to speed up CI (ie: suse).
+# Can be overridden by individual jobs. Setting to "" will load data from all sources.
+export SCANNER_V4_CI_VULN_BUNDLE_ALLOWLIST="${SCANNER_V4_CI_VULN_BUNDLE_ALLOWLIST:-alpine,debian,epss,manual,nvd,osv,rhel-vex,stackrox-rhel-csaf,ubuntu}"
 
 # If `envsubst` is contained in a non-standard directory `env -i` won't be able to
 # execute it, even though it can be located via `$PATH`, hence we retrieve the absolute path of
@@ -41,11 +52,19 @@ POD_CONTAINERS_MAP["pod: collector - container: collector"]="collector-[A-Za-z0-
 POD_CONTAINERS_MAP["pod: collector - container: compliance"]="collector-[A-Za-z0-9]+-compliance-previous.log"
 POD_CONTAINERS_MAP["pod: collector - container: node-inventory"]="collector-[A-Za-z0-9]+-node-inventory-previous.log"
 
+# Note: the caller must make sure to redirect stdin to /dev/null where needed.
+retrying_kubectl() {
+    "${TEST_ROOT}/scripts/retry-kubectl.sh" "$@"
+}
+export -f retrying_kubectl
+
 # shellcheck disable=SC2120
 deploy_stackrox() {
     local tls_client_certs=${1:-}
     local central_namespace=${2:-stackrox}
     local sensor_namespace=${3:-stackrox}
+
+    info "About to deploy StackRox (Central + Sensor)."
 
     setup_podsecuritypolicies_config
 
@@ -55,6 +74,7 @@ deploy_stackrox() {
 
     export_central_basic_auth_creds
     wait_for_api "${central_namespace}"
+
     setup_client_TLS_certs "${tls_client_certs}"
     record_build_info "${central_namespace}"
 
@@ -62,16 +82,197 @@ deploy_stackrox() {
     echo "Sensor deployed. Waiting for sensor to be up"
     sensor_wait "${sensor_namespace}"
 
-    # Bounce collectors to avoid restarts on initial module pull
-    kubectl -n "${sensor_namespace}" delete pod -l app=collector --grace-period=0
-
     sensor_wait "${sensor_namespace}"
 
     wait_for_collectors_to_be_operational "${sensor_namespace}"
 
     pause_stackrox_operator_reconcile "${central_namespace}" "${sensor_namespace}"
 
+    if retrying_kubectl </dev/null -n "${central_namespace}" get deployment scanner-v4-indexer >/dev/null 2>&1; then
+        wait_for_scanner_V4 "${central_namespace}"
+    fi
+
     touch "${STATE_DEPLOYED}"
+}
+
+# Deploy StackRox using roxie.
+#
+# This is the preferred way of deploying StackRox for tests as of 2026Q2.
+# This function expects the path to a roxie configuration.
+deploy_stackrox_with_roxie() {
+    info "╔═════════════════════════════════╗"
+    info "║                                 ║"
+    info "║  Deploying StackRox with roxie  ║"
+    info "║                                 ║"
+    info "╚═════════════════════════════════╝"
+
+    local config_file="${1:-}"
+
+    local central_namespace
+    central_namespace="$(yq eval ".central.namespace // \"\"" "$config_file")"
+    if [[ -n "$central_namespace" ]]; then
+        info "Deploying Central into namespace ${central_namespace}"
+    else
+        info "Deploying Central into standard namespace"
+    fi
+
+    local securedcluster_namespace
+    securedcluster_namespace="$(yq eval ".securedCluster.namespace // \"\"" "$config_file")"
+    if [[ -n "$securedcluster_namespace" ]]; then
+        info "Deploying SecuredCluster into namespace ${securedcluster_namespace}"
+    else
+        info "Deploying SecuredCluster into standard namespace"
+    fi
+
+    info "Creating admin password"
+    ROX_ADMIN_PASSWORD="$(gen_admin_password)"
+    export ROX_ADMIN_PASSWORD # Let roxie pick it up automatically.
+
+    prepare_for_konflux "$config_file"
+
+    workaround_label_length_limitation "$config_file"
+
+    # Print out the config file in use for transparency.
+    # This does not contain secrets.
+    info "roxie configuration:"
+    info "------------------------------------"
+    while IFS="" read -r line; do # IFS="" for preserving indentation in the output.
+        info "${line}"
+    done < <(yq eval --prettyPrint "$config_file")
+    info "------------------------------------"
+
+    # Replaces deploy_stackrox steps:
+    # - deploy_stackrox_operator (implicit)
+    # - deploy_central
+    # - pause_stackrox_operator_reconcile (--pause-reconciliation)
+    # - wait_for_api (implicit)
+    local roxie_envrc; roxie_envrc="$(mktemp)"
+
+    roxie deploy \
+        --envrc "$roxie_envrc" \
+        --config "$config_file"
+
+    # Persist and load (extended) roxie environment, mimicking the effect of ci_export in a more concise way.
+    extend_roxie_envrc "$roxie_envrc"
+    if [[ -n "${BASH_ENV:-}" ]]; then
+        cat "$roxie_envrc" >> "$BASH_ENV"
+    fi
+    # shellcheck source=/dev/null
+    source "$roxie_envrc"
+
+    record_build_info "${central_namespace}"
+
+    # This implements something between roxie's (upcoming) `--early-readiness=true` and `--early-readiness=false`.
+    # It just waits for sensor and collector workloads to be up and running.
+    # We use the same mechanism here instead of `--early-readiness=false`, because the latter
+    # would also wait for scanner (v2), which takes an enormous amount of time to be properly initialized
+    # and we don't want to slow down this deployment path using roxie.
+    sensor_wait "$securedcluster_namespace"
+    wait_for_collectors_to_be_operational "$securedcluster_namespace"
+    if retrying_kubectl </dev/null -n "$central_namespace" get deployment scanner-v4-indexer >/dev/null 2>&1; then
+        wait_for_scanner_V4 "$central_namespace"
+    fi
+
+    touch "${STATE_DEPLOYED}"
+    rm -f "$roxie_envrc"
+
+    info "╔═════════════════════╗"
+    info "║                     ║"
+    info "║  StackRox deployed  ║"
+    info "║                     ║"
+    info "╚═════════════════════╝"
+}
+
+prepare_for_konflux() {
+    local config_file="$1"
+    local use_konflux
+    use_konflux=$(yq eval ".roxie.konfluxImages" "$config_file")
+    local main_image_tag
+    main_image_tag=$(yq eval ".roxie.version" "$config_file")
+    if [[ "$use_konflux" == "true" ]]; then
+        # We need to be able to pull operator bundle images.
+        registry_ro_login "quay.io/rhacs-eng"
+
+        info "Checking if ACS main image tag needs to be patched for Konflux usage: current tag is ${main_image_tag}"
+        if is_CI; then
+            # get_branch_name() may only be called in CI context.
+            local branch_name
+            branch_name="$(get_branch_name)"
+            if [[ "$branch_name" =~ ^release- ]]; then
+                info "On release branch (${branch_name}), skipping main image tag patching for Konflux usage"
+                return
+            fi
+        fi
+        info "Patching main image tag for Konflux usage: using ${main_image_tag}"
+        if [[ "$main_image_tag" != *-fast ]]; then
+            main_image_tag="${main_image_tag}-fast"
+            patch_yaml "$config_file" ".roxie.version = \"${main_image_tag}\""
+            info "Main image tag patched for Konflux usage: ${main_image_tag}"
+        fi
+    fi
+}
+
+# When deploying Konflux-built images, we might get an additional "-fast" suffix on the main image version,
+# which can easily cause the Helm chart labels to exceed the 63 character limit. To work around this, we
+# use shorter labels for the the roxie-deployed resources.
+workaround_label_length_limitation() {
+    local config_file="$1"
+    local version
+    version="$(yq eval ".roxie.version" "$config_file")"
+    merge_yaml "$config_file" <<EOF
+central:
+  spec:
+    customize:
+      labels:
+        helm.sh/chart: "stackrox-central-${version}"
+securedCluster:
+  spec:
+    customize:
+      labels:
+        helm.sh/chart: "stackrox-secured-cluster-${version}"
+EOF
+}
+
+check_for_roxie() {
+    if ! command -v roxie >/dev/null 2>&1; then
+        die "ERROR: roxie command not found in PATH. Please install roxie or set USE_ROXIE_DEPLOY=false"
+    fi
+
+    info "roxie found, version: $(roxie version)"
+}
+
+extend_roxie_envrc() {
+    local roxie_envrc="$1"
+    local orchestrator_flavor="${ORCHESTRATOR_FLAVOR:-k8s}"
+
+    # shellcheck source=/dev/null
+    source "$roxie_envrc"
+
+    # roxie does not export these (yet?) via envrc, but they are needed by the tests.
+    ## First validation
+    if [[ "${API_ENDPOINT:-}" == "" ]]; then
+        die "API_ENDPOINT is missing from roxies envrc file."
+    fi
+    if [[ ! "$API_ENDPOINT" =~ ^[^:]+:[0-9]+$ ]]; then
+        die "API_ENDPOINT has unexpected format: $API_ENDPOINT (expected hostname:port)"
+    fi
+    ## CLUSTER
+    local CLUSTER; CLUSTER="$(echo "$orchestrator_flavor" | tr '[:lower:]' '[:upper:]')"
+    ## API_HOSTNAME, remove :port from end of API_ENDPOINT.
+    local API_HOSTNAME; API_HOSTNAME="${API_ENDPOINT%:*}"
+    ## API_PORT, remove hostname: from beginning of API_ENDPOINT.
+    local API_PORT; API_PORT="${API_ENDPOINT##*:}"
+
+    # Add these to roxie's envrc.
+    cat >> "$roxie_envrc" <<EOF
+export CLUSTER="${CLUSTER}"
+export API_HOSTNAME="${API_HOSTNAME}"
+export API_PORT="${API_PORT}"
+EOF
+}
+
+gen_admin_password() {
+    head -c 20 </dev/urandom | base64
 }
 
 # shellcheck disable=SC2120
@@ -88,9 +289,12 @@ deploy_stackrox_with_custom_central_and_sensor_versions() {
     ci_export OUTPUT_FORMAT "helm"
 
     # Repo name can't be too long or `helm search repo [REPO_NAME] -l` cuts off part of the name and the regex below fails.
-    helm_repo_name="tmp-srox-compat"
-    helm repo add "${helm_repo_name}" https://raw.githubusercontent.com/stackrox/helm-charts/main/opensource
-    helm repo update
+    local helm_repo_name="tmp-srox-compat"
+    local helm_chart_url="https://raw.githubusercontent.com/stackrox/helm-charts/main/opensource"
+    if ! helm repo list -o json | jq -e --arg name "$helm_repo_name" --arg url "$helm_chart_url" \
+        'any(.[]; .name == $name and .url == $url)'; then
+        helm repo add --force-update "${helm_repo_name}" "${helm_chart_url}"
+    fi
 
     current_tag="$(make tag --quiet --no-print-directory)"
 
@@ -138,7 +342,6 @@ deploy_stackrox_with_custom_central_and_sensor_versions() {
 
     rm -rf "$charts_dir"
 
-    helm repo remove "${helm_repo_name}"
     ci_export CENTRAL_CHART_DIR_OVERRIDE ""
     ci_export SENSOR_CHART_DIR_OVERRIDE ""
 }
@@ -162,33 +365,41 @@ export_test_environment() {
 
     ci_export ROX_BASELINE_GENERATION_DURATION "${ROX_BASELINE_GENERATION_DURATION:-1m}"
     ci_export ROX_NETWORK_BASELINE_OBSERVATION_PERIOD "${ROX_NETWORK_BASELINE_OBSERVATION_PERIOD:-2m}"
-    ci_export ROX_VULN_MGMT_UNIFIED_CVE_DEFERRAL "${ROX_VULN_MGMT_UNIFIED_CVE_DEFERRAL:-true}"
     ci_export ROX_VULN_MGMT_LEGACY_SNOOZE "${ROX_VULN_MGMT_LEGACY_SNOOZE:-true}"
     ci_export ROX_DECLARATIVE_CONFIGURATION "${ROX_DECLARATIVE_CONFIGURATION:-true}"
     ci_export ROX_COMPLIANCE_ENHANCEMENTS "${ROX_COMPLIANCE_ENHANCEMENTS:-true}"
-    ci_export ROX_POLICY_CRITERIA_MODAL "${ROX_POLICY_CRITERIA_MODAL:-true}"
     ci_export ROX_TELEMETRY_STORAGE_KEY_V1 "DISABLED"
-    ci_export ROX_SCANNER_V4 "${ROX_SCANNER_V4:-false}"
-    ci_export ROX_AUTH_MACHINE_TO_MACHINE "${ROX_AUTH_MACHINE_TO_MACHINE:-true}"
-    ci_export ROX_COMPLIANCE_HIERARCHY_CONTROL_DATA "${ROX_COMPLIANCE_HIERARCHY_CONTROL_DATA:-true}"
     ci_export ROX_COMPLIANCE_REPORTING "${ROX_COMPLIANCE_REPORTING:-true}"
     ci_export ROX_REGISTRY_RESPONSE_TIMEOUT "${ROX_REGISTRY_RESPONSE_TIMEOUT:-90s}"
     ci_export ROX_REGISTRY_CLIENT_TIMEOUT "${ROX_REGISTRY_CLIENT_TIMEOUT:-120s}"
     ci_export ROX_SCAN_SCHEDULE_REPORT_JOBS "${ROX_SCAN_SCHEDULE_REPORT_JOBS:-true}"
     ci_export ROX_PLATFORM_COMPONENTS "${ROX_PLATFORM_COMPONENTS:-true}"
-    ci_export ROX_CVE_ADVISORY_SEPARATION "${ROX_CVE_ADVISORY_SEPARATION:-true}"
-    ci_export ROX_EPSS_SCORE "${ROX_EPSS_SCORE:-true}"
-    ci_export ROX_SBOM_GENERATION "${ROX_SBOM_GENERATION:-true}"
-    ci_export ROX_CLUSTERS_PAGE_MIGRATION_UI "${ROX_CLUSTERS_PAGE_MIGRATION_UI:-true}"
     ci_export ROX_EXTERNAL_IPS "${ROX_EXTERNAL_IPS:-true}"
+    ci_export ROX_NETWORK_GRAPH_AGGREGATE_EXT_IPS "${ROX_NETWORK_GRAPH_AGGREGATE_EXT_IPS:-true}"
     ci_export ROX_NETWORK_GRAPH_EXTERNAL_IPS "${ROX_NETWORK_GRAPH_EXTERNAL_IPS:-false}"
-    ci_export ROX_FLATTEN_CVE_DATA "${ROX_FLATTEN_CVE_DATA:-false}"
+    ci_export ROX_FLATTEN_IMAGE_DATA "${ROX_FLATTEN_IMAGE_DATA:-true}"
+    ci_export ROX_VULNERABILITY_VIEW_BASED_REPORTS "${ROX_VULNERABILITY_VIEW_BASED_REPORTS:-true}"
+    ci_export ROX_CUSTOMIZABLE_PLATFORM_COMPONENTS "${ROX_CUSTOMIZABLE_PLATFORM_COMPONENTS:-true}"
+    ci_export ROX_ADMISSION_CONTROLLER_CONFIG "${ROX_ADMISSION_CONTROLLER_CONFIG:-true}"
+    ci_export ROX_CISA_KEV "${ROX_CISA_KEV:-true}"
+    ci_export ROX_DEPRECATED_COMPLIANCE_DASHBOARD "${ROX_DEPRECATED_COMPLIANCE_DASHBOARD:-true}"
+    ci_export ROX_SENSITIVE_FILE_ACTIVITY "${ROX_SENSITIVE_FILE_ACTIVITY:-true}"
+    ci_export ROX_CVE_FIX_TIMESTAMP "${ROX_CVE_FIX_TIMESTAMP:-true}"
+    ci_export ROX_BASE_IMAGE_DETECTION "${ROX_BASE_IMAGE_DETECTION:-true}"
+    ci_export ROX_LABEL_BASED_POLICY_SCOPING "${ROX_LABEL_BASED_POLICY_SCOPING:-true}"
+    ci_export ROX_VULNERABILITY_REPORTS_ENHANCED_FILTERING "${ROX_VULNERABILITY_REPORTS_ENHANCED_FILTERING:-true}"
+    ci_export ROX_NODE_VULNERABILITY_REPORTS "${ROX_NODE_VULNERABILITY_REPORTS:-true}"
+    ci_export ROX_NETFLOW_BATCHING "${ROX_NETFLOW_BATCHING:-true}"
+    ci_export ROX_NETFLOW_CACHE_LIMITING "${ROX_NETFLOW_CACHE_LIMITING:-true}"
+    ci_export ROX_INIT_CONTAINER_SUPPORT "${ROX_INIT_CONTAINER_SUPPORT:-true}"
+    ci_export ROX_UI_SECRETS_PAGE_MIGRATION "${ROX_UI_SECRETS_PAGE_MIGRATION:-true}"
+    ci_export SCANNER_V4_VULN_READINESS "${SCANNER_V4_VULN_READINESS:-true}"
 
     if is_in_PR_context && pr_has_label ci-fail-fast; then
         ci_export FAIL_FAST "true"
     fi
 
-    if [[ "${CI_JOB_NAME}" =~ gke ]]; then
+    if [[ "${CI_JOB_NAME:-}" =~ gke ]]; then
         # GKE uses this network for services. Consider it as a private subnet.
         ci_export ROX_NON_AGGREGATED_NETWORKS "${ROX_NON_AGGREGATED_NETWORKS:-34.118.224.0/20}"
     fi
@@ -205,16 +416,18 @@ deploy_stackrox_operator() {
     if [[ "${USE_MIDSTREAM_IMAGES}" == "true" ]]; then
         info "Deploying ACS operator via midstream images"
         # Retrieving values from json map for operator and iib
-        ocp_version=$(kubectl get clusterversion -o=jsonpath='{.items[0].status.desired.version}' | cut -d '.' -f 1,2)
+        ocp_version=$(retrying_kubectl </dev/null get clusterversion -o=jsonpath='{.items[0].status.desired.version}' | cut -d '.' -f 1,2)
 
         make -C operator kuttl deploy-via-olm \
-          INDEX_IMG_BASE="brew.registry.redhat.io/rh-osbs/iib" \
+          TEST_NAMESPACE="rhacs-operator-system" \
+          INDEX_IMG_BASE="quay.io/rhacs-eng/stackrox-operator-index" \
           INDEX_IMG_TAG="$(< operator/midstream/iib.json jq -r --arg version "$ocp_version" '.iibs[$version]')" \
           INSTALL_CHANNEL="$(< operator/midstream/iib.json jq -r '.operator.channel')" \
           INSTALL_VERSION="v$(< operator/midstream/iib.json jq -r '.operator.version')"
     else
         info "Deploying ACS operator"
         make -C operator kuttl deploy-via-olm \
+          TEST_NAMESPACE="rhacs-operator-system" \
           ROX_PRODUCT_BRANDING=RHACS_BRANDING
     fi
 }
@@ -225,19 +438,21 @@ deploy_central() {
 
     # If we're running a nightly build or race condition check, then set CGO_CHECKS=true so that central is
     # deployed with strict checks
-    if is_nightly_run || pr_has_label ci-race-tests || [[ "${CI_JOB_NAME:-}" =~ race-condition ]]; then
-        ci_export CGO_CHECKS "true"
-    fi
+    if [[ "${CI:-}" == "true" ]]; then
+        if is_nightly_run || pr_has_label ci-race-tests || [[ "${CI_JOB_NAME:-}" =~ race-condition ]]; then
+            ci_export CGO_CHECKS "true"
+        fi
 
-    if pr_has_label ci-race-tests || [[ "${CI_JOB_NAME:-}" =~ race-condition ]]; then
-        ci_export IS_RACE_BUILD "true"
+        if pr_has_label ci-race-tests || [[ "${CI_JOB_NAME:-}" =~ race-condition ]]; then
+            ci_export IS_RACE_BUILD "true"
+        fi
     fi
 
     if [[ "${DEPLOY_STACKROX_VIA_OPERATOR}" == "true" ]]; then
         deploy_central_via_operator "${central_namespace}"
     else
         if [[ -z "${OUTPUT_FORMAT:-}" ]]; then
-            if pr_has_label ci-helm-deploy; then
+            if [[ "${CI:-}" == "true" ]] && pr_has_label ci-helm-deploy; then
                 ci_export OUTPUT_FORMAT helm
             fi
         fi
@@ -247,12 +462,24 @@ deploy_central() {
     fi
 }
 
+# _scanner_v4_db_persistence_yaml prints the YAML snippet for the scannerV4.db
+# persistence block, indented for use inside an operator CR template. Prints
+# nothing when SCANNER_V4_DB_STORAGE_CLASS is unset.
+_scanner_v4_db_persistence_yaml() {
+    [[ -n "${SCANNER_V4_DB_STORAGE_CLASS:-}" ]] || return 0
+    cat <<EOF
+      persistence:
+        persistentVolumeClaim:
+          storageClassName: "${SCANNER_V4_DB_STORAGE_CLASS}"
+EOF
+}
+
 # shellcheck disable=SC2120
 deploy_central_via_operator() {
     local central_namespace=${1:-stackrox}
-    info "Deploying central via operator into namespace ${central_namespace}"
-    if ! kubectl get ns "${central_namespace}" >/dev/null 2>&1; then
-        kubectl create ns "${central_namespace}"
+    info "Deploying central using operator into namespace ${central_namespace}"
+    if ! retrying_kubectl </dev/null get ns "${central_namespace}" >/dev/null 2>&1; then
+        retrying_kubectl </dev/null create ns "${central_namespace}"
     fi
 
     NAMESPACE="${central_namespace}" make -C operator stackrox-image-pull-secret
@@ -296,10 +523,6 @@ deploy_central_via_operator() {
     customize_envVars+=$'\n        value: "15s"'
     customize_envVars+=$'\n      - name: ROX_COMPLIANCE_ENHANCEMENTS'
     customize_envVars+=$'\n        value: "true"'
-    customize_envVars+=$'\n      - name: ROX_AUTH_MACHINE_TO_MACHINE'
-    customize_envVars+=$'\n        value: "true"'
-    customize_envVars+=$'\n      - name: ROX_COMPLIANCE_HIERARCHY_CONTROL_DATA'
-    customize_envVars+=$'\n        value: "true"'
     customize_envVars+=$'\n      - name: ROX_COMPLIANCE_REPORTING'
     customize_envVars+=$'\n        value: "true"'
     customize_envVars+=$'\n      - name: ROX_REGISTRY_RESPONSE_TIMEOUT'
@@ -312,27 +535,69 @@ deploy_central_via_operator() {
     customize_envVars+=$'\n        value: "true"'
     customize_envVars+=$'\n      - name: ROX_PLATFORM_COMPONENTS'
     customize_envVars+=$'\n        value: "true"'
-    customize_envVars+=$'\n      - name: ROX_CVE_ADVISORY_SEPARATION'
-    customize_envVars+=$'\n        value: "true"'
-    customize_envVars+=$'\n      - name: ROX_EPSS_SCORE'
-    customize_envVars+=$'\n        value: "true"'
-    customize_envVars+=$'\n      - name: ROX_CLUSTERS_PAGE_MIGRATION_UI'
-    customize_envVars+=$'\n        value: "true"'
     customize_envVars+=$'\n      - name: ROX_EXTERNAL_IPS'
     customize_envVars+=$'\n        value: "true"'
     customize_envVars+=$'\n      - name: ROX_NETWORK_GRAPH_EXTERNAL_IPS'
     customize_envVars+=$'\n        value: "false"'
-    customize_envVars+=$'\n      - name: ROX_SBOM_GENERATION'
+    customize_envVars+=$'\n      - name: ROX_NETWORK_GRAPH_AGGREGATE_EXT_IPS'
     customize_envVars+=$'\n        value: "true"'
-    customize_envVars+=$'\n      - name: ROX_FLATTEN_CVE_DATA'
-    customize_envVars+=$'\n        value: "false"'
+    customize_envVars+=$'\n      - name: ROX_FLATTEN_IMAGE_DATA'
+    customize_envVars+=$'\n        value: "true"'
+    customize_envVars+=$'\n      - name: ROX_VULNERABILITY_VIEW_BASED_REPORTS'
+    customize_envVars+=$'\n        value: "true"'
+    customize_envVars+=$'\n      - name: ROX_CUSTOMIZABLE_PLATFORM_COMPONENTS'
+    customize_envVars+=$'\n        value: "true"'
+    customize_envVars+=$'\n      - name: ROX_ADMISSION_CONTROLLER_CONFIG'
+    customize_envVars+=$'\n        value: "true"'
+    customize_envVars+=$'\n      - name: ROX_CISA_KEV'
+    customize_envVars+=$'\n        value: "true"'
+    customize_envVars+=$'\n      - name: ROX_DEPRECATED_COMPLIANCE_DASHBOARD'
+    customize_envVars+=$'\n        value: "true"'
+    customize_envVars+=$'\n      - name: ROX_SENSITIVE_FILE_ACTIVITY'
+    customize_envVars+=$'\n        value: "'"${ROX_SENSITIVE_FILE_ACTIVITY}"'"'
+    customize_envVars+=$'\n      - name: ROX_CVE_FIX_TIMESTAMP'
+    customize_envVars+=$'\n        value: "true"'
+    customize_envVars+=$'\n      - name: ROX_VULNERABILITY_REPORTS_ENHANCED_FILTERING'
+    customize_envVars+=$'\n        value: "true"'
+    customize_envVars+=$'\n      - name: ROX_NODE_VULNERABILITY_REPORTS'
+    customize_envVars+=$'\n        value: "true"'
+    customize_envVars+=$'\n      - name: ROX_BASE_IMAGE_DETECTION'
+    customize_envVars+=$'\n        value: "'"${ROX_BASE_IMAGE_DETECTION}"'"'
+    customize_envVars+=$'\n      - name: ROX_LABEL_BASED_POLICY_SCOPING'
+    customize_envVars+=$'\n        value: "true"'
+    customize_envVars+=$'\n      - name: ROX_INIT_CONTAINER_SUPPORT'
+    customize_envVars+=$'\n        value: "true"'
+    customize_envVars+=$'\n      - name: ROX_UI_SECRETS_PAGE_MIGRATION'
+    customize_envVars+=$'\n        value: "'"${ROX_UI_SECRETS_PAGE_MIGRATION}"'"'
+    if [[ "${ROX_VIRTUAL_MACHINES:-}" == "true" ]]; then
+        customize_envVars+=$'\n      - name: ROX_VIRTUAL_MACHINES'
+        customize_envVars+=$'\n        value: "true"'
+    fi
+
+    local scannerV4ScannerComponent="Default"
+    case "${ROX_SCANNER_V4:-}" in
+        true)  scannerV4ScannerComponent="Enabled"  ;;
+        false) scannerV4ScannerComponent="Disabled" ;;
+    esac
+
+    if [[ "$scannerV4ScannerComponent" != "Disabled" ]]; then
+        if [[ "${SCANNER_V4_VULN_READINESS:-false}" == "true" ]]; then
+            customize_envVars+=$'\n      - name: SCANNER_V4_MATCHER_READINESS'
+            customize_envVars+=$'\n        value: "vulnerability"'
+        fi
+        if [[ -n "${SCANNER_V4_CI_VULN_BUNDLE_ALLOWLIST:-}" ]]; then
+            customize_envVars+=$'\n      - name: SCANNER_V4_MATCHER_VULN_BUNDLE_ALLOWLIST'
+            customize_envVars+=$'\n        value: "'"${SCANNER_V4_CI_VULN_BUNDLE_ALLOWLIST}"'"'
+        fi
+    fi
+
+    local scannerV4DbPersistenceYaml
+    scannerV4DbPersistenceYaml="$(_scanner_v4_db_persistence_yaml)"
 
     CENTRAL_YAML_PATH="tests/e2e/yaml/central-cr.envsubst.yaml"
     # Different yaml for midstream images
     if [[ "${USE_MIDSTREAM_IMAGES}" == "true" ]]; then
         CENTRAL_YAML_PATH="tests/e2e/yaml/central-cr-midstream.envsubst.yaml"
-    elif [[ "${ROX_SCANNER_V4:-false}" == "true" ]]; then
-        CENTRAL_YAML_PATH="tests/e2e/yaml/central-cr-with-scanner-v4.envsubst.yaml"
     fi
     env - \
       centralAdminPasswordBase64="$centralAdminPasswordBase64" \
@@ -343,8 +608,10 @@ deploy_central_via_operator() {
       central_exposure_loadBalancer_enabled="$central_exposure_loadBalancer_enabled" \
       central_exposure_route_enabled="$central_exposure_route_enabled" \
       customize_envVars="$customize_envVars" \
+      scannerV4ScannerComponent="$scannerV4ScannerComponent" \
+      scannerV4DbPersistenceYaml="$scannerV4DbPersistenceYaml" \
     "${envsubst}" \
-      < "${CENTRAL_YAML_PATH}" | kubectl apply -n "${central_namespace}" -f -
+      < "${CENTRAL_YAML_PATH}" | retrying_kubectl apply -n "${central_namespace}" -f -
 
     wait_for_object_to_appear "${central_namespace}" deploy/central 300
 }
@@ -353,20 +620,26 @@ deploy_central_via_operator() {
 deploy_sensor() {
     local sensor_namespace=${1:-stackrox}
     local central_namespace=${2:-stackrox}
+    local validate=${3:-true}
 
     info "Deploying sensor into namespace ${sensor_namespace} (central is expected in namespace ${central_namespace})"
 
     ci_export ROX_AFTERGLOW_PERIOD "15"
+    ci_export ROX_COLLECTOR_INTROSPECTION_ENABLE "true"
+
+    # Per-namespace filtering tests expect to have one namespace configured
+    # without persistence.
+    ci_export ROX_PROCESS_INDICATORS_PER_NAMESPACE "true"
 
     if [[ "${DEPLOY_STACKROX_VIA_OPERATOR}" == "true" ]]; then
-        deploy_sensor_via_operator "${sensor_namespace}" "${central_namespace}"
+        deploy_sensor_via_operator "${sensor_namespace}" "${central_namespace}" "${validate}"
     else
         if [[ "${OUTPUT_FORMAT:-}" == "helm" ]]; then
-            echo "Deploying Sensor using Helm ..."
+            echo "Preparing deployment of Sensor using Helm ..."
             ci_export SENSOR_HELM_DEPLOY "true"
             ci_export ADMISSION_CONTROLLER "true"
         else
-            echo "Deploying sensor using kubectl ... "
+            echo "Preparing deployment of Sensor using kubectl ... "
             if [[ -n "${IS_RACE_BUILD:-}" ]]; then
                 # builds with -race are slow at generating the sensor bundle
                 # https://stack-rox.atlassian.net/browse/ROX-6987
@@ -375,6 +648,7 @@ deploy_sensor() {
         fi
 
         DEPLOY_DIR="deploy/${ORCHESTRATOR_FLAVOR}"
+        ROX_CA_CERT_FILE="" # force sensor.sh to fetch the actual cert.
         CENTRAL_NAMESPACE="${central_namespace}" SENSOR_NAMESPACE="${sensor_namespace}" "${ROOT}/${DEPLOY_DIR}/sensor.sh"
     fi
 
@@ -383,7 +657,7 @@ deploy_sensor() {
         # https://stack-rox.atlassian.net/browse/ROX-5334
         # https://stack-rox.atlassian.net/browse/ROX-6891
         # et al.
-        kubectl -n "${sensor_namespace}" set resources deploy/sensor -c sensor --requests 'cpu=2' --limits 'cpu=4'
+        retrying_kubectl </dev/null -n "${sensor_namespace}" set resources deploy/sensor -c sensor --requests 'cpu=2' --limits 'cpu=4'
     fi
 }
 
@@ -391,30 +665,25 @@ deploy_sensor() {
 deploy_sensor_via_operator() {
     local sensor_namespace=${1:-stackrox}
     local central_namespace=${2:-stackrox}
+    local validate=${3:-true}
     local scanner_component_setting="Disabled"
+    local fam_mode_setting="Disabled"
     local central_endpoint="central.${central_namespace}.svc:443"
 
-    info "Deploying sensor via operator into namespace ${sensor_namespace} (central is expected in namespace ${central_namespace})"
-
-    if ! kubectl get ns "${sensor_namespace}" >/dev/null 2>&1; then
-        kubectl create ns "${sensor_namespace}"
+    info "Deploying sensor using operator into namespace ${sensor_namespace} (central is expected in namespace ${central_namespace})"
+    if ! retrying_kubectl </dev/null get ns "${sensor_namespace}" >/dev/null 2>&1; then
+        retrying_kubectl </dev/null create ns "${sensor_namespace}"
     fi
 
     NAMESPACE="${sensor_namespace}" make -C operator stackrox-image-pull-secret
 
     # shellcheck disable=SC2016
     echo "${ROX_ADMIN_PASSWORD}" | \
-    kubectl -n "${central_namespace}" exec -i deploy/central -- bash -c \
-    'ROX_ADMIN_PASSWORD=$(cat) roxctl central init-bundles generate my-test-bundle \
+    retrying_kubectl -n "${central_namespace}" exec -i deploy/central -- bash -c \
+    'ROX_ADMIN_PASSWORD=$(cat) roxctl central crs generate my-test-cluster \
         --insecure-skip-tls-verify \
-        --output-secrets -' \
-    | kubectl -n "${sensor_namespace}" apply -f -
-
-    if [[ -n "${COLLECTION_METHOD:-}" ]]; then
-       echo "Overriding the product default collection method due to COLLECTION_METHOD variable: ${COLLECTION_METHOD}"
-    else
-       die "COLLECTION_METHOD not set"
-    fi
+        --output -' \
+    | retrying_kubectl -n "${sensor_namespace}" apply -f -
 
     if [[ "${SENSOR_SCANNER_SUPPORT:-}" == "true" ]]; then
         scanner_component_setting="AutoSense"
@@ -425,31 +694,88 @@ deploy_sensor_via_operator() {
         secured_cluster_yaml_path="tests/e2e/yaml/secured-cluster-cr-with-scanner-v4.envsubst.yaml"
     fi
 
-    upper_case_collection_method="$(echo "$COLLECTION_METHOD" | tr '[:lower:]' '[:upper:]')"
-
-    # forceCollection only has an impact when the collection method is EBPF
-    # but upgrade tests can fail if forceCollection is used for 4.3 or older.
-    if [[ "${upper_case_collection_method}" == "CORE_BPF" ]]; then
-      sed -i.bak '/forceCollection/d' "${secured_cluster_yaml_path}"
+    if [[ "${SFA_AGENT:-}" == "true" ]]; then
+       echo "Enabling File Activity Monitoring"
+       fam_mode_setting="Enabled"
     fi
 
+    customize_envVars=""
+    if [[ "${ROX_VIRTUAL_MACHINES:-}" == "true" ]]; then
+        customize_envVars+=$'\n    - name: ROX_VIRTUAL_MACHINES'
+        customize_envVars+=$'\n      value: "true"'
+        # Shorten pull-mode scraper cadence so VM e2e does not wait on the
+        # production default (5m) between Sensor polls of guest agents.
+        # Floor is 1m (vmscraper.clampPollInterval); values below that are raised to 1m.
+        customize_envVars+=$'\n    - name: ROX_VIRTUAL_MACHINES_SCRAPER_POLL_INTERVAL'
+        customize_envVars+=$'\n      value: "'"${ROX_VIRTUAL_MACHINES_SCRAPER_POLL_INTERVAL:-1m}"'"'
+    fi
+    # For VM e2e tests that may send multiple index reports per minute.
+    if [[ -n "${ROX_VM_RELAY_MAX_REPORTS_PER_MINUTE:-}" ]]; then
+        customize_envVars+=$'\n    - name: ROX_VM_RELAY_MAX_REPORTS_PER_MINUTE'
+        customize_envVars+=$'\n      value: "'"${ROX_VM_RELAY_MAX_REPORTS_PER_MINUTE}"'"'
+    fi
+    if [[ -n "${ROX_NETFLOW_BATCHING:-}" ]]; then
+        customize_envVars+=$'\n    - name: ROX_NETFLOW_BATCHING'
+        customize_envVars+=$'\n      value: "'"${ROX_NETFLOW_BATCHING}"'"'
+    fi
+    if [[ -n "${ROX_NETFLOW_CACHE_LIMITING:-}" ]]; then
+        customize_envVars+=$'\n    - name: ROX_NETFLOW_CACHE_LIMITING'
+        customize_envVars+=$'\n      value: "'"${ROX_NETFLOW_CACHE_LIMITING}"'"'
+    fi
+    # Feature flags set via ci_export (line ~200) reach Sensor in non-operator
+    # deployments (GKE) through the shell environment. Operator-deployed Sensor
+    # (OCP) only gets env vars injected via the SecuredCluster CR's
+    # customize.envVars, which is built separately here. Flags that Sensor needs
+    # must be added explicitly below until they are enabled by default.
+    if [[ -n "${ROX_INIT_CONTAINER_SUPPORT:-}" ]]; then
+        customize_envVars+=$'\n    - name: ROX_INIT_CONTAINER_SUPPORT'
+        customize_envVars+=$'\n      value: "'"${ROX_INIT_CONTAINER_SUPPORT}"'"'
+    fi
+
+    local scannerV4DbPersistenceYaml
+    scannerV4DbPersistenceYaml="$(_scanner_v4_db_persistence_yaml)"
+
     env - \
-      collection_method="$upper_case_collection_method" \
       scanner_component_setting="$scanner_component_setting" \
+      fam_mode_setting="$fam_mode_setting" \
       central_endpoint="$central_endpoint" \
+      customize_envVars="$customize_envVars" \
+      scannerV4DbPersistenceYaml="$scannerV4DbPersistenceYaml" \
     "${envsubst}" \
-      < "${secured_cluster_yaml_path}" | kubectl apply -n "${sensor_namespace}" -f -
+      < "${secured_cluster_yaml_path}" | retrying_kubectl apply -n "${sensor_namespace}" --validate="${validate}" -f -
 
     wait_for_object_to_appear "${sensor_namespace}" deploy/sensor 300
     wait_for_object_to_appear "${sensor_namespace}" ds/collector 300
 
+    # Operator cannot set Helm virtualMachines.enabled yet; without that value
+    # the chart skips VSOCK RBAC. Pull-mode scraping needs get on
+    # virtualmachineinstances/vsock, so apply the equivalent roles here.
+    if [[ "${ROX_VIRTUAL_MACHINES:-}" == "true" ]]; then
+        info "Applying Sensor VSOCK RBAC for virtual machine pull-mode scraping"
+        if [[ "${sensor_namespace}" != "stackrox" ]]; then
+            # Manifest hard-codes the sensor SA namespace as stackrox.
+            die "ROX_VIRTUAL_MACHINES VSOCK RBAC currently requires sensor_namespace=stackrox (got ${sensor_namespace})"
+        fi
+        retrying_kubectl </dev/null apply -f "${ROOT}/tests/e2e/yaml/sensor-vsock-rbac.yaml"
+    fi
+
+    collector_envs=()
+
     if [[ -n "${ROX_AFTERGLOW_PERIOD:-}" ]]; then
-       kubectl -n "${sensor_namespace}" set env ds/collector ROX_AFTERGLOW_PERIOD="${ROX_AFTERGLOW_PERIOD}"
+       collector_envs+=("ROX_AFTERGLOW_PERIOD=${ROX_AFTERGLOW_PERIOD}")
+    fi
+
+    if [[ -n "${ROX_COLLECTOR_INTROSPECTION_ENABLE:-}" ]]; then
+       collector_envs+=("ROX_COLLECTOR_INTROSPECTION_ENABLE=${ROX_COLLECTOR_INTROSPECTION_ENABLE}")
     fi
 
     if [[ -n "${ROX_PROCESSES_LISTENING_ON_PORT:-}" ]]; then
-       kubectl -n "${sensor_namespace}" set env deployment/sensor ROX_PROCESSES_LISTENING_ON_PORT="${ROX_PROCESSES_LISTENING_ON_PORT}"
-       kubectl -n "${sensor_namespace}" set env ds/collector ROX_PROCESSES_LISTENING_ON_PORT="${ROX_PROCESSES_LISTENING_ON_PORT}"
+       retrying_kubectl </dev/null -n "${sensor_namespace}" set env deployment/sensor ROX_PROCESSES_LISTENING_ON_PORT="${ROX_PROCESSES_LISTENING_ON_PORT}"
+       collector_envs+=("ROX_PROCESSES_LISTENING_ON_PORT=${ROX_PROCESSES_LISTENING_ON_PORT}")
+    fi
+
+    if [[ ${#collector_envs[@]} -gt 0 ]]; then
+        retrying_kubectl </dev/null -n "${sensor_namespace}" set env ds/collector "${collector_envs[@]}"
     fi
 }
 
@@ -460,12 +786,12 @@ pause_stackrox_operator_reconcile() {
     local central_namespace=${1:-stackrox}
     local sensor_namespace=${2:-stackrox}
 
-    kubectl annotate -n "${central_namespace}" \
+    retrying_kubectl </dev/null annotate -n "${central_namespace}" \
         centrals.platform.stackrox.io \
         stackrox-central-services \
         stackrox.io/pause-reconcile=true
 
-    kubectl annotate -n "${sensor_namespace}" \
+    retrying_kubectl </dev/null annotate -n "${sensor_namespace}" \
         securedclusters.platform.stackrox.io \
         stackrox-secured-cluster-services \
         stackrox.io/pause-reconcile=true
@@ -495,26 +821,142 @@ deploy_optional_e2e_components() {
     else
         info "Skipping the compliance operator install"
     fi
+
+    if [[ "${INSTALL_CNV_OPERATOR:-false}" == "true" ]]; then
+        install_the_cnv_operator
+    else
+        info "Skipping the CNV operator install"
+    fi
 }
 
 install_the_compliance_operator() {
     csv=$(oc get csv -n openshift-compliance -o json | jq ".items[] | select(.metadata.name | test(\"compliance-operator\")).metadata.name")
     if [[ $csv == "" ]]; then
-        # Install from subscription, but point to the upstream images available
-        # in https://github.com/complianceascode/compliance-operator/pkgs/container/compliance-operator.
-        # Similar process as documented in https://docs.openshift.com/container-platform/latest/security/compliance_operator/compliance-operator-installation.html
+        # Install from the upstream catalog source to avoid flaky failures caused
+        # by the redhat-operators catalog refreshing mid-install (ROX-26851).
         info "Installing the compliance operator"
         oc create -f "${ROOT}/tests/e2e/yaml/compliance-operator/namespace.yaml"
         oc create -f "${ROOT}/tests/e2e/yaml/compliance-operator/catalog-source.yaml"
+        wait_for_catalogsource_ready openshift-marketplace compliance-operator 300
         oc create -f "${ROOT}/tests/e2e/yaml/compliance-operator/operator-group.yaml"
         oc create -f "${ROOT}/tests/e2e/yaml/compliance-operator/subscription.yaml"
-        wait_for_object_to_appear openshift-compliance deploy/compliance-operator
+        wait_for_object_to_appear openshift-compliance deploy/compliance-operator 900
     else
         info "Reusing existing compliance operator deployment from $csv subscription"
     fi
 
     wait_for_profile_bundles_to_be_ready
     oc get csv -n openshift-compliance
+}
+
+install_the_cnv_operator() {
+    local csv
+    csv=$(oc get csv -n openshift-cnv -o json 2>/dev/null | jq -r '.items[] | select(.metadata.name | test("kubevirt-hyperconverged")).metadata.name // empty')
+    if [[ -z "$csv" ]]; then
+        info "Installing the OpenShift Virtualization (CNV) operator"
+        oc apply -f "${ROOT}/tests/e2e/yaml/cnv-operator/namespace.yaml"
+        oc apply -f "${ROOT}/tests/e2e/yaml/cnv-operator/operator-group.yaml"
+        oc apply -f "${ROOT}/tests/e2e/yaml/cnv-operator/subscription.yaml"
+        # VM-scanning E2E intentionally uses longer, explicit wait budgets here to
+        # tolerate slower CNV reconciliation in CI.
+        info "Waiting for CNV operator deployment (this may take several minutes)..."
+        wait_for_object_to_appear openshift-cnv deploy/hco-operator 900
+        oc rollout status deploy/hco-operator -n openshift-cnv --timeout=300s
+        info "Waiting for hco-webhook-service endpoints before creating HyperConverged CR..."
+        wait_for_service_endpoints openshift-cnv hco-webhook-service 300
+        info "Creating HyperConverged CR..."
+        oc apply -f "${ROOT}/tests/e2e/yaml/cnv-operator/hyperconverged.yaml"
+        info "Waiting for virt-operator deployment..."
+        wait_for_object_to_appear openshift-cnv deploy/virt-operator 600
+        oc rollout status deploy/virt-operator -n openshift-cnv --timeout=300s
+        info "Waiting for virt-handler daemonset..."
+        wait_for_object_to_appear openshift-cnv ds/virt-handler 600
+        oc rollout status ds/virt-handler -n openshift-cnv --timeout=600s
+    else
+        info "Reusing existing CNV operator deployment from ${csv} subscription"
+        wait_for_object_to_appear openshift-cnv deploy/hco-operator 900
+        oc rollout status deploy/hco-operator -n openshift-cnv --timeout=300s
+        wait_for_object_to_appear openshift-cnv deploy/virt-operator 600
+        oc rollout status deploy/virt-operator -n openshift-cnv --timeout=300s
+        wait_for_object_to_appear openshift-cnv ds/virt-handler 600
+        oc rollout status ds/virt-handler -n openshift-cnv --timeout=600s
+        if ! oc get hyperconverged kubevirt-hyperconverged -n openshift-cnv >/dev/null 2>&1; then
+            info "Creating missing HyperConverged CR..."
+            wait_for_service_endpoints openshift-cnv hco-webhook-service 300
+            oc apply -f "${ROOT}/tests/e2e/yaml/cnv-operator/hyperconverged.yaml"
+        fi
+    fi
+
+    # Ensure VSOCK feature gate via annotation on the HyperConverged CR.
+    # The HC operator reconciles the KubeVirt CR, so patching KubeVirt
+    # directly is ephemeral. The jsonpatch annotation is the supported way
+    # to inject custom feature gates into the managed KubeVirt CR.
+    local vsock_patch='[{"op":"add","path":"/spec/configuration/developerConfiguration/featureGates/-","value":"VSOCK"}]'
+    local kv_gates
+    kv_gates=$(oc get kubevirt -n openshift-cnv \
+        -o jsonpath='{.items[0].spec.configuration.developerConfiguration.featureGates}' 2>/dev/null || true)
+    if [[ "$kv_gates" != *"VSOCK"* ]]; then
+        info "Annotating HyperConverged CR to add VSOCK feature gate..."
+        oc annotate hyperconverged kubevirt-hyperconverged -n openshift-cnv --overwrite \
+            "kubevirt.kubevirt.io/jsonpatch=${vsock_patch}"
+        info "Waiting for VSOCK to appear in KubeVirt CR feature gates..."
+        local attempts=0
+        while (( attempts < 60 )); do
+            kv_gates=$(oc get kubevirt -n openshift-cnv \
+                -o jsonpath='{.items[0].spec.configuration.developerConfiguration.featureGates}' 2>/dev/null || true)
+            if [[ "$kv_gates" == *"VSOCK"* ]]; then
+                break
+            fi
+            (( attempts++ ))
+            sleep 5
+        done
+        if [[ "$kv_gates" != *"VSOCK"* ]]; then
+            die "KubeVirt CR still missing VSOCK after 5 minutes"
+        fi
+        info "Waiting for virt-handler rollout after VSOCK enablement..."
+        oc rollout status ds/virt-handler -n openshift-cnv --timeout=600s
+    else
+        info "KubeVirt CR already has VSOCK feature gate"
+    fi
+    oc get csv -n openshift-cnv
+}
+
+wait_for_service_endpoints() {
+    if [[ "$#" -lt 2 ]]; then
+        die "missing args. usage: wait_for_service_endpoints <namespace> <service> [<delay>]"
+    fi
+
+    local namespace="$1"
+    local service="$2"
+    local delay="${3:-600}"
+    local wait_interval=5
+    local tries=$(( delay / wait_interval ))
+    local count=0
+
+    while true; do
+        # Service object may exist before backing pods become Ready; for webhook-backed
+        # API calls we need at least one resolved endpoint address.
+        local endpoints_json
+        endpoints_json="$(retrying_kubectl </dev/null -n "$namespace" get endpoints "$service" -o json 2>/dev/null || true)"
+        local address_count
+        address_count="$(jq -r '[.subsets[]?.addresses[]?] | length' <<< "$endpoints_json" 2>/dev/null || echo 0)"
+
+        if [[ "$address_count" =~ ^[0-9]+$ ]] && (( address_count > 0 )); then
+            info "${namespace} svc/${service} has ${address_count} endpoint address(es)"
+            return 0
+        fi
+
+        count=$((count + 1))
+        if [[ $count -ge "$tries" ]]; then
+            info "Service endpoints did not become ready after ${count} tries: ${namespace} svc/${service}"
+            retrying_kubectl </dev/null -n "$namespace" get svc "$service" -o wide || true
+            retrying_kubectl </dev/null -n "$namespace" get endpoints "$service" -o wide || true
+            return 1
+        fi
+
+        info "Waiting for endpoints of ${namespace} svc/${service} (${count}/${tries})"
+        sleep "$wait_interval"
+    done
 }
 
 setup_client_CA_auth_provider() {
@@ -524,7 +966,7 @@ setup_client_CA_auth_provider() {
     require_environment "ROX_ADMIN_PASSWORD"
     require_environment "CLIENT_CA_PATH"
 
-    roxctl -e "$API_ENDPOINT" \
+    roxctl -e "$API_ENDPOINT" --ca "" --insecure-skip-tls-verify \
         central userpki create test-userpki -r Analyst -c "$CLIENT_CA_PATH"
 }
 
@@ -540,12 +982,12 @@ setup_generated_certs_for_test() {
     require_environment "API_ENDPOINT"
     require_environment "ROX_ADMIN_PASSWORD"
 
-    roxctl -e "$API_ENDPOINT" \
+    roxctl -e "$API_ENDPOINT" --ca "" --insecure-skip-tls-verify \
         sensor generate-certs remote --output-dir "$dir"
     [[ -f "$dir"/cluster-remote-tls.yaml ]]
     # Use the certs in future steps that will use client auth.
     # This will ensure that the certs are valid.
-    sensor_tls_cert="$(kubectl create --dry-run=client -o json -f "$dir"/cluster-remote-tls.yaml | jq 'select(.metadata.name=="sensor-tls")')"
+    sensor_tls_cert="$(retrying_kubectl </dev/null create --dry-run=client -o json -f "$dir"/cluster-remote-tls.yaml | jq 'select(.metadata.name=="sensor-tls")')"
     for file in ca.pem sensor-cert.pem sensor-key.pem; do
         echo "${sensor_tls_cert}" | jq --arg filename "${file}" '.stringData[$filename]' -r > "$dir/${file}"
     done
@@ -554,7 +996,7 @@ setup_generated_certs_for_test() {
 setup_podsecuritypolicies_config() {
     info "Set POD_SECURITY_POLICIES variable based on kubernetes version"
 
-    SUPPORTS_PSP=$(kubectl api-resources | grep "podsecuritypolicies" -c || true)
+    SUPPORTS_PSP=$(retrying_kubectl </dev/null api-resources | grep "podsecuritypolicies" -c || true)
     if [[ "${SUPPORTS_PSP}" -eq 0 ]]; then
         ci_export "POD_SECURITY_POLICIES" "false"
         info "POD_SECURITY_POLICIES set to false"
@@ -582,7 +1024,7 @@ wait_for_collectors_to_be_operational() {
     fi
 
     # Ensure collector DaemonSet state is stable
-    kubectl rollout status daemonset collector --namespace "${sensor_namespace}" --timeout=5m --watch=true
+    retrying_kubectl </dev/null rollout status daemonset collector --namespace "${sensor_namespace}" --timeout=5m --watch=true
 
     # Check each collector pod readiness.
     local start_time
@@ -590,13 +1032,13 @@ wait_for_collectors_to_be_operational() {
     local all_ready="false"
     while [[ "$all_ready" == "false" ]]; do
         all_ready="true"
-        for pod in $(kubectl -n "${sensor_namespace}" get pods -l app=collector -o json | jq -r '.items[].metadata.name'); do
+        for pod in $(retrying_kubectl </dev/null -n "${sensor_namespace}" get pods -l app=collector -o json | jq -r '.items[].metadata.name'); do
             echo "Checking readiness of $pod"
-            if kubectl -n "${sensor_namespace}" logs -c collector "${pod}" | grep "${readiness_indicator}" > /dev/null 2>&1; then
+            if retrying_kubectl </dev/null -n "${sensor_namespace}" logs -c collector "${pod}" | grep "${readiness_indicator}" > /dev/null 2>&1; then
                 echo "$pod is deemed ready"
             else
                 info "$pod is not ready"
-                kubectl -n "${sensor_namespace}" logs -c collector "$pod" || true
+                retrying_kubectl </dev/null -n "${sensor_namespace}" logs -c collector "$pod" || true
                 all_ready="false"
                 break
             fi
@@ -621,8 +1063,8 @@ patch_resources_for_test() {
     require_environment "TEST_ROOT"
     require_environment "API_HOSTNAME"
 
-    kubectl -n "${central_namespace}" patch svc central-loadbalancer --patch "$(cat "$TEST_ROOT"/tests/e2e/yaml/endpoints-test-lb-patch.yaml)"
-    kubectl -n "${central_namespace}" apply -f "$TEST_ROOT/tests/e2e/yaml/endpoints-test-netpol.yaml"
+    retrying_kubectl </dev/null -n "${central_namespace}" patch svc central-loadbalancer --patch "$(cat "$TEST_ROOT"/tests/e2e/yaml/endpoints-test-lb-patch.yaml)"
+    retrying_kubectl </dev/null -n "${central_namespace}" apply -f "$TEST_ROOT/tests/e2e/yaml/endpoints-test-netpol.yaml"
 
     info "Checking port availability..."
     for target_port in 8080 8081 8082 8443 8444 8445 8446 8447 8448; do
@@ -654,7 +1096,7 @@ check_stackrox_logs() {
     local dir="$1"
 
     if [[ ! -d "$dir/stackrox/pods" ]]; then
-        die "StackRox logs were not collected. (Use ./scripts/ci/collect-service-logs.sh stackrox)"
+        die "StackRox logs were not collected. (Use ./scripts/ci/collect-service-logs.sh stackrox $dir)"
     fi
 
     check_for_stackrox_OOMs "$dir"
@@ -670,7 +1112,7 @@ check_for_stackrox_OOMs() {
     local dir="$1"
 
     if [[ ! -d "$dir/stackrox/pods" ]]; then
-        die "StackRox logs were not collected. (Use ./scripts/ci/collect-service-logs.sh stackrox)"
+        die "StackRox logs were not collected. (Use ./scripts/ci/collect-service-logs.sh stackrox $dir)"
     fi
 
     local objects
@@ -757,7 +1199,7 @@ check_for_stackrox_restarts() {
     local dir="$1"
 
     if [[ ! -d "$dir/stackrox/pods" ]]; then
-        die "StackRox logs were not collected. (Use ./scripts/ci/collect-service-logs.sh stackrox)"
+        die "StackRox logs were not collected. (Use ./scripts/ci/collect-service-logs.sh stackrox $dir)"
     fi
 
     local previous_logs
@@ -789,7 +1231,7 @@ check_for_errors_in_stackrox_logs() {
     local dir="$1/stackrox/pods"
 
     if [[ ! -d "${dir}" ]]; then
-        die "StackRox logs were not collected. (Use ./scripts/ci/collect-service-logs.sh stackrox)"
+        die "StackRox logs were not collected. (Use ./scripts/ci/collect-service-logs.sh stackrox $dir)"
     fi
 
     local pod_objects=()
@@ -848,7 +1290,7 @@ _verify_item_count() {
     # used by ./scripts/ci/collect-service-logs.sh
 
     if [[ ! -f "${dir}/ITEM_COUNT.txt" ]]; then
-        die "ITEM_COUNT.txt is missing. (Check output from ./scripts/ci/collect-service-logs.sh"
+        die "ITEM_COUNT.txt is missing. (Check output from ./scripts/ci/collect-service-logs.sh)"
     fi
 
     local item_count
@@ -929,6 +1371,43 @@ summarize_check_output() {
     echo "${output}"
 }
 
+# start_continuous_log_streaming starts a background process that continuously
+# streams logs from StackRox pods to files. This preserves logs across pod
+# replacements (deployment rollouts) and container restarts, where kubectl's
+# single-previous-container limitation would otherwise lose intermediate logs.
+# See ROX-35267.
+start_continuous_log_streaming() {
+    if [[ "$#" -lt 1 ]]; then
+        die "missing args. usage: start_continuous_log_streaming <output-dir> [namespace]"
+    fi
+
+    local dir="$1"
+    local ns="${2:-stackrox}"
+    mkdir -p "$dir"
+
+    info "Starting continuous log streaming for namespace $ns to $dir"
+
+    local labels=("app=central" "app=sensor" "app=scanner-v4-indexer" "app=scanner-v4-matcher")
+
+    for label in "${labels[@]}"; do
+        local app_name="${label#app=}"
+        local log_file="$dir/${app_name}-continuous.log"
+        (
+            while true; do
+                pod=$(kubectl -n "$ns" get pod -l "$label" -o jsonpath='{.items[0].metadata.name}' 2>/dev/null) || { sleep 2; continue; }
+                [[ -n "$pod" ]] || { sleep 2; continue; }
+                echo "--- streaming from $pod ($(date -Iseconds)) ---" >> "$log_file"
+                kubectl -n "$ns" logs -f --timestamps "$pod" >> "$log_file" 2>/dev/null || true
+                echo "--- stream from $pod ended ($(date -Iseconds)) ---" >> "$log_file"
+                sleep 1
+            done
+        ) &
+    done
+
+    info "Continuous log streaming started for: ${labels[*]}"
+}
+
+
 collect_and_check_stackrox_logs() {
     if [[ "$#" -ne 2 ]]; then
         die "missing args. usage: collect_and_check_stackrox_logs <output-dir> <test_stage>"
@@ -963,9 +1442,12 @@ remove_existing_stackrox_resources() {
 
     # Check API Server Capabilities.
     local k8s_api_resources
-    k8s_api_resources=$(kubectl api-resources -o name)
+    k8s_api_resources=$(retrying_kubectl </dev/null api-resources -o name)
     if echo "${k8s_api_resources}" | grep -q "^securitycontextconstraints\.security\.openshift\.io$"; then
         resource_types="${resource_types},SecurityContextConstraints"
+    fi
+    if echo "${k8s_api_resources}" | grep -q "^consoleplugins\.console\.openshift\.io$"; then
+        global_resource_types="${global_resource_types},consoleplugins.console.openshift.io"
     fi
     if echo "${k8s_api_resources}" | grep -q "^podsecuritypolicies\.policy$"; then
         psps_supported=true
@@ -983,42 +1465,43 @@ remove_existing_stackrox_resources() {
         if [[ "${securedclusters_supported}" == "true" ]]; then
             # Remove stackrox.io/pause-reconcile annotation since it prevents
             # deletion of secured cluster in static clusters
-            kubectl annotate -n stackrox \
+            retrying_kubectl </dev/null annotate -n stackrox \
             securedclusters.platform.stackrox.io \
             stackrox-secured-cluster-services \
             stackrox.io/pause-reconcile-
 
-            kubectl get securedclusters -o name | while read -r securedcluster; do
-                kubectl -n "${namespace}" delete --ignore-not-found --wait "${securedcluster}"
+            retrying_kubectl </dev/null get securedclusters -o name | while read -r securedcluster; do
+                retrying_kubectl </dev/null -n "${namespace}" delete --ignore-not-found --wait "${securedcluster}"
                 # Wait until resources are actually deleted.
-                kubectl wait -n "${namespace}"  --for=delete deployment/sensor --timeout=60s
+                retrying_kubectl </dev/null wait -n "${namespace}"  --for=delete deployment/sensor --timeout=60s
             done
         fi
         if [[ "${centrals_supported}" == "true" ]]; then
             # Remove stackrox.io/pause-reconcile annotation since it prevents
             # deletion of central in static clusters
-               kubectl annotate -n stackrox \
+               retrying_kubectl </dev/null annotate -n stackrox \
                 centrals.platform.stackrox.io \
                 stackrox-central-services \
                 stackrox.io/pause-reconcile-
 
-            kubectl get centrals -o name | while read -r central; do
-                kubectl -n "${namespace}" delete --ignore-not-found --wait "${central}"
-                kubectl wait -n "${namespace}"  --for=delete deployment/central --timeout=60s
+            retrying_kubectl </dev/null get centrals -o name | while read -r central; do
+                retrying_kubectl </dev/null -n "${namespace}" delete --ignore-not-found --wait "${central}"
+                retrying_kubectl </dev/null wait -n "${namespace}"  --for=delete deployment/central --timeout=60s
             done
         fi
         if [[ "$psps_supported" = "true" ]]; then
-            kubectl delete -R -f scripts/ci/psp --wait
+            retrying_kubectl </dev/null delete -R -f scripts/ci/psp --wait
         fi
 
         for namespace in "${namespaces[@]}"; do
-            if kubectl get ns "$namespace" >/dev/null 2>&1; then
-                kubectl -n "$namespace" delete "$resource_types" -l "app.kubernetes.io/name=stackrox" --wait
+            if retrying_kubectl </dev/null get ns "$namespace" >/dev/null 2>&1; then
+                retrying_kubectl </dev/null -n "$namespace" delete "$resource_types" -l "app.kubernetes.io/name=stackrox" --wait
             fi
-            kubectl delete --ignore-not-found ns "$namespace" --wait
+            retrying_kubectl </dev/null delete --ignore-not-found ns "$namespace" --wait
         done
 
-        kubectl delete "${global_resource_types}" -l "app.kubernetes.io/name=stackrox" --wait
+        retrying_kubectl </dev/null delete "${global_resource_types}" -l "app.kubernetes.io/name=stackrox" --wait
+        retrying_kubectl </dev/null delete crd securitypolicies.config.stackrox.io --wait
 
         helm list -o json | jq -r '.[] | .name' | while read -r name; do
             case "$name" in
@@ -1028,35 +1511,110 @@ remove_existing_stackrox_resources() {
             esac
         done
 
-        kubectl get namespace -o name | grep -E '^namespace/qa' | while read -r namespace; do
-            kubectl delete --wait "$namespace"
+        retrying_kubectl </dev/null get namespace -o name | grep -E '^namespace/qa' | while read -r namespace; do
+            retrying_kubectl </dev/null delete --wait "$namespace"
         done
 
-        # midstream ocp specific
-        if kubectl get ns stackrox-operator >/dev/null 2>&1; then
-            kubectl -n stackrox-operator delete "$resource_types" -l "app=rhacs-operator" --wait
+        if retrying_kubectl </dev/null get ns rhacs-operator-system >/dev/null 2>&1; then
+            # Delete subscription first to give OLM a chance to notice and prevent errors on re-install.
+            # See https://issues.redhat.com/browse/ROX-30450
+            retrying_kubectl </dev/null -n rhacs-operator-system delete --ignore-not-found --wait subscription.operators.coreos.com --all
+            # Then delete remaining OLM resources.
+            # The awk is a quick hack to omit templating that might confuse kubectl's YAML parser.
+            # We only care about apiVersion, kind and metadata, which do not contain any templating.
+            awk 'BEGIN{interesting=1} /^spec:/{interesting=0} /^---$/{interesting=1} interesting{print}' operator/hack/operator.envsubst.yaml | \
+              retrying_kubectl -n rhacs-operator-system delete --ignore-not-found --wait -f -
         fi
-        kubectl delete --ignore-not-found ns stackrox-operator --wait
+        retrying_kubectl </dev/null delete --ignore-not-found ns rhacs-operator-system --wait
+        retrying_kubectl </dev/null delete --ignore-not-found crd {centrals.platform,securedclusters.platform,securitypolicies.config}.stackrox.io --wait
     ) 2>&1 | sed -e 's/^/out: /' || true # (prefix output to avoid triggering prow log focus)
     info "Finished tearing down resources."
 }
 
 remove_compliance_operator_resources() {
     info "Will remove any existing compliance operator resources"
-    if kubectl get crd compliancecheckresults.compliance.openshift.io; then
+    if retrying_kubectl </dev/null get crd compliancecheckresults.compliance.openshift.io; then
         (
-            kubectl -n openshift-compliance delete ssb --all --wait --ignore-not-found=true
+            retrying_kubectl </dev/null -n openshift-compliance delete ssb --all --wait --ignore-not-found=true
             # The profilebundles must be deleted before the csv. If not, the finalizers
             # will prevent the profilebundles from deleting because the CRDs are gone.
-            kubectl -n openshift-compliance delete pb --all --wait --ignore-not-found=true
-            kubectl -n openshift-compliance delete sub --all  --ignore-not-found=true
-            kubectl -n openshift-compliance delete csv --all  --ignore-not-found=true
-            kubectl -n openshift-compliance delete operatorgroup --all  --ignore-not-found=true
-            kubectl -n openshift-marketplace delete catalogsource compliance-operator  --ignore-not-found=true
-            kubectl delete namespace openshift-compliance --wait --ignore-not-found=true
+            retrying_kubectl </dev/null -n openshift-compliance delete pb --all --wait --ignore-not-found=true
+            retrying_kubectl </dev/null -n openshift-compliance delete sub --all  --ignore-not-found=true
+            retrying_kubectl </dev/null -n openshift-compliance delete csv --all  --ignore-not-found=true
+            retrying_kubectl </dev/null -n openshift-compliance delete operatorgroup --all  --ignore-not-found=true
+            retrying_kubectl </dev/null -n openshift-marketplace delete catalogsource compliance-operator  --ignore-not-found=true
+            retrying_kubectl </dev/null delete namespace openshift-compliance --wait --ignore-not-found=true
         # (prefix output to avoid triggering prow log focus)
         ) 2>&1 | sed -e 's/^/out: /' || true
     fi
+}
+
+
+wait_for_ready_deployment() {
+    local namespace="$1"
+    local deployment_name="$2"
+    local max_seconds="$3"
+
+    info "Waiting for deployment ${deployment_name} to be ready in namespace ${namespace}"
+
+    start_time="$(date '+%s')"
+    while true; do
+        deployment_json="$(retrying_kubectl </dev/null -n "${namespace}" get "deploy/${deployment_name}" -o json)"
+        replicas="$(jq '.status.replicas' <<<"$deployment_json")"
+        ready_replicas="$(jq '.status.readyReplicas' <<<"$deployment_json")"
+        curr_time="$(date '+%s')"
+        elapsed_seconds=$(( curr_time - start_time ))
+
+        # Ready case. First we need to make sure that "$replicas" is an integer and not
+        # something like "null", which would cause an execution error while
+        # evaluating [[ "$replicas" -gt 0 ]].
+        if [[ "$replicas" =~ ^[0-9]+$ && "$replicas" -gt 0 && "$replicas" == "$ready_replicas" ]]; then
+            sleep 10
+            break
+        fi
+
+        # Timeout case
+        if (( elapsed_seconds > max_seconds )); then
+            retrying_kubectl </dev/null -n "${namespace}" get pod -o wide
+            retrying_kubectl </dev/null -n "${namespace}" get deploy -o wide
+            die "wait_for_ready_deployment() timeout after $max_seconds seconds."
+        fi
+
+        # Otherwise report and retry
+        info "Still waiting (${elapsed_seconds}s/${max_seconds}s)..."
+        sleep 5
+    done
+
+    info "Deployment ${deployment_name} is ready in namespace ${namespace}."
+}
+
+# shellcheck disable=SC2120
+wait_for_scanner_V4() {
+    local namespace="$1"
+    local max_seconds=${MAX_WAIT_SECONDS:-300}
+    local matcher_max_seconds="$max_seconds"
+    info "Waiting for Scanner V4 to become ready..."
+    if [[ "${ORCHESTRATOR_FLAVOR:-}" == "openshift" ]]; then
+        # OCP Interop tests are run on minimal instances and will take longer
+        # Allow override with MAX_WAIT_SECONDS
+        max_seconds=${MAX_WAIT_SECONDS:-600}
+        matcher_max_seconds="$max_seconds"
+        info "Waiting ${max_seconds}s (increased for openshift-ci provisioned clusters) for central api and $(( max_seconds * 6 )) for ingress..."
+    fi
+    if [[ "${SCANNER_V4_VULN_READINESS:-false}" == "true" ]]; then
+        # Slowness or timeout may indicate that a low performance disk is used by
+        # the Scanner V4 DB PVC. If storage class is unset the cluster default
+        # storage class is used.
+        info "SCANNER_V4_DB_STORAGE_CLASS=${SCANNER_V4_DB_STORAGE_CLASS:-<unset>}"
+        info "Listing available storage classes:"
+        kubectl describe storageclasses 2>/dev/null || true
+
+        matcher_max_seconds=${SCANNER_V4_VULN_READINESS_TIMEOUT:-3600}
+        info "Waiting ${matcher_max_seconds}s for matcher vulnerability readiness..."
+    fi
+
+    wait_for_ready_deployment "$namespace" "scanner-v4-indexer" "$max_seconds"
+    wait_for_ready_deployment "$namespace" "scanner-v4-matcher" "$matcher_max_seconds"
 }
 
 # shellcheck disable=SC2120
@@ -1074,31 +1632,7 @@ wait_for_api() {
     fi
     max_ingress_seconds=$(( max_seconds * 6 ))
 
-    while true; do
-        central_json="$(kubectl -n "${central_namespace}" get deploy/central -o json)"
-        replicas="$(jq '.status.replicas' <<<"$central_json")"
-        ready_replicas="$(jq '.status.readyReplicas' <<<"$central_json")"
-        curr_time="$(date '+%s')"
-        elapsed_seconds=$(( curr_time - start_time ))
-
-        # Ready case
-        if [[ "$replicas" == 1 && "$ready_replicas" == 1 ]]; then
-            sleep 30
-            break
-        fi
-
-        # Timeout case
-        if (( elapsed_seconds > max_seconds )); then
-            kubectl -n "${central_namespace}" get pod -o wide
-            kubectl -n "${central_namespace}" get deploy -o wide
-            die "wait_for_api() timeout after $max_seconds seconds."
-        fi
-
-        # Otherwise report and retry
-        info "Still waiting (${elapsed_seconds}s/${max_seconds}s)..."
-        sleep 5
-    done
-
+    wait_for_ready_deployment "$central_namespace" "central" "$max_seconds"
     info "Central deployment is ready in namespace ${central_namespace}."
     info "Waiting for Central API endpoint"
 
@@ -1152,7 +1686,7 @@ wait_for_api() {
         info "port-forwards:"
         pgrep port-forward
         info "pods:"
-        kubectl -n "${central_namespace}" get pod
+        retrying_kubectl </dev/null -n "${central_namespace}" get pod
         exit 1
     fi
     set -e
@@ -1177,7 +1711,7 @@ get_ingress_endpoint() {
     start_time="$(date '+%s')"
 
     while true; do
-        endpoint=$("${cli_cmd}" -n "${namespace}" get "${object}" -o json | jq -r "${field_accessor}")
+        endpoint=$(KUBECTL="${cli_cmd}" retrying_kubectl </dev/null -n "${namespace}" get "${object}" -o json | jq -r "${field_accessor}")
         if [[ -n "${endpoint}" ]] && [[ "${endpoint}" != "null" ]]; then
             info "Found ingress endpoint: ${endpoint}"
             ingress_endpoint="${endpoint}"
@@ -1188,7 +1722,7 @@ get_ingress_endpoint() {
         elapsed_seconds=$(( curr_time - start_time ))
 
         if (( elapsed_seconds > timeout )); then
-            "${cli_cmd}" -n "${namespace}" get "${object}" -o json
+            KUBECTL="${cli_cmd}" retrying_kubectl </dev/null -n "${namespace}" get "${object}" -o json
             echo >&2 "get_ingress_endpoint() timeout after $timeout seconds."
             exit 1
         fi
@@ -1228,23 +1762,26 @@ _record_build_info() {
     # -race debug builds - use the image tag as the most reliable way to
     # determine the build under test.
     local central_image
-    central_image="$(kubectl -n "${central_namespace}" get deploy central -o json | jq -r '.spec.template.spec.containers[0].image')"
+    central_image="$(retrying_kubectl </dev/null -n "${central_namespace}" get deploy central -o json | jq -r '.spec.template.spec.containers[0].image')"
     if [[ "${central_image}" =~ -rcd$ ]]; then
         build_info="${build_info},-race"
     fi
 
-    update_job_record "build" "${build_info}"
+    setup_gcp
+    set_ci_shared_export "build" "${build_info}"
 }
 
-restore_4_1_postgres_backup() {
-    info "Restoring a 4.1 postgres backup"
+restore_4_6_postgres_backup() {
+    info "Restoring a 4.6 postgres backup"
 
     require_environment "API_ENDPOINT"
     require_environment "ROX_ADMIN_PASSWORD"
 
-    gsutil cp gs://stackrox-ci-upgrade-test-fixtures/upgrade-test-dbs/postgres_db_4_1.sql.zip .
-    roxctl -e "$API_ENDPOINT" \
-        central db restore --timeout 5m postgres_db_4_1.sql.zip
+    setup_gcp
+    gsutil cp gs://stackrox-ci-upgrade-test-fixtures/upgrade-test-dbs/postgres_db_4_6.sql.zip .
+
+    roxctl -e "$API_ENDPOINT" --ca "" --insecure-skip-tls-verify \
+            central db restore --timeout 5m postgres_db_4_6.sql.zip
 }
 
 update_public_config() {
@@ -1273,14 +1810,14 @@ db_backup_and_restore_test() {
 
     info "Backing up to ${output_dir}"
     mkdir -p "$output_dir"
-    roxctl -e "${API_ENDPOINT}" central backup --output "$output_dir" || touch DB_TEST_FAIL
+    roxctl --ca="" --insecure-skip-tls-verify -e "${API_ENDPOINT}" central backup --output "$output_dir" || touch DB_TEST_FAIL
 
     info "Updating public config"
     update_public_config
 
     if [[ ! -e DB_TEST_FAIL ]]; then
         info "Restoring from ${output_dir}/postgres_db_*"
-        roxctl -e "${API_ENDPOINT}" central db restore "$output_dir"/postgres_db_* || touch DB_TEST_FAIL
+        roxctl --ca="" --insecure-skip-tls-verify -e "${API_ENDPOINT}" central db restore "$output_dir"/postgres_db_* || touch DB_TEST_FAIL
     fi
 
     wait_for_api "${central_namespace}"
@@ -1359,18 +1896,8 @@ record_upgrade_test_progess() {
     record_progress_step "${UPGRADE_PROGRESS_UPGRADER}" "${UPGRADE_PROGRESS_SENSOR_BUNDLE}" \
         "postgres_sensor_run" "bin/upgrader tests"
 
-    # tests/upgrade/legacy_to_postgres_run.sh
-    record_progress_step "${UPGRADE_PROGRESS_LEGACY_PREP}" "${UPGRADE_PROGRESS_UPGRADER}" \
-        "legacy_to_postgres_run" "Preparation for legacy to postgres testing"
-    record_progress_step "${UPGRADE_PROGRESS_LEGACY_ROCKSDB_CENTRAL}" "${UPGRADE_PROGRESS_LEGACY_PREP}" \
-        "legacy_to_postgres_run" "Deployed an earlier rocksdb central"
-    record_progress_step "${UPGRADE_PROGRESS_LEGACY_TO_RELEASE}" "${UPGRADE_PROGRESS_LEGACY_ROCKSDB_CENTRAL}" \
-        "legacy_to_postgres_run" "Helm upgrade to latest postgres release from rocksdb"
-    record_progress_step "${UPGRADE_PROGRESS_RELEASE_BACK_TO_LEGACY}" "${UPGRADE_PROGRESS_LEGACY_TO_RELEASE}" \
-        "legacy_to_postgres_run" "Rollback to rocksdb"
-
     # tests/upgrade/postgres_run.sh
-    record_progress_step "${UPGRADE_PROGRESS_POSTGRES_PREP}" "${UPGRADE_PROGRESS_RELEASE_BACK_TO_LEGACY}" \
+    record_progress_step "${UPGRADE_PROGRESS_POSTGRES_PREP}" "${UPGRADE_PROGRESS_UPGRADER}" \
         "postgres_run" "Preparation for postgres testing"
     record_progress_step "${UPGRADE_PROGRESS_POSTGRES_EARLIER_CENTRAL}" "${UPGRADE_PROGRESS_POSTGRES_PREP}" \
         "postgres_run" "Deployed earlier postgres central"
@@ -1425,10 +1952,24 @@ setup_automation_flavor_e2e_cluster() {
     if [[ "$ci_job" =~ ^osd ]]; then
         info "Logging in to an OSD cluster"
         source "${SHARED_DIR}/dotenv"
-        oc login "$CLUSTER_API_ENDPOINT" \
+        # OSD API server certificates may not be fully propagated right after
+        # cluster creation, causing transient x509 errors (ROX-27600).
+        retry 5 true \
+            oc login "$CLUSTER_API_ENDPOINT" \
                 --username "$CLUSTER_USERNAME" \
                 --password "$CLUSTER_PASSWORD" \
-                --insecure-skip-tls-verify=true
+                --insecure-skip-tls-verify=true \
+            || die "Failed to log in to OSD cluster"
+    fi
+
+    # Export console credentials for OCP UI e2e tests (Cypress browser login)
+    # No oc login needed - kubeconfig already has admin access from automation-flavors
+    if [[ "$ci_job" =~ ^ocp.*ui-e2e-tests$ ]]; then
+        info "Exporting OCP console credentials for UI tests"
+        source "${SHARED_DIR}/dotenv"
+        export OPENSHIFT_CONSOLE_URL="${OPENSHIFT_CONSOLE_URL}"
+        export OPENSHIFT_CONSOLE_USERNAME="${OPENSHIFT_CONSOLE_USERNAME}"
+        export OPENSHIFT_CONSOLE_PASSWORD="${OPENSHIFT_CONSOLE_PASSWORD}"
     fi
 }
 
@@ -1445,7 +1986,7 @@ wait_for_central_db() {
     max_seconds=300
 
     while true; do
-        central_db_json="$(kubectl -n "${central_namespace}" get deploy/central-db -o json)"
+        central_db_json="$(retrying_kubectl </dev/null -n "${central_namespace}" get deploy/central-db -o json)"
         replicas="$(jq '.status.replicas' <<<"$central_db_json")"
         ready_replicas="$(jq '.status.readyReplicas' <<<"$central_db_json")"
         curr_time="$(date '+%s')"
@@ -1459,8 +2000,8 @@ wait_for_central_db() {
 
         # Timeout case
         if (( elapsed_seconds > max_seconds )); then
-            kubectl -n "${central_namespace}" get pod -o wide
-            kubectl -n "${central_namespace}" get deploy -o wide
+            retrying_kubectl </dev/null -n "${central_namespace}" get pod -o wide
+            retrying_kubectl </dev/null -n "${central_namespace}" get deploy -o wide
             echo >&2 "wait_for_central_db() timeout after $max_seconds seconds."
             exit 1
         fi
@@ -1484,12 +2025,12 @@ wait_for_object_to_appear() {
     local waitInterval=20
     local tries=$(( delay / waitInterval ))
     local count=0
-    until kubectl -n "$namespace" get "$object" > /dev/null 2>&1; do
+    until retrying_kubectl </dev/null -n "$namespace" get "$object" > /dev/null 2>&1; do
         count=$((count + 1))
         if [[ $count -ge "$tries" ]]; then
             info "$namespace $object did not appear after $count tries"
             echo "Waiting for $object in ns $namespace timed out." > "${QA_DEPLOY_WAIT_INFO}" || true
-            kubectl -n "$namespace" get "$object"
+            retrying_kubectl </dev/null -n "$namespace" get "$object"
             return 1
         fi
         info "Waiting for $namespace $object to appear"
@@ -1499,9 +2040,64 @@ wait_for_object_to_appear() {
     return 0
 }
 
+wait_for_catalogsource_ready() {
+    if [[ "$#" -lt 2 ]]; then
+        die "missing args. usage: wait_for_catalogsource_ready <namespace> <name> [<delay>]"
+    fi
+
+    local namespace="$1"
+    local name="$2"
+    local delay="${3:-300}"
+    local waitInterval=10
+    local tries=$(( delay / waitInterval ))
+    local count=0
+
+    info "Waiting for CatalogSource $namespace/$name to be READY"
+    until [[ "$(oc get catalogsource "$name" -n "$namespace" -o jsonpath='{.status.connectionState.lastObservedState}' 2>/dev/null)" == "READY" ]]; do
+        count=$((count + 1))
+        if [[ $count -ge "$tries" ]]; then
+            info "CatalogSource $namespace/$name did not become READY after $count tries"
+            oc get catalogsource "$name" -n "$namespace" -o yaml || true
+            return 1
+        fi
+        sleep "$waitInterval"
+    done
+    info "CatalogSource $namespace/$name is READY"
+
+    return 0
+}
+
+wait_for_log_line() {
+    if [[ "$#" -lt 2 ]]; then
+        die "missing args. usage: wait_for_log_line <namespace> <object> <container> <log_line> [<delay>]"
+    fi
+
+    local namespace="$1"
+    local object="$2"
+    local container="$3"
+    local log_line="$4"
+    local delay="${5:-300}"
+    local waitInterval=20
+    local tries=$(( delay / waitInterval ))
+    local count=0
+    until retrying_kubectl </dev/null logs -n "$namespace" "$object" -c "${container}" | grep "${log_line}"; do
+        count=$((count + 1))
+        if [[ $count -ge "$tries" ]]; then
+            info "$namespace $object did not log ${log_line} after $count tries"
+            echo "Waiting for $object log in ns $namespace timed out." > "${QA_DEPLOY_WAIT_INFO}" || true
+            retrying_kubectl </dev/null -n "$namespace" get "$object"
+            return 1
+        fi
+        info "Waiting for $namespace $object to log ${log_line}"
+        sleep "$waitInterval"
+    done
+
+    return 0
+}
+
 wait_for_profile_bundles_to_be_ready() {
-    wait_for_object_to_appear openshift-compliance profilebundle/ocp4
-    wait_for_object_to_appear openshift-compliance profilebundle/rhcos4
+    wait_for_object_to_appear openshift-compliance profilebundle/ocp4 900
+    wait_for_object_to_appear openshift-compliance profilebundle/rhcos4 900
     for pb in $(oc get pb -n openshift-compliance -o jsonpath="{.items[*].metadata.name}"); do
         local delay="300"
         local waitInterval=10

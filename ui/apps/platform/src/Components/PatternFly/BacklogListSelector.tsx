@@ -1,18 +1,17 @@
-import React, { Key, ReactNode } from 'react';
+import type { Key, ReactElement, ReactNode } from 'react';
 import {
     Badge,
     Button,
     EmptyState,
-    EmptyStateIcon,
+    EmptyStateFooter,
     Flex,
     FormGroup,
-    EmptyStateHeader,
-    EmptyStateFooter,
     Icon,
 } from '@patternfly/react-core';
 import { CubesIcon, MinusCircleIcon, PlusCircleIcon } from '@patternfly/react-icons';
 
-import { BaseCellProps, Table, Tbody, Td, Tr } from '@patternfly/react-table';
+import { Table, Tbody, Td, Tr } from '@patternfly/react-table';
+import type { BaseCellProps } from '@patternfly/react-table';
 
 type BacklogTableProps<Item> = {
     type: 'selected' | 'deselected';
@@ -40,15 +39,15 @@ function BacklogTable<Item>({
     buttonText,
     searchFilter = () => true,
     showBadge,
-}: BacklogTableProps<Item>) {
+}: BacklogTableProps<Item>): ReactElement {
     const actionIcon =
         type === 'selected' ? (
             <Icon>
-                <MinusCircleIcon color="var(--pf-v5-global--danger-color--200)" />
+                <MinusCircleIcon color="var(--pf-t--global--icon--color--status--danger--default)" />
             </Icon>
         ) : (
             <Icon>
-                <PlusCircleIcon color="var(--pf-v5-global--primary-color--100)" />
+                <PlusCircleIcon color="var(--pf-t--global--icon--color--brand--default)" />
             </Icon>
         );
 
@@ -60,7 +59,7 @@ function BacklogTable<Item>({
                 <>
                     {label}
                     {showBadge && (
-                        <Badge className="pf-v5-u-ml-sm" isRead>
+                        <Badge className="pf-v6-u-ml-sm" isRead>
                             {items.length}
                         </Badge>
                     )}
@@ -82,7 +81,7 @@ function BacklogTable<Item>({
                                         variant="link"
                                         onClick={() => listAction(item)}
                                         icon={actionIcon}
-                                        className="pf-v5-u-text-nowrap"
+                                        className="pf-v6-u-text-nowrap"
                                         isInline
                                     >
                                         {buttonText}
@@ -93,8 +92,7 @@ function BacklogTable<Item>({
                     </Tbody>
                 </Table>
             ) : (
-                <EmptyState variant="xs">
-                    <EmptyStateHeader icon={<EmptyStateIcon icon={CubesIcon} />} />
+                <EmptyState icon={CubesIcon} variant="xs">
                     <EmptyStateFooter>
                         <p>No items remaining</p>
                     </EmptyStateFooter>

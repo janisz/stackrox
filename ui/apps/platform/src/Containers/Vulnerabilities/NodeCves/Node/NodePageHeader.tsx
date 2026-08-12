@@ -1,5 +1,4 @@
-import React from 'react';
-import { Flex, Title, LabelGroup, Label } from '@patternfly/react-core';
+import { Flex, Label, LabelGroup, Title } from '@patternfly/react-core';
 import { gql } from '@apollo/client';
 
 import { getDateTime } from 'utils/dateUtils';
@@ -44,9 +43,7 @@ function NodePageHeader({ data }: NodePageHeaderProps) {
 
     return (
         <Flex direction={{ default: 'column' }} alignItems={{ default: 'alignItemsFlexStart' }}>
-            <Title headingLevel="h1" className="pf-u-mb-sm">
-                {data.name}
-            </Title>
+            <Title headingLevel="h1">{data.name}</Title>
             <LabelGroup numLabels={numLabels}>
                 <Label>OS: {data.osImage}</Label>
                 <Label>Kubelet: {data.kubeletVersion}</Label>

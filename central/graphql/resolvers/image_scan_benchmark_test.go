@@ -3,7 +3,11 @@ package resolvers
 import (
 	"testing"
 
+	graphql "github.com/graph-gophers/graphql-go"
+	"github.com/stackrox/rox/central/views/imagecomponentflat"
+	"github.com/stackrox/rox/central/views/imagecveflat"
 	imagesView "github.com/stackrox/rox/central/views/images"
+	"github.com/stackrox/rox/pkg/features"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 )
@@ -71,27 +75,42 @@ const (
 )
 
 func BenchmarkImageResolver(b *testing.B) {
-
 	mockCtrl := gomock.NewController(b)
 	testDB := SetupTestPostgresConn(b)
-	defer testDB.Teardown(b)
-
-	resolver, schema := SetupTestResolver(b,
-		imagesView.NewImageView(testDB.DB),
-		CreateTestImageDatastore(b, testDB, mockCtrl),
-		CreateTestImageComponentDatastore(b, testDB, mockCtrl),
-		CreateTestImageCVEDatastore(b, testDB),
-		CreateTestImageComponentCVEEdgeDatastore(b, testDB),
-	)
 	ctx := contextWithImagePerm(b, mockCtrl)
 
-	images := getTestImages(100)
-	for _, image := range images {
-		require.NoError(b, resolver.ImageDataStore.UpsertImage(ctx, image))
+	// TODO(ROX-30117): Remove conditional when FlattenImageData feature flag is removed.
+	var schema *graphql.Schema
+	if features.FlattenImageData.Enabled() {
+		resolver, s := SetupTestResolver(b,
+			imagesView.NewImageView(testDB.DB),
+			CreateTestImageComponentV2Datastore(b, testDB, mockCtrl),
+			CreateTestImageCVEV2Datastore(b, testDB),
+			CreateTestImageV2Datastore(b, testDB, mockCtrl),
+			imagecveflat.NewCVEFlatView(testDB.DB),
+			imagecomponentflat.NewComponentFlatView(testDB.DB),
+		)
+		schema = s
+		for _, image := range getTestImagesV2(100) {
+			require.NoError(b, resolver.ImageV2DataStore.UpsertImage(ctx, image))
+		}
+	} else {
+		resolver, s := SetupTestResolver(b,
+			imagesView.NewImageView(testDB.DB),
+			CreateTestImageComponentV2Datastore(b, testDB, mockCtrl),
+			CreateTestImageCVEV2Datastore(b, testDB),
+			CreateTestImageDatastore(b, testDB, mockCtrl),
+			imagecveflat.NewCVEFlatView(testDB.DB),
+			imagecomponentflat.NewComponentFlatView(testDB.DB),
+		)
+		schema = s
+		for _, image := range getTestImages(100) {
+			require.NoError(b, resolver.ImageDataStore.UpsertImage(ctx, image))
+		}
 	}
 
 	b.Run("GetImageComponentsInImageScanResolver", func(b *testing.B) {
-		for i := 0; i < b.N; i++ {
+		for b.Loop() {
 			response := schema.Exec(ctx,
 				imageWithScanQuery,
 				"getImages",
@@ -106,7 +125,7 @@ func BenchmarkImageResolver(b *testing.B) {
 	})
 
 	b.Run("GetImageComponentsWithoutImageScanResolver", func(b *testing.B) {
-		for i := 0; i < b.N; i++ {
+		for b.Loop() {
 			response := schema.Exec(ctx,
 				imageWithoutScanQuery,
 				"getImages",
@@ -121,7 +140,7 @@ func BenchmarkImageResolver(b *testing.B) {
 	})
 
 	b.Run("GetImageComponentsDerivedFieldsWithImageScanResolver", func(b *testing.B) {
-		for i := 0; i < b.N; i++ {
+		for b.Loop() {
 			response := schema.Exec(ctx,
 				imageWithScanLongQuery,
 				"getImages",
@@ -136,7 +155,7 @@ func BenchmarkImageResolver(b *testing.B) {
 	})
 
 	b.Run("GetImageComponentsDerivedWithoutImageScanResolver", func(b *testing.B) {
-		for i := 0; i < b.N; i++ {
+		for b.Loop() {
 			response := schema.Exec(ctx,
 				imageWithoutScanLongQuery,
 				"getImages",
@@ -151,7 +170,7 @@ func BenchmarkImageResolver(b *testing.B) {
 	})
 
 	b.Run("GetImageOnly", func(b *testing.B) {
-		for i := 0; i < b.N; i++ {
+		for b.Loop() {
 			response := schema.Exec(ctx,
 				imageOnlyQuery,
 				"getImages",
@@ -166,7 +185,7 @@ func BenchmarkImageResolver(b *testing.B) {
 	})
 
 	b.Run("GetImageWithCounts", func(b *testing.B) {
-		for i := 0; i < b.N; i++ {
+		for b.Loop() {
 			response := schema.Exec(ctx,
 				imageWithCountsQuery,
 				"getImages",
@@ -181,7 +200,7 @@ func BenchmarkImageResolver(b *testing.B) {
 	})
 
 	b.Run("GetImageScanTimeTopLevel", func(b *testing.B) {
-		for i := 0; i < b.N; i++ {
+		for b.Loop() {
 			response := schema.Exec(ctx,
 				imageWithTopLevelScanTimeQuery,
 				"getImages",
@@ -196,7 +215,7 @@ func BenchmarkImageResolver(b *testing.B) {
 	})
 
 	b.Run("GetImageScanTimeNested", func(b *testing.B) {
-		for i := 0; i < b.N; i++ {
+		for b.Loop() {
 			response := schema.Exec(ctx,
 				imageWithNestedScanTimeQuery,
 				"getImages",

@@ -1,8 +1,7 @@
-import React from 'react';
-import { Flex, Button } from '@patternfly/react-core';
+import { Button, Flex, FlexItem } from '@patternfly/react-core';
 import { TimesIcon } from '@patternfly/react-icons';
 
-import { Descriptor } from './policyCriteriaDescriptors';
+import type { Descriptor } from './policyCriteriaDescriptors';
 import PolicyCriteriaFieldInput from './PolicyCriteriaFieldInput';
 
 type FieldValueProps = {
@@ -30,13 +29,14 @@ function PolicyCriteriaFieldValue({
                 <PolicyCriteriaFieldInput descriptor={descriptor} name={name} readOnly={readOnly} />
                 {/* only show remove button if there is more than one value */}
                 {!readOnly && length > 1 && (
-                    <Button
-                        onClick={handleRemoveValue}
-                        variant="tertiary"
-                        title="Delete value of policy field"
-                    >
-                        <TimesIcon />
-                    </Button>
+                    <FlexItem>
+                        <Button
+                            icon={<TimesIcon />}
+                            onClick={handleRemoveValue}
+                            variant="tertiary"
+                            title="Delete value of policy field"
+                        />
+                    </FlexItem>
                 )}
             </Flex>
         </div>

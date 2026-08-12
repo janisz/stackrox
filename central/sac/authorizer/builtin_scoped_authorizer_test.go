@@ -29,25 +29,28 @@ var (
 	allResourcesView = mapResourcesToAccess(resources.AllResourcesViewPermissions())
 	allResourcesEdit = mapResourcesToAccess(resources.AllResourcesModifyPermissions())
 
-	clusters = []*storage.Cluster{
-		{Id: firstClusterID, Name: firstClusterName},
-		{Id: secondClusterID, Name: secondClusterName},
+	clusters = []effectiveaccessscope.Cluster{
+		&storage.Cluster{Id: firstClusterID, Name: firstClusterName},
+		&storage.Cluster{Id: secondClusterID, Name: secondClusterName},
 	}
-	namespaces = []*storage.NamespaceMetadata{{
-		Id:          "namespace-1",
-		Name:        firstNamespaceName,
-		ClusterId:   firstClusterID,
-		ClusterName: firstClusterName,
-	}, {
-		Id:          "namespace-2",
-		Name:        secondNamespaceName,
-		ClusterId:   firstClusterID,
-		ClusterName: firstClusterName,
-	}}
+
+	namespaces = []effectiveaccessscope.Namespace{
+		&storage.NamespaceMetadata{
+			Id:          "namespace-1",
+			Name:        firstNamespaceName,
+			ClusterId:   firstClusterID,
+			ClusterName: firstClusterName,
+		},
+		&storage.NamespaceMetadata{
+			Id:          "namespace-2",
+			Name:        secondNamespaceName,
+			ClusterId:   firstClusterID,
+			ClusterName: firstClusterName,
+		},
+	}
 )
 
 func TestBuiltInScopeAuthorizerWithTracing(t *testing.T) {
-	t.Parallel()
 	clusterEdit := map[string]storage.Access{string(resources.Cluster.Resource): storage.Access_READ_WRITE_ACCESS}
 	complianceEdit := map[string]storage.Access{string(resources.Compliance.Resource): storage.Access_READ_WRITE_ACCESS}
 
@@ -134,7 +137,6 @@ func TestBuiltInScopeAuthorizerWithTracing(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
 			trace := observe.NewAuthzTrace()
 			scc := newGlobalScopeCheckerCore(clusters, namespaces, tc.roles, trace)
 			for i, scopeKey := range tc.scopeKeys {
@@ -151,7 +153,6 @@ func TestBuiltInScopeAuthorizerWithTracing(t *testing.T) {
 }
 
 func TestScopeCheckerWithParallelAccessAndSharedGlobalScopeChecker(t *testing.T) {
-	t.Parallel()
 	roles := []permissions.ResolvedRole{role(allResourcesView, withAccessTo1Namespace())}
 
 	subScopeChecker := newGlobalScopeCheckerCore(clusters, namespaces, roles, nil)
@@ -241,7 +242,6 @@ func TestScopeCheckerWithParallelAccessAndSharedGlobalScopeChecker(t *testing.T)
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
 			scc := subScopeChecker
 			for i, scopeKey := range tc.scopeKeys {
 				if i >= len(tc.results) {
@@ -257,7 +257,6 @@ func TestScopeCheckerWithParallelAccessAndSharedGlobalScopeChecker(t *testing.T)
 }
 
 func TestEffectiveAccessScope(t *testing.T) {
-	t.Parallel()
 
 	clusterEdit := map[string]storage.Access{string(resources.Cluster.Resource): storage.Access_READ_WRITE_ACCESS}
 
@@ -687,7 +686,6 @@ func TestEffectiveAccessScope(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
 			scc := newGlobalScopeCheckerCore(clusters, namespaces, tc.roles, nil)
 			// Checks on the global level SCC scope extraction
 			checkEffectiveAccessScope(t, scc, tc.resource, tc.resultEAS)
@@ -713,13 +711,11 @@ func checkEffectiveAccessScope(t *testing.T, scc sac.ScopeCheckerCore, resource 
 }
 
 func TestGlobalScopeCheckerCore(t *testing.T) {
-	t.Parallel()
 	scc := newGlobalScopeCheckerCore(nil, nil, nil, nil)
 	assert.Equal(t, false, scc.Allowed())
 }
 
 func TestBuiltInScopeAuthorizerPanicsWhenErrorOnComputeAccessScope(t *testing.T) {
-	t.Parallel()
 	tests := []struct {
 		name      string
 		roles     []permissions.ResolvedRole
@@ -741,7 +737,6 @@ func TestBuiltInScopeAuthorizerPanicsWhenErrorOnComputeAccessScope(t *testing.T)
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
 			scc := newGlobalScopeCheckerCore(clusters, namespaces, tc.roles, nil)
 			for i, scopeKey := range tc.scopeKeys {
 				scc = scc.SubScopeChecker(scopeKey)
@@ -838,4 +833,79 @@ func countAllowedResults(xs []bool) int {
 		}
 	}
 	return result
+}
+
+func TestNoAddedResources(t *testing.T) {
+	knownResources := []permissions.ResourceMetadata{
+		resources.Access,
+		resources.Administration,
+		resources.Alert,
+		resources.CVE,
+		resources.Cluster,
+		resources.Compliance,
+		resources.Deployment,
+		resources.DeploymentExtension,
+		resources.Detection,
+		resources.Image,
+		resources.ImageAdministration,
+		resources.Integration,
+		resources.K8sRole,
+		resources.K8sRoleBinding,
+		resources.K8sSubject,
+		resources.Namespace,
+		resources.NetworkGraph,
+		resources.NetworkPolicy,
+		resources.Node,
+		resources.Secret,
+		resources.ServiceAccount,
+		resources.VirtualMachine,
+		resources.VulnerabilityManagementApprovals,
+		resources.VulnerabilityManagementRequests,
+		resources.WatchedImage,
+		resources.WorkflowAdministration,
+	}
+	knownDisabledResources := ([]permissions.ResourceMetadata)(nil)
+	knownInternalResources := []permissions.ResourceMetadata{
+		resources.ComplianceOperator,
+		resources.Hash,
+		resources.InitBundleMeta,
+		resources.InstallationInfo,
+		resources.NetworkEntity,
+		resources.Notifications,
+		resources.Version,
+		resources.VulnerabilityRequest,
+	}
+
+	const failureMessage = "" +
+		"Please contact the Sensor & Ecosystems team to validate " +
+		"your addition of resource. For more information about " +
+		"the resource creation process, check " +
+		"https://github.com/stackrox/stackrox/tree/master/pkg/sac/resources/README.md ."
+
+	for _, metadata := range resources.ListAllMetadata() {
+		assert.Contains(
+			t,
+			knownResources,
+			metadata,
+			failureMessage+" "+metadata.String(),
+		)
+	}
+	for _, metadata := range resources.ListAllDisabledMetadata() {
+		assert.Contains(
+			t,
+			knownDisabledResources,
+			metadata,
+			failureMessage,
+			metadata.String(),
+		)
+	}
+	for _, metadata := range resources.ListAllInternalMetadata() {
+		assert.Contains(
+			t,
+			knownInternalResources,
+			metadata,
+			failureMessage,
+			metadata.String(),
+		)
+	}
 }

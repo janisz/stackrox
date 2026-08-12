@@ -1,35 +1,9 @@
-ARG FINAL_STAGE_PATH="/mnt/final"
-
-# TODO(ROX-20312): we can't pin image tag or digest because currently there's no mechanism to auto-update that.
-FROM registry.access.redhat.com/ubi8/ubi:latest AS ubi-base
-FROM registry.access.redhat.com/ubi8/ubi-minimal:latest AS final-base
+ARG PG_VERSION=15
 
 
-# TODO(ROX-20651): use content sets instead of subscription manager for access to RHEL RPMs once available. Move dnf commands to respective stages.
-FROM ubi-base AS rpm-installer
+FROM brew.registry.redhat.io/rh-osbs/openshift-golang-builder:rhel_9_golang_1.26@sha256:3ca2c34c83e6563fa574b7c7ecda92a5fdae2ec7a5f37a408e5e383947fb1957 AS go-builder
 
-ARG FINAL_STAGE_PATH
-COPY --from=final-base / "$FINAL_STAGE_PATH"
-
-COPY ./.konflux/scripts/subscription-manager/* /tmp/.konflux/
-RUN /tmp/.konflux/subscription-manager-bro.sh register "$FINAL_STAGE_PATH"
-
-# Install packages for the final stage.
-RUN dnf -y --installroot="$FINAL_STAGE_PATH" upgrade --nobest && \
-    dnf -y --installroot="$FINAL_STAGE_PATH" module enable postgresql:13 && \
-    # find is used in /stackrox/import-additional-cas \
-    dnf -y --installroot="$FINAL_STAGE_PATH" install findutils postgresql && \
-    # We can do usual cleanup while we're here: remove packages that would trigger violations. \
-    dnf -y --installroot="$FINAL_STAGE_PATH" clean all && \
-    rpm --root="$FINAL_STAGE_PATH" --verbose -e --nodeps $(rpm --root="$FINAL_STAGE_PATH" -qa curl '*rpm*' '*dnf*' '*libsolv*' '*hawkey*' 'yum*') && \
-    rm -rf "$FINAL_STAGE_PATH/var/cache/dnf" "$FINAL_STAGE_PATH/var/cache/yum"
-
-RUN /tmp/.konflux/subscription-manager-bro.sh cleanup
-
-
-FROM brew.registry.redhat.io/rh-osbs/openshift-golang-builder:rhel_8_1.23 AS go-builder
-
-RUN dnf -y install --allowerasing make automake gcc gcc-c++ coreutils binutils diffutils zlib-devel bzip2-devel lz4-devel cmake jq
+RUN dnf -y install --allowerasing jq
 
 WORKDIR /go/src/github.com/stackrox/rox/app
 
@@ -40,24 +14,30 @@ RUN if [[ "$BUILD_TAG" == "" ]]; then >&2 echo "error: required BUILD_TAG arg is
 ENV BUILD_TAG="$BUILD_TAG"
 
 ENV GOFLAGS=""
-ENV CGO_ENABLED=1
 # TODO(ROX-20240): enable non-release development builds.
+ENV GOTAGS="release"
+ENV CI=1
+
+# TODO(ROX-13200): make sure roxctl cli is built without running go mod tidy.
+# CLI builds are without strictfipsruntime (and CGO_ENABLED is set to 0) because these binaries are for user download and use outside the cluster.
+RUN make roxctl-build
+
+ENV CGO_ENABLED=1
 # TODO(ROX-27054): Remove the redundant strictfipsruntime option if one is found to be so.
 ENV GOTAGS="release,strictfipsruntime"
 ENV GOEXPERIMENT=strictfipsruntime
-ENV CI=1
 
-RUN # TODO(ROX-13200): make sure roxctl cli is built without running go mod tidy. \
-    make main-build-nodeps cli-build && \
-    mkdir -p image/rhel/docs/api/v1 && \
-    ./scripts/mergeswag.sh generated/api/v1 1 >image/rhel/docs/api/v1/swagger.json && \
+RUN make main-build-nodeps
+
+RUN mkdir -p image/rhel/docs/api/v1 && \
+    ./scripts/mergeswag.sh 1 generated/api/v1 central/docs/api_custom_routes >image/rhel/docs/api/v1/swagger.json && \
     mkdir -p image/rhel/docs/api/v2 && \
-    ./scripts/mergeswag.sh generated/api/v2 2 >image/rhel/docs/api/v2/swagger.json
+    ./scripts/mergeswag.sh 2 generated/api/v2 >image/rhel/docs/api/v2/swagger.json
 
 RUN make copy-go-binaries-to-image-dir
 
 
-FROM registry.access.redhat.com/ubi8/nodejs-20:latest AS ui-builder
+FROM registry.access.redhat.com/ubi9/nodejs-22@sha256:0e4e66a6fa295e7d7c13c94d1b4f39cb058a97843ac01e555e72721ac31eefa8 as ui-builder
 
 WORKDIR /go/src/github.com/stackrox/rox/app
 
@@ -79,10 +59,38 @@ ENV UI_PKG_INSTALL_EXTRA_ARGS="--ignore-scripts"
 RUN make -C ui build
 
 
-FROM scratch
+FROM registry.access.redhat.com/ubi9/ubi-micro:latest@sha256:7e7f79ab747bf2b452e3043dd89f388e92be4c7fdcc8b815b58adf6c99c39c95 AS ubi-micro-base
 
-ARG FINAL_STAGE_PATH
-COPY --from=rpm-installer "$FINAL_STAGE_PATH" /
+FROM registry.access.redhat.com/ubi9/ubi:latest@sha256:d3e61197e0f96aee94872141b429f63eadb939de95a25fe6b504843f427b7a3f AS package_installer
+
+ARG PG_VERSION
+
+COPY --from=ubi-micro-base / /out/
+
+RUN dnf module enable -y \
+        --installroot=/out/ \
+        --setopt=reposdir=/etc/yum.repos.d \
+        --releasever=9 \
+        postgresql:${PG_VERSION} && \
+    dnf install -y \
+        --installroot=/out/ \
+        --setopt=reposdir=/etc/yum.repos.d \
+        --releasever=9 \
+        --setopt=install_weak_deps=0 \
+        --nodocs \
+        ca-certificates \
+        findutils \
+        gzip \
+        less \
+        openssl \
+        postgresql \
+        tar && \
+    dnf clean all --installroot=/out/ && \
+    rm -rf /out/var/cache/dnf /out/var/cache/yum
+
+FROM ubi-micro-base
+
+COPY --from=package_installer /out/ /
 
 COPY --from=ui-builder /go/src/github.com/stackrox/rox/app/ui/build /ui/
 
@@ -94,12 +102,11 @@ COPY --from=go-builder /go/src/github.com/stackrox/rox/app/image/rhel/bin/kubern
 COPY --from=go-builder /go/src/github.com/stackrox/rox/app/image/rhel/bin/sensor-upgrader /stackrox/bin/
 COPY --from=go-builder /go/src/github.com/stackrox/rox/app/image/rhel/bin/admission-control /stackrox/bin/
 COPY --from=go-builder /go/src/github.com/stackrox/rox/app/image/rhel/bin/config-controller /stackrox/bin/
-COPY --from=go-builder /go/src/github.com/stackrox/rox/app/image/rhel/bin/init-tls-certs /stackrox/bin/
+COPY --from=go-builder /go/src/github.com/stackrox/rox/app/image/rhel/bin/roxagent /stackrox/bin/
 COPY --from=go-builder /go/src/github.com/stackrox/rox/app/image/rhel/static-bin/* /stackrox/
 RUN GOARCH=$(uname -m) ; \
     case $GOARCH in x86_64) GOARCH=amd64 ;; aarch64) GOARCH=arm64 ;; esac ; \
-    ln -s /assets/downloads/cli/roxctl-linux-$GOARCH /stackrox/roxctl ; \
-    ln -s /assets/downloads/cli/roxctl-linux-$GOARCH /assets/downloads/cli/roxctl-linux
+    ln -s /assets/downloads/cli/roxctl-linux-$GOARCH /stackrox/roxctl
 
 ARG BUILD_TAG
 
@@ -112,7 +119,7 @@ LABEL \
     io.k8s.display-name="main" \
     io.openshift.tags="rhacs,main,stackrox" \
     maintainer="Red Hat, Inc." \
-    name="rhacs-main-rhel8" \
+    name="advanced-cluster-security/rhacs-main-rhel9" \
     # Custom Snapshot creation in `operator-bundle-pipeline` depends on source-location label to be set correctly.
     source-location="https://github.com/stackrox/stackrox" \
     summary="Main Image for Red Hat Advanced Cluster Security for Kubernetes" \
@@ -139,7 +146,7 @@ COPY --from=go-builder /go/src/github.com/stackrox/rox/app/image/rhel/docs/api/v
 COPY LICENSE /licenses/LICENSE
 
 # The following paths are written to in Central.
-RUN chown -R 4000:4000 /etc/pki/ca-trust /etc/ssl && save-dir-contents /etc/pki/ca-trust /etc/ssl && \
+RUN chown -R 4000:4000 /etc/pki/ca-trust && save-dir-contents /etc/pki/ca-trust/source && \
     mkdir -p /var/lib/stackrox && chown -R 4000:4000 /var/lib/stackrox && \
     mkdir -p /var/log/stackrox && chown -R 4000:4000 /var/log/stackrox && \
     mkdir -p /var/cache/stackrox && chown -R 4000:4000 /var/cache/stackrox && \

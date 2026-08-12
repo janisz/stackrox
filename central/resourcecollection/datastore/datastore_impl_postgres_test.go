@@ -5,11 +5,11 @@ package datastore
 import (
 	"context"
 	"fmt"
+	"slices"
 	"testing"
 	"time"
 
 	"github.com/heimdalr/dag"
-	"github.com/stackrox/rox/central/resourcecollection/datastore/search"
 	pgStore "github.com/stackrox/rox/central/resourcecollection/datastore/store/postgres"
 	v1 "github.com/stackrox/rox/generated/api/v1"
 	"github.com/stackrox/rox/generated/storage"
@@ -41,7 +41,7 @@ func (s *CollectionPostgresDataStoreTestSuite) SetupSuite() {
 	s.testDB = pgtest.ForT(s.T())
 
 	s.store = pgStore.New(s.testDB)
-	ds, qs, err := New(s.store, search.New(s.store))
+	ds, qs, err := New(s.store)
 	s.NoError(err)
 	s.datastore = ds
 	s.qr = qs
@@ -50,10 +50,6 @@ func (s *CollectionPostgresDataStoreTestSuite) SetupSuite() {
 // SetupTest removes the local graph before every test
 func (s *CollectionPostgresDataStoreTestSuite) SetupTest() {
 	s.NoError(resetLocalGraph(s.datastore.(*datastoreImpl)))
-}
-
-func (s *CollectionPostgresDataStoreTestSuite) TearDownSuite() {
-	s.testDB.Teardown(s.T())
 }
 
 func (s *CollectionPostgresDataStoreTestSuite) TestGraphInit() {
@@ -118,8 +114,8 @@ func (s *CollectionPostgresDataStoreTestSuite) TestGraphInit() {
 			protoassert.ElementsMatch(s.T(), objs, batch)
 
 			// clean up data
-			for i := len(objIDs) - 1; i >= 0; i-- {
-				assert.NoError(s.T(), s.datastore.DeleteCollection(ctx, objIDs[i]))
+			for _, objID := range slices.Backward(objIDs) {
+				assert.NoError(s.T(), s.datastore.DeleteCollection(ctx, objID))
 			}
 			assert.NoError(s.T(), resetLocalGraph(s.datastore.(*datastoreImpl)))
 		})
@@ -145,7 +141,7 @@ func (s *CollectionPostgresDataStoreTestSuite) TestCollectionWorkflows() {
 	objA := getTestCollection("a", nil)
 	err = s.datastore.DryRunAddCollection(ctx, objA)
 	assert.NoError(s.T(), err)
-	assert.Equal(s.T(), "", objA.Id)
+	assert.Equal(s.T(), "", objA.GetId())
 	count, err := s.datastore.Count(ctx, nil)
 	assert.NoError(s.T(), err)
 	assert.Equal(s.T(), 0, count)
@@ -153,7 +149,7 @@ func (s *CollectionPostgresDataStoreTestSuite) TestCollectionWorkflows() {
 	// add 'a', verify present
 	_, err = s.datastore.AddCollection(ctx, objA)
 	assert.NoError(s.T(), err)
-	assert.NotEqual(s.T(), "", objA.Id)
+	assert.NotEqual(s.T(), "", objA.GetId())
 	obj, ok, err := s.datastore.Get(ctx, objA.GetId())
 	assert.NoError(s.T(), err)
 	assert.True(s.T(), ok)
@@ -163,18 +159,18 @@ func (s *CollectionPostgresDataStoreTestSuite) TestCollectionWorkflows() {
 	objADup := getTestCollection("a", nil)
 	err = s.datastore.DryRunAddCollection(ctx, objADup)
 	assert.Error(s.T(), err)
-	assert.Equal(s.T(), "", objADup.Id)
+	assert.Equal(s.T(), "", objADup.GetId())
 
 	// add duplicate 'a'
 	_, err = s.datastore.AddCollection(ctx, objADup)
 	assert.Error(s.T(), err)
-	assert.Equal(s.T(), "", objADup.Id)
+	assert.Equal(s.T(), "", objADup.GetId())
 
 	// dryrun add 'b' which points to 'a', verify not present
 	objB := getTestCollection("b", []string{objA.GetId()})
 	err = s.datastore.DryRunAddCollection(ctx, objB)
 	assert.NoError(s.T(), err)
-	assert.Equal(s.T(), "", objB.Id)
+	assert.Equal(s.T(), "", objB.GetId())
 	count, err = s.datastore.Count(ctx, nil)
 	assert.NoError(s.T(), err)
 	assert.Equal(s.T(), 1, count)
@@ -182,7 +178,7 @@ func (s *CollectionPostgresDataStoreTestSuite) TestCollectionWorkflows() {
 	// add 'b' which points to 'a', verify present
 	_, err = s.datastore.AddCollection(ctx, objB)
 	assert.NoError(s.T(), err)
-	assert.NotEqual(s.T(), "", objB.Id)
+	assert.NotEqual(s.T(), "", objB.GetId())
 	obj, ok, err = s.datastore.Get(ctx, objB.GetId())
 	assert.NoError(s.T(), err)
 	assert.True(s.T(), ok)
@@ -251,7 +247,7 @@ func (s *CollectionPostgresDataStoreTestSuite) TestCollectionWorkflows() {
 	objE := getTestCollection("e", []string{objB.GetId()})
 	_, err = s.datastore.AddCollection(ctx, objE)
 	assert.NoError(s.T(), err)
-	assert.NotEqual(s.T(), "", objE.Id)
+	assert.NotEqual(s.T(), "", objE.GetId())
 	obj, ok, err = s.datastore.Get(ctx, objE.GetId())
 	assert.NoError(s.T(), err)
 	assert.True(s.T(), ok)
@@ -547,9 +543,10 @@ func (s *CollectionPostgresDataStoreTestSuite) TestVerifyCollectionConstraints()
 
 func (s *CollectionPostgresDataStoreTestSuite) TestCollectionToQueries() {
 
-	var supportedLabelRules []*storage.SelectorRule
+	supportedFieldLabels := GetSupportedFieldLabels()
+	supportedLabelRules := make([]*storage.SelectorRule, 0, len(supportedFieldLabels))
 
-	for _, label := range GetSupportedFieldLabels() {
+	for _, label := range supportedFieldLabels {
 		supportedLabelRules = append(supportedLabelRules, &storage.SelectorRule{
 			FieldName: label.String(),
 			Operator:  storage.BooleanOperator_OR,
@@ -822,6 +819,140 @@ func (s *CollectionPostgresDataStoreTestSuite) TestResolveCollectionQuery() {
 	query, err = s.qr.ResolveCollectionQuery(ctx, testObj)
 	assert.NoError(s.T(), err)
 	assert.Equal(s.T(), expectedQuery.String(), query.String())
+
+	// Clean up
+	s.NoError(s.datastore.DeleteCollection(ctx, objC.GetId()))
+	s.NoError(s.datastore.DeleteCollection(ctx, objB.GetId()))
+	s.NoError(s.datastore.DeleteCollection(ctx, objA.GetId()))
+}
+
+func (s *CollectionPostgresDataStoreTestSuite) TestSearchResults() {
+	ctx := sac.WithAllAccess(context.Background())
+	// Create test resource collections
+	collection1 := getTestCollection("test-collection-1", nil)
+	collection1.ResourceSelectors = []*storage.ResourceSelector{
+		{
+			Rules: []*storage.SelectorRule{
+				{
+					FieldName: pkgSearch.Cluster.String(),
+					Operator:  storage.BooleanOperator_OR,
+					Values: []*storage.RuleValue{
+						{
+							Value: "cluster-1",
+						},
+					},
+				},
+			},
+		},
+	}
+	id1, err := s.datastore.AddCollection(ctx, collection1)
+	s.NoError(err)
+	s.NotEmpty(id1)
+
+	collection2 := getTestCollection("test-collection-2", nil)
+	collection2.ResourceSelectors = []*storage.ResourceSelector{
+		{
+			Rules: []*storage.SelectorRule{
+				{
+					FieldName: pkgSearch.Namespace.String(),
+					Operator:  storage.BooleanOperator_OR,
+					Values: []*storage.RuleValue{
+						{
+							Value: "namespace-1",
+						},
+					},
+				},
+			},
+		},
+	}
+	id2, err := s.datastore.AddCollection(ctx, collection2)
+	s.NoError(err)
+	s.NotEmpty(id2)
+
+	collection3 := getTestCollection("test-collection-3", nil)
+	collection3.ResourceSelectors = []*storage.ResourceSelector{
+		{
+			Rules: []*storage.SelectorRule{
+				{
+					FieldName: pkgSearch.DeploymentName.String(),
+					Operator:  storage.BooleanOperator_OR,
+					Values: []*storage.RuleValue{
+						{
+							Value: "deployment-1",
+						},
+					},
+				},
+			},
+		},
+	}
+	id3, err := s.datastore.AddCollection(ctx, collection3)
+	s.NoError(err)
+	s.NotEmpty(id3)
+
+	// Define test cases
+	testCases := []struct {
+		name          string
+		query         *v1.Query
+		expectedCount int
+		expectedIDs   []string
+		expectedNames []string
+	}{
+		{
+			name:          "empty query returns all collections with names populated",
+			query:         pkgSearch.EmptyQuery(),
+			expectedCount: 3,
+			expectedIDs:   []string{id1, id2, id3},
+			expectedNames: []string{collection1.GetName(), collection2.GetName(), collection3.GetName()},
+		},
+		{
+			name:          "nil query defaults to empty query",
+			query:         nil,
+			expectedCount: 3,
+			expectedIDs:   []string{id1, id2, id3},
+			expectedNames: []string{collection1.GetName(), collection2.GetName(), collection3.GetName()},
+		},
+		{
+			name:          "query by collection name - exact match",
+			query:         pkgSearch.NewQueryBuilder().AddExactMatches(pkgSearch.CollectionName, "test-collection-1").ProtoQuery(),
+			expectedCount: 1,
+			expectedIDs:   []string{id1},
+			expectedNames: []string{collection1.GetName()},
+		},
+	}
+
+	// Run test cases
+	for _, tc := range testCases {
+		s.Run(tc.name, func() {
+			results, err := s.datastore.SearchResults(ctx, tc.query)
+			s.NoError(err)
+			s.Len(results, tc.expectedCount, "Expected %d results, got %d", tc.expectedCount, len(results))
+
+			actualIDs := make([]string, 0, len(results))
+			actualNames := make([]string, 0, len(results))
+			for _, result := range results {
+				actualIDs = append(actualIDs, result.GetId())
+				actualNames = append(actualNames, result.GetName())
+				s.Equal(v1.SearchCategory_COLLECTIONS, result.GetCategory())
+			}
+
+			if len(tc.expectedIDs) > 0 {
+				s.ElementsMatch(tc.expectedIDs, actualIDs)
+			}
+
+			if len(tc.expectedNames) > 0 {
+				s.ElementsMatch(tc.expectedNames, actualNames)
+			}
+		})
+	}
+	// Clean up - delete in reverse dependency order (children before parents)
+	s.NoError(s.datastore.DeleteCollection(ctx, id3)) // has reference to id1, delete first
+	s.NoError(s.datastore.DeleteCollection(ctx, id2))
+	s.NoError(s.datastore.DeleteCollection(ctx, id1))
+
+	// Verify cleanup
+	results, err := s.datastore.SearchResults(ctx, pkgSearch.EmptyQuery())
+	s.NoError(err)
+	s.Empty(results)
 }
 
 func (s *CollectionPostgresDataStoreTestSuite) TestFoo() {

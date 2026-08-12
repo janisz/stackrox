@@ -1,4 +1,4 @@
-FROM registry.redhat.io/rhel8/postgresql-15:latest
+FROM registry.redhat.io/rhel9/postgresql-15:latest@sha256:1ce97000d1619e734f659d3b106aecd8454be4ff479ed979d921d876c44059ba
 
 ARG BUILD_TAG
 RUN if [[ "$BUILD_TAG" == "" ]]; then >&2 echo "error: required BUILD_TAG arg is unset"; exit 6; fi
@@ -11,7 +11,7 @@ LABEL \
     io.k8s.display-name="scanner-v4-db" \
     io.openshift.tags="rhacs,scanner-v4-db,stackrox" \
     maintainer="Red Hat, Inc." \
-    name="rhacs-scanner-v4-db-rhel8" \
+    name="advanced-cluster-security/rhacs-scanner-v4-db-rhel9" \
     # Custom Snapshot creation in `operator-bundle-pipeline` depends on source-location label to be set correctly.
     source-location="https://github.com/stackrox/stackrox" \
     summary="Scanner v4 DB for Red Hat Advanced Cluster Security for Kubernetes" \
@@ -27,10 +27,10 @@ USER root
 COPY \
      scanner/image/db/scripts/docker-entrypoint.sh \
      scanner/image/db/scripts/init-entrypoint.sh \
+     scanner/image/db/scripts/cert-watcher.sh \
      /usr/local/bin/
 
-RUN dnf upgrade -y --nobest && \
-    localedef -f UTF-8 -i en_US en_US.UTF-8 && \
+RUN localedef -f UTF-8 -i en_US en_US.UTF-8 && \
     mkdir -p /var/lib/postgresql && \
     groupmod -g 70 postgres && \
     usermod -u 70 postgres -d /var/lib/postgresql && \

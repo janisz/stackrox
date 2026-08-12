@@ -1,32 +1,33 @@
-import acscsEmail from 'images/acsEmailNotifier.svg';
-import artifactory from 'images/artifactory.svg';
-import aws from 'images/aws.svg';
-import awsSecurityHub from 'images/aws-security-hub.svg';
-import azure from 'images/azure.svg';
-import clair from 'images/clair.svg';
-import docker from 'images/docker.svg';
-import email from 'images/email.svg';
-import ghcr from 'images/ghcr.svg';
-import google from 'images/google-cloud.svg';
-import googleartifact from 'images/google-artifact.svg';
-import googleregistry from 'images/google-container.svg';
-import ibm from 'images/ibm-ccr.svg';
-import jira from 'images/jira.svg';
-import logo from 'images/StackRox-integration-logo.svg';
-import microsoftSentinel from 'images/microsoft_sentinel.svg';
-import nexus from 'images/nexus.svg';
-import pagerduty from 'images/pagerduty.svg';
-import quay from 'images/quay.svg';
-import redhat from 'images/redhat.svg';
-import signature from 'images/signature.svg';
-import slack from 'images/slack.svg';
-import splunk from 'images/splunk.svg';
-import sumologic from 'images/sumologic.svg';
-import s3 from 'images/s3.svg';
-import s3compatible from 'images/s3-compatible.svg';
-import syslog from 'images/syslog.svg';
-import teams from 'images/teams.svg';
-import paladinCloud from 'images/paladinCloud.svg';
+import type { ComponentType, SVGProps } from 'react';
+import AcscsEmailSvg from 'images/acsEmailNotifier.svg?react';
+import ArtifactorySvg from 'images/artifactory.svg?react';
+import AwsSvg from 'images/aws.svg?react';
+import AwsSecurityHubSvg from 'images/aws-security-hub.svg?react';
+import AzureSvg from 'images/azure.svg?react';
+import ClairSvg from 'images/clair.svg?react';
+import DockerSvg from 'images/docker.svg?react';
+import EmailSvg from 'images/email.svg?react';
+import GhcrSvg from 'images/ghcr.svg?react';
+import GoogleSvg from 'images/google-cloud.svg?react';
+import GoogleArtifactSvg from 'images/google-artifact.svg?react';
+import GoogleRegistrySvg from 'images/google-container.svg?react';
+import IbmSvg from 'images/ibm-ccr.svg?react';
+import JiraSvg from 'images/jira.svg?react';
+import LogoSvg from 'images/StackRox-integration-logo.svg?react';
+import MicrosoftSentinelSvg from 'images/microsoft_sentinel.svg?react';
+import NexusSvg from 'images/nexus.svg?react';
+import PagerDutySvg from 'images/pagerduty.svg?react';
+import QuaySvg from 'images/quay.svg?react';
+import RedhatSvg from 'images/redhat.svg?react';
+import SignatureSvg from 'images/signature.svg?react';
+import SlackSvg from 'images/slack.svg?react';
+import SplunkSvg from 'images/splunk.svg?react';
+import SumologicSvg from 'images/sumologic.svg?react';
+import S3Svg from 'images/s3.svg?react';
+import S3CompatibleSvg from 'images/s3-compatible.svg?react';
+import SyslogSvg from 'images/syslog.svg?react';
+import TeamsSvg from 'images/teams.svg?react';
+import PaladinCloudSvg from 'images/paladinCloud.svg?react';
 import { integrationsPath } from 'routePaths';
 
 /*
@@ -36,16 +37,23 @@ import { integrationsPath } from 'routePaths';
  *    featureFlagDependency: ['ROX_WHATEVER_1', 'ROX_WHATEVER_2'],
  */
 
-import { FeatureFlagEnvVar } from 'types/featureFlag';
-import {
+import type { IsCentralCapabilityAvailable } from 'hooks/useCentralCapabilities';
+import type { IsFeatureFlagEnabled } from 'hooks/useFeatureFlags';
+import type { CentralCapabilitiesFlags } from 'services/MetadataService';
+import type { FeatureFlagEnvVar } from 'types/featureFlag';
+import { integrationSources } from 'types/integration';
+import type {
     AuthProviderType,
     BackupIntegrationType,
     CloudSourceIntegrationType,
     ImageIntegrationType,
     IntegrationSource,
+    IntegrationType,
     NotifierIntegrationType,
     SignatureIntegrationType,
 } from 'types/integration';
+// import { allEnabled } from 'utils/featureFlagUtils'; // uncomment when needed
+import type { FeatureFlagPredicate } from 'utils/featureFlagUtils';
 
 export type AuthProviderDescriptor = {
     type: AuthProviderType;
@@ -81,7 +89,8 @@ export type CloudSourceDescriptor = {
 export type BaseIntegrationDescriptor = {
     type: string;
     label: string;
-    image: string;
+    Logo: ComponentType<SVGProps<SVGSVGElement>>;
+    centralCapabilityRequirement?: CentralCapabilitiesFlags;
     featureFlagDependency?: FeatureFlagEnvVar[];
 };
 
@@ -90,101 +99,102 @@ export const imageIntegrationsSource: IntegrationSource = 'imageIntegrations';
 export const imageIntegrationsDescriptors: ImageIntegrationDescriptor[] = [
     {
         categories: 'Image Scanner + Node Scanner',
-        image: logo,
-        label: '[DEPRECATED] StackRox Scanner',
-        type: 'clairify',
-    },
-    {
-        categories: 'Image Scanner + Node Scanner',
-        image: logo,
+        Logo: LogoSvg,
         label: 'Scanner V4',
         type: 'scannerv4',
         featureFlagDependency: ['ROX_SCANNER_V4'],
     },
     {
         categories: 'Registry',
-        image: docker,
+        Logo: DockerSvg,
         label: 'Generic Docker Registry',
         type: 'docker',
     },
     {
         categories: 'Registry',
-        image: aws,
+        Logo: AwsSvg,
         label: 'Amazon ECR',
         type: 'ecr',
     },
     {
-        categories: 'Registry + Scanner',
-        image: googleregistry,
-        label: '[DEPRECATED] Google Container Registry',
-        type: 'google',
-    },
-    {
         categories: 'Registry',
-        image: googleartifact,
+        Logo: GoogleArtifactSvg,
         label: 'Google Artifact Registry',
         type: 'artifactregistry',
     },
     {
         categories: 'Registry',
-        image: azure,
+        Logo: AzureSvg,
         label: 'Microsoft ACR',
         type: 'azure',
     },
     {
         categories: 'Registry',
-        image: artifactory,
+        Logo: ArtifactorySvg,
         label: 'JFrog Artifactory',
         type: 'artifactory',
     },
     {
         categories: 'Registry + Scanner',
-        image: quay,
+        Logo: QuaySvg,
         label: 'Quay.io',
         type: 'quay',
     },
     {
         categories: 'Scanner',
-        image: clair,
-        label: '[DEPRECATED] CoreOS Clair',
-        type: 'clair',
-    },
-    {
-        categories: 'Scanner',
-        image: clair,
+        Logo: ClairSvg,
         label: 'Clair v4',
         type: 'clairV4',
     },
     {
         categories: 'Registry',
-        image: nexus,
+        Logo: NexusSvg,
         label: 'Sonatype Nexus',
         type: 'nexus',
     },
     {
         categories: 'Registry',
-        image: ibm,
+        Logo: IbmSvg,
         label: 'IBM Cloud',
         type: 'ibm',
     },
     {
         categories: 'Registry',
-        image: redhat,
+        Logo: RedhatSvg,
         label: 'Red Hat',
         type: 'rhel',
     },
     {
         categories: 'Registry',
-        image: ghcr,
+        Logo: GhcrSvg,
         label: 'GitHub Container Registry',
         type: 'ghcr',
+    },
+    {
+        categories: 'Image Scanner + Node Scanner',
+        Logo: LogoSvg,
+        label: '[DEPRECATED] StackRox Scanner',
+        type: 'clairify',
+        featureFlagDependency: ['ROX_LEGACY_SCANNER'],
+    },
+    {
+        categories: 'Scanner',
+        Logo: ClairSvg,
+        label: '[DEPRECATED] CoreOS Clair',
+        type: 'clair',
+    },
+    {
+        categories: 'Registry + Scanner',
+        Logo: GoogleRegistrySvg,
+        label: '[DEPRECATED] Google Container Registry',
+        type: 'google',
     },
 ];
 
 export const signatureIntegrationsSource = 'signatureIntegrations';
 
 export const signatureIntegrationDescriptor: SignatureIntegrationDescriptor = {
-    image: signature,
+    Logo: SignatureSvg,
     label: 'Signature',
     type: 'signature',
 };
@@ -195,71 +205,69 @@ export const notifierIntegrationsSource = 'notifiers';
 
 export const notifierIntegrationsDescriptors: NotifierIntegrationDescriptor[] = [
     {
-        image: slack,
+        Logo: SlackSvg,
         label: 'Slack',
         type: 'slack',
     },
     {
-        image: logo,
+        Logo: LogoSvg,
         label: 'Generic Webhook',
         type: 'generic',
     },
     {
-        image: jira,
+        Logo: JiraSvg,
         label: 'Jira',
         type: 'jira',
     },
     {
-        image: email,
+        Logo: EmailSvg,
         label: 'Email',
         type: 'email',
     },
     {
-        image: acscsEmail,
+        Logo: AcscsEmailSvg,
         label: 'RHACS Cloud Service',
         type: 'acscsEmail',
-        featureFlagDependency: ['ROX_ACSCS_EMAIL_NOTIFIER'],
     },
     {
-        image: google,
+        Logo: GoogleSvg,
         label: 'Google Cloud SCC',
         type: 'cscc',
     },
     {
-        image: splunk,
+        Logo: SplunkSvg,
         label: 'Splunk',
         type: 'splunk',
     },
     {
-        image: pagerduty,
+        Logo: PagerDutySvg,
         label: 'PagerDuty',
         type: 'pagerduty',
     },
     {
-        image: sumologic,
+        Logo: SumologicSvg,
         label: 'Sumo Logic',
         type: 'sumologic',
     },
     {
-        image: teams,
+        Logo: TeamsSvg,
         label: 'Microsoft Teams',
         type: 'teams',
     },
     {
-        image: awsSecurityHub,
+        Logo: AwsSecurityHubSvg,
         label: 'AWS Security Hub',
         type: 'awsSecurityHub',
     },
     {
-        image: syslog,
+        Logo: SyslogSvg,
         label: 'Syslog',
         type: 'syslog',
     },
     {
-        image: microsoftSentinel,
+        Logo: MicrosoftSentinelSvg,
         label: 'Microsoft Sentinel',
         type: 'microsoftSentinel',
-        featureFlagDependency: ['ROX_MICROSOFT_SENTINEL'],
     },
 ];
 
@@ -267,17 +275,17 @@ export const backupIntegrationsSource = 'backups';
 
 export const backupIntegrationsDescriptors: BackupIntegrationDescriptor[] = [
     {
-        image: s3,
+        Logo: S3Svg,
         label: 'Amazon S3',
         type: 's3',
     },
     {
-        image: s3compatible,
+        Logo: S3CompatibleSvg,
         label: 'S3 API Compatible',
         type: 's3compatible',
     },
     {
-        image: google,
+        Logo: GoogleSvg,
         label: 'Google Cloud Storage',
         type: 'gcs',
     },
@@ -286,39 +294,29 @@ export const backupIntegrationsDescriptors: BackupIntegrationDescriptor[] = [
 export const authenticationTokensSource = 'authProviders';
 
 export const apiTokenDescriptor: AuthProviderDescriptor = {
-    image: logo,
+    Logo: LogoSvg,
     label: 'API Token',
     type: 'apitoken',
 };
 
-export const clusterInitBundleDescriptor: AuthProviderDescriptor = {
-    image: logo,
-    label: 'Cluster Init Bundle',
-    type: 'clusterInitBundle',
-};
-
 export const machineAccessDescriptor: AuthProviderDescriptor = {
-    image: logo,
+    Logo: LogoSvg,
     label: 'Machine access configuration',
     type: 'machineAccess',
 };
 
-const authenticationTokensDescriptors = [
-    apiTokenDescriptor,
-    clusterInitBundleDescriptor,
-    machineAccessDescriptor,
-];
+const authenticationTokensDescriptors = [apiTokenDescriptor, machineAccessDescriptor];
 
 export const cloudSourcesSource = 'cloudSources';
 
 export const paladinCloudDescriptor: CloudSourceDescriptor = {
-    image: paladinCloud,
+    Logo: PaladinCloudSvg,
     label: 'Paladin Cloud',
     type: 'paladinCloud',
 };
 
 export const ocmDescriptor: CloudSourceDescriptor = {
-    image: redhat,
+    Logo: RedhatSvg,
     label: 'OpenShift Cluster Manager',
     type: 'ocm',
 };
@@ -347,6 +345,75 @@ function getDescriptors(source: string): BaseIntegrationDescriptor[] {
 export function getIntegrationLabel(source: string, type: string): string {
     const descriptorFound = getDescriptors(source).find((descriptor) => descriptor.type === type);
     return descriptorFound ? descriptorFound.label : '';
+}
+
+// Adapted from RouteRequirements and routeRequirementsMap from routePaths.ts file.
+
+type IntegrationsRouteRequirements = {
+    centralCapabilityRequirement?: CentralCapabilitiesFlags;
+    featureFlagRequirements?: FeatureFlagPredicate;
+};
+
+const integrationSourceRequirementsMap: Record<IntegrationSource, IntegrationsRouteRequirements> = {
+    imageIntegrations: {},
+    signatureIntegrations: {},
+    notifiers: {},
+    backups: { centralCapabilityRequirement: 'centralCanUseCloudBackupIntegrations' },
+    cloudSources: {},
+    authProviders: {},
+    apiClients: {},
+};
+
+export type IntegrationsRoutePredicates = {
+    isCentralCapabilityAvailable: IsCentralCapabilityAvailable;
+    isFeatureFlagEnabled: IsFeatureFlagEnabled;
+};
+
+function isIntegrationsRouteEnabled(
+    { isCentralCapabilityAvailable, isFeatureFlagEnabled }: IntegrationsRoutePredicates,
+    { centralCapabilityRequirement, featureFlagRequirements }: IntegrationsRouteRequirements
+) {
+    if (
+        centralCapabilityRequirement &&
+        !isCentralCapabilityAvailable(centralCapabilityRequirement)
+    ) {
+        return false;
+    }
+
+    if (featureFlagRequirements && !featureFlagRequirements(isFeatureFlagEnabled)) {
+        return false;
+    }
+
+    return true;
+}
+
+export function getSourcesEnabled(predicates: IntegrationsRoutePredicates): IntegrationSource[] {
+    return integrationSources.filter((source) =>
+        isIntegrationsRouteEnabled(predicates, integrationSourceRequirementsMap[source])
+    );
+}
+
+export function getTypesEnabled(
+    predicates: IntegrationsRoutePredicates,
+    source: IntegrationSource
+): IntegrationType[] {
+    return getDescriptors(source)
+        .filter((descriptor) => isIntegrationsRouteEnabled(predicates, descriptor))
+        .map(({ type }) => type as IntegrationType);
+}
+
+export const integrationSourceTitleMap: Record<IntegrationSource, string> = {
+    imageIntegrations: 'Image',
+    signatureIntegrations: 'Signature',
+    notifiers: 'Notifier',
+    backups: 'Backup',
+    cloudSources: 'Cloud source',
+    authProviders: 'Authentication',
+    apiClients: 'API clients',
+};
+
+export function getIntegrationTabPath(source: IntegrationSource) {
+    return `${integrationsPath}/${source}`; // tabs need full instead of relative path
 }
 
 export function getIntegrationsListPath(source: IntegrationSource, type: string) {

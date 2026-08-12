@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"regexp"
+	"slices"
 
 	"github.com/stackrox/rox/central/compliance/framework"
 	"github.com/stackrox/rox/generated/storage"
@@ -20,7 +21,7 @@ var (
 func CheckNotifierInUseByCluster(ctx framework.ComplianceContext) {
 	notifiers := set.NewStringSet()
 	for _, notifier := range ctx.Data().Notifiers() {
-		notifiers.Add(notifier.Id)
+		notifiers.Add(notifier.GetId())
 	}
 
 	for _, policy := range ctx.Data().Policies() {
@@ -28,11 +29,9 @@ func CheckNotifierInUseByCluster(ctx framework.ComplianceContext) {
 			continue
 		}
 
-		for _, notifierID := range policy.GetNotifiers() {
-			if notifiers.Contains(notifierID) {
-				framework.Pass(ctx, "At least one enabled policy has a notifier configured.")
-				return
-			}
+		if slices.ContainsFunc(policy.GetNotifiers(), notifiers.Contains) {
+			framework.Pass(ctx, "At least one enabled policy has a notifier configured.")
+			return
 		}
 	}
 
@@ -45,7 +44,7 @@ func CheckImageScannerInUseByCluster(ctx framework.ComplianceContext) {
 	for _, integration := range ctx.Data().ImageIntegrations() {
 		for _, category := range integration.GetCategories() {
 			if category == storage.ImageIntegrationCategory_SCANNER {
-				scanners = append(scanners, integration.Name)
+				scanners = append(scanners, integration.GetName())
 			}
 		}
 	}
@@ -106,13 +105,7 @@ func CheckAnyPolicyInLifecycleStageEnforced(ctx framework.ComplianceContext, lif
 
 // PolicyIsInLifecycleStage returns whether the given policy is in the given lifecycle stage.
 func PolicyIsInLifecycleStage(policy *storage.Policy, targetStage storage.LifecycleStage) bool {
-	for _, policyStage := range policy.GetLifecycleStages() {
-		if policyStage == targetStage {
-			return true
-		}
-	}
-
-	return false
+	return slices.Contains(policy.GetLifecycleStages(), targetStage)
 }
 
 // AnyPoliciesEnforced checks if any policy in the given set is being enforced.
@@ -188,7 +181,7 @@ func deploymentHasReadOnlyRootFS(ctx framework.ComplianceContext, deployment *st
 
 // IsPolicyEnabled returns true if the policy is enabled.
 func IsPolicyEnabled(p *storage.Policy) bool {
-	return !p.Disabled
+	return !p.GetDisabled()
 }
 
 // IsPolicyEnforced returns true if the policy has one or more enforcement actions.
@@ -333,12 +326,7 @@ func deploymentHasSpecifiedNetworkPolicy(policyType storage.NetworkPolicyType, d
 }
 
 func policyIsOfType(spec *storage.NetworkPolicySpec, policyType storage.NetworkPolicyType) bool {
-	for _, ty := range spec.GetPolicyTypes() {
-		if ty == policyType {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(spec.GetPolicyTypes(), policyType)
 }
 
 func isKubeSystem(deployment *storage.Deployment) bool {
@@ -370,7 +358,7 @@ func CheckViolationsForPolicyByDeployment(ctx framework.ComplianceContext, polic
 	deploymentIDToAlerts := make(map[string][]*storage.ListAlert)
 	for _, alert := range alerts {
 		// resolved alerts is ok. We are interested in current env.
-		if alert.State == storage.ViolationState_RESOLVED {
+		if alert.GetState() == storage.ViolationState_RESOLVED {
 			continue
 		}
 
@@ -413,10 +401,10 @@ func CheckSecretFilePerms(ctx framework.ComplianceContext) {
 	deployments := ctx.Data().Deployments()
 	for _, deployment := range deployments {
 		secretFilePath := ""
-		for _, container := range deployment.Containers {
-			for _, vol := range container.Volumes {
-				if vol.Type == "secret" {
-					secretFilePath = vol.GetDestination() + vol.Name
+		for _, container := range deployment.GetContainers() {
+			for _, vol := range container.GetVolumes() {
+				if vol.GetType() == "secret" {
+					secretFilePath = vol.GetDestination() + vol.GetName()
 					info, err := os.Lstat(secretFilePath)
 					if err != nil {
 						log.Error(err)

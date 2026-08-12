@@ -2,6 +2,8 @@
 # https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners#about-code-owners
 # This will automatically assign a team / people as reviewers for PRs based on the files changed within the PR.
 
+# NOTE: the LAST matching line wins.
+
 # Core team's main responsibilities include policies including default policies and policy management workflows,
 # detection and alerting, integrations and notifiers, risk, vulnerability management and reporting, migrator and
 # interactions with Postgres.
@@ -17,32 +19,54 @@ migrator/**/*                       @stackrox/core-workflows
 pkg/postgres/**/*                   @stackrox/core-workflows
 tests/upgrade/*                     @stackrox/core-workflows
 pkg/search/**/*                     @stackrox/core-workflows
+tests/policy_as_code_test.go        @stackrox/core-workflows
 
-# Merlin's main responsibilities include roxctl, authN (authproviders), authZ (SAC), declarative config,
-# performance testing, administration events, cloud sources, and image signatures.
-*/administration/**/*       @stackrox/merlin
-*/auth/**/*                 @stackrox/merlin
-*/cloudsources/**/*         @stackrox/merlin
-*/declarativeconfig/**/*    @stackrox/merlin
-*/discoveredclusters/**/    @stackrox/merlin
-*/signatureintegration/**/* @stackrox/merlin
-pkg/features/**/*           @stackrox/merlin
-pkg/sac/**/*                @stackrox/merlin
-pkg/signatures/**/*         @stackrox/merlin
-roxctl/**/*                 @stackrox/merlin
-tests/performance           @stackrox/merlin
+# sensor-ecosystem main responsibilities include:
+# administration events, authN (authproviders), authZ (SAC)
+# cloud sources, declarative config, image signatures, images, netpol,
+# observability, performance testing, roxctl, sensor and telemetry.
+*/administration/**/*             @stackrox/sensor-ecosystem
+*/auth/**/*                       @stackrox/sensor-ecosystem
+*/cloudsources/**/*               @stackrox/sensor-ecosystem
+*/declarativeconfig/**/*          @stackrox/sensor-ecosystem
+*/discoveredclusters/**/          @stackrox/sensor-ecosystem
+*/signatureintegration/**/*       @stackrox/sensor-ecosystem
+compliance/virtualmachines/**/*   @stackrox/sensor-ecosystem
+scripts/ci/add-vms/**/*           @stackrox/sensor-ecosystem @vikin91
+pkg/features/**/*                 @stackrox/sensor-ecosystem
+pkg/images/defaults/**/*          @stackrox/sensor-ecosystem
+pkg/sac/**/*                      @stackrox/sensor-ecosystem
+pkg/signatures/**/*               @stackrox/sensor-ecosystem
+proto/internalapi/sensor/**/*     @stackrox/sensor-ecosystem
+qa-tests-backend/**/*CloudSource* @stackrox/sensor-ecosystem
+qa-tests-backend/**/*Signature*   @stackrox/sensor-ecosystem
+roxctl/**/*                       @stackrox/sensor-ecosystem
+sensor/**/*                       @stackrox/sensor-ecosystem
+sensor/admission-control/**/*     @stackrox/core-workflows
+tests/ocp_dynamic_plugin_test.go  @stackrox/sensor-ecosystem
+tests/performance/**/*            @stackrox/sensor-ecosystem
+tests/roxctl/**/*                 @stackrox/sensor-ecosystem
+roxctl/central/migratetooperator/**/*  @stackrox/sensor-ecosystem @stackrox/install
+roxctl/common/migratetooperator/**/*   @stackrox/sensor-ecosystem @stackrox/install
+roxctl/sensor/migratetooperator/**/*   @stackrox/sensor-ecosystem @stackrox/install
+
+qa-tests-backend/**/*       @janisz
 
 /ui/**/* @stackrox/ui
 
-# Listing all users as "Outside collaborators cannot be added to a team"
-roxctl/netpol/**/*                             @zivnevo @adisos @shireenf-ibm @stackrox/maple
-tests/roxctl/bats-tests/local/roxctl-netpol-*  @zivnevo @adisos @shireenf-ibm @stackrox/maple
-tests/roxctl/bats-tests/test-data/np-guard/    @zivnevo @adisos @shireenf-ibm @stackrox/maple
-
-pkg/images/defaults/**/* @stackrox/maple
-sensor/**/*              @stackrox/maple
-
-operator/**/* @stackrox/install
+# Install team owns everything installation-related, including TLS cert management.
+central/securedclustercertgen/** @stackrox/install
+image/templates/**               @stackrox/install
+operator/**                      @stackrox/install
+pkg/crs/**                       @stackrox/install
+pkg/helm/**                      @stackrox/install
+pkg/migratetooperator/**         @stackrox/install
+sensor/kubernetes/certrefresh/** @stackrox/install @stackrox/sensor-ecosystem
+sensor/kubernetes/crs/**         @stackrox/install @stackrox/sensor-ecosystem
+roxctl/central/crs/**            @stackrox/install @stackrox/sensor-ecosystem
+# Also the e2e tests for legacy-to-operator migration commands in roxctl:
+tests/roxctl/bats-tests/cluster/sensor-migrate-to-operator.bats  @stackrox/install
+tests/roxctl/bats-tests/local/central-migrate-to-operator.bats   @stackrox/install
 
 # Scanner team's responsibilities include anything related to the scanner itself and scanning utilities
 # such as vulnerability uploading and image integrations.
@@ -73,6 +97,20 @@ operator/**/* @stackrox/install
 /sensor/kubernetes/listener/resources/secrets*            @stackrox/scanner
 /SCANNER_VERSION                                          @stackrox/scanner
 
-# The RHTAP maintainers for ACS review all changes related to the RHTAP pipelines, such as new pipelines,
-# parameter changes or automated task updates.
-/.tekton/   @stackrox/rhtap-maintainers
+# Konflux maintainers for ACS review all changes related to the Konflux pipelines, Dockerfiles, etc.
+# Release engineers need to merge MintMaker PRs at the time of the release.
+# rhacs-bot needs an ability to auto-approve MintMaker PRs for automated task and security updates.
+# The list here should be kept in sync with the .github/labeler.yml configuration for the konflux-build label.
+**/konflux.*Dockerfile  @stackrox/konflux-maintainers-no-email @stackrox/release-mgmt-no-email @rhacs-bot
+/.tekton/               @stackrox/konflux-maintainers-no-email @stackrox/release-mgmt-no-email @rhacs-bot
+rpms.*                  @stackrox/konflux-maintainers-no-email @stackrox/release-mgmt-no-email @rhacs-bot
+/.konflux/              @stackrox/konflux-maintainers
+.github/renovate.json5  @stackrox/konflux-maintainers
+
+
+# Dependencies
+**/go.mod @stackrox/backend-dep-updaters
+**/go.sum @stackrox/backend-dep-updaters
+/.github/**/* @stackrox/backend-dep-updaters
+/qa-tests-backend/build.gradle @stackrox/backend-dep-updaters
+/ui/**/package*.json @stackrox/ui-dep-updaters

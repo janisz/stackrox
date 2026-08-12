@@ -38,13 +38,10 @@ type serviceAccountSACSuite struct {
 }
 
 func (s *serviceAccountSACSuite) SetupSuite() {
-	var err error
-
 	pgtestbase := pgtest.ForT(s.T())
 	s.Require().NotNil(pgtestbase)
 	s.pool = pgtestbase.DB
-	s.datastore, err = GetTestPostgresDataStore(s.T(), s.pool)
-	s.Require().NoError(err)
+	s.datastore = GetTestPostgresDataStore(s.T(), s.pool)
 	s.optionsMap = schema.ServiceAccountsSchema.OptionsMap
 
 	s.testContexts = testutils.GetNamespaceScopedTestContexts(context.Background(), s.T(),
@@ -81,7 +78,7 @@ func (s *serviceAccountSACSuite) deleteServiceAccount(id string) {
 }
 
 func (s *serviceAccountSACSuite) TestUpsertServiceAccount() {
-	cases := testutils.GenericGlobalSACUpsertTestCases(s.T(), testutils.VerbUpsert)
+	cases := testutils.GenericNamespaceSACUpsertTestCases(s.T(), testutils.VerbUpsert)
 
 	for name, c := range cases {
 		s.Run(name, func() {
@@ -127,7 +124,7 @@ func (s *serviceAccountSACSuite) TestGetServiceAccount() {
 }
 
 func (s *serviceAccountSACSuite) TestRemoveServiceAccount() {
-	cases := testutils.GenericGlobalSACDeleteTestCases(s.T())
+	cases := testutils.GenericNamespaceSACDeleteTestCases(s.T())
 
 	for name, c := range cases {
 		s.Run(name, func() {
@@ -141,11 +138,16 @@ func (s *serviceAccountSACSuite) TestRemoveServiceAccount() {
 			defer s.deleteServiceAccount(account.GetId())
 
 			err = s.datastore.RemoveServiceAccount(ctx, account.GetId())
-			if c.ExpectError {
-				s.Require().Error(err)
-				s.ErrorIs(err, c.ExpectedError)
+			s.NoError(err)
+
+			fetchedAccount, found, err := s.datastore.GetServiceAccount(s.testContexts[testutils.UnrestrictedReadCtx], account.GetId())
+			s.NoError(err)
+			if c.ExpectedFound {
+				s.True(found)
+				protoassert.Equal(s.T(), account, fetchedAccount)
 			} else {
-				s.NoError(err)
+				s.False(found)
+				s.Nil(fetchedAccount)
 			}
 		})
 	}

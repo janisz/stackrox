@@ -10,6 +10,7 @@ import (
 	"github.com/pkg/errors"
 	"github.com/stackrox/rox/generated/storage"
 	"github.com/stackrox/rox/pkg/administration/events/option"
+	"github.com/stackrox/rox/pkg/features"
 	"github.com/stackrox/rox/pkg/httputil"
 	"github.com/stackrox/rox/pkg/logging"
 	"github.com/stackrox/rox/pkg/retry"
@@ -46,10 +47,16 @@ func AlertLink(endpoint string, alert *storage.Alert) string {
 	}
 	var alertPath string
 	switch entity := alert.GetEntity().(type) {
-	case *storage.Alert_Deployment_, *storage.Alert_Resource_:
+	case *storage.Alert_Deployment_, *storage.Alert_Resource_, *storage.Alert_Node_:
 		alertPath = fmt.Sprintf(alertLinkPath, alert.GetId())
 	case *storage.Alert_Image:
-		alertPath = fmt.Sprintf(imageLinkPath, entity.Image.GetId())
+		var imgID string
+		if features.FlattenImageData.Enabled() {
+			imgID = entity.Image.GetIdV2()
+		} else {
+			imgID = entity.Image.GetId()
+		}
+		alertPath = fmt.Sprintf(imageLinkPath, imgID)
 	}
 	u, err := url.Parse(alertPath)
 	if err != nil {
@@ -79,7 +86,7 @@ func SeverityString(s storage.Severity) string {
 
 // CreateError formats a returned HTTP response's status into an error, or nil.
 func CreateError(notifier string, resp *http.Response, errCode string) error {
-	if resp.StatusCode == 503 { // Error codes we want to retry go here.
+	if resp.StatusCode == http.StatusServiceUnavailable { // Error codes we want to retry go here.
 		return retry.MakeRetryable(wrapError(notifier, resp, errCode))
 	}
 	return wrapError(notifier, resp, errCode)

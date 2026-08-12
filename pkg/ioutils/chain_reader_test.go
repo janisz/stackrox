@@ -32,10 +32,7 @@ func (r *testReader) Read(buf []byte) (int, error) {
 	if len(r.data) == 0 {
 		return 0, io.EOF
 	}
-	toRead := len(buf)
-	if toRead > len(r.data) {
-		toRead = len(r.data)
-	}
+	toRead := min(len(buf), len(r.data))
 
 	copy(buf[:toRead], r.data[:toRead])
 	r.data = r.data[toRead:]
@@ -51,7 +48,6 @@ func (r *testReader) Close() error {
 }
 
 func TestChainReadersFull(t *testing.T) {
-	t.Parallel()
 
 	r := ChainReadersEager(
 		strings.NewReader("foo"),
@@ -72,7 +68,6 @@ func TestChainReadersFull(t *testing.T) {
 }
 
 func TestChainReadersEager_AllAreClosed(t *testing.T) {
-	t.Parallel()
 
 	trs := []*testReader{
 		newTestReader("foo"),
@@ -98,7 +93,6 @@ func TestChainReadersEager_AllAreClosed(t *testing.T) {
 }
 
 func TestChainReadersLazy_FutureAreNotClosed(t *testing.T) {
-	t.Parallel()
 
 	trs := []*testReader{
 		newTestReader("foo"),
@@ -124,7 +118,6 @@ func TestChainReadersLazy_FutureAreNotClosed(t *testing.T) {
 }
 
 func TestChainReaders_CloseErrorPropagation(t *testing.T) {
-	t.Parallel()
 
 	trs := []*testReader{
 		newTestReader("foo"),

@@ -601,7 +601,7 @@ func (suite *ServiceTestSuite) TestGetAllowedPeersFromCurrentPolicyForDeployment
 	// Prepare deployment001 - deployment004
 	numDeployments := 4
 	deps := make([]*storage.Deployment, 0, numDeployments)
-	for i := 0; i < numDeployments; i++ {
+	for i := range numDeployments {
 		deps = append(deps, &storage.Deployment{
 			Id:        fmt.Sprintf("deployment%03d", i),
 			Name:      fmt.Sprintf("deployment%03d", i),
@@ -879,7 +879,6 @@ func checkHasPolicies(policyNames ...string) gomock.Matcher {
 }
 
 func TestCheckAllNamespacesWriteAllowed(t *testing.T) {
-	t.Parallel()
 
 	namespaces := []string{"foo", "bar", "baz", "qux"}
 	clusterID := "clusterA"
@@ -946,7 +945,6 @@ func TestCheckAllNamespacesWriteAllowed(t *testing.T) {
 
 	for name, c := range cases {
 		t.Run(name, func(t *testing.T) {
-			t.Parallel()
 			ctx := sac.WithGlobalAccessScopeChecker(context.Background(), c.checker)
 			err := checkAllNamespacesWriteAllowed(ctx, clusterID, namespaces...)
 			if c.expectAllowed {
@@ -959,7 +957,6 @@ func TestCheckAllNamespacesWriteAllowed(t *testing.T) {
 }
 
 func TestGetNamespacesFromModification(t *testing.T) {
-	t.Parallel()
 
 	cases := map[string]struct {
 		applyYAML string
@@ -998,7 +995,6 @@ func TestGetNamespacesFromModification(t *testing.T) {
 
 	for name, c := range cases {
 		t.Run(name, func(t *testing.T) {
-			t.Parallel()
 
 			mod := &storage.NetworkPolicyModification{
 				ApplyYaml: c.applyYAML,

@@ -6,6 +6,7 @@ import (
 	"github.com/pkg/errors"
 	"github.com/stackrox/rox/generated/internalapi/central"
 	"github.com/stackrox/rox/pkg/concurrency"
+	"github.com/stackrox/rox/pkg/features"
 	"github.com/stackrox/rox/pkg/kubernetes"
 	"github.com/stackrox/rox/pkg/sync"
 	"github.com/stackrox/rox/pkg/utils"
@@ -24,11 +25,14 @@ type resourceEventHandlerImpl struct {
 	dispatcher resources.Dispatcher
 
 	resolver         component.Resolver
+	pubSubDispatcher pubSubPublisher
+
 	syncingResources *concurrency.Flag
 
 	syncLock                   sync.Mutex
 	seenIDs                    map[types.UID]struct{}
 	missingInitialIDs          map[types.UID]struct{}
+	initialSyncTotalIDs        int
 	hasSeenAllInitialIDsSignal concurrency.Signal
 }
 
@@ -76,6 +80,7 @@ func (h *resourceEventHandlerImpl) populateInitialObjects(initialObjs []interfac
 			h.missingInitialIDs[newUID] = struct{}{}
 		}
 	}
+	h.initialSyncTotalIDs = len(initialObjs)
 	h.seenIDs = nil
 	h.checkHasSeenAllInitialIDsNoLock()
 }
@@ -103,14 +108,32 @@ func (h *resourceEventHandlerImpl) checkHasSeenAllInitialIDsNoLock() {
 	}
 }
 
+func (h *resourceEventHandlerImpl) initialSyncDebugState() (missingCount int, totalCount int) {
+	h.syncLock.Lock()
+	defer h.syncLock.Unlock()
+
+	if h.missingInitialIDs != nil {
+		missingCount = len(h.missingInitialIDs)
+	}
+	totalCount = h.initialSyncTotalIDs
+	return
+}
+
 func (h *resourceEventHandlerImpl) sendResourceEvent(obj, oldObj interface{}, action central.ResourceAction) {
 	if metaObj, ok := obj.(v1.Object); ok {
 		kubernetes.TrimAnnotations(metaObj)
 	}
 
-	message := h.dispatcher.ProcessEvent(obj, oldObj, action)
-	message.Context = h.context
-	h.resolver.Send(message)
+	if message := h.dispatcher.ProcessEvent(obj, oldObj, action); message != nil {
+		message.Context = h.context
+		if features.SensorInternalPubSub.Enabled() {
+			if err := h.pubSubDispatcher.Publish(message); err != nil {
+				log.Errorf("unable to publish event %q: %v", message.Topic().String(), err)
+			}
+			return
+		}
+		h.resolver.Send(message)
+	}
 }
 
 func getObjUID(newObj interface{}) types.UID {

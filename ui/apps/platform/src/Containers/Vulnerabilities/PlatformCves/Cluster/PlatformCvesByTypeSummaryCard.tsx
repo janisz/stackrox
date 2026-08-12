@@ -1,6 +1,13 @@
-import React from 'react';
 import { gql } from '@apollo/client';
-import { Card, CardTitle, CardBody, Flex, FlexItem, Text, pluralize } from '@patternfly/react-core';
+import {
+    Card,
+    CardBody,
+    CardTitle,
+    Content,
+    Flex,
+    FlexItem,
+    pluralize,
+} from '@patternfly/react-core';
 
 const statusDisplays = [
     {
@@ -37,13 +44,13 @@ export type PlatformCvesByTypeSummaryCardProps = {
 
 function PlatformCvesByTypeSummaryCard({ data }: PlatformCvesByTypeSummaryCardProps) {
     return (
-        <Card isCompact isFlat isFullHeight>
+        <Card isCompact isFullHeight>
             <CardTitle>CVEs by type</CardTitle>
             <CardBody>
                 <Flex direction={{ default: 'column' }}>
                     {statusDisplays.map(({ type, field }) => (
                         <FlexItem key={type} span={12}>
-                            <Text>{pluralize(data[field], type)}</Text>
+                            <Content component="p">{pluralize(data[field], type)}</Content>
                         </FlexItem>
                     ))}
                 </Flex>

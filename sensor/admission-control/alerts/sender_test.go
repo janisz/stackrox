@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cenkalti/backoff/v3"
+	"github.com/cenkalti/backoff/v4"
 	"github.com/pkg/errors"
 	"github.com/stackrox/rox/generated/internalapi/central"
 	"github.com/stackrox/rox/generated/internalapi/sensor"
@@ -97,7 +97,7 @@ func createAlertsRequest(alerts []*storage.Alert) *sensor.AdmissionControlAlerts
 
 func createAlertsMessage(numAlerts int) []*storage.Alert {
 	ret := make([]*storage.Alert, numAlerts)
-	for i := 0; i < numAlerts; i++ {
+	for i := range numAlerts {
 		ret[i] = &storage.Alert{
 			Id: fmt.Sprintf("alert-%d", i),
 		}

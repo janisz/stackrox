@@ -16,6 +16,8 @@ func init() {
 		resourceProcessedCounterVec,
 		totalNetworkFlowsReceivedCounter,
 		totalNetworkEndpointsReceivedCounter,
+		totalExternalPoliciesGauge,
+		currentExternalPolicies,
 		sensorEventDurationHistogramVec,
 		riskProcessingHistogramVec,
 		datastoreFunctionDurationHistogramVec,
@@ -39,5 +41,6 @@ func init() {
 		signatureVerificationReprocessorDurationGauge,
 		pruningDurationHistogramVec,
 		storeCacheOperationHistogramVec,
+		msgToSensorNotSentCounter,
 	)
 }

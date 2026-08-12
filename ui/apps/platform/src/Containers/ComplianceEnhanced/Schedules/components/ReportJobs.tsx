@@ -1,4 +1,4 @@
-import React, { useCallback } from 'react';
+import { useCallback } from 'react';
 import {
     Alert,
     AlertGroup,
@@ -13,10 +13,10 @@ import {
 } from '@patternfly/react-core';
 
 import {
-    ComplianceReportSnapshot,
     deleteDownloadableComplianceReport,
     fetchComplianceReportHistory,
 } from 'services/ComplianceScanConfigurationService';
+import type { ComplianceReportSnapshot } from 'services/ComplianceScanConfigurationService';
 import JobDetails from 'Containers/Vulnerabilities/VulnerablityReporting/ViewVulnReport/JobDetails';
 import ReportJobsTable from 'Components/ReportJob/ReportJobsTable';
 import useURLPagination from 'hooks/useURLPagination';
@@ -30,12 +30,12 @@ import { getRequestQueryStringForSearchFilter } from 'utils/searchUtils';
 import { getTableUIState } from 'utils/getTableUIState';
 import useDeleteDownloadModal from 'Containers/Vulnerabilities/VulnerablityReporting/hooks/useDeleteDownloadModal';
 import DeleteModal from 'Components/PatternFly/DeleteModal';
-import ConfigDetails from './ConfigDetails';
 import ReportJobStatusFilter, {
     ensureReportJobStatuses,
-    ReportJobStatus,
-} from './ReportJobStatusFilter';
-import MyJobsFilter from './MyJobsFilter';
+} from 'Components/ReportJob/ReportJobStatusFilter';
+import MyJobsFilter from 'Components/ReportJob/MyJobsFilter';
+import type { ReportJobStatus } from 'Components/ReportJob/types';
+import ConfigDetails from './ConfigDetails';
 
 function getJobId(snapshot: ComplianceReportSnapshot) {
     return snapshot.reportJobId;
@@ -55,12 +55,19 @@ function createQueryFromReportJobStatusFilters(jobStatusFilters: string[]) {
         PREPARING: { category: 'Compliance Report State', value: 'PREPARING' },
         WAITING: { category: 'Compliance Report State', value: 'WAITING' },
         ERROR: { category: 'Compliance Report State', value: 'FAILURE' },
-        PARTIAL_ERROR: { category: 'Compliance Report State', value: 'PARTIAL_ERROR' },
+        PARTIAL_SCAN_ERROR_DOWNLOAD: {
+            category: 'Compliance Report State',
+            value: 'PARTIAL_SCAN_ERROR_DOWNLOAD',
+        },
         DOWNLOAD_GENERATED: {
             category: 'Compliance Report Notification Method',
             value: 'DOWNLOAD',
         },
         EMAIL_DELIVERED: { category: 'Compliance Report Notification Method', value: 'EMAIL' },
+        PARTIAL_SCAN_ERROR_EMAIL: {
+            category: 'Compliance Report State',
+            value: 'PARTIAL_SCAN_ERROR_EMAIL',
+        },
     };
 
     const reportJobStatuses = ensureReportJobStatuses(jobStatusFilters);
@@ -83,10 +90,9 @@ const sortOptions = {
 
 type ReportJobsProps = {
     scanConfigId: string;
-    isComplianceReportingEnabled: boolean;
 };
 
-function ReportJobs({ scanConfigId, isComplianceReportingEnabled }: ReportJobsProps) {
+function ReportJobs({ scanConfigId }: ReportJobsProps) {
     const { analyticsTrack } = useAnalytics();
 
     const { page, perPage, setPage, setPerPage } = useURLPagination(10);
@@ -182,17 +188,26 @@ function ReportJobs({ scanConfigId, isComplianceReportingEnabled }: ReportJobsPr
                 <ToolbarContent>
                     <ToolbarItem alignItems="center">
                         <ReportJobStatusFilter
+                            availableStatuses={[
+                                'WAITING',
+                                'PREPARING',
+                                'DOWNLOAD_GENERATED',
+                                'PARTIAL_SCAN_ERROR_DOWNLOAD',
+                                'EMAIL_DELIVERED',
+                                'PARTIAL_SCAN_ERROR_EMAIL',
+                                'ERROR',
+                            ]}
                             selectedStatuses={ensureReportJobStatuses(reportJobStatusFilters)}
                             onChange={onReportJobStatusFilterChange}
                         />
                     </ToolbarItem>
-                    <ToolbarItem className="pf-v5-u-flex-grow-1" alignSelf="center">
+                    <ToolbarItem className="pf-v6-u-flex-grow-1" alignSelf="center">
                         <MyJobsFilter
                             isViewingOnlyMyJobs={ensureBoolean(isViewingOnlyMyJobs)}
                             onMyJobsFilterChange={onMyJobsFilterChange}
                         />
                     </ToolbarItem>
-                    <ToolbarItem variant="pagination" align={{ default: 'alignRight' }}>
+                    <ToolbarItem variant="pagination" align={{ default: 'alignEnd' }}>
                         <Pagination
                             toggleTemplate={({ firstIndex, lastIndex }) => (
                                 <span>
@@ -226,17 +241,14 @@ function ReportJobs({ scanConfigId, isComplianceReportingEnabled }: ReportJobsPr
                 renderExpandableRowContent={(snapshot: ComplianceReportSnapshot) => {
                     return (
                         <>
-                            <Card isFlat>
+                            <Card>
                                 <CardBody>
                                     <JobDetails
                                         reportStatus={snapshot.reportStatus}
                                         isDownloadAvailable={snapshot.isDownloadAvailable}
                                     />
-                                    <Divider component="div" className="pf-v5-u-my-md" />
-                                    <ConfigDetails
-                                        scanConfig={snapshot.reportData}
-                                        isComplianceReportingEnabled={isComplianceReportingEnabled}
-                                    />
+                                    <Divider component="div" className="pf-v6-u-my-md" />
+                                    <ConfigDetails scanConfig={snapshot.reportData} />
                                 </CardBody>
                             </Card>
                         </>
@@ -257,7 +269,7 @@ function ReportJobs({ scanConfigId, isComplianceReportingEnabled }: ReportJobsPr
                             variant="danger"
                             title={deleteDownloadError}
                             component="p"
-                            className="pf-v5-u-mb-sm"
+                            className="pf-v6-u-mb-sm"
                         />
                     )}
                 </AlertGroup>

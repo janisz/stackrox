@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/NYTimes/gziphandler"
+	administrationEventDS "github.com/stackrox/rox/central/administration/events/datastore"
 	administrationEventHandler "github.com/stackrox/rox/central/administration/events/handler"
 	administrationEventService "github.com/stackrox/rox/central/administration/events/service"
 	administrationUsageCSV "github.com/stackrox/rox/central/administration/usage/csv"
@@ -17,15 +18,20 @@ import (
 	administrationUsageService "github.com/stackrox/rox/central/administration/usage/service"
 	alertDatastore "github.com/stackrox/rox/central/alert/datastore"
 	alertService "github.com/stackrox/rox/central/alert/service"
+	apitokenDS "github.com/stackrox/rox/central/apitoken/datastore"
 	apiTokenExpiration "github.com/stackrox/rox/central/apitoken/expiration"
 	apiTokenService "github.com/stackrox/rox/central/apitoken/service"
 	"github.com/stackrox/rox/central/audit"
 	authDS "github.com/stackrox/rox/central/auth/datastore"
+	internalTokenAuthService "github.com/stackrox/rox/central/auth/internaltokens/service"
 	authService "github.com/stackrox/rox/central/auth/service"
 	"github.com/stackrox/rox/central/auth/userpass"
 	authProviderRegistry "github.com/stackrox/rox/central/authprovider/registry"
 	authProviderSvc "github.com/stackrox/rox/central/authprovider/service"
 	authProviderTelemetry "github.com/stackrox/rox/central/authprovider/telemetry"
+	backgroundmigrations "github.com/stackrox/rox/central/backgroundmigrations/runner"
+	baseImageService "github.com/stackrox/rox/central/baseimage/service"
+	baseImageWatcher "github.com/stackrox/rox/central/baseimage/watcher"
 	centralHealthService "github.com/stackrox/rox/central/centralhealth/service"
 	"github.com/stackrox/rox/central/certgen"
 	certHandler "github.com/stackrox/rox/central/certs/handlers"
@@ -38,13 +44,13 @@ import (
 	clusterService "github.com/stackrox/rox/central/cluster/service"
 	"github.com/stackrox/rox/central/clusterinit/backend"
 	clusterInitService "github.com/stackrox/rox/central/clusterinit/service"
+	clusterInitStore "github.com/stackrox/rox/central/clusterinit/store/singleton"
 	clustersHelmConfig "github.com/stackrox/rox/central/clusters/helmconfig"
 	clustersZip "github.com/stackrox/rox/central/clusters/zip"
 	complianceDatastore "github.com/stackrox/rox/central/compliance/datastore"
 	complianceHandlers "github.com/stackrox/rox/central/compliance/handlers"
 	complianceManagerService "github.com/stackrox/rox/central/compliance/manager/service"
 	complianceService "github.com/stackrox/rox/central/compliance/service"
-	v2ComplianceBenchmark "github.com/stackrox/rox/central/complianceoperator/v2/benchmarks/datastore"
 	v2ComplianceResults "github.com/stackrox/rox/central/complianceoperator/v2/checkresults/service"
 	v2ComplianceStats "github.com/stackrox/rox/central/complianceoperator/v2/checkresults/stats/service"
 	v2ComplianceMgr "github.com/stackrox/rox/central/complianceoperator/v2/compliancemanager"
@@ -52,6 +58,7 @@ import (
 	v2ComplianceProfiles "github.com/stackrox/rox/central/complianceoperator/v2/profiles/service"
 	complianceReportManager "github.com/stackrox/rox/central/complianceoperator/v2/report/manager"
 	v2ComplianceRules "github.com/stackrox/rox/central/complianceoperator/v2/rules/service"
+	complianceScanDS "github.com/stackrox/rox/central/complianceoperator/v2/scanconfigurations/datastore"
 	complianceScanSettings "github.com/stackrox/rox/central/complianceoperator/v2/scanconfigurations/service"
 	configDS "github.com/stackrox/rox/central/config/datastore"
 	configService "github.com/stackrox/rox/central/config/service"
@@ -61,7 +68,6 @@ import (
 	"github.com/stackrox/rox/central/cve/csv"
 	"github.com/stackrox/rox/central/cve/fetcher"
 	imageCveCsv "github.com/stackrox/rox/central/cve/image/csv"
-	imageCVEService "github.com/stackrox/rox/central/cve/image/service"
 	nodeCveCsv "github.com/stackrox/rox/central/cve/node/csv"
 	nodeCVEService "github.com/stackrox/rox/central/cve/node/service"
 	"github.com/stackrox/rox/central/cve/suppress"
@@ -81,6 +87,7 @@ import (
 	externalbackupsDS "github.com/stackrox/rox/central/externalbackups/datastore"
 	_ "github.com/stackrox/rox/central/externalbackups/plugins/all" // Import all of the external backup plugins
 	backupService "github.com/stackrox/rox/central/externalbackups/service"
+	"github.com/stackrox/rox/central/externalbackups/service/externaldb"
 	featureFlagService "github.com/stackrox/rox/central/featureflags/service"
 	"github.com/stackrox/rox/central/globaldb"
 	dbAuthz "github.com/stackrox/rox/central/globaldb/authz"
@@ -99,12 +106,14 @@ import (
 	imageintegrationsDS "github.com/stackrox/rox/central/imageintegration/datastore"
 	iiService "github.com/stackrox/rox/central/imageintegration/service"
 	iiStore "github.com/stackrox/rox/central/imageintegration/store"
+	imageV2Datastore "github.com/stackrox/rox/central/imagev2/datastore"
 	installationStore "github.com/stackrox/rox/central/installation/store"
 	integrationHealthService "github.com/stackrox/rox/central/integrationhealth/service"
 	"github.com/stackrox/rox/central/internal"
 	"github.com/stackrox/rox/central/jwt"
 	logimbueHandler "github.com/stackrox/rox/central/logimbue/handler"
 	metadataService "github.com/stackrox/rox/central/metadata/service"
+	customMetrics "github.com/stackrox/rox/central/metrics/custom"
 	"github.com/stackrox/rox/central/metrics/telemetry"
 	mitreService "github.com/stackrox/rox/central/mitre/service"
 	namespaceService "github.com/stackrox/rox/central/namespace/service"
@@ -160,7 +169,7 @@ import (
 	signatureIntegrationService "github.com/stackrox/rox/central/signatureintegration/service"
 	"github.com/stackrox/rox/central/splunk"
 	"github.com/stackrox/rox/central/systeminfo/listener"
-	"github.com/stackrox/rox/central/telemetry/centralclient"
+	phonehomeClient "github.com/stackrox/rox/central/telemetry/centralclient"
 	telemetryService "github.com/stackrox/rox/central/telemetry/service"
 	"github.com/stackrox/rox/central/tlsconfig"
 	"github.com/stackrox/rox/central/trace"
@@ -168,10 +177,11 @@ import (
 	userService "github.com/stackrox/rox/central/user/service"
 	"github.com/stackrox/rox/central/version"
 	vStore "github.com/stackrox/rox/central/version/store"
-	versionUtils "github.com/stackrox/rox/central/version/utils"
+	virtualMachineDS "github.com/stackrox/rox/central/virtualmachine/datastore"
+	virtualmachineService "github.com/stackrox/rox/central/virtualmachine/service"
+	virtualmachineV2Service "github.com/stackrox/rox/central/virtualmachine/v2/service"
 	vulnMgmtService "github.com/stackrox/rox/central/vulnmgmt/service"
 	vulnRequestManager "github.com/stackrox/rox/central/vulnmgmt/vulnerabilityrequest/manager/requestmgr"
-	vulnRequestService "github.com/stackrox/rox/central/vulnmgmt/vulnerabilityrequest/service"
 	vulnRequestServiceV2 "github.com/stackrox/rox/central/vulnmgmt/vulnerabilityrequest/service/v2"
 	"github.com/stackrox/rox/generated/storage"
 	"github.com/stackrox/rox/pkg/auth/authproviders"
@@ -310,14 +320,11 @@ func main() {
 			log.Errorf("Failed to remove backup DB: %v", err)
 		}
 	}
-	versionUtils.SetCurrentVersionPostgres(globaldb.GetPostgres())
 
 	features.LogFeatureFlags()
-	// Register telemetry prometheus metrics.
-	telemetry.Singleton().Start()
-	// Start the prometheus metrics server
-	pkgMetrics.NewServer(pkgMetrics.CentralSubsystem, pkgMetrics.NewTLSConfigurerFromEnv()).RunForever()
-	pkgMetrics.GatherThrottleMetricsForever(pkgMetrics.CentralSubsystem.String())
+
+	go startGRPCServer()
+	go startTelemetryServer()
 
 	if env.ManagedCentral.BooleanSetting() {
 		clusterInternalServer := internal.NewHTTPServer(metrics.HTTPSingleton())
@@ -325,9 +332,15 @@ func main() {
 		clusterInternalServer.RunForever()
 	}
 
-	go startGRPCServer()
-
 	waitForTerminationSignal()
+}
+
+func startTelemetryServer() {
+	// Register telemetry prometheus metrics.
+	telemetry.Singleton().Start()
+	// Start the prometheus metrics server
+	pkgMetrics.NewServer(pkgMetrics.CentralSubsystem, pkgMetrics.NewTLSConfigurerFromEnv()).RunForever()
+	pkgMetrics.GatherThrottleMetricsForever(pkgMetrics.CentralSubsystem.String())
 }
 
 // clusterInternalRoutes returns list of route-handler pairs to be served on "cluster-internal" port.
@@ -337,8 +350,8 @@ func main() {
 // * kubectl exec into central pod
 // * modifying central service definition
 func clusterInternalRoutes() []*internal.Route {
-	result := make([]*internal.Route, 0)
 	debugRoutes := debugRoutes()
+	result := make([]*internal.Route, 0, len(debugRoutes)+1)
 	for _, r := range debugRoutes {
 		result = append(result, &internal.Route{
 			Route:         r.Route,
@@ -363,9 +376,14 @@ func ensureDB(ctx context.Context) {
 }
 
 func startServices() {
+	go cloudSourcesManager.Singleton().Start()
+
 	reprocessor.Singleton().Start()
 	suppress.Singleton().Start()
 	pruning.Singleton().Start()
+	if baseImageWatcher.Enabled() {
+		baseImageWatcher.Singleton().Start()
+	}
 	gatherer.Singleton().Start()
 	vulnRequestManager.Singleton().Start()
 	apiTokenExpiration.Singleton().Start()
@@ -377,7 +395,20 @@ func startServices() {
 		platformReprocessor.Singleton().Start()
 	}
 
-	go registerDelayedIntegrations(iiStore.DelayedIntegrations)
+	// If we have no delayed integrations, we can skip spawning the goroutine
+	delayedIntegrations := iiStore.GetDelayedIntegrations()
+	log.Debug("Registering delayed integrations", "numIntegrations", len(delayedIntegrations))
+	if len(delayedIntegrations) > 0 {
+		go registerDelayedIntegrations(delayedIntegrations)
+	}
+
+	if env.DeclarativeConfiguration.BooleanSetting() {
+		declarativeconfig.ManagerSingleton().ReconcileDeclarativeConfigurations()
+	}
+
+	if features.BackgroundMigration.Enabled() {
+		backgroundmigrations.Singleton().Start()
+	}
 }
 
 func servicesToRegister() []pkgGRPC.APIService {
@@ -412,7 +443,6 @@ func servicesToRegister() []pkgGRPC.APIService {
 		grpcPreferences.Singleton(),
 		helmcharts.NewService(),
 		iiService.Singleton(),
-		imageCVEService.Singleton(),
 		imageService.Singleton(),
 		integrationHealthService.Singleton(),
 		metadataService.New(),
@@ -436,7 +466,7 @@ func servicesToRegister() []pkgGRPC.APIService {
 		roleService.Singleton(),
 		searchService.Singleton(),
 		secretService.Singleton(),
-		sensorService.New(connection.ManagerSingleton(), all.Singleton(), clusterDataStore.Singleton(), installationStore.Singleton()),
+		sensorService.New(connection.ManagerSingleton(), all.Singleton(), clusterDataStore.Singleton(), installationStore.Singleton(), clusterInitStore.Singleton()),
 		sensorUpgradeControlService.Singleton(),
 		sensorUpgradeService.Singleton(),
 		serviceAccountService.Singleton(),
@@ -445,14 +475,14 @@ func servicesToRegister() []pkgGRPC.APIService {
 		telemetryService.Singleton(),
 		userService.Singleton(),
 		vulnMgmtService.Singleton(),
-		// TODO: [ROX-20245] Make the "/v1/cve/requests" APIs unavailable.
-		// This cannot be now because the frontend is not ready with the feature flag checks.
-		vulnRequestService.Singleton(),
+		vulnRequestServiceV2.Singleton(),
 	}
 
 	// The scheduled backup service is not applicable when using an external database
 	if !env.ManagedCentral.BooleanSetting() && !pgconfig.IsExternalDatabase() {
 		servicesToRegister = append(servicesToRegister, backupService.Singleton())
+	} else {
+		servicesToRegister = append(servicesToRegister, externaldb.Singleton())
 	}
 
 	servicesToRegister = append(servicesToRegister, reportServiceV2.Singleton())
@@ -464,12 +494,23 @@ func servicesToRegister() []pkgGRPC.APIService {
 		servicesToRegister = append(servicesToRegister, v2ComplianceStats.Singleton())
 		servicesToRegister = append(servicesToRegister, v2ComplianceProfiles.Singleton())
 		servicesToRegister = append(servicesToRegister, v2ComplianceRules.Singleton())
-		// TODO: this is only done to initialize the table. Once we have a service we can move this there
-		v2ComplianceBenchmark.Singleton()
 	}
 
-	if features.UnifiedCVEDeferral.Enabled() {
-		servicesToRegister = append(servicesToRegister, vulnRequestServiceV2.Singleton())
+	if features.VirtualMachines.Enabled() {
+		if features.VirtualMachinesEnhancedDataModel.Enabled() {
+			// V2 service replaces V1 to avoid route conflicts on /v2/virtualmachines/{id}.
+			servicesToRegister = append(servicesToRegister, virtualmachineV2Service.Singleton())
+		} else {
+			servicesToRegister = append(servicesToRegister, virtualmachineService.Singleton())
+		}
+	}
+
+	if features.BaseImageDetection.Enabled() {
+		servicesToRegister = append(servicesToRegister, baseImageService.Singleton())
+	}
+
+	if features.OCPConsoleIntegration.Enabled() {
+		servicesToRegister = append(servicesToRegister, internalTokenAuthService.Singleton())
 	}
 
 	autoTriggerUpgrades := sensorUpgradeService.Singleton().AutoUpgradeSetting()
@@ -488,7 +529,9 @@ func servicesToRegister() []pkgGRPC.APIService {
 	}
 
 	// Start cluster-level (Kubernetes, OpenShift, Istio) vulnerability data fetcher.
-	fetcher.SingletonManager().Start()
+	if features.LegacyScanner.Enabled() {
+		fetcher.SingletonManager().Start()
+	}
 
 	if devbuild.IsEnabled() {
 		servicesToRegister = append(servicesToRegister, developmentService.Singleton())
@@ -550,12 +593,6 @@ func startGRPCServer() {
 
 	basicAuthProvider := userpass.RegisterAuthProviderOrPanic(authProviderRegisteringCtx, basicAuthMgr, registry)
 
-	if env.DeclarativeConfiguration.BooleanSetting() {
-		declarativeconfig.ManagerSingleton().ReconcileDeclarativeConfigurations()
-	}
-
-	cloudSourcesManager.Singleton().Start()
-
 	clusterInitBackend := backend.Singleton()
 	serviceMTLSExtractor, err := service.NewExtractorWithCertValidation(clusterInitBackend)
 	if err != nil {
@@ -589,6 +626,7 @@ func startGRPCServer() {
 		GRPCMetrics:        metrics.GRPCSingleton(),
 		HTTPMetrics:        metrics.HTTPSingleton(),
 		Endpoints:          endpointCfgs,
+		Subsystem:          pkgMetrics.CentralSubsystem,
 	}
 
 	if devbuild.IsEnabled() {
@@ -614,42 +652,79 @@ func startGRPCServer() {
 		centralSAC.GetEnricher().GetPreAuthContextEnricher(authzTraceSink),
 	)
 
-	if cds, err := configDS.Singleton().GetPublicConfig(); err == nil || cds == nil {
-		if t := cds.GetTelemetry(); t == nil || t.GetEnabled() {
-			if cfg := centralclient.Enable(); cfg.Enabled() {
-				centralclient.RegisterCentralClient(&config, basicAuthProvider.ID())
-				centralclient.StartPeriodicReload(1 * time.Hour)
-				gs := cfg.Gatherer()
-				gs.AddGatherer(authDS.Gather)
-				gs.AddGatherer(authProviderTelemetry.Gather)
-				gs.AddGatherer(cloudSourcesDS.Gather(cloudSourcesDS.Singleton()))
-				gs.AddGatherer(clusterDataStore.Gather)
-				gs.AddGatherer(declarativeconfig.ManagerSingleton().Gather())
-				gs.AddGatherer(delegatedRegistryConfigDS.Gather(delegatedRegistryConfigDS.Singleton()))
-				gs.AddGatherer(externalbackupsDS.Gather)
-				gs.AddGatherer(featuresTelemetry.Gather)
-				gs.AddGatherer(imageintegrationsDS.Gather)
-				gs.AddGatherer(notifierDS.Gather)
-				gs.AddGatherer(roleDataStore.Gather)
-				gs.AddGatherer(signatureIntegrationDS.Gather)
-				gs.AddGatherer(globaldb.Gather)
-			}
-		}
-	}
+	// Telemetry client has to add interceptors before starting the server.
+	c := phonehomeClient.Singleton()
+	config.HTTPInterceptors = append(config.HTTPInterceptors, c.GetHTTPInterceptor())
+	config.UnaryInterceptors = append(config.UnaryInterceptors, c.GetGRPCInterceptor())
 
 	server := pkgGRPC.NewAPI(config)
 	server.Register(servicesToRegister()...)
-
-	startServices()
 	startedSig := server.Start()
 
 	go watchdog(startedSig, grpcServerWatchdogTimeout)
+
+	go startPhonehomeTelemetryCollection(c, basicAuthProvider.ID())
+
+	go startServices()
+}
+
+func startPhonehomeTelemetryCollection(c *phonehomeClient.CentralClient, basicAuthProviderID string) {
+	pubcfg, err := configDS.Singleton().GetPublicConfig()
+	if err != nil {
+		log.Warnw("Failed to read telemetry configuration", logging.Err(err))
+		return
+	}
+	if cfg := pubcfg.GetTelemetry(); cfg != nil && !cfg.GetEnabled() {
+		return
+	}
+	log.Debug("User configuration grants consent for telemetry collection")
+	// Sending the initial client identity requires user consent.
+	c.GrantConsent()
+	c.RegisterCentralClient(basicAuthProviderID)
+	addCentralIdentityGatherers(c)
+	// Start the gathering.
+	// For release versions, the remote configuration will be periodically
+	// downloaded. For non-release versions, you can call POST to
+	// /v1/telemetry/config/reload to reload the configuration.
+	c.Enable()
+	log.Infof("Telemetry Client Configuration: %s", c)
+}
+
+func addCentralIdentityGatherers(c *phonehomeClient.CentralClient) {
+	add := c.Gatherer().AddGatherer
+
+	add(administrationEventDS.Gather(administrationEventDS.Singleton()))
+	add(apitokenDS.Gather(apitokenDS.Singleton()))
+	add(authDS.Gather)
+	add(authProviderTelemetry.Gather)
+	add(cloudSourcesDS.Gather(cloudSourcesDS.Singleton()))
+	add(clusterDataStore.Gather)
+	add(complianceScanDS.GatherProfiles(complianceScanDS.Singleton()))
+	add(complianceScanDS.GatherTailoredProfiles(complianceScanDS.Singleton()))
+	add(declarativeconfig.ManagerSingleton().Gather())
+	add(delegatedRegistryConfigDS.Gather(delegatedRegistryConfigDS.Singleton()))
+	add(externalbackupsDS.Gather)
+	add(featuresTelemetry.Gather)
+	add(globaldb.Gather)
+	add(imageintegrationsDS.Gather)
+	add(notifierDS.Gather)
+	add(policyDataStore.Gather)
+	add(roleDataStore.Gather)
+	add(signatureIntegrationDS.Gather)
+	add(virtualMachineDS.Gather(virtualMachineDS.Singleton()))
 }
 
 func registerDelayedIntegrations(integrationsInput []iiStore.DelayedIntegration) {
+	numIntegrations := len(integrationsInput)
+	if numIntegrations == 0 {
+		// we shouldn't get here, but in case we do let's just bail out here
+		log.Debug("No delayed integrations to register")
+		return
+	}
+
 	integrationManager := enrichment.ManagerSingleton()
 
-	integrations := make(map[int]iiStore.DelayedIntegration, len(integrationsInput))
+	integrations := make(map[int]iiStore.DelayedIntegration, numIntegrations)
 	for k, v := range integrationsInput {
 		integrations[k] = v
 	}
@@ -758,13 +833,19 @@ func customRoutes() (customRoutes []routes.CustomRoute) {
 		{
 			Route:         "/api/v1/images/sbom",
 			Authorizer:    user.With(permissions.Modify(resources.Image)),
-			ServerHandler: imageService.SBOMHandler(imageintegration.Set(), enrichment.ImageEnricherSingleton(), sachelper.NewClusterSacHelper(clusterDataStore.Singleton()), riskManager.Singleton()),
+			ServerHandler: imageService.SBOMGenHandler(imageintegration.Set(), enrichment.ImageEnricherSingleton(), enrichment.ImageEnricherV2Singleton(), sachelper.NewClusterSacHelper(clusterDataStore.Singleton()), riskManager.Singleton()),
+			Compression:   true,
+		},
+		{
+			Route:         "/api/v1/sboms/scan",
+			Authorizer:    user.With(permissions.Modify(resources.Image)),
+			ServerHandler: imageService.SBOMScanHandler(imageintegration.Set()),
 			Compression:   true,
 		},
 		{
 			Route:         "/api/splunk/ta/vulnmgmt",
 			Authorizer:    user.With(permissions.View(resources.Image), permissions.View(resources.Deployment)),
-			ServerHandler: splunk.NewVulnMgmtHandler(deploymentDatastore.Singleton(), imageDatastore.Singleton()),
+			ServerHandler: splunk.NewVulnMgmtHandler(deploymentDatastore.Singleton(), imageDatastore.Singleton(), imageV2Datastore.Singleton()),
 			Compression:   true,
 		},
 		{
@@ -856,6 +937,16 @@ func customRoutes() (customRoutes []routes.CustomRoute) {
 			ServerHandler: certHandler.BackupCerts(listener.Singleton()),
 			Compression:   true,
 		},
+		{
+			// User configured Prometheus metrics will be exposed on this path.
+			// The access is behind authorization because the metric label
+			// values may include sensitive data, such as deployment names and
+			// CVEs.
+			Route:         "GET /metrics",
+			Authorizer:    user.With(permissions.View(resources.Administration)),
+			ServerHandler: customMetrics.Singleton(),
+			Compression:   true,
+		},
 	}
 	scannerDefinitionsRoute := "/api/extensions/scannerdefinitions"
 	// Only grant compression to well-known content types. It should capture files
@@ -891,7 +982,7 @@ func customRoutes() (customRoutes []routes.CustomRoute) {
 	// Append report custom routes
 	customRoutes = append(customRoutes, routes.CustomRoute{
 		Route:         "/api/reports/jobs/download",
-		Authorizer:    user.With(permissions.Modify(resources.WorkflowAdministration)),
+		Authorizer:    user.With(permissions.Modify(resources.WorkflowAdministration), permissions.View(resources.Image)),
 		ServerHandler: v2Service.NewDownloadHandler(),
 		Compression:   true,
 	})
@@ -911,6 +1002,10 @@ func customRoutes() (customRoutes []routes.CustomRoute) {
 }
 
 func debugRoutes() []routes.CustomRoute {
+	if env.ContinuousProfiling.BooleanSetting() {
+		return []routes.CustomRoute{}
+	}
+
 	customRoutes := make([]routes.CustomRoute, 0, len(routes.DebugRoutes))
 
 	for r, h := range routes.DebugRoutes {
@@ -945,13 +1040,17 @@ func waitForTerminationSignal() {
 		{pruning.Singleton(), "garbage collector"},
 		{gatherer.Singleton(), "network graph default external sources gatherer"},
 		{vulnRequestManager.Singleton(), "vuln deferral requests expiry loop"},
-		{centralclient.InstanceConfig().Gatherer(), "telemetry gatherer"},
-		{centralclient.InstanceConfig().Telemeter(), "telemetry client"},
+		{phonehomeClient.Singleton().Gatherer(), "telemetry gatherer"},
+		{phonehomeClient.Singleton().Telemeter(), "telemetry client"},
 		{administrationUsageInjector.Singleton(), "administration usage injector"},
 		{apiTokenExpiration.Singleton(), "api token expiration notifier"},
 		{gcp.Singleton(), "GCP cloud credentials manager"},
 		{cloudSourcesManager.Singleton(), "cloud sources manager"},
 		{administrationEventHandler.Singleton(), "administration events handler"},
+	}
+
+	if baseImageWatcher.Enabled() {
+		stoppables = append(stoppables, stoppableWithName{baseImageWatcher.Singleton(), "base image watcher"})
 	}
 
 	stoppables = append(stoppables,
@@ -965,6 +1064,18 @@ func waitForTerminationSignal() {
 	if features.PlatformComponents.Enabled() {
 		stoppables = append(stoppables,
 			stoppableWithName{platformReprocessor.Singleton(), "platform components reprocessor"})
+	}
+
+	if features.BackgroundMigration.Enabled() {
+		stoppables = append(stoppables,
+			stoppableWithName{backgroundmigrations.Singleton(), "background migrations"})
+	}
+
+	if w := signatureIntegrationDS.KeyBundleWatcher(); w != nil {
+		stoppables = append(stoppables, stoppableWithName{w, "Red Hat signing key bundle watcher"})
+	}
+	if u := signatureIntegrationDS.KeyBundleUpdater(); u != nil {
+		stoppables = append(stoppables, stoppableWithName{u, "Red Hat signing key bundle updater"})
 	}
 
 	var wg sync.WaitGroup

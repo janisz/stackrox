@@ -1,13 +1,18 @@
 import withAuth from '../../../helpers/basicAuth';
 import { verifyColumnManagement } from '../../../helpers/tableHelpers';
+import {
+    getRouteMatcherMapForGraphQL,
+    interactAndWaitForResponses,
+} from '../../../helpers/request';
 
 import {
     applyLocalSeverityFilters,
-    selectEntityTab,
+    interactAndWaitForDeploymentList,
     visitWorkloadCveOverview,
 } from './WorkloadCves.helpers';
 import { selectors as vulnSelectors } from '../vulnerabilities.selectors';
 import { selectors } from './WorkloadCves.selectors';
+import { compoundFiltersSelectors } from '../../../helpers/compoundFilters';
 
 describe('Workload CVE Deployment Single page', () => {
     withAuth();
@@ -15,19 +20,45 @@ describe('Workload CVE Deployment Single page', () => {
     function visitFirstDeployment() {
         visitWorkloadCveOverview();
 
-        selectEntityTab('Deployment');
-        cy.get('tbody tr td[data-label="Deployment"] a').first().click();
+        interactAndWaitForDeploymentList(() => {
+            cy.get(vulnSelectors.entityTypeToggleItem('Deployment')).click();
+        });
+
+        const routeMatcherMap = getRouteMatcherMapForGraphQL([
+            'getDeploymentMetadata',
+            'getCvesForDeployment',
+            'getDeploymentSummaryData',
+        ]);
+        const staticResponseMap = {
+            getDeploymentMetadata: {
+                fixture: 'vulnerabilities/workloadCves/getDeploymentMetadata.json',
+            },
+            getCvesForDeployment: {
+                fixture: 'vulnerabilities/workloadCves/getCvesForDeployment.json',
+            },
+            getDeploymentSummaryData: {
+                fixture: 'vulnerabilities/workloadCves/getDeploymentSummaryData.json',
+            },
+        };
+
+        interactAndWaitForResponses(
+            () => {
+                cy.get('tbody tr td[data-label="Deployment"] a').first().click();
+            },
+            routeMatcherMap,
+            staticResponseMap
+        );
     }
 
     it('should contain the correct search filters in the toolbar', () => {
         visitFirstDeployment();
 
         // Check that only applicable resource menu items are present in the toolbar
-        cy.get(selectors.searchEntityDropdown).click();
-        cy.get(selectors.searchEntityMenuItem).contains('Image');
-        cy.get(selectors.searchEntityMenuItem).contains('CVE');
-        cy.get(selectors.searchEntityMenuItem).contains('Image component');
-        cy.get(selectors.searchEntityDropdown).click();
+        cy.get(compoundFiltersSelectors.entityMenuToggle).click();
+        cy.get(compoundFiltersSelectors.entityMenuItem).contains('Image');
+        cy.get(compoundFiltersSelectors.entityMenuItem).contains('CVE');
+        cy.get(compoundFiltersSelectors.entityMenuItem).contains('Image component');
+        cy.get(compoundFiltersSelectors.entityMenuToggle).click();
     });
 
     it('should navigate between vulnerabilities and resources tabs', () => {
@@ -48,7 +79,17 @@ describe('Workload CVE Deployment Single page', () => {
         cy.get('table thead tr th').contains('First discovered');
 
         // Visit the resources tab
-        cy.get(selectors.resourcesTab).click();
+        interactAndWaitForResponses(
+            () => {
+                cy.get(selectors.resourcesTab).click();
+            },
+            getRouteMatcherMapForGraphQL(['getDeploymentResources']),
+            {
+                getDeploymentResources: {
+                    fixture: 'vulnerabilities/workloadCves/getDeploymentResources.json',
+                },
+            }
+        );
 
         cy.get(selectors.vulnerabilitiesTab).should('have.attr', 'aria-selected', 'false');
         cy.get(selectors.resourcesTab).should('have.attr', 'aria-selected', 'true');

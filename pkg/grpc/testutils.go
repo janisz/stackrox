@@ -6,6 +6,7 @@ import (
 	"net"
 	"os"
 	"runtime/pprof"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -84,14 +85,14 @@ func (d *debugLoggerImpl) Log(args ...any) {
 	if d == nil || d.log == nil {
 		return
 	}
-	d.log.Log(args)
+	d.log.Log(args...)
 }
 
 func (d *debugLoggerImpl) Logf(format string, args ...any) {
 	if d == nil || d.log == nil {
 		return
 	}
-	d.log.Logf(format, args)
+	d.log.Logf(format, args...)
 }
 
 func newDebugLogger(t *testing.T) *debugLoggerImpl {
@@ -113,14 +114,6 @@ func testPrintSocketInfo(t *testing.T, ports ...uint64) error {
 }
 
 func testPrintSocketInfoFromProcFile(t *testing.T, fName string, ports ...uint64) (err error) {
-	shouldPrintPort := func(port uint64, ports ...uint64) bool {
-		for _, p := range ports {
-			if p == port {
-				return true
-			}
-		}
-		return false
-	}
 	getStateString := func(code uint64) string {
 		codeToState := map[uint64]string{
 			0x01: "ESTABLISHED",
@@ -167,7 +160,7 @@ func testPrintSocketInfoFromProcFile(t *testing.T, fName string, ports ...uint64
 		if parseErr != nil {
 			return parseErr
 		}
-		if !shouldPrintPort(port, ports...) {
+		if !slices.Contains(ports, port) {
 			continue
 		}
 		code, parseErr := strconv.ParseUint(columns[3], 16, 8)

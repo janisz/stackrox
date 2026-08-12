@@ -1,22 +1,21 @@
-import React, { ReactElement } from 'react';
-import { TextInput, PageSection, Form, Checkbox, TextArea } from '@patternfly/react-core';
+import type { ReactElement } from 'react';
+import { Checkbox, Form, PageSection, TextArea, TextInput } from '@patternfly/react-core';
 import * as yup from 'yup';
 import merge from 'lodash/merge';
 
-import { ImageIntegrationBase } from 'services/ImageIntegrationsService';
-
-import usePageState from 'Containers/Integrations/hooks/usePageState';
 import FormMessage from 'Components/PatternFly/FormMessage';
 import FormTestButton from 'Components/PatternFly/FormTestButton';
 import FormSaveButton from 'Components/PatternFly/FormSaveButton';
 import FormCancelButton from 'Components/PatternFly/FormCancelButton';
+import type { ImageIntegrationBase } from 'services/ImageIntegrationsService';
+
+import usePageState from '../../hooks/usePageState';
+import { getGoogleCredentialsPlaceholder } from '../../utils/integrationUtils';
 import useIntegrationForm from '../useIntegrationForm';
-import { IntegrationFormProps } from '../integrationFormTypes';
+import type { IntegrationFormProps } from '../integrationFormTypes';
 
 import IntegrationFormActions from '../IntegrationFormActions';
 import FormLabelGroup from '../FormLabelGroup';
-
-import { getGoogleCredentialsPlaceholder } from '../../utils/integrationUtils';
 
 export type ArtifactRegistryIntegration = {
     categories: 'REGISTRY'[];
@@ -44,7 +43,7 @@ export const validationSchema = yup.object().shape({
             .required('A category is required'),
         google: yup.object().shape({
             endpoint: yup.string().trim().required('An endpoint is required'),
-            project: yup.string().trim().required('A project is required'),
+            project: yup.string().trim(),
             wifEnabled: yup.boolean(),
             serviceAccount: yup
                 .string()
@@ -145,7 +144,7 @@ function ArtifactRegistryIntegrationForm({
 
     return (
         <>
-            <PageSection variant="light" isFilled hasOverflowScroll>
+            <PageSection isFilled hasOverflowScroll>
                 <FormMessage message={message} />
                 <Form isWidthLimited>
                     <FormLabelGroup
@@ -184,8 +183,8 @@ function ArtifactRegistryIntegrationForm({
                     </FormLabelGroup>
                     <FormLabelGroup
                         label="Project"
-                        isRequired
                         fieldId="config.google.project"
+                        helperText="Match images by the project of the registry. Leave empty to match all projects."
                         touched={touched}
                         errors={errors}
                     >

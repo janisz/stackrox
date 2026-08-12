@@ -1,0 +1,85 @@
+//go:build release && !test
+
+package phonehome
+
+import (
+	"net/http"
+	"net/http/httptest"
+	"testing"
+
+	"github.com/stackrox/rox/pkg/version"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+func TestNewClient_release(t *testing.T) {
+	require.True(t, version.IsReleaseVersion(),
+		`must be run with, e.g., `+
+			`-tags release -ldflags "-X github.com/stackrox/rox/pkg/version/internal.MainVersion=4.8.0"`)
+
+	const remoteKey = "remote-key"
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"storage_key_v1": "` + remoteKey + `" }`))
+		t.Log("served", remoteKey)
+	}))
+	defer server.Close()
+
+	t.Run("no key", func(t *testing.T) {
+		// This is a self-managed installation case.
+		reconfigured := make(chan struct{}, 1)
+		c := NewClient("test", "Test", "0.0.0",
+			WithStorageKey(""),
+			WithEndpoint(server.URL),
+			WithConfigURL(server.URL),
+			WithConfigureCallback(func(rc *RuntimeConfig) {
+				t.Logf("reconfigured with %v", rc)
+				reconfigured <- struct{}{}
+			}),
+		)
+		// Wait for the background Reconfigure to complete before
+		// checking the key, to avoid relying on eventual.Value
+		// blocking for synchronization.
+		<-reconfigured
+		assert.True(t, c.IsEnabled())
+		assert.Equal(t, remoteKey, c.GetStorageKey(), "should fetch the key")
+	})
+
+	t.Run("explicit key preserved", func(t *testing.T) {
+		// When a key is explicitly provided via ROX_TELEMETRY_STORAGE_KEY_V1,
+		// it must not be overwritten by the remote configuration.
+		const explicitKey = "explicit-key"
+		reconfigured := make(chan struct{}, 1)
+		c := NewClient("test", "Test", "0.0.0",
+			WithStorageKey(explicitKey),
+			WithEndpoint(server.URL),
+			WithConfigURL(server.URL),
+			WithConfigureCallback(func(rc *RuntimeConfig) {
+				t.Logf("reconfigured with %v", rc)
+				reconfigured <- struct{}{}
+			}),
+		)
+		// Wait for the background Reconfigure to complete, so we
+		// verify the key survives the overwrite attempt.
+		<-reconfigured
+		assert.True(t, c.IsEnabled())
+		assert.Equal(t, explicitKey, c.GetStorageKey(),
+			"explicit key must not be overwritten by remote key")
+	})
+
+	t.Run("DISABLED key", func(t *testing.T) {
+		// This is release CI and infra clusters case.
+		c := NewClient("test", "Test", "0.0.0",
+			WithStorageKey(DisabledKey),
+			WithEndpoint(server.URL),
+			WithConfigURL(server.URL),
+			WithConfigureCallback(func(rc *RuntimeConfig) {
+				t.Logf("reconfigured with %v", rc)
+			}),
+		)
+		assert.False(t, c.IsEnabled())
+		assert.False(t, c.IsActive())
+		assert.Equal(t, DisabledKey, c.GetStorageKey())
+	})
+}

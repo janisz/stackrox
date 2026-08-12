@@ -31,7 +31,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/googlerpcStatus"
+              "$ref": "#/definitions/googleRpcStatus"
             }
           }
         },
@@ -75,7 +75,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/googlerpcStatus"
+              "$ref": "#/definitions/googleRpcStatus"
             }
           }
         },
@@ -97,7 +97,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/googlerpcStatus"
+              "$ref": "#/definitions/googleRpcStatus"
             }
           }
         },
@@ -119,7 +119,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/googlerpcStatus"
+              "$ref": "#/definitions/googleRpcStatus"
             }
           }
         },
@@ -152,7 +152,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/googlerpcStatus"
+              "$ref": "#/definitions/googleRpcStatus"
             }
           }
         },
@@ -180,7 +180,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/googlerpcStatus"
+              "$ref": "#/definitions/googleRpcStatus"
             }
           }
         },
@@ -208,7 +208,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/googlerpcStatus"
+              "$ref": "#/definitions/googleRpcStatus"
             }
           }
         },
@@ -247,7 +247,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/googlerpcStatus"
+              "$ref": "#/definitions/googleRpcStatus"
             }
           }
         },
@@ -269,7 +269,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/googlerpcStatus"
+              "$ref": "#/definitions/googleRpcStatus"
             }
           }
         },
@@ -291,7 +291,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/googlerpcStatus"
+              "$ref": "#/definitions/googleRpcStatus"
             }
           }
         },
@@ -319,7 +319,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/googlerpcStatus"
+              "$ref": "#/definitions/googleRpcStatus"
             }
           }
         },
@@ -349,7 +349,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/googlerpcStatus"
+              "$ref": "#/definitions/googleRpcStatus"
             }
           }
         },
@@ -385,7 +385,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/googlerpcStatus"
+              "$ref": "#/definitions/googleRpcStatus"
             }
           }
         },
@@ -426,7 +426,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/googlerpcStatus"
+              "$ref": "#/definitions/googleRpcStatus"
             }
           }
         },
@@ -507,7 +507,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/googlerpcStatus"
+              "$ref": "#/definitions/googleRpcStatus"
             }
           }
         },
@@ -547,7 +547,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/googlerpcStatus"
+              "$ref": "#/definitions/googleRpcStatus"
             }
           }
         },
@@ -569,7 +569,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/googlerpcStatus"
+              "$ref": "#/definitions/googleRpcStatus"
             }
           }
         },
@@ -602,7 +602,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/googlerpcStatus"
+              "$ref": "#/definitions/googleRpcStatus"
             }
           }
         },
@@ -630,7 +630,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/googlerpcStatus"
+              "$ref": "#/definitions/googleRpcStatus"
             }
           }
         },
@@ -658,7 +658,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/googlerpcStatus"
+              "$ref": "#/definitions/googleRpcStatus"
             }
           }
         },
@@ -700,6 +700,33 @@
       "properties": {
         "simpleRules": {
           "$ref": "#/definitions/SimpleAccessScopeRules"
+        }
+      }
+    },
+    "EffectiveAccessScopeCluster": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "state": {
+          "$ref": "#/definitions/storageEffectiveAccessScopeState"
+        },
+        "labels": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "namespaces": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/storageEffectiveAccessScopeNamespace"
+          }
         }
       }
     },
@@ -774,14 +801,51 @@
       },
       "description": "A role specifies which actions are allowed for which subset of cluster\nobjects. Permissions be can either specified directly via setting\nresource_to_access together with global_access or by referencing a\npermission set by its id in permission_set_name."
     },
-    "SimpleAccessScopeRules": {
+    "SetBasedLabelSelectorOperator": {
+      "type": "string",
+      "enum": [
+        "UNKNOWN",
+        "IN",
+        "NOT_IN",
+        "EXISTS",
+        "NOT_EXISTS"
+      ],
+      "default": "UNKNOWN"
+    },
+    "SetBasedLabelSelectorRequirement": {
       "type": "object",
       "properties": {
-        "includedClusters": {
+        "key": {
+          "type": "string"
+        },
+        "op": {
+          "$ref": "#/definitions/SetBasedLabelSelectorOperator"
+        },
+        "values": {
           "type": "array",
           "items": {
             "type": "string"
           }
+        }
+      },
+      "title": "Next available tag: 4"
+    },
+    "SimpleAccessScopeRules": {
+      "type": "object",
+      "properties": {
+        "includedClusterIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "included_cluster_ids contains a list of clusters to which\nfull access is granted, identified by their IDs."
+        },
+        "includedClusters": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "included_clusters contains a list of clusters to which\nfull access is granted, identified by their names."
         },
         "includedNamespaces": {
           "type": "array",
@@ -810,45 +874,19 @@
     "SimpleAccessScopeRulesNamespace": {
       "type": "object",
       "properties": {
-        "clusterName": {
+        "clusterId": {
           "type": "string",
-          "description": "Both fields must be set."
+          "description": "The namespace field and at least one cluster field must be set.\nThe cluster ID takes precedence over the cluster name when a cluster with that ID exists."
+        },
+        "clusterName": {
+          "type": "string"
         },
         "namespaceName": {
           "type": "string"
         }
       }
     },
-    "TraitsMutabilityMode": {
-      "type": "string",
-      "enum": [
-        "ALLOW_MUTATE",
-        "ALLOW_MUTATE_FORCED"
-      ],
-      "default": "ALLOW_MUTATE",
-      "description": "EXPERIMENTAL.\nNOTE: Please refer from using MutabilityMode for the time being. It will be replaced in the future (ROX-14276).\nMutabilityMode specifies whether and how an object can be modified. Default\nis ALLOW_MUTATE and means there are no modification restrictions; this is equivalent\nto the absence of MutabilityMode specification. ALLOW_MUTATE_FORCED forbids all\nmodifying operations except object removal with force bit on.\n\nBe careful when changing the state of this field. For example, modifying an\nobject from ALLOW_MUTATE to ALLOW_MUTATE_FORCED is allowed but will prohibit any further\nchanges to it, including modifying it back to ALLOW_MUTATE."
-    },
-    "TraitsOrigin": {
-      "type": "string",
-      "enum": [
-        "IMPERATIVE",
-        "DEFAULT",
-        "DECLARATIVE",
-        "DECLARATIVE_ORPHANED"
-      ],
-      "default": "IMPERATIVE",
-      "description": "Origin specifies the origin of an object.\nObjects can have four different origins:\n- IMPERATIVE: the object was created via the API. This is assumed by default.\n- DEFAULT: the object is a default object, such as default roles, access scopes etc.\n- DECLARATIVE: the object is created via declarative configuration.\n- DECLARATIVE_ORPHANED: the object is created via declarative configuration and then unsuccessfully deleted(for example, because it is referenced by another object)\nBased on the origin, different rules apply to the objects.\nObjects with the DECLARATIVE origin are not allowed to be modified via API, only via declarative configuration.\nAdditionally, they may not reference objects with the IMPERATIVE origin.\nObjects with the DEFAULT origin are not allowed to be modified via either API or declarative configuration.\nThey may be referenced by all other objects.\nObjects with the IMPERATIVE origin are allowed to be modified via API, not via declarative configuration.\nThey may reference all other objects.\nObjects with the DECLARATIVE_ORPHANED origin are not allowed to be modified via either API or declarative configuration.\nDECLARATIVE_ORPHANED resource can become DECLARATIVE again if it is redefined in declarative configuration.\nObjects with this origin will be cleaned up from the system immediately after they are not referenced by other resources anymore.\nThey may be referenced by all other objects."
-    },
-    "TraitsVisibility": {
-      "type": "string",
-      "enum": [
-        "VISIBLE",
-        "HIDDEN"
-      ],
-      "default": "VISIBLE",
-      "description": "EXPERIMENTAL.\nvisibility allows to specify whether the object should be visible for certain APIs."
-    },
-    "googlerpcStatus": {
+    "googleRpcStatus": {
       "type": "object",
       "properties": {
         "code": {
@@ -894,38 +932,11 @@
           "type": "array",
           "items": {
             "type": "object",
-            "$ref": "#/definitions/storageEffectiveAccessScopeCluster"
+            "$ref": "#/definitions/EffectiveAccessScopeCluster"
           }
         }
       },
       "description": "EffectiveAccessScope describes which clusters and namespaces are \"in scope\"\ngiven current state. Basically, if AccessScope is applied to the currently\nknown clusters and namespaces, the result is EffectiveAccessScope.\n\nEffectiveAccessScope represents a tree with nodes marked as included and\nexcluded. If a node is included, all its child nodes are included."
-    },
-    "storageEffectiveAccessScopeCluster": {
-      "type": "object",
-      "properties": {
-        "id": {
-          "type": "string"
-        },
-        "name": {
-          "type": "string"
-        },
-        "state": {
-          "$ref": "#/definitions/storageEffectiveAccessScopeState"
-        },
-        "labels": {
-          "type": "object",
-          "additionalProperties": {
-            "type": "string"
-          }
-        },
-        "namespaces": {
-          "type": "array",
-          "items": {
-            "type": "object",
-            "$ref": "#/definitions/storageEffectiveAccessScopeNamespace"
-          }
-        }
-      }
     },
     "storageEffectiveAccessScopeNamespace": {
       "type": "object",
@@ -1024,40 +1035,11 @@
           "type": "array",
           "items": {
             "type": "object",
-            "$ref": "#/definitions/storageSetBasedLabelSelectorRequirement"
+            "$ref": "#/definitions/SetBasedLabelSelectorRequirement"
           }
         }
       },
       "description": "SetBasedLabelSelector only allows set-based label requirements.\n\nNext available tag: 3"
-    },
-    "storageSetBasedLabelSelectorOperator": {
-      "type": "string",
-      "enum": [
-        "UNKNOWN",
-        "IN",
-        "NOT_IN",
-        "EXISTS",
-        "NOT_EXISTS"
-      ],
-      "default": "UNKNOWN"
-    },
-    "storageSetBasedLabelSelectorRequirement": {
-      "type": "object",
-      "properties": {
-        "key": {
-          "type": "string"
-        },
-        "op": {
-          "$ref": "#/definitions/storageSetBasedLabelSelectorOperator"
-        },
-        "values": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
-        }
-      },
-      "title": "Next available tag: 4"
     },
     "storageSimpleAccessScope": {
       "type": "object",
@@ -1086,15 +1068,50 @@
       "type": "object",
       "properties": {
         "mutabilityMode": {
-          "$ref": "#/definitions/TraitsMutabilityMode"
+          "$ref": "#/definitions/storageTraitsMutabilityMode"
         },
         "visibility": {
-          "$ref": "#/definitions/TraitsVisibility"
+          "$ref": "#/definitions/storageTraitsVisibility"
         },
         "origin": {
-          "$ref": "#/definitions/TraitsOrigin"
+          "$ref": "#/definitions/storageTraitsOrigin"
+        },
+        "expiresAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "expires_at specifies when this object should be considered expired and eligible for pruning.\nThis field is optional. Objects without an expires_at value are never pruned based on expiry.\nCurrently used for dynamically created RBAC objects (roles, permission sets, access scopes)\nthat are generated by the internal token API for sensors."
         }
       }
+    },
+    "storageTraitsMutabilityMode": {
+      "type": "string",
+      "enum": [
+        "ALLOW_MUTATE",
+        "ALLOW_MUTATE_FORCED"
+      ],
+      "default": "ALLOW_MUTATE",
+      "description": "EXPERIMENTAL.\nNOTE: Please refer from using MutabilityMode for the time being. It will be replaced in the future (ROX-14276).\nMutabilityMode specifies whether and how an object can be modified. Default\nis ALLOW_MUTATE and means there are no modification restrictions; this is equivalent\nto the absence of MutabilityMode specification. ALLOW_MUTATE_FORCED forbids all\nmodifying operations except object removal with force bit on.\n\nBe careful when changing the state of this field. For example, modifying an\nobject from ALLOW_MUTATE to ALLOW_MUTATE_FORCED is allowed but will prohibit any further\nchanges to it, including modifying it back to ALLOW_MUTATE."
+    },
+    "storageTraitsOrigin": {
+      "type": "string",
+      "enum": [
+        "IMPERATIVE",
+        "DEFAULT",
+        "DECLARATIVE",
+        "DECLARATIVE_ORPHANED",
+        "EPHEMERAL"
+      ],
+      "default": "IMPERATIVE",
+      "description": "Origin specifies the origin of an object.\nObjects can have five different origins:\n- IMPERATIVE: the object was created via the API. This is assumed by default.\n- DEFAULT: the object is a default object, such as default roles, access scopes etc.\n- DECLARATIVE: the object is created via declarative configuration.\n- DECLARATIVE_ORPHANED: the object is created via declarative configuration and then unsuccessfully deleted(for example, because it is referenced by another object)\n- EPHEMERAL: the object is created via an internal API, generated on the fly and meant to be ephemeral.\nBased on the origin, different rules apply to the objects.\nObjects with the DECLARATIVE origin are not allowed to be modified via API, only via declarative configuration.\nAdditionally, they may not reference objects with the IMPERATIVE or EPHEMERAL origin.\nObjects with the DEFAULT origin are not allowed to be modified via either API or declarative configuration.\nThey may be referenced by all other objects.\nObjects with the IMPERATIVE origin are allowed to be modified via API, not via declarative configuration.\nThey may reference all other objects.\nObjects with the EPHEMERAL origin are neither allowed to be modified via API, nor via declarative configuration.\nThey may reference all other objects.\nObjects with the DECLARATIVE_ORPHANED origin are not allowed to be modified via either API or declarative configuration.\nDECLARATIVE_ORPHANED resource can become DECLARATIVE again if it is redefined in declarative configuration.\nObjects with this origin will be cleaned up from the system immediately after they are not referenced by other resources anymore.\nThey may be referenced by all other objects."
+    },
+    "storageTraitsVisibility": {
+      "type": "string",
+      "enum": [
+        "VISIBLE",
+        "HIDDEN"
+      ],
+      "default": "VISIBLE",
+      "description": "EXPERIMENTAL.\nvisibility allows to specify whether the object should be visible for certain APIs."
     },
     "v1AggregateBy": {
       "type": "object",

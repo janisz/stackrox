@@ -1,4 +1,3 @@
-import React from 'react';
 import { Bullseye, PageSection, Spinner, Tab, Tabs, Title } from '@patternfly/react-core';
 import { ExclamationCircleIcon } from '@patternfly/react-icons';
 
@@ -21,10 +20,10 @@ function ExceptionConfigurationPage() {
     return (
         <>
             <PageTitle title="Exception configuration" />
-            <PageSection variant="light">
+            <PageSection>
                 <Title headingLevel="h1">Exception configuration</Title>
             </PageSection>
-            <PageSection variant="light" padding={{ default: 'noPadding' }}>
+            <PageSection type="tabs">
                 <Tabs
                     activeKey={category}
                     onSelect={(e, value) => setCategory(value)}
@@ -43,7 +42,7 @@ function ExceptionConfigurationPage() {
                                     title="Error loading vulnerability exception configuration"
                                     headingLevel="h2"
                                     icon={ExclamationCircleIcon}
-                                    iconClassName="pf-v5-u-danger-color-100"
+                                    status="danger"
                                 >
                                     {getAxiosErrorMessage(configLoadError)}
                                 </EmptyStateTemplate>

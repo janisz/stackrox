@@ -2,6 +2,7 @@ package translation
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strconv"
 
@@ -10,12 +11,15 @@ import (
 
 	"github.com/pkg/errors"
 	platform "github.com/stackrox/rox/operator/api/v1alpha1"
+	"github.com/stackrox/rox/operator/internal/central/common"
 	"github.com/stackrox/rox/operator/internal/values/translation"
 	helmUtil "github.com/stackrox/rox/pkg/helm/util"
 	"github.com/stackrox/rox/pkg/telemetry/phonehome"
 	"github.com/stackrox/rox/pkg/utils"
 	"github.com/stackrox/rox/pkg/version"
 	"helm.sh/helm/v3/pkg/chartutil"
+	corev1 "k8s.io/api/core/v1"
+	apiErrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/utils/pointer"
@@ -51,8 +55,19 @@ func (t Translator) Translate(ctx context.Context, u *unstructured.Unstructured)
 	if err != nil {
 		return nil, err
 	}
+	// For translation purposes, enrich Central with defaults, which are not implicitly marshalled/unmarshaled.
+	if err := platform.AddUnstructuredDefaultsToCentral(&c, u); err != nil {
+		return nil, err
+	}
 
-	valsFromCR, err := t.translate(ctx, c)
+	// At this point we don't need the Defaults in the unstructured object anymore and simply get rid of it to prevent
+	// Kube API warnings of the form:
+	//
+	//   KubeAPIWarningLogger    unknown field "defaults"
+	delete(u.Object, "defaults")
+
+	centralCopy := c.DeepCopy()
+	valsFromCR, err := t.translate(ctx, *centralCopy)
 	if err != nil {
 		return nil, err
 	}
@@ -66,7 +81,12 @@ func (t Translator) Translate(ctx context.Context, u *unstructured.Unstructured)
 }
 
 // translate translates a Central CR into helm values.
+// This function potentially modifies the provided Central.
 func (t Translator) translate(ctx context.Context, c platform.Central) (chartutil.Values, error) {
+	if err := platform.MergeCentralDefaultsIntoSpec(&c); err != nil {
+		return nil, err
+	}
+
 	v := translation.NewValuesBuilder()
 
 	v.AddAllFrom(translation.GetImagePullSecrets(c.Spec.ImagePullSecrets))
@@ -75,6 +95,10 @@ func (t Translator) translate(ctx context.Context, c platform.Central) (chartuti
 
 	customize := translation.NewValuesBuilder()
 	customize.AddAllFrom(translation.GetCustomize(c.Spec.Customize))
+	deploymentDefaults, err := translation.GetDeploymentDefaults(c.Spec.Customize)
+	if err != nil {
+		return nil, err
+	}
 
 	centralSpec := c.Spec.Central
 	if centralSpec == nil {
@@ -83,21 +107,14 @@ func (t Translator) translate(ctx context.Context, c platform.Central) (chartuti
 
 	monitoring := c.Spec.Monitoring
 	v.AddChild("monitoring", translation.GetGlobalMonitoring(monitoring))
-	central, err := getCentralComponentValues(centralSpec)
+	central, err := getCentralComponentValues(ctx, centralSpec, c.GetNamespace(), t.client, deploymentDefaults)
 	if err != nil {
 		return nil, err
 	}
 
 	v.AddChild("central", central)
-
-	if c.Spec.Scanner != nil {
-		v.AddChild("scanner", getCentralScannerComponentValues(c.Spec.Scanner))
-	}
-
-	if c.Spec.ScannerV4 != nil {
-		v.AddChild("scannerV4", getCentralScannerV4ComponentValues(ctx, c.Spec.ScannerV4, c.GetNamespace(), t.client))
-	}
-
+	v.AddChild("scanner", getCentralScannerComponentValues(c.Spec.Scanner, deploymentDefaults))
+	v.AddChild("scannerV4", getCentralScannerV4ComponentValues(ctx, c.Spec.ScannerV4, c.GetNamespace(), t.client, deploymentDefaults))
 	v.AddChild("customize", &customize)
 
 	if c.Spec.Network != nil {
@@ -107,6 +124,9 @@ func (t Translator) translate(ctx context.Context, c platform.Central) (chartuti
 	if c.Spec.ConfigAsCode != nil {
 		v.AddChild("configAsCode", translation.GetConfigAsCode(c.Spec.ConfigAsCode))
 	}
+
+	v.AddChild("configController", getConfigControllerValues(c.Spec.ConfigAsCode, deploymentDefaults))
+	v.AddChild("centralWorker", getCentralWorkerValues(c.Spec.CentralWorker, deploymentDefaults))
 
 	return v.Build()
 }
@@ -148,15 +168,58 @@ func getEnv(c platform.Central) *translation.ValuesBuilder {
 	return &ret
 }
 
-func getCentralDBPersistenceValues(p *platform.DBPersistence) *translation.ValuesBuilder {
+func getExposureRouteValues(r *platform.ExposureRoute) *translation.ValuesBuilder {
+	if r == nil {
+		return nil
+	}
+	route := translation.NewValuesBuilder()
+	route.SetBool("enabled", r.Enabled)
+	route.SetString("host", r.Host)
+	if r.Reencrypt != nil {
+		reencrypt := translation.NewValuesBuilder()
+		reencrypt.SetBool("enabled", r.Reencrypt.Enabled)
+		reencrypt.SetString("host", r.Reencrypt.Host)
+		if r.Reencrypt.TLS != nil {
+			tls := translation.NewValuesBuilder()
+			tls.SetString("caCertificate", r.Reencrypt.TLS.CaCertificate)
+			tls.SetString("certificate", r.Reencrypt.TLS.Certificate)
+			tls.SetString("destinationCACertificate", r.Reencrypt.TLS.DestinationCACertificate)
+			tls.SetString("key", r.Reencrypt.TLS.Key)
+			reencrypt.AddChild("tls", &tls)
+		}
+		route.AddChild("reencrypt", &reencrypt)
+	}
+	return &route
+}
+
+func getCentralDBPersistenceValues(ctx context.Context, p *platform.DBPersistence, namespace string, client ctrlClient.Client) *translation.ValuesBuilder {
 	persistence := translation.NewValuesBuilder()
 	if hostPath := p.GetHostPath(); hostPath != "" {
 		persistence.SetStringValue("hostPath", hostPath)
 	} else {
 		pvcBuilder := translation.NewValuesBuilder()
 		pvcBuilder.SetBoolValue("createClaim", false)
+
+		// Search for a backup PVC, if it exists, allow to mount it.
+		backupClaimName := common.DefaultCentralDBBackupPVCName
 		if pvc := p.GetPersistentVolumeClaim(); pvc != nil {
+			if pvc.ClaimName != nil {
+				backupClaimName = common.GetBackupClaimName(*pvc.ClaimName)
+			}
 			pvcBuilder.SetString("claimName", pvc.ClaimName)
+		}
+
+		key := ctrlClient.ObjectKey{
+			Namespace: namespace,
+			Name:      backupClaimName,
+		}
+		pvc := &corev1.PersistentVolumeClaim{}
+		if err := client.Get(ctx, key, pvc); err == nil {
+			persistence.SetBoolValue("_backup", true)
+		} else {
+			if !apiErrors.IsNotFound(err) {
+				persistence.SetError(fmt.Errorf("could not find backup PVC, %w", err))
+			}
 		}
 
 		persistence.AddChild("persistentVolumeClaim", &pvcBuilder)
@@ -164,7 +227,7 @@ func getCentralDBPersistenceValues(p *platform.DBPersistence) *translation.Value
 	return &persistence
 }
 
-func getCentralComponentValues(c *platform.CentralComponentSpec) (*translation.ValuesBuilder, error) {
+func getCentralComponentValues(ctx context.Context, c *platform.CentralComponentSpec, namespace string, client ctrlClient.Client, defaults translation.SchedulingConstraints) (*translation.ValuesBuilder, error) {
 	cv := translation.NewValuesBuilder()
 
 	cv.AddChild(translation.ResourcesKey, translation.GetResources(c.Resources))
@@ -173,8 +236,8 @@ func getCentralComponentValues(c *platform.CentralComponentSpec) (*translation.V
 	}
 
 	cv.SetBoolValue("exposeMonitoring", c.Monitoring.IsEnabled())
-	cv.SetStringMap("nodeSelector", c.NodeSelector)
-	cv.AddAllFrom(translation.GetTolerations(translation.TolerationsKey, c.Tolerations))
+
+	cv.SetScheduling("nodeSelector", translation.TolerationsKey, &c.DeploymentSpec, defaults)
 
 	if c.Exposure != nil {
 		exposure := translation.NewValuesBuilder()
@@ -191,12 +254,7 @@ func getCentralComponentValues(c *platform.CentralComponentSpec) (*translation.V
 			np.SetInt32("port", c.Exposure.NodePort.Port)
 			exposure.AddChild("nodePort", &np)
 		}
-		if c.Exposure.Route != nil {
-			route := translation.NewValuesBuilder()
-			route.SetBool("enabled", c.Exposure.Route.Enabled)
-			route.SetString("host", c.Exposure.Route.Host)
-			exposure.AddChild("route", &route)
-		}
+		exposure.AddChild("route", getExposureRouteValues(c.Exposure.Route))
 		cv.AddChild("exposure", &exposure)
 	}
 
@@ -204,7 +262,11 @@ func getCentralComponentValues(c *platform.CentralComponentSpec) (*translation.V
 		cv.AddAllFrom(translation.GetHostAliases(translation.HostAliasesKey, c.HostAliases))
 	}
 
-	cv.AddChild("db", getCentralDBComponentValues(c.DB))
+	if c.RolloutStrategy != nil {
+		cv.SetStringValue("rolloutStrategy", string(*c.RolloutStrategy))
+	}
+
+	cv.AddChild("db", getCentralDBComponentValues(ctx, c.DB, namespace, client, defaults))
 	cv.AddChild("telemetry", getTelemetryValues(c.Telemetry))
 
 	cv.AddChild("declarativeConfiguration", getDeclarativeConfigurationValues(c.DeclarativeConfiguration))
@@ -218,13 +280,13 @@ func getCentralComponentValues(c *platform.CentralComponentSpec) (*translation.V
 	return &cv, nil
 }
 
-func getCentralDBComponentValues(c *platform.CentralDBSpec) *translation.ValuesBuilder {
+func getCentralDBComponentValues(ctx context.Context, c *platform.CentralDBSpec, namespace string, client ctrlClient.Client, defaults translation.SchedulingConstraints) *translation.ValuesBuilder {
 	cv := translation.NewValuesBuilder()
 	if c == nil {
 		c = &platform.CentralDBSpec{}
 	}
 
-	if c.ConfigOverride.Name != "" {
+	if c.ConfigOverride != nil && c.ConfigOverride.Name != "" {
 		cv.SetStringValue("configOverride", c.ConfigOverride.Name)
 	}
 
@@ -235,18 +297,6 @@ func getCentralDBComponentValues(c *platform.CentralDBSpec) *translation.ValuesB
 	}
 
 	if c.ConnectionStringOverride != nil {
-		if c.GetPersistence() != nil {
-			cv.SetError(errors.New("if a connection string is provided, no persistence settings must be supplied"))
-		}
-
-		// TODO: there are other settings which are ignored in external mode - should we error if those are set, too?
-		// Persistence seems fundamental, so it makes sense to error here, but a node selector can be regarded as more
-		// accidental, that's why we tolerate it being specified. However, the reason we don't warn about it is mostly
-		// that there is no good/easy way to warn.
-		// Moreover, the behaviour of OpenShift console UI w.r.t. defaults is such that we cannot infer user intent
-		// based merely on the (non-)nil-ness of a struct.
-		// See https://github.com/stackrox/stackrox/pull/3322#discussion_r1005954280 for more details.
-
 		cv.SetBoolValue("external", true)
 		source.SetString("connectionString", c.ConnectionStringOverride)
 		cv.AddChild("source", &source)
@@ -255,9 +305,9 @@ func getCentralDBComponentValues(c *platform.CentralDBSpec) *translation.ValuesB
 
 	cv.AddChild("source", &source)
 	cv.AddChild(translation.ResourcesKey, translation.GetResources(c.Resources))
-	cv.SetStringMap("nodeSelector", c.NodeSelector)
-	cv.AddAllFrom(translation.GetTolerations(translation.TolerationsKey, c.Tolerations))
-	cv.AddChild("persistence", getCentralDBPersistenceValues(c.GetPersistence()))
+
+	cv.SetScheduling("nodeSelector", translation.TolerationsKey, &c.DeploymentSpec, defaults)
+	cv.AddChild("persistence", getCentralDBPersistenceValues(ctx, c.GetPersistence(), namespace, client))
 	if len(c.HostAliases) > 0 {
 		cv.AddAllFrom(translation.GetHostAliases(translation.HostAliasesKey, c.HostAliases))
 	}
@@ -320,28 +370,100 @@ func getDeclarativeConfigurationValues(c *platform.DeclarativeConfiguration) *tr
 	return &declarativeConfig
 }
 
-func getCentralScannerComponentValues(s *platform.ScannerComponentSpec) *translation.ValuesBuilder {
+func getCentralScannerComponentValues(s *platform.ScannerComponentSpec, defaults translation.SchedulingConstraints) *translation.ValuesBuilder {
+	if s == nil && !defaults.IsSet() {
+		return nil
+	}
+	if s == nil {
+		s = &platform.ScannerComponentSpec{}
+	}
+
 	sv := translation.NewValuesBuilder()
-
 	translation.SetScannerComponentDisableValue(&sv, s.ScannerComponent)
-	translation.SetScannerAnalyzerValues(&sv, s.GetAnalyzer())
-	translation.SetScannerDBValues(&sv, s.DB)
-
+	translation.SetScannerAnalyzerValues(&sv, s.GetAnalyzer(), defaults)
+	translation.SetScannerDBValues(&sv, s.DB, defaults)
 	sv.SetBoolValue("exposeMonitoring", s.Monitoring.IsEnabled())
 
 	return &sv
 }
 
-func getCentralScannerV4ComponentValues(ctx context.Context, s *platform.ScannerV4Spec, namespace string, client ctrlClient.Client) *translation.ValuesBuilder {
+func getCentralScannerV4ComponentValues(ctx context.Context, s *platform.ScannerV4Spec, namespace string, client ctrlClient.Client, defaults translation.SchedulingConstraints) *translation.ValuesBuilder {
+	if s == nil && !defaults.IsSet() {
+		return nil
+	}
+	if s == nil {
+		s = &platform.ScannerV4Spec{}
+	}
+
 	sv := translation.NewValuesBuilder()
 	translation.SetScannerV4DisableValue(&sv, s.ScannerComponent)
-	translation.SetScannerV4ComponentValues(&sv, "indexer", s.Indexer)
-	translation.SetScannerV4ComponentValues(&sv, "matcher", s.Matcher)
-	translation.SetScannerV4DBValues(ctx, &sv, s.DB, platform.CentralGVK.Kind, namespace, client)
+	translation.SetScannerV4ComponentValues(&sv, "indexer", s.Indexer, defaults)
+	translation.SetScannerV4ComponentValues(&sv, "matcher", s.Matcher, defaults)
+	translation.SetScannerV4DBValues(ctx, &sv, s.DB, platform.CentralGVK.Kind, namespace, client, defaults)
 
 	if s.Monitoring != nil {
 		sv.SetBoolValue("exposeMonitoring", s.Monitoring.IsEnabled())
 	}
 
 	return &sv
+}
+
+func getConfigControllerValues(c *platform.ConfigAsCodeSpec, defaults translation.SchedulingConstraints) *translation.ValuesBuilder {
+	if c == nil && !defaults.IsSet() {
+		return nil
+	}
+	if c == nil {
+		c = &platform.ConfigAsCodeSpec{}
+	}
+
+	cv := translation.NewValuesBuilder()
+	cv.AddChild(translation.ResourcesKey, translation.GetResources(c.Resources))
+	cv.SetScheduling("nodeSelector", translation.TolerationsKey, &c.DeploymentSpec, defaults)
+	if len(c.HostAliases) > 0 {
+		cv.AddAllFrom(translation.GetHostAliases(translation.HostAliasesKey, c.HostAliases))
+	}
+
+	return &cv
+}
+
+func getCentralWorkerValues(c *platform.CentralWorkerSpec, defaults translation.SchedulingConstraints) *translation.ValuesBuilder {
+	// TODO(ROX-36029): Always emit `enabled` explicitly instead of short-circuiting on nil.
+	if c == nil && !defaults.IsSet() {
+		return nil
+	}
+	if c == nil {
+		c = &platform.CentralWorkerSpec{}
+	}
+
+	cv := translation.NewValuesBuilder()
+	enabled := c.Enabled != nil && *c.Enabled
+	cv.SetBoolValue("enabled", enabled)
+	cv.AddChild(translation.ResourcesKey, translation.GetResources(c.Resources))
+	cv.SetScheduling("nodeSelector", translation.TolerationsKey, &c.DeploymentSpec, defaults)
+	if c.Affinity != nil {
+		affinityMap, err := toStringInterfaceMap(c.Affinity)
+		if err != nil {
+			cv.SetError(errors.Wrap(err, "translating centralWorker affinity"))
+		} else {
+			cv.SetMap("affinity", affinityMap)
+		}
+	}
+	cv.SetString("priorityClassName", c.PriorityClassName)
+	if len(c.HostAliases) > 0 {
+		cv.AddAllFrom(translation.GetHostAliases(translation.HostAliasesKey, c.HostAliases))
+	}
+
+	return &cv
+}
+
+func toStringInterfaceMap(v any) (map[string]interface{}, error) {
+	data, err := json.Marshal(v)
+	if err != nil {
+		return nil, err
+	}
+	var m map[string]interface{}
+	if err := json.Unmarshal(data, &m); err != nil {
+		return nil, err
+	}
+	return m, nil
 }

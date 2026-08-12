@@ -19,10 +19,10 @@ import (
 	concPool "github.com/sourcegraph/conc/pool"
 	"github.com/stackrox/rox/central/cluster/datastore"
 	configDS "github.com/stackrox/rox/central/config/datastore"
+	deleRegDS "github.com/stackrox/rox/central/delegatedregistryconfig/datastore"
 	"github.com/stackrox/rox/central/globaldb"
 	groupDS "github.com/stackrox/rox/central/group/datastore"
 	"github.com/stackrox/rox/central/logimbue/store"
-	"github.com/stackrox/rox/central/logimbue/writer"
 	notifierDS "github.com/stackrox/rox/central/notifier/datastore"
 	roleDS "github.com/stackrox/rox/central/role/datastore"
 	"github.com/stackrox/rox/central/sensor/service/connection"
@@ -41,6 +41,7 @@ import (
 	"github.com/stackrox/rox/pkg/grpc/authz/user"
 	"github.com/stackrox/rox/pkg/grpc/routes"
 	"github.com/stackrox/rox/pkg/httputil"
+	"github.com/stackrox/rox/pkg/jsonutil"
 	"github.com/stackrox/rox/pkg/k8sintrospect"
 	"github.com/stackrox/rox/pkg/logging"
 	"github.com/stackrox/rox/pkg/postgres/pgconfig"
@@ -50,11 +51,14 @@ import (
 	"github.com/stackrox/rox/pkg/sac"
 	"github.com/stackrox/rox/pkg/sac/observe"
 	"github.com/stackrox/rox/pkg/sac/resources"
+	"github.com/stackrox/rox/pkg/set"
 	"github.com/stackrox/rox/pkg/telemetry/data"
 	"github.com/stackrox/rox/pkg/version"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/proto"
 )
 
 type logsMode int
@@ -125,7 +129,7 @@ type Service interface {
 func New(clusters datastore.DataStore, sensorConnMgr connection.Manager, telemetryGatherer *gatherers.RoxGatherer,
 	store store.Store, authzTraceSink observe.AuthzTraceSink, authProviderRegistry authproviders.Registry,
 	groupDataStore groupDS.DataStore, roleDataStore roleDS.DataStore, configDataStore configDS.DataStore,
-	notifierDataStore notifierDS.DataStore) Service {
+	notifierDataStore notifierDS.DataStore, deleRegConfigDS deleRegDS.DataStore) Service {
 	return &serviceImpl{
 		clusters:             clusters,
 		sensorConnMgr:        sensorConnMgr,
@@ -137,6 +141,7 @@ func New(clusters datastore.DataStore, sensorConnMgr connection.Manager, telemet
 		roleDataStore:        roleDataStore,
 		configDataStore:      configDataStore,
 		notifierDataStore:    notifierDataStore,
+		deleRegConfigDS:      deleRegConfigDS,
 	}
 }
 
@@ -153,6 +158,7 @@ type serviceImpl struct {
 	roleDataStore        roleDS.DataStore
 	configDataStore      configDS.DataStore
 	notifierDataStore    notifierDS.DataStore
+	deleRegConfigDS      deleRegDS.DataStore
 }
 
 // ResetDBStats resets pg_stat_statements in order to allow new metrics to be accumulated.
@@ -316,6 +322,26 @@ func addJSONToZip(zipWriter *zipWriter, fileName string, jsonObj interface{}) er
 	return jsonEnc.Encode(jsonObj)
 }
 
+// addProtoJSONToZip mimics addJSONToZip but instead outputs JSON similar to the gRPC gateway.
+// When compared to addJSONToZip, a few advantages include: enums are translated to human friendly
+// strings (ie: "RESOLVED" vs 2), and field names are converted to CamelCase (vs. snake_case) matching the StackRox API output.
+func addProtoJSONToZip(zipWriter *zipWriter, fileName string, protoMsg proto.Message) error {
+	zipWriter.LockWrite()
+	defer zipWriter.UnlockWrite()
+	w, err := zipWriter.writerWithCurrentTimestampNoLock(fileName)
+	if err != nil {
+		return errors.Wrapf(err, "unable to create zip file %q", fileName)
+	}
+
+	b, err := protojson.MarshalOptions{Multiline: true}.Marshal(protoMsg)
+	if err != nil {
+		return err
+	}
+
+	_, err = w.Write(b)
+	return err
+}
+
 func zipPrometheusMetrics(ctx context.Context, zipWriter *zipWriter, name string) error {
 	// Write to the buffer first instead of directly to the zip writer, this way we hold the lock _only_ for the copy
 	// time.
@@ -477,15 +503,28 @@ func getCentralDBData(ctx context.Context, zipWriter *zipWriter) error {
 	if tuples.Error != "" {
 		log.Errorw("error retrieving pg_stat_user_tables", logging.Err(errors.New(tuples.Error)))
 	}
-	return addJSONToZip(zipWriter, "central-db-pg-tuples.json", tuples)
-}
-
-func (s *serviceImpl) getLogImbue(ctx context.Context, zipWriter *zipWriter) error {
-	logs, err := s.store.GetAll(ctx)
-	if err != nil {
+	if err := addJSONToZip(zipWriter, "central-db-pg-tuples.json", tuples); err != nil {
 		return err
 	}
 
+	// Get the active session stats
+	activities := stats.GetPGStatActivities(ctx, db, pgStatStatementsMax)
+	if activities.Error != "" {
+		log.Errorw("error retrieving pg_stat_activity", logging.Err(errors.New(activities.Error)))
+	}
+	if err := addJSONToZip(zipWriter, "central-db-pg-activity.json", activities); err != nil {
+		return err
+	}
+
+	// Get the index health stats
+	indexStats := stats.GetPGIndexStats(ctx, db, pgStatStatementsMax)
+	if indexStats.Error != "" {
+		log.Errorw("error retrieving pg_stat_user_indexes", logging.Err(errors.New(indexStats.Error)))
+	}
+	return addJSONToZip(zipWriter, "central-db-pg-index-stats.json", indexStats)
+}
+
+func (s *serviceImpl) getLogImbue(ctx context.Context, zipWriter *zipWriter) error {
 	zipWriter.LockWrite()
 	defer zipWriter.UnlockWrite()
 	w, err := zipWriter.writerWithCurrentTimestampNoLock("logimbue-data.json")
@@ -493,13 +532,46 @@ func (s *serviceImpl) getLogImbue(ctx context.Context, zipWriter *zipWriter) err
 		return err
 	}
 
-	return writer.WriteLogs(w, logs)
+	// WriteLogs takes the LogImbue logs from the Store and writes them to Writer.
+	// Each log will be a JSON object. For convenience, we wrap it in "[]" so that
+	// it is readable as a JSON array.
+	jsonWriter := jsonutil.NewJSONArrayWriter(w)
+	err = jsonWriter.Init()
+	if err != nil {
+		return err
+	}
+
+	err = s.store.Walk(ctx, func(log *storage.LogImbue) error {
+		return jsonWriter.WriteObject(safeRawMessage(log.GetLog()))
+	})
+	if err != nil {
+		return errors.Wrap(err, "writing logs to zip")
+	}
+	return jsonWriter.Finish()
+}
+
+type safeRawMessage []byte
+
+// MarshalJSON returns m as the JSON encoding of m.
+func (m safeRawMessage) MarshalJSON() ([]byte, error) {
+	if m == nil {
+		return []byte("null"), nil
+	}
+	msg, err := json.Marshal(json.RawMessage(m))
+	if err != nil {
+		msg, err = json.Marshal(map[string]interface{}{"encodingError": err.Error(), "raw": string(m)})
+	}
+	return msg, err
 }
 
 func (s *serviceImpl) getAuthProviders(_ context.Context) (interface{}, error) {
 	authProviders := s.authProviderRegistry.GetProviders(nil, nil)
 
+	// An empty slice and nil are marshaled differently. Therefore if keys is empty we want to keep result equal to nil
 	var storageAuthProviders []*storage.AuthProvider
+	if len(authProviders) > 0 {
+		storageAuthProviders = make([]*storage.AuthProvider, 0, len(authProviders))
+	}
 	for _, authProvider := range authProviders {
 		storageAuthProviders = append(storageAuthProviders, authProvider.StorageView())
 	}
@@ -513,7 +585,12 @@ func (s *serviceImpl) getGroups(_ context.Context) (interface{}, error) {
 			sac.AccessModeScopeKeys(storage.Access_READ_ACCESS),
 			sac.ResourceScopeKeys(resources.Access)))
 
-	return s.groupDataStore.GetAll(accessGroupsCtx)
+	var groups []*storage.Group
+	err := s.groupDataStore.ForEach(accessGroupsCtx, func(group *storage.Group) error {
+		groups = append(groups, group)
+		return nil
+	})
+	return groups, err
 }
 
 type diagResolvedRole struct {
@@ -540,7 +617,7 @@ func (s *serviceImpl) getRoles(_ context.Context) (interface{}, error) {
 		}
 
 		if resolvedRole, err := s.roleDataStore.GetAndResolveRole(accessRolesCtx,
-			role.Name); err == nil && resolvedRole != nil {
+			role.GetName()); err == nil && resolvedRole != nil {
 			// Get better formatting of permission sets.
 			diagRole.PermissionSet = map[string]string{}
 			for permName, accessRight := range resolvedRole.GetPermissions() {
@@ -561,7 +638,17 @@ func (s *serviceImpl) getNotifiers(_ context.Context) (interface{}, error) {
 			sac.AccessModeScopeKeys(storage.Access_READ_ACCESS),
 			sac.ResourceScopeKeys(resources.Integration)))
 
-	return s.notifierDataStore.GetScrubbedNotifiers(accessNotifierCtx)
+	var notifiers []*storage.Notifier
+	err := s.notifierDataStore.ForEachScrubbedNotifier(accessNotifierCtx, func(n *storage.Notifier) error {
+		notifiers = append(notifiers, n)
+		return nil
+	})
+
+	if err != nil {
+		return nil, err
+	}
+
+	return notifiers, nil
 }
 
 func (s *serviceImpl) getConfig(_ context.Context) (interface{}, error) {
@@ -701,11 +788,24 @@ func (s *serviceImpl) writeZippedDebugDump(ctx context.Context, w http.ResponseW
 	}
 	if s.telemetryGatherer != nil && opts.telemetryMode > noTelemetry {
 		diagBundleTasks.Go(func(ctx context.Context) error {
-			telemetryData := s.telemetryGatherer.Gather(ctx, opts.telemetryMode >= telemetryCentralAndSensors,
-				opts.withCentral)
+			telemetryData := s.telemetryGatherer.Gather(
+				ctx,
+				opts.telemetryMode >= telemetryCentralAndSensors,
+				opts.withCentral,
+				set.NewStringSet(opts.clusters...))
 			return writeTelemetryData(zipWriter, telemetryData)
 		})
 	}
+	diagBundleTasks.Go(func(ctx context.Context) error {
+		filename := "delegated-scanning-config.json"
+
+		config, err := s.getDeleRegConfigs(ctx)
+		if err != nil {
+			return addJSONToZip(zipWriter, filename, map[string]string{"message": err.Error()})
+		}
+
+		return addProtoJSONToZip(zipWriter, filename, config)
+	})
 	if opts.withAccessControl {
 		diagBundleTasks.Go(func(ctx context.Context) error {
 			fetchAndAddJSONToZip(ctx, zipWriter, "auth-providers.json", s.getAuthProviders)
@@ -750,7 +850,9 @@ func (s *serviceImpl) writeZippedDebugDump(ctx context.Context, w http.ResponseW
 	log.Info("Finished writing data to the diagnostic bundle")
 
 	// Get logs last to also catch logs made during creation of diag bundle.
-	if (opts.withCentral || opts.withDBOnly) && (opts.logs == localLogs || failureDuringDiagnostics) {
+	if (opts.withCentral || opts.withDBOnly) &&
+		(opts.logs == localLogs || failureDuringDiagnostics) &&
+		!env.ManagedCentral.BooleanSetting() {
 		if err := logging.ForEachRotation(logging.LoggingPath, func(logFileName string) error {
 			return zipWriter.addFile(filepath.Base(logFileName), logFileName)
 		}); err != nil {
@@ -853,6 +955,27 @@ func (s *serviceImpl) getDiagnosticDumpWithCentral(w http.ResponseWriter, r *htt
 	log.Infof("Started writing diagnostic bundle %q with options: %+v", filename, opts)
 
 	s.writeZippedDebugDump(r.Context(), w, filename, opts)
+}
+
+func (s *serviceImpl) getDeleRegConfigs(ctx context.Context) (proto.Message, error) {
+	adminCtx := sac.WithGlobalAccessScopeChecker(
+		ctx,
+		sac.AllowFixedScopes(
+			sac.AccessModeScopeKeys(storage.Access_READ_ACCESS),
+			sac.ResourceScopeKeys(resources.Administration),
+		),
+	)
+
+	config, exists, err := s.deleRegConfigDS.GetConfig(adminCtx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get delegated registry config: %w", err)
+	}
+
+	if !exists {
+		return nil, errors.New("delegated registry config unavailable")
+	}
+
+	return config, nil
 }
 
 func getOptionalQueryParams(opts *debugDumpOptions, u *url.URL) error {

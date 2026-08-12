@@ -1,11 +1,41 @@
-name: Scanner standalone E2E tests
+name: Scanner functional tests
 
 on:
   workflow_dispatch:
+  pull_request:
+    types:
+    - opened
+    - reopened
+    - synchronize
 
 jobs:
-  e2e-run:
-    name: "Deploy and run"
+  scanner-ft-images:
+    name: Wait for images
+    if: >
+      github.event_name != 'pull_request'
+      || contains(github.event.pull_request.labels.*.name, 'scanner-functional-tests')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # ratchet:actions/checkout@v7.0.0
+        with:
+          fetch-depth: 0
+          ref: "${{ github.event.pull_request.head.sha }}"
+      - name: Get tag
+        run: |
+          echo "tag=$(make --quiet --no-print-directory tag)" >> "$GITHUB_ENV"
+      - name: Wait for images
+        uses: stackrox/actions/release/wait-for-image@9238e423c3ae1ac4eb0f254cbb98da9daae24d86 # ratchet:stackrox/actions/release/wait-for-image@v1
+        with:
+          token: ${{ secrets.QUAY_RHACS_ENG_BEARER_TOKEN }}
+          image: |
+            rhacs-eng/scanner-v4:${{ env.tag }}
+            rhacs-eng/scanner-v4-db:${{ env.tag }}
+
+  scanner-ft-run:
+    name: Deploy and run
+    needs:
+      - scanner-ft-images
     runs-on: ubuntu-latest
     env:
       SCANNER_E2E_QUAY_USERNAME: ${{ secrets.QUAY_RHACS_ENG_RO_USERNAME }}
@@ -15,40 +45,54 @@ jobs:
       SCANNER_E2E_REDHAT_PASSWORD: ${{ secrets.REDHAT_PASSWORD }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # ratchet:actions/checkout@v7.0.0
         with:
           fetch-depth: 0
-          ref: ${{ github.event.pull_request.head.sha }}
+          ref: "${{ github.event.pull_request.head.sha }}"
 
       - uses: ./.github/actions/job-preamble
         with:
           gcp-account: ${{ secrets.GCP_SERVICE_ACCOUNT_STACKROX_CI }}
 
-      - name: Start minikube
-        uses: medyagh/setup-minikube@master
+      - name: Create cluster (minikube)
+        uses: medyagh/setup-minikube@e9e035a86bbc3caea26a450bd4dbf9d0c453682e # ratchet:medyagh/setup-minikube@latest
         with:
           driver: docker
           cpus: max
           memory: max
           mount-path: ${{ runner.temp }}:/runner
+          container-runtime: cri-o
 
-      - name: Deploy
+      - name: Deploy scanner
         run: |
           mkdir -m 777 "${{ runner.temp }}"/pgdata
+          # TODO(ROX-28174) Rename the targets and charts to "scanner functional
+          # tests".
           make -C scanner e2e-deploy db-host-path="/runner/pgdata"
 
-      - name: Show deployment
-        if: success() || failure()
+      - name: Wait for deployments
         run: |
-          set +e
-          kubectl -n stackrox describe pods -l app=scanner-v4-db
-          kubectl -n stackrox logs -l app=scanner-v4-db --all-containers=true
-          kubectl -n stackrox describe pods -l app=scanner-v4
-          kubectl -n stackrox logs -l app=scanner-v4 --all-containers=true
+          info() { echo >&2 ">>> INFO (Wait for deployments): $*"; }
+          timeout=1m
+          while : ; do
+              info "Waiting for deployments to become ready (in $timeout)..."
+              kubectl -n stackrox wait pod --for=condition=Ready --all --timeout="$timeout" && break
+              info "Deployments are not ready yet"
+              info "Describing all pods:"
+              kubectl -n stackrox describe pods
+              for app in scanner-v4-db scanner-v4; do
+                  info "Showing deployment logs ($app):"
+                  kubectl -n stackrox logs -l app="$app" --all-containers=true
+              done
+              info "Abort if any pod has failed:"
+              kubectl \
+                  -n stackrox get pods \
+                  -o jsonpath='{range .items[*]}{.metadata.name} status={.status.phase}{range .status.containerStatuses[*]} restart={.restartCount}/{.name}{end}{"\n"}{end}' \
+              | grep -E 'status=Failed' && exit 1
+          done
 
-      - name: Run
+      - name: Run tests
         run: |
-          set -x
           kubectl -n stackrox expose deployment scanner-v4
           kubectl -n stackrox get svc
           while true; do
@@ -58,12 +102,30 @@ jobs:
                              -o jsonpath="{.items[*].metadata.name}")" \
                   8443:8443 || continue
           done &
-          trap 'kill $!' EXIT
-          make -C scanner e2e-run NODEPS=1
+          PID1=$!
+          while true; do
+              kubectl -n stackrox port-forward \
+                  "$(kubectl -n stackrox get pods \
+                             -l app=scanner-v4-db \
+                             -o jsonpath="{.items[*].metadata.name}")" \
+                  5432:5432 || continue
+          done &
+          PID2=$!
+          trap 'kill $PID1 $PID2' EXIT
 
-      - name: Show logs on failure
-        if: failure()
+          PGPASSWORD=$(kubectl get secret "scanner-v4-db-password" -o json -n stackrox | jq .data.password -r | base64 -d)
+
+          # TODO(ROX-28174) Rename the targets and charts to "scanner functional
+          # tests".
+          PGPASSWORD="$PGPASSWORD" make -C scanner e2e-run NODEPS=1
+
+      - name: Describe and show logs
+        if: failure() || success()
         run: |
-          set +e
-          kubectl -n stackrox logs -l app=scanner-v4-db --all-containers=true
-          kubectl -n stackrox logs -l app=scanner-v4 --all-containers=true
+          info() { echo >&2 ">>> INFO (Describe and show logs): $*"; }
+          info "Describing all pods:"
+          kubectl -n stackrox describe pods
+          for app in scanner-v4-db scanner-v4; do
+              info "Showing deployment logs ($app):"
+              kubectl -n stackrox logs -l app="$app" --all-containers=true
+          done

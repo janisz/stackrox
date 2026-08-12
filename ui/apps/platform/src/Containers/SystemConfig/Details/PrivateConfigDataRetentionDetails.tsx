@@ -1,4 +1,4 @@
-import React, { ReactElement } from 'react';
+import type { ReactElement } from 'react';
 import { Link } from 'react-router-dom';
 import pluralize from 'pluralize';
 import {
@@ -11,13 +11,13 @@ import {
     GridItem,
     Popover,
     Title,
+    Tooltip,
 } from '@patternfly/react-core';
-
-import ClusterLabelsTable from 'Containers/Clusters/ClusterLabelsTable';
-import { PrivateConfig } from 'types/config.proto';
+import { HelpIcon } from '@patternfly/react-icons';
+import { Table, Tbody, Td, Th, Thead, Tr } from '@patternfly/react-table';
+import type { PrivateConfig } from 'types/config.proto';
 import { clustersBasePath } from 'routePaths';
 
-import { HelpIcon } from '@patternfly/react-icons';
 import { convertBetweenBytesAndMB } from '../SystemConfig.utils';
 
 type DataRetentionValueProps = {
@@ -43,7 +43,7 @@ function DataRetentionValue({
         }
     }
 
-    return <span className="pf-v5-u-font-size-xl pf-v5-u-font-weight-bold">{content}</span>;
+    return <span className="pf-v6-u-font-size-xl pf-v6-u-font-weight-bold">{content}</span>;
 }
 
 export type PrivateConfigDataRetentionDetailsProps = {
@@ -58,7 +58,7 @@ const PrivateConfigDataRetentionDetails = ({
     return (
         <Grid hasGutter md={6}>
             <GridItem>
-                <Card isFlat className="pf-v5-u-h-100">
+                <Card className="pf-v6-u-h-100">
                     <CardTitle>All runtime violations</CardTitle>
                     <CardBody>
                         <DataRetentionValue
@@ -69,7 +69,7 @@ const PrivateConfigDataRetentionDetails = ({
                 </Card>
             </GridItem>
             <GridItem>
-                <Card isFlat className="pf-v5-u-h-100">
+                <Card className="pf-v6-u-h-100">
                     <CardTitle>Runtime violations for deleted deployments</CardTitle>
                     <CardBody>
                         <DataRetentionValue
@@ -80,7 +80,7 @@ const PrivateConfigDataRetentionDetails = ({
                 </Card>
             </GridItem>
             <GridItem>
-                <Card isFlat className="pf-v5-u-h-100">
+                <Card className="pf-v6-u-h-100">
                     <CardTitle>Resolved deploy-phase violations</CardTitle>
                     <CardBody>
                         <DataRetentionValue
@@ -91,7 +91,7 @@ const PrivateConfigDataRetentionDetails = ({
                 </Card>
             </GridItem>
             <GridItem>
-                <Card isFlat className="pf-v5-u-h-100">
+                <Card className="pf-v6-u-h-100">
                     <CardTitle>Attempted deploy-phase violations</CardTitle>
                     <CardBody>
                         <DataRetentionValue
@@ -102,7 +102,7 @@ const PrivateConfigDataRetentionDetails = ({
                 </Card>
             </GridItem>
             <GridItem>
-                <Card isFlat className="pf-v5-u-h-100">
+                <Card className="pf-v6-u-h-100">
                     <CardTitle>Attempted runtime violations</CardTitle>
                     <CardBody>
                         <DataRetentionValue
@@ -115,8 +115,12 @@ const PrivateConfigDataRetentionDetails = ({
                 </Card>
             </GridItem>
             <GridItem>
-                <Card isFlat className="pf-v5-u-h-100">
-                    <CardTitle>Images no longer deployed</CardTitle>
+                <Card className="pf-v6-u-h-100">
+                    <CardTitle>
+                        <Tooltip content={<div>Images no longer active</div>} position="auto">
+                            <div>Images no longer deployed or watched</div>
+                        </Tooltip>
+                    </CardTitle>
                     <CardBody>
                         <DataRetentionValue
                             value={privateConfig?.imageRetentionDurationDays}
@@ -126,7 +130,7 @@ const PrivateConfigDataRetentionDetails = ({
                 </Card>
             </GridItem>
             <GridItem>
-                <Card isFlat>
+                <Card>
                     <CardTitle>Expired vulnerability requests</CardTitle>
                     <CardBody>
                         <DataRetentionValue
@@ -137,7 +141,7 @@ const PrivateConfigDataRetentionDetails = ({
                 </Card>
             </GridItem>
             <GridItem>
-                <Card isFlat>
+                <Card>
                     <CardTitle>
                         <Flex alignItems={{ default: 'alignItemsCenter' }}>
                             <FlexItem>Vulnerability report job history retention</FlexItem>
@@ -157,7 +161,7 @@ const PrivateConfigDataRetentionDetails = ({
                                                 specific cases:
                                             </p>
                                             <ul
-                                                className="pf-v5-u-ml-md pf-v5-u-mt-md"
+                                                className="pf-v6-u-ml-md pf-v6-u-mt-md"
                                                 style={{ listStyleType: 'disclosure-closed ' }}
                                             >
                                                 <li>
@@ -199,7 +203,7 @@ const PrivateConfigDataRetentionDetails = ({
                 </Card>
             </GridItem>
             <GridItem>
-                <Card isFlat>
+                <Card>
                     <CardTitle>
                         Prepared downloadable vulnerability reports retention days
                     </CardTitle>
@@ -216,7 +220,7 @@ const PrivateConfigDataRetentionDetails = ({
                 </Card>
             </GridItem>
             <GridItem>
-                <Card isFlat>
+                <Card>
                     <CardTitle>Prepared downloadable vulnerability reports limit</CardTitle>
                     <CardBody>
                         Set a total limit for all prepared downloadable vulnerability reports. Once
@@ -236,7 +240,7 @@ const PrivateConfigDataRetentionDetails = ({
                 </Card>
             </GridItem>
             <GridItem>
-                <Card isFlat>
+                <Card>
                     <CardTitle>Administration events retention days</CardTitle>
                     <CardBody>
                         <DataRetentionValue
@@ -253,7 +257,7 @@ const PrivateConfigDataRetentionDetails = ({
                 </Title>
             </GridItem>
             <GridItem>
-                <Card isFlat>
+                <Card>
                     <CardTitle>Decommissioned cluster age</CardTitle>
                     <CardBody>
                         <DataRetentionValue
@@ -266,7 +270,7 @@ const PrivateConfigDataRetentionDetails = ({
                 </Card>
             </GridItem>
             <GridItem>
-                <Card isFlat>
+                <Card>
                     <CardTitle>Ignore clusters which have labels</CardTitle>
                     <CardBody>
                         {Object.keys(
@@ -274,13 +278,29 @@ const PrivateConfigDataRetentionDetails = ({
                         ).length === 0 ? (
                             'No labels'
                         ) : (
-                            <ClusterLabelsTable
-                                labels={
-                                    privateConfig.decommissionedClusterRetention.ignoreClusterLabels
-                                }
-                                hasAction={false}
-                                handleChangeLabels={() => {}}
-                            />
+                            <Table variant="compact" aria-label="Cluster labels">
+                                <Thead>
+                                    <Tr>
+                                        <Th>Key</Th>
+                                        <Th>Value</Th>
+                                    </Tr>
+                                </Thead>
+                                <Tbody>
+                                    {Object.entries(
+                                        privateConfig.decommissionedClusterRetention
+                                            .ignoreClusterLabels
+                                    ).map(([key, value]) => (
+                                        <Tr key={key}>
+                                            <Td dataLabel="Key" modifier="breakWord">
+                                                {key}
+                                            </Td>
+                                            <Td dataLabel="Value" modifier="breakWord">
+                                                {value}
+                                            </Td>
+                                        </Tr>
+                                    ))}
+                                </Tbody>
+                            </Table>
                         )}
                     </CardBody>
                     {isClustersRoutePathRendered && (

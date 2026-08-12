@@ -1,13 +1,13 @@
 /* eslint-disable no-void */
-import React, { ReactElement } from 'react';
+import type { ReactElement } from 'react';
 import {
     Checkbox,
+    Content,
     Form,
     FormSelect,
     PageSection,
-    Text,
-    TextInput,
     TextArea,
+    TextInput,
 } from '@patternfly/react-core';
 import * as yup from 'yup';
 import merge from 'lodash/merge';
@@ -17,14 +17,14 @@ import FormTestButton from 'Components/PatternFly/FormTestButton';
 import FormSaveButton from 'Components/PatternFly/FormSaveButton';
 import FormCancelButton from 'Components/PatternFly/FormCancelButton';
 import ExternalLink from 'Components/PatternFly/IconText/ExternalLink';
-import usePageState from 'Containers/Integrations/hooks/usePageState';
 import useMetadata from 'hooks/useMetadata';
-import { BackupIntegrationBase } from 'services/BackupIntegrationsService';
+import type { BackupIntegrationBase } from 'services/BackupIntegrationsService';
 import { getVersionedDocs } from 'utils/versioning';
 
-import IntegrationHelpIcon from '../Components/IntegrationHelpIcon';
+import usePageState from '../../../hooks/usePageState';
+import { getGoogleCredentialsPlaceholder } from '../../../utils/integrationUtils';
 import useIntegrationForm from '../../useIntegrationForm';
-import { IntegrationFormProps } from '../../integrationFormTypes';
+import type { IntegrationFormProps } from '../../integrationFormTypes';
 
 import IntegrationFormActions from '../../IntegrationFormActions';
 import FormLabelGroup from '../../FormLabelGroup';
@@ -32,7 +32,7 @@ import ScheduleIntervalOptions from '../../FormSchedule/ScheduleIntervalOptions'
 import ScheduleWeeklyOptions from '../../FormSchedule/ScheduleWeeklyOptions';
 import ScheduleDailyOptions from '../../FormSchedule/ScheduleDailyOptions';
 
-import { getGoogleCredentialsPlaceholder } from '../../../utils/integrationUtils';
+import IntegrationHelpIcon from '../Components/IntegrationHelpIcon';
 
 export type GcsIntegration = {
     gcs: {
@@ -174,7 +174,7 @@ function GcsIntegrationForm({
 
     return (
         <>
-            <PageSection variant="light" isFilled hasOverflowScroll>
+            <PageSection isFilled hasOverflowScroll>
                 <FormMessage message={message} />
                 <Form isWidthLimited>
                     <FormLabelGroup
@@ -285,7 +285,7 @@ function GcsIntegrationForm({
                     </FormLabelGroup>
                     <FormLabelGroup
                         label="Object prefix"
-                        labelIcon={
+                        labelHelp={
                             <IntegrationHelpIcon
                                 helpTitle="Object prefix"
                                 helpText={
@@ -313,16 +313,16 @@ function GcsIntegrationForm({
                     </FormLabelGroup>
                     <FormLabelGroup
                         label="Short-lived tokens"
-                        labelIcon={
+                        labelHelp={
                             <IntegrationHelpIcon
                                 helpTitle="GCP workload identity"
                                 helpText={
                                     <>
-                                        <Text>
+                                        <Content component="p">
                                             Enables authentication via short-lived tokens using GCP
                                             workload identities.
-                                        </Text>
-                                        <Text>
+                                        </Content>
+                                        <Content component="p">
                                             For more information, see{' '}
                                             <ExternalLink>
                                                 <a
@@ -336,7 +336,7 @@ function GcsIntegrationForm({
                                                     RHACS documentation
                                                 </a>
                                             </ExternalLink>
-                                        </Text>
+                                        </Content>
                                     </>
                                 }
                                 ariaLabel="Help for short-lived tokens"

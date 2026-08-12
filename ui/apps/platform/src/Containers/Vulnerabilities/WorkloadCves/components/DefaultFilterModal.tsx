@@ -1,11 +1,12 @@
-import React, { useState } from 'react';
-import { Button, Modal, Form, FormGroup, Checkbox } from '@patternfly/react-core';
+import { useState } from 'react';
+import { Button, Checkbox, Form, FormGroup } from '@patternfly/react-core';
+import { Modal } from '@patternfly/react-core/deprecated';
 import cloneDeep from 'lodash/cloneDeep';
-import { useFormik, FormikProvider } from 'formik';
-import { Globe } from 'react-feather';
+import { FormikProvider, useFormik } from 'formik';
+import { Globe } from 'react-feather'; // eslint-disable-line limited/no-feather-icons
 
 import useAnalytics, { WORKLOAD_CVE_DEFAULT_FILTERS_CHANGED } from 'hooks/useAnalytics';
-import { DefaultFilters, FixableStatus, VulnerabilitySeverityLabel } from '../../types';
+import type { DefaultFilters, FixableStatus, VulnerabilitySeverityLabel } from '../../types';
 
 function analyticsTrackDefaultFilters(
     analyticsTrack: ReturnType<typeof useAnalytics>['analyticsTrack'],
@@ -14,12 +15,13 @@ function analyticsTrackDefaultFilters(
     analyticsTrack({
         event: WORKLOAD_CVE_DEFAULT_FILTERS_CHANGED,
         properties: {
-            SEVERITY_CRITICAL: filters.SEVERITY.includes('Critical') ? 1 : 0,
-            SEVERITY_IMPORTANT: filters.SEVERITY.includes('Important') ? 1 : 0,
-            SEVERITY_MODERATE: filters.SEVERITY.includes('Moderate') ? 1 : 0,
-            SEVERITY_LOW: filters.SEVERITY.includes('Low') ? 1 : 0,
-            CVE_STATUS_FIXABLE: filters.FIXABLE.includes('Fixable') ? 1 : 0,
-            CVE_STATUS_NOT_FIXABLE: filters.FIXABLE.includes('Not fixable') ? 1 : 0,
+            SEVERITY_CRITICAL: filters.Severity.includes('Critical') ? 1 : 0,
+            SEVERITY_IMPORTANT: filters.Severity.includes('Important') ? 1 : 0,
+            SEVERITY_MODERATE: filters.Severity.includes('Moderate') ? 1 : 0,
+            SEVERITY_LOW: filters.Severity.includes('Low') ? 1 : 0,
+            SEVERITY_UNKNOWN: filters.Severity.includes('Unknown') ? 1 : 0,
+            CVE_STATUS_FIXABLE: filters.Fixable.includes('Fixable') ? 1 : 0,
+            CVE_STATUS_NOT_FIXABLE: filters.Fixable.includes('Not fixable') ? 1 : 0,
         },
     });
 }
@@ -32,7 +34,7 @@ type DefaultFilterModalProps = {
 function DefaultFilterModal({ defaultFilters, setLocalStorage }: DefaultFilterModalProps) {
     const { analyticsTrack } = useAnalytics();
     const [isOpen, setIsOpen] = useState(false);
-    const totalFilters = defaultFilters.SEVERITY.length + defaultFilters.FIXABLE.length;
+    const totalFilters = defaultFilters.Severity.length + defaultFilters.Fixable.length;
 
     const formik = useFormik({
         initialValues: cloneDeep(defaultFilters),
@@ -44,14 +46,14 @@ function DefaultFilterModal({ defaultFilters, setLocalStorage }: DefaultFilterMo
     });
 
     const { submitForm, values, setFieldValue, setValues } = formik;
-    const severityValues = values.SEVERITY;
-    const fixableValues = values.FIXABLE;
+    const severityValues = values.Severity;
+    const fixableValues = values.Fixable;
 
     function handleModalToggle() {
         if (isOpen) {
             setValues(defaultFilters).catch(() => {});
         }
-        setIsOpen(!isOpen);
+        setIsOpen((prev) => !prev);
     }
 
     function handleSeverityChange(severity: VulnerabilitySeverityLabel, isChecked: boolean) {
@@ -61,7 +63,7 @@ function DefaultFilterModal({ defaultFilters, setLocalStorage }: DefaultFilterMo
         } else {
             newSeverityValues = newSeverityValues.filter((val) => val !== severity);
         }
-        setFieldValue('SEVERITY', newSeverityValues).catch(() => {});
+        setFieldValue('Severity', newSeverityValues).catch(() => {});
     }
 
     function handleFixableChange(fixable: FixableStatus, isChecked: boolean) {
@@ -71,14 +73,14 @@ function DefaultFilterModal({ defaultFilters, setLocalStorage }: DefaultFilterMo
         } else {
             newFixableValues = newFixableValues.filter((val) => val !== fixable);
         }
-        setFieldValue('FIXABLE', newFixableValues).catch(() => {});
+        setFieldValue('Fixable', newFixableValues).catch(() => {});
     }
 
     return (
         <>
             <Button
                 variant="secondary"
-                className="pf-v5-u-display-inline-flex pf-v5-u-align-items-center"
+                className="pf-v6-u-display-inline-flex pf-v6-u-align-items-center"
                 onClick={handleModalToggle}
                 countOptions={{
                     isRead: true,
@@ -86,7 +88,7 @@ function DefaultFilterModal({ defaultFilters, setLocalStorage }: DefaultFilterMo
                     className: 'custom-badge-unread',
                 }}
             >
-                <Globe height="20px" width="20px" className="pf-v5-u-mr-sm" />
+                <Globe height="20px" width="20px" className="pf-v6-u-mr-sm" />
                 <span>Default filters</span>
             </Button>
             <Modal
@@ -137,6 +139,14 @@ function DefaultFilterModal({ defaultFilters, setLocalStorage }: DefaultFilterMo
                                 isChecked={severityValues.includes('Low')}
                                 onChange={(_event, isChecked) => {
                                     handleSeverityChange('Low', isChecked);
+                                }}
+                            />
+                            <Checkbox
+                                label="Unknown"
+                                id="unknown-severity"
+                                isChecked={severityValues.includes('Unknown')}
+                                onChange={(_event, isChecked) => {
+                                    handleSeverityChange('Unknown', isChecked);
                                 }}
                             />
                         </FormGroup>

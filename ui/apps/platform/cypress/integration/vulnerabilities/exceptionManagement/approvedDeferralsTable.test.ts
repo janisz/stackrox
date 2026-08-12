@@ -6,9 +6,9 @@ import {
     visitWorkloadCveOverview,
 } from '../workloadCves/WorkloadCves.helpers';
 import {
+    approveRequest,
     deferAndVisitRequestDetails,
     visitApprovedDeferralsTab,
-    approveRequest,
 } from './ExceptionManagement.helpers';
 import { selectors } from './ExceptionManagement.selectors';
 import { selectors as workloadSelectors } from '../workloadCves/WorkloadCves.selectors';
@@ -52,8 +52,10 @@ describe('Exception Management - Approved Deferrals Table', () => {
             viewCvesByObservationState('Deferred');
 
             // Verify correct CVE filter
-            cy.get('td[data-label="Request details"] a:contains("View")').click();
-            cy.get(workloadSelectors.filterChipGroupItem('CVE', cveName));
+            cy.get(
+                `tr:has(td[data-label="CVE"]:contains("${cveName}")) td[data-label="Request details"] a:contains("View")`
+            ).click();
+            cy.get(workloadSelectors.filterLabelGroupItem('CVE', cveName));
 
             // Verify a link in the table containing the request
             cy.get('td a').contains(requestName);
@@ -113,7 +115,7 @@ describe('Exception Management - Approved Deferrals Table', () => {
     it('should be able to sort on the "Requester" column', () => {
         visitApprovedDeferralsTab();
 
-        cy.get(selectors.tableSortColumn('Requester')).should('have.attr', 'aria-sort', 'none');
+        cy.get(selectors.tableSortColumn('Requester')).should('not.have.attr', 'aria-sort');
         cy.get(selectors.tableColumnSortButton('Requester')).click();
         cy.location('search').should(
             'contain',
@@ -139,7 +141,7 @@ describe('Exception Management - Approved Deferrals Table', () => {
     it('should be able to sort on the "Requested" column', () => {
         visitApprovedDeferralsTab();
 
-        cy.get(selectors.tableSortColumn('Requested')).should('have.attr', 'aria-sort', 'none');
+        cy.get(selectors.tableSortColumn('Requested')).should('not.have.attr', 'aria-sort');
         cy.get(selectors.tableColumnSortButton('Requested')).click();
         cy.location('search').should(
             'contain',
@@ -165,7 +167,7 @@ describe('Exception Management - Approved Deferrals Table', () => {
     it('should be able to sort on the "Expires" column', () => {
         visitApprovedDeferralsTab();
 
-        cy.get(selectors.tableSortColumn('Expires')).should('have.attr', 'aria-sort', 'none');
+        cy.get(selectors.tableSortColumn('Expires')).should('not.have.attr', 'aria-sort');
         cy.get(selectors.tableColumnSortButton('Expires')).click();
         cy.location('search').should(
             'contain',
@@ -183,7 +185,7 @@ describe('Exception Management - Approved Deferrals Table', () => {
     it('should be able to sort on the "Scope" column', () => {
         visitApprovedDeferralsTab();
 
-        cy.get(selectors.tableSortColumn('Scope')).should('have.attr', 'aria-sort', 'none');
+        cy.get(selectors.tableSortColumn('Scope')).should('not.have.attr', 'aria-sort');
         cy.get(selectors.tableColumnSortButton('Scope')).click();
         cy.location('search').should(
             'contain',

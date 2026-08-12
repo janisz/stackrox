@@ -3,25 +3,29 @@ package manager
 import (
 	"context"
 	"sync/atomic"
+	"testing"
 	"time"
-	"unsafe"
 
+	lru "github.com/hashicorp/golang-lru/v2"
 	pkgErr "github.com/pkg/errors"
 	"github.com/stackrox/rox/generated/internalapi/sensor"
 	"github.com/stackrox/rox/generated/storage"
 	"github.com/stackrox/rox/pkg/booleanpolicy"
 	"github.com/stackrox/rox/pkg/booleanpolicy/policyfields"
 	"github.com/stackrox/rox/pkg/clientconn"
+	"github.com/stackrox/rox/pkg/coalescer"
 	"github.com/stackrox/rox/pkg/concurrency"
 	"github.com/stackrox/rox/pkg/detection"
 	"github.com/stackrox/rox/pkg/detection/deploytime"
 	"github.com/stackrox/rox/pkg/detection/runtime"
+	"github.com/stackrox/rox/pkg/env"
 	"github.com/stackrox/rox/pkg/logging"
 	"github.com/stackrox/rox/pkg/mtls"
 	"github.com/stackrox/rox/pkg/protocompat"
 	"github.com/stackrox/rox/pkg/set"
 	"github.com/stackrox/rox/pkg/size"
 	"github.com/stackrox/rox/pkg/sizeboundedcache"
+	"github.com/stackrox/rox/pkg/sync"
 	"github.com/stackrox/rox/pkg/utils"
 	"github.com/stackrox/rox/sensor/admission-control/errors"
 	"github.com/stackrox/rox/sensor/admission-control/resources"
@@ -45,11 +49,19 @@ var (
 
 type state struct {
 	*sensor.AdmissionControlSettings
-	deploytimeDetector deploytime.Detector
 
-	allRuntimePoliciesDetector                    runtime.Detector
-	runtimeDetectorForPoliciesWithoutDeployFields runtime.Detector
-	runtimeDetectorForPoliciesWithDeployFields    runtime.Detector
+	// specOnlyDeployDetector evaluates deploy policies that only reference
+	// deployment spec fields (privileged, capabilities, labels, etc.) and
+	// can produce a review response without requiring image enrichment data.
+	specOnlyDeployDetector deploytime.Detector
+
+	// enrichmentRequiredDeployDetector evaluates deploy policies that require image
+	// enrichment data (scan results, image metadata, signatures).
+	enrichmentRequiredDeployDetector deploytime.Detector
+
+	allK8sEventDetector    runtime.Detector
+	deployFieldK8sDetector runtime.Detector
+	eventOnlyK8sDetector   runtime.Detector
 
 	bypassForUsers, bypassForGroups set.FrozenStringSet
 	enforcedOps                     map[admission.Operation]struct{}
@@ -65,23 +77,112 @@ func (s *state) clusterID() string {
 	return clusterID
 }
 
+func (s *state) admissionTimeoutCtx() (context.Context, context.CancelFunc) {
+	timeout := s.GetClusterConfig().GetAdmissionControllerConfig().GetTimeoutSeconds()
+	return context.WithTimeout(context.Background(), time.Duration(timeout)*time.Second)
+}
+
 func (s *state) activeForOperation(op admission.Operation) bool {
 	_, active := s.enforcedOps[op]
 	return active
 }
 
+const (
+	// imageNameCacheSize is the maximum number of entries in the image name-to-cache-key
+	// LRU. Each entry maps a full image name (e.g. "docker.io/library/nginx:1.25") to its
+	// resolved cache key in imageCache. 8192 covers large clusters with aggressive CI/CD
+	// while bounding memory to ~1.6MB. Dead entries (old tags never referenced again) are
+	// naturally evicted by LRU pressure from new entries.
+	imageNameCacheSize = 8192
+)
+
+// imageGenTracker tracks per-key generation counters to prevent stale in-flight
+// fetches from re-caching data after an invalidation or full purge.
+type imageGenTracker struct {
+	mu           sync.RWMutex
+	gen          map[string]uint64
+	cacheVersion string
+}
+
+func newImageGenTracker() *imageGenTracker {
+	return &imageGenTracker{gen: make(map[string]uint64)}
+}
+
+// Snapshot captures the per-key generation and CacheVersion before a fetch.
+func (t *imageGenTracker) Snapshot(key string) (gen uint64, cacheVersion string) {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	return t.gen[key], t.cacheVersion
+}
+
+// Changed returns true if the generation or CacheVersion moved since the snapshot.
+func (t *imageGenTracker) Changed(key string, gen uint64, cacheVersion string) bool {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	return t.gen[key] != gen || t.cacheVersion != cacheVersion
+}
+
+// Inc bumps the per-key generation counter.
+func (t *imageGenTracker) Inc(key string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.gen[key]++
+}
+
+// CacheVersion returns the current cache version.
+func (t *imageGenTracker) CacheVersion() string {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	return t.cacheVersion
+}
+
+// UpdateCacheVersion sets a new CacheVersion and clears all per-key counters.
+func (t *imageGenTracker) UpdateCacheVersion(v string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.cacheVersion = v
+	clear(t.gen)
+}
+
+// Get returns the per-key generation counter (for testing only).
+func (t *imageGenTracker) Get(_ testing.TB, key string) uint64 {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	return t.gen[key]
+}
+
+// Clear resets all per-key counters and the cache version (for testing only).
+func (t *imageGenTracker) Clear(_ testing.TB) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.cacheVersion = ""
+	clear(t.gen)
+}
+
 type manager struct {
 	stopper concurrency.Stopper
 
-	client     sensor.ImageServiceClient
-	imageCache sizeboundedcache.Cache[string, imageCacheEntry]
+	client        sensor.ImageServiceClient
+	imageCache    sizeboundedcache.Cache[string, imageCacheEntry]
+	imageCacheGen *imageGenTracker
+	// imageNameToImageCacheKey resolves image full names (e.g. "docker.io/library/nginx:1.25")
+	// to their cache keys in imageCache. This is needed because admission requests for CREATE/UPDATE
+	// operations only contain image names (no digest/ID), so imageKey() returns the full name as the
+	// cache key. After a scan, the cache stores the result under the image's resolved digest. Without this
+	// map, subsequent requests for the same image by name would miss the cache and trigger redundant scans.
+	// Bounded by imageNameCacheSize to prevent unbounded growth during long-lived Sensor sessions.
+	imageNameToImageCacheKey *lru.Cache[string, string]
+	imageNameCacheEnabled    bool
+	imageCacheTTL            time.Duration
+	imageFetchGroup          *coalescer.Coalescer[*storage.Image]
 
-	depClient        sensor.DeploymentServiceClient
-	resourceUpdatesC chan *sensor.AdmCtrlUpdateResourceRequest
-	namespaces       *resources.NamespaceStore
-	deployments      *resources.DeploymentStore
-	pods             *resources.PodStore
-	initialSyncSig   concurrency.Signal
+	depClient               sensor.DeploymentServiceClient
+	resourceUpdatesC        chan *sensor.AdmCtrlUpdateResourceRequest
+	imageCacheInvalidationC chan *sensor.AdmCtrlImageCacheInvalidation
+	namespaces              *resources.NamespaceStore
+	deployments             *resources.DeploymentStore
+	pods                    *resources.PodStore
+	initialSyncSig          concurrency.Signal
 
 	settingsStream     *concurrency.ValueStream[*sensor.AdmissionControlSettings]
 	settingsC          chan *sensor.AdmissionControlSettings
@@ -89,9 +190,8 @@ type manager struct {
 
 	syncC chan *concurrency.Signal
 
-	statePtr unsafe.Pointer
-
-	cacheVersion string
+	state         atomic.Pointer[state]
+	clusterLabels atomic.Pointer[map[string]string]
 
 	sensorConnStatus concurrency.Flag
 
@@ -101,10 +201,13 @@ type manager struct {
 }
 
 // NewManager creates a new manager
-func NewManager(namespace string, maxImageCacheSize int64, imageServiceClient sensor.ImageServiceClient, deploymentServiceClient sensor.DeploymentServiceClient) *manager {
+func NewManager(namespace string, maxImageCacheSize int64, imageNameCacheEnabled bool, imageServiceClient sensor.ImageServiceClient, deploymentServiceClient sensor.DeploymentServiceClient) *manager {
 	cache, err := sizeboundedcache.New(maxImageCacheSize, 2*size.MB, func(key string, value imageCacheEntry) int64 {
 		return int64(len(key) + value.SizeVT())
 	})
+	utils.CrashOnError(err)
+
+	nameCache, err := lru.New[string, string](imageNameCacheSize)
 	utils.CrashOnError(err)
 
 	podStore := resources.NewPodStore()
@@ -116,28 +219,52 @@ func NewManager(namespace string, maxImageCacheSize int64, imageServiceClient se
 		stopper:        concurrency.NewStopper(),
 		syncC:          make(chan *concurrency.Signal),
 
-		client:     imageServiceClient,
-		imageCache: cache,
+		client:                   imageServiceClient,
+		imageCache:               cache,
+		imageNameToImageCacheKey: nameCache,
+		imageNameCacheEnabled:    imageNameCacheEnabled,
+		imageCacheTTL:            env.AdmissionControlImageCacheTTL.DurationSetting(),
+		imageFetchGroup:          coalescer.New[*storage.Image](),
+		imageCacheGen:            newImageGenTracker(),
 
 		alertsC: make(chan []*storage.Alert),
 
-		namespaces:       nsStore,
-		deployments:      depStore,
-		pods:             podStore,
-		resourceUpdatesC: make(chan *sensor.AdmCtrlUpdateResourceRequest),
-		initialSyncSig:   concurrency.NewSignal(),
-		depClient:        deploymentServiceClient,
+		namespaces:              nsStore,
+		deployments:             depStore,
+		pods:                    podStore,
+		resourceUpdatesC:        make(chan *sensor.AdmCtrlUpdateResourceRequest),
+		imageCacheInvalidationC: make(chan *sensor.AdmCtrlImageCacheInvalidation),
+		initialSyncSig:          concurrency.NewSignal(),
+		depClient:               deploymentServiceClient,
 
 		ownNamespace: namespace,
 	}
 }
 
 func (m *manager) currentState() *state {
-	return (*state)(atomic.LoadPointer(&m.statePtr))
+	return m.state.Load()
 }
 
 func (m *manager) SettingsStream() concurrency.ReadOnlyValueStream[*sensor.AdmissionControlSettings] {
 	return m.settingsStream
+}
+
+// GetClusterLabels implements scopecomp.ClusterLabelProvider interface.
+func (m *manager) GetClusterLabels(_ context.Context, _ string) (map[string]string, error) {
+	labels := m.clusterLabels.Load()
+	if labels == nil {
+		return nil, nil
+	}
+	return *labels, nil
+}
+
+// GetNamespaceLabels implements scopecomp.NamespaceLabelProvider interface.
+func (m *manager) GetNamespaceLabels(ctx context.Context, clusterID string, namespaceName string) (map[string]string, error) {
+	labels, err := m.namespaces.GetNamespaceLabels(ctx, clusterID, namespaceName)
+	if err != nil {
+		return nil, pkgErr.Wrapf(err, "getting namespace labels for %q", namespaceName)
+	}
+	return labels, nil
 }
 
 func (m *manager) IsReady() bool {
@@ -149,18 +276,24 @@ func (m *manager) Sync(ctx context.Context) error {
 	select {
 	case m.syncC <- &syncSig:
 	case <-ctx.Done():
-		return ctx.Err()
+		return pkgErr.Wrap(ctx.Err(), "sync")
 	case <-m.stopper.Client().Stopped().Done():
-		return m.stopper.Client().Stopped().ErrorWithDefault(pkgErr.New("manager was stopped"))
+		return pkgErr.Wrap(
+			m.stopper.Client().Stopped().ErrorWithDefault(pkgErr.New("manager was stopped")),
+			"sync",
+		)
 	}
 
 	select {
 	case <-syncSig.Done():
 		return nil
 	case <-ctx.Done():
-		return ctx.Err()
+		return pkgErr.Wrap(ctx.Err(), "syncing")
 	case <-m.stopper.Client().Stopped().Done():
-		return m.stopper.Client().Stopped().ErrorWithDefault(pkgErr.New("manager was stopped"))
+		return pkgErr.Wrap(
+			m.stopper.Client().Stopped().ErrorWithDefault(pkgErr.New("manager was stopped")),
+			"sync",
+		)
 	}
 }
 
@@ -184,6 +317,10 @@ func (m *manager) ResourceUpdatesC() chan<- *sensor.AdmCtrlUpdateResourceRequest
 	return m.resourceUpdatesC
 }
 
+func (m *manager) ImageCacheInvalidationC() chan<- *sensor.AdmCtrlImageCacheInvalidation {
+	return m.imageCacheInvalidationC
+}
+
 func (m *manager) InitialResourceSyncSig() *concurrency.Signal {
 	return &m.initialSyncSig
 }
@@ -201,6 +338,8 @@ func (m *manager) run() {
 			m.ProcessNewSettings(newSettings)
 		case req := <-m.resourceUpdatesC:
 			m.processUpdateResourceRequest(req)
+		case inv := <-m.imageCacheInvalidationC:
+			m.processImageCacheInvalidation(inv)
 		default:
 			// Select on syncC only if there is nothing to be read from the main
 			// channels. The duplication of select branches is a bit ugly, but inevitable
@@ -213,6 +352,8 @@ func (m *manager) run() {
 				m.ProcessNewSettings(newSettings)
 			case req := <-m.resourceUpdatesC:
 				m.processUpdateResourceRequest(req)
+			case inv := <-m.imageCacheInvalidationC:
+				m.processImageCacheInvalidation(inv)
 			case syncSig := <-m.syncC:
 				syncSig.Signal()
 			}
@@ -224,7 +365,7 @@ func (m *manager) run() {
 func (m *manager) ProcessNewSettings(newSettings *sensor.AdmissionControlSettings) {
 	if newSettings == nil {
 		log.Info("DISABLING admission control service (config map was deleted).")
-		atomic.StorePointer(&m.statePtr, nil)
+		m.state.Store(nil)
 		m.lastSettingsUpdate = nil
 		m.settingsStream.Push(newSettings) // typed nil ptr, not nil!
 		return
@@ -234,24 +375,25 @@ func (m *manager) ProcessNewSettings(newSettings *sensor.AdmissionControlSetting
 		return // no update
 	}
 
-	allRuntimePolicySet := detection.NewPolicySet()
-	runtimePoliciesWithDeployFields, runtimePoliciesWithoutDeployFields := detection.NewPolicySet(), detection.NewPolicySet()
+	// Manager implements both ClusterLabelProvider and NamespaceLabelProvider interfaces.
+	allK8sEventPolicies := detection.NewPolicySet(m, m)
+	deployFieldK8sEventPolicies, k8sEventOnlyPolicies := detection.NewPolicySet(m, m), detection.NewPolicySet(m, m)
 	for _, policy := range newSettings.GetRuntimePolicies().GetPolicies() {
-		if policyfields.ContainsScanRequiredFields(policy) && !newSettings.GetClusterConfig().GetAdmissionControllerConfig().GetScanInline() {
+		if policyfields.AlertsOnMissingEnrichment(policy) && !newSettings.GetClusterConfig().GetAdmissionControllerConfig().GetScanInline() {
 			log.Warn(errors.ImageScanUnavailableMsg(policy))
 			continue
 		}
 
-		if err := allRuntimePolicySet.UpsertPolicy(policy); err != nil {
+		if err := allK8sEventPolicies.UpsertPolicy(policy); err != nil {
 			log.Errorf("Unable to upsert policy %q (%s), will not be able to detect", policy.GetName(), policy.GetId())
 		}
 
 		if booleanpolicy.ContainsDeployTimeFields(policy) {
-			if err := runtimePoliciesWithDeployFields.UpsertPolicy(policy); err != nil {
+			if err := deployFieldK8sEventPolicies.UpsertPolicy(policy); err != nil {
 				log.Errorf("Unable to upsert policy %q (%s), will not be able to detect", policy.GetName(), policy.GetId())
 			}
 		} else {
-			if err := runtimePoliciesWithoutDeployFields.UpsertPolicy(policy); err != nil {
+			if err := k8sEventOnlyPolicies.UpsertPolicy(policy); err != nil {
 				log.Errorf("Unable to upsert policy %q (%s), will not be able to detect", policy.GetName(), policy.GetId())
 			}
 		}
@@ -261,16 +403,25 @@ func (m *manager) ProcessNewSettings(newSettings *sensor.AdmissionControlSetting
 	enforceOnCreates := newSettings.GetClusterConfig().GetAdmissionControllerConfig().GetEnabled()
 	enforceOnUpdates := newSettings.GetClusterConfig().GetAdmissionControllerConfig().GetEnforceOnUpdates()
 
-	deployTimePolicySet := detection.NewPolicySet()
+	// Manager implements both ClusterLabelProvider and NamespaceLabelProvider interfaces.
+	specOnlyPolicies := detection.NewPolicySet(m, m)
+	enrichmentRequiredPolicies := detection.NewPolicySet(m, m)
 	if enforceOnCreates || enforceOnUpdates {
 		for _, policy := range newSettings.GetEnforcedDeployTimePolicies().GetPolicies() {
-			if policyfields.ContainsScanRequiredFields(policy) &&
+			if policyfields.AlertsOnMissingEnrichment(policy) &&
 				!newSettings.GetClusterConfig().GetAdmissionControllerConfig().GetScanInline() {
 				log.Warn(errors.ImageScanUnavailableMsg(policy))
 				continue
 			}
-			if err := deployTimePolicySet.UpsertPolicy(policy); err != nil {
-				log.Errorf("Unable to upsert policy %q (%s), will not be able to enforce", policy.GetName(), policy.GetId())
+			compiled, err := detection.CompilePolicy(policy, m, m)
+			if err != nil {
+				log.Errorf("Unable to compile policy %q (%s): %v", policy.GetName(), policy.GetId(), err)
+				continue
+			}
+			if compiled.RequiresImageEnrichment() {
+				enrichmentRequiredPolicies.UpsertCompiledPolicy(compiled)
+			} else {
+				specOnlyPolicies.UpsertCompiledPolicy(compiled)
 			}
 		}
 	}
@@ -286,14 +437,15 @@ func (m *manager) ProcessNewSettings(newSettings *sensor.AdmissionControlSetting
 
 	oldState := m.currentState()
 	newState := &state{
-		AdmissionControlSettings:                      newSettings,
-		deploytimeDetector:                            deploytime.NewDetector(deployTimePolicySet),
-		allRuntimePoliciesDetector:                    runtime.NewDetector(allRuntimePolicySet),
-		runtimeDetectorForPoliciesWithDeployFields:    runtime.NewDetector(runtimePoliciesWithDeployFields),
-		runtimeDetectorForPoliciesWithoutDeployFields: runtime.NewDetector(runtimePoliciesWithoutDeployFields),
-		bypassForUsers:                                allowAlwaysUsers,
-		bypassForGroups:                               allowAlwaysGroups,
-		enforcedOps:                                   enforcedOperations,
+		AdmissionControlSettings:         newSettings,
+		specOnlyDeployDetector:           deploytime.NewDetector(specOnlyPolicies),
+		enrichmentRequiredDeployDetector: deploytime.NewDetector(enrichmentRequiredPolicies),
+		allK8sEventDetector:              runtime.NewDetector(allK8sEventPolicies),
+		deployFieldK8sDetector:           runtime.NewDetector(deployFieldK8sEventPolicies),
+		eventOnlyK8sDetector:             runtime.NewDetector(k8sEventOnlyPolicies),
+		bypassForUsers:                   allowAlwaysUsers,
+		bypassForGroups:                  allowAlwaysGroups,
+		enforcedOps:                      enforcedOperations,
 	}
 
 	if oldState != nil && newSettings.GetCentralEndpoint() == oldState.GetCentralEndpoint() {
@@ -319,30 +471,37 @@ func (m *manager) ProcessNewSettings(newSettings *sensor.AdmissionControlSetting
 		}
 	}
 
-	if newSettings.GetCacheVersion() != m.cacheVersion {
+	if newSettings.GetCacheVersion() != m.imageCacheGen.CacheVersion() {
+		log.Infof("CacheVersion changed (%s -> %s): purging image cache and resetting gen counters",
+			m.imageCacheGen.CacheVersion(), newSettings.GetCacheVersion())
+		// UpdateCacheVersion must precede Purge so that any in-flight fetch that
+		// snapshotted the old cacheVersion sees the mismatch in Changed() and
+		// discards its result instead of re-caching stale data.
+		m.imageCacheGen.UpdateCacheVersion(newSettings.GetCacheVersion())
 		m.imageCache.Purge()
-		m.cacheVersion = newSettings.GetCacheVersion()
+		m.imageNameToImageCacheKey.Purge()
 	}
 
-	//#nosec G103
-	atomic.StorePointer(&m.statePtr, unsafe.Pointer(newState))
+	m.state.Store(newState)
 	if m.lastSettingsUpdate == nil {
 		log.Info("RE-ENABLING admission control service")
 	}
 	m.lastSettingsUpdate = protocompat.ConvertTimestampToTimeOrNil(newSettings.GetTimestamp())
 
 	enforceablePolicies := 0
-	for _, policy := range allRuntimePolicySet.GetCompiledPolicies() {
+	for _, policy := range allK8sEventPolicies.GetCompiledPolicies() {
 		if len(policy.Policy().GetEnforcementActions()) > 0 {
 			enforceablePolicies++
 		}
 	}
 	log.Infof("Applied new admission control settings "+
-		"(enforcing on %d deploy-time policies; "+
+		"(enforcing on %d deploy-time policies: %d deployment metadata only, %d image enrichment data required; "+
 		"detecting on %d run-time policies; "+
 		"enforcing on %d run-time policies).",
-		len(deployTimePolicySet.GetCompiledPolicies()),
-		len(allRuntimePolicySet.GetCompiledPolicies()),
+		len(specOnlyPolicies.GetCompiledPolicies())+len(enrichmentRequiredPolicies.GetCompiledPolicies()),
+		len(specOnlyPolicies.GetCompiledPolicies()),
+		len(enrichmentRequiredPolicies.GetCompiledPolicies()),
+		len(allK8sEventPolicies.GetCompiledPolicies()),
 		enforceablePolicies)
 
 	m.settingsStream.Push(newSettings)
@@ -429,6 +588,10 @@ func (m *manager) processUpdateResourceRequest(req *sensor.AdmCtrlUpdateResource
 		m.pods.ProcessEvent(req.GetAction(), req.GetPod())
 	case *sensor.AdmCtrlUpdateResourceRequest_Namespace:
 		m.namespaces.ProcessEvent(req.GetAction(), req.GetNamespace())
+	case *sensor.AdmCtrlUpdateResourceRequest_ClusterLabels:
+		labels := req.GetClusterLabels().GetLabels()
+		m.clusterLabels.Store(&labels)
+		log.Infof("Updated cluster labels: %v", labels)
 	default:
 		log.Warnf("Received message of unknown type %T from sensor, not sure what to do with it ...", m)
 	}
@@ -436,4 +599,35 @@ func (m *manager) processUpdateResourceRequest(req *sensor.AdmCtrlUpdateResource
 
 func (m *manager) getDeploymentForPod(namespace, podName string) *storage.Deployment {
 	return m.deployments.Get(namespace, m.pods.GetDeploymentID(namespace, podName))
+}
+
+// processImageCacheInvalidation removes targeted entries from the image cache
+// and bumps generation counters for both the digest key and full name to
+// prevent in-flight fetches from re-caching stale data.
+func (m *manager) processImageCacheInvalidation(inv *sensor.AdmCtrlImageCacheInvalidation) {
+	s := m.currentState()
+	flatten := s != nil && s.GetFlattenImageData()
+
+	invalidated := 0
+	for _, key := range inv.GetImageKeys() {
+		cacheKey := key.GetImageId()
+		if flatten && key.GetImageIdV2() != "" {
+			cacheKey = key.GetImageIdV2()
+		}
+		fullName := key.GetImageFullName()
+
+		if cacheKey != "" {
+			m.imageCacheGen.Inc(cacheKey)
+			m.imageCache.Remove(cacheKey)
+			m.imageFetchGroup.Forget(cacheKey)
+			invalidated++
+		}
+		if fullName != "" {
+			m.imageCacheGen.Inc(fullName)
+			m.imageNameToImageCacheKey.Remove(fullName)
+			m.imageFetchGroup.Forget(fullName)
+		}
+	}
+
+	log.Infof("Targeted image cache invalidation: invalidated %d entries", invalidated)
 }

@@ -1,16 +1,17 @@
-import React from 'react';
+import { useState } from 'react';
+import type { MouseEvent } from 'react';
 import {
+    Content,
     ExpandableSection,
     Flex,
     FlexItem,
     Label,
     LabelGroup,
-    Text,
-    Title,
     Skeleton,
+    Title,
 } from '@patternfly/react-core';
 
-import { ComplianceProfileSummary } from 'services/ComplianceCommon';
+import type { ComplianceProfileSummary } from 'services/ComplianceCommon';
 
 interface ProfileDetailsHeaderProps {
     isLoading: boolean;
@@ -23,18 +24,15 @@ function ProfileDetailsHeader({
     profileDetails,
     profileName,
 }: ProfileDetailsHeaderProps) {
-    const [isExpanded, setIsExpanded] = React.useState(false);
+    const [isExpanded, setIsExpanded] = useState(false);
 
-    function onToggleDescription(_event: React.MouseEvent, isExpanded: boolean) {
+    function onToggleDescription(_event: MouseEvent, isExpanded: boolean) {
         setIsExpanded(isExpanded);
     }
 
     if (isLoading) {
         return (
-            <Flex
-                className="pf-v5-u-p-md pf-v5-u-background-color-100"
-                direction={{ default: 'column' }}
-            >
+            <Flex className="pf-v6-u-p-lg" direction={{ default: 'column' }}>
                 <Title headingLevel="h2">{profileName}</Title>
                 <Skeleton screenreaderText="Loading profile details" />
             </Flex>
@@ -45,10 +43,7 @@ function ProfileDetailsHeader({
         const { description, productType, profileVersion, title } = profileDetails;
 
         return (
-            <Flex
-                className="pf-v5-u-p-md pf-v5-u-background-color-100"
-                direction={{ default: 'column' }}
-            >
+            <Flex className="pf-v6-u-p-lg" direction={{ default: 'column' }}>
                 <Flex
                     alignItems={{ default: 'alignItemsFlexStart' }}
                     justifyContent={{ default: 'justifyContentSpaceBetween' }}
@@ -66,11 +61,13 @@ function ProfileDetailsHeader({
                     </FlexItem>
                 </Flex>
                 <FlexItem>
-                    <Text className="pf-v5-u-font-size-sm">{title}</Text>
+                    <Content component="p" className="pf-v6-u-font-size-sm">
+                        {title}
+                    </Content>
                 </FlexItem>
                 <FlexItem>
                     <ExpandableSection
-                        className="pf-v5-u-font-size-sm"
+                        className="pf-v6-u-font-size-sm"
                         isExpanded={isExpanded}
                         toggleText={isExpanded ? 'Show less' : 'Show more'}
                         truncateMaxLines={5}

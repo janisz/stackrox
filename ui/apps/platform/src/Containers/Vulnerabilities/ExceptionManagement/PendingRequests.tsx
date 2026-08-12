@@ -1,29 +1,29 @@
-import React, { useCallback } from 'react';
+import { useCallback } from 'react';
 import { PageSection, Pagination, ToolbarItem } from '@patternfly/react-core';
 import { Table, Td, Th, Thead, Tr } from '@patternfly/react-table';
 
 import useURLPagination from 'hooks/useURLPagination';
 import useURLSearch from 'hooks/useURLSearch';
+import useURLSort from 'hooks/useURLSort';
 import useRestQuery from 'hooks/useRestQuery';
 import { fetchVulnerabilityExceptions } from 'services/VulnerabilityExceptionService';
 
-import useURLSort from 'hooks/useURLSort';
 import PageTitle from 'Components/PageTitle';
 import TableErrorComponent from 'Components/PatternFly/TableErrorComponent';
 import TbodyUnified from 'Components/TableStateTemplates/TbodyUnified';
-import { SearchFilter } from 'types/search';
+import type { SearchFilter } from 'types/search';
+import { getTableUIState } from 'utils/getTableUIState';
 import {
+    RequestCreatedAt,
     RequestExpires,
     RequestIDLink,
+    RequestScope,
     RequestedAction,
     RequestedItems,
-    RequestCreatedAt,
     Requester,
-    RequestScope,
 } from './components/ExceptionRequestTableCells';
 import AdvancedFiltersToolbar from '../components/AdvancedFiltersToolbar';
 import { DEFAULT_VM_PAGE_SIZE } from '../constants';
-import { getTableUIState } from '../../../utils/getTableUIState';
 import { vulnRequestSearchFilterConfig } from './searchFilterConfig';
 
 const sortFields = [
@@ -38,7 +38,7 @@ const defaultSortOption = {
     direction: 'desc',
 } as const;
 
-function PendingApprovals() {
+function PendingRequests() {
     const { searchFilter, setSearchFilter } = useURLSearch();
     const { page, perPage, setPage, setPerPage } = useURLPagination(DEFAULT_VM_PAGE_SIZE);
     const { sortOption, getSortParams } = useURLSort({
@@ -83,7 +83,7 @@ function PendingApprovals() {
 
     if (tableState.type === 'ERROR') {
         return (
-            <PageSection variant="light">
+            <PageSection>
                 <TableErrorComponent
                     error={tableState.error}
                     message="An error occurred. Try refreshing again"
@@ -102,7 +102,7 @@ function PendingApprovals() {
                 includeCveSeverityFilters={false}
                 includeCveStatusFilters={false}
             >
-                <ToolbarItem variant="pagination" align={{ default: 'alignRight' }}>
+                <ToolbarItem variant="pagination" align={{ default: 'alignEnd' }}>
                     <Pagination
                         toggleTemplate={({ firstIndex, lastIndex }) => (
                             <span>
@@ -120,7 +120,7 @@ function PendingApprovals() {
                     />
                 </ToolbarItem>
             </AdvancedFiltersToolbar>
-            <Table borders={false}>
+            <Table>
                 <Thead noWrap>
                     <Tr>
                         <Th sort={getSortParams('Request Name')}>Request name</Th>
@@ -188,4 +188,4 @@ function PendingApprovals() {
     );
 }
 
-export default PendingApprovals;
+export default PendingRequests;

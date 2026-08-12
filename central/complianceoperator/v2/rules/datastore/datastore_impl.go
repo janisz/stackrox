@@ -41,11 +41,7 @@ func (d *datastoreImpl) SearchRules(ctx context.Context, query *v1.Query) ([]*st
 // DeleteRulesByCluster delete rule by cluster id
 func (d *datastoreImpl) DeleteRulesByCluster(ctx context.Context, clusterID string) error {
 	query := search.NewQueryBuilder().AddStrings(search.ClusterID, clusterID).ProtoQuery()
-	_, err := d.store.DeleteByQuery(ctx, query)
-	if err != nil {
-		return err
-	}
-	return nil
+	return d.store.DeleteByQuery(ctx, query)
 }
 
 // ControlResult represents a result of a control.
@@ -75,7 +71,11 @@ func (d *datastoreImpl) GetControlsByRulesAndBenchmarks(ctx context.Context, rul
 	)
 
 	query := builder.ProtoQuery()
-	results, err := pgSearch.RunSelectRequestForSchema[ControlResult](ctx, d.db, postgresSchema.ComplianceOperatorRuleV2Schema, query)
+	var results []*ControlResult
+	err := pgSearch.RunSelectRequestForSchemaFn[ControlResult](ctx, d.db, postgresSchema.ComplianceOperatorRuleV2Schema, query, func(r *ControlResult) error {
+		results = append(results, r)
+		return nil
+	})
 	if err != nil {
 		return nil, err
 	}

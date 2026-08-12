@@ -1,8 +1,7 @@
 # StackRox Kubernetes Security Platform Web Application (UI)
 
-Single-page application (SPA) for StackRox Kubernetes Security Platform. This
-application was bootstrapped with
-[Create React App](https://github.com/facebookincubator/create-react-app).
+Single-page application (SPA) for StackRox Kubernetes Security Platform. Built with
+React 18, TypeScript, and Vite.
 
 ## Development
 
@@ -51,30 +50,331 @@ the value of `UI_START_TARGET`: `https://8.8.8.8:443`.
 
 ### Linting
 
-Unlike ESLint 8 which auto-detects eslint.config.js **flat config** file, ESLint plugin for Visual Studio code editor does not (yet).
+The `npm run lint` command uses ESLint with `--cache --cache-strategy content`. This caches lint results per file based on content hashes, so subsequent runs only re-lint changed files. The cache file (`.eslintcache`) is gitignored. If you need a clean lint run (e.g. after modifying custom rules in `eslint-plugins/`), delete `.eslintcache` and re-run.
+
+In CI, the `.eslintcache` file is persisted between runs via the `cache-eslint` GitHub Action (`.github/actions/cache-eslint/`). The cache is saved on master merges and restored on PR runs. The cache key includes hashes of `package-lock.json` and `eslint-plugins/**`, so dependency upgrades or custom rule changes automatically bust the cache.
 
 If **stackrox/ui** is your workspace root folder, you can create or edit stackrox/ui/.vscode/settings.json file to add the following properties:
 
 ```json
 {
-    "eslint.experimental.useFlatConfig": true,
     "eslint.workingDirectories": ["apps/platform"]
 }
 ```
 
+### Running as an OpenShift Console plugin
+
+A subset of the code can also be embedded in the OpenShift Console UI using
+[webpack federated modules](https://webpack.js.org/concepts/module-federation/).
+The build tooling for this is completely separate from the build tooling for the
+standalone version, but both versions share a large amount of application code.
+
+For additional reference, see the
+[OpenShift Console Plugin SDK docs](https://github.com/openshift/console/tree/main/frontend/packages/console-dynamic-plugin-sdk)
+and the [console-plugin-template](https://github.com/openshift/console-plugin-template?tab=readme-ov-file#development)
+repository.
+
+#### How the plugin works
+
+OpenShift Console uses webpack Module Federation to load plugins at runtime. The
+key concepts are:
+
+- **Host / Remote**: The console is the "host" application. Our plugin is a
+  "remote" that exposes named modules (React components) via a manifest.
+- **Shared singletons**: Certain dependencies (React, Redux, PatternFly
+  Topology, react-router, etc.) are provided by the console as singletons.
+  Plugins use the console's copy at runtime -- they cannot bundle their own.
+  See [Compatibility](#compatibility) for the full list and implications.
+- **ConsolePlugin CRD**: In production, the console discovers plugins via a
+  `ConsolePlugin` custom resource that points to the Service and base path
+  serving the plugin manifest and bundles.
+
+The plugin webpack config (`webpack.ocp-plugin.config.js`) uses the
+`ConsoleRemotePlugin` from `@openshift-console/dynamic-plugin-sdk-webpack`,
+which wraps Module Federation with console-specific conventions. It generates
+the manifest, declares shared modules, and registers console
+[extensions](https://github.com/openshift/console/tree/main/frontend/packages/console-dynamic-plugin-sdk/docs)
+(routes, nav items, resource tabs, context providers).
+
+#### Authentication and request flow
+
+The plugin never talks to Central directly. All API requests flow through the
+console's proxy and `sensor-proxy`, which handles authentication and
+authorization using the user's existing OpenShift session.
+
+```txt
+Browser (OpenShift Console)
+  |
+  |  Plugin component calls axios.get('/v1/...')
+  |
+  v
+consoleFetchAxiosAdapter (src/ConsolePlugin/consoleFetchAxiosAdapter.ts)
+  |  Overrides axios default adapter
+  |  Injects ACS-AUTH-NAMESPACE-SCOPE header (active namespace)
+  |  Calls consoleFetch() from SDK (adds user's OCP bearer token + CSRF)
+  |
+  v
+Console Proxy
+  |  Route: /api/proxy/plugin/advanced-cluster-security/api-service/...
+  |  ConsolePlugin CRD proxy config: authorization: UserToken
+  |  Console injects the user's bearer token into the upstream request
+  |
+  v
+sensor-proxy (in-cluster Service, port 443)
+  |  Validates OCP token against Kubernetes RBAC
+  |  Applies ACS RBAC based on namespace scope header
+  |  Forwards authenticated request to Central
+  |
+  v
+Central
+  |  Generates dynamic access scope
+  |  Processes request with full auth context
+  |  Returns data filtered by user permissions
+```
+
+#### Code structure
+
+The plugin-specific code lives in `src/ConsolePlugin/`. Everything else under
+`src/` (providers, services, hooks, components in `Containers/`) is shared
+between the standalone UI and the plugin.
+
+```txt
+src/
+├── index.tsx                         # Standalone UI entry point
+├── ConsolePlugin/                    # Plugin-specific code and wrappers
+│   ├── PluginProvider.tsx            # Context provider: sets up axios adapter,
+│   │                                 #   wraps shared providers (auth, flags, etc.)
+│   ├── consoleFetchAxiosAdapter.ts   # Bridges axios -> consoleFetch (SDK)
+│   ├── ScopeContext.tsx              # Tracks active namespace from console
+│   ├── PluginContent.tsx             # Permission gate wrapper
+│   ├── hooks/                        # Plugin-specific hooks
+│   │   ├── useAnalyticsPageView.ts
+│   │   ├── useDefaultWorkloadCveViewContext.ts
+│   │   └── useWorkloadId.ts
+│   ├── Components/                  # Plugin-specific general UI components
+│   │
+│   │   # Exposed modules (entry points registered as console extensions):
+│   ├── SecurityVulnerabilitiesPage/  # Top-level /acs/security/vulnerabilities route
+│   ├── CveDetailPage/               # CVE detail route
+│   ├── ImageDetailPage/             # Image detail route
+│   ├── WorkloadSecurityTab/         # "Security" tab on Deployment, StatefulSet, etc.
+│   ├── AdministrationNamespaceSecurityTab/  # "Security" tab on Namespace
+│   └── ProjectSecurityTab/          # "Security" tab on Project
+│
+├── Containers/Vulnerabilities/       # Vuln Management page components - shared
+├── providers/                        # Shared context providers
+├── services/                         # Shared API service functions
+└── hooks/                            # Shared hooks
+```
+
+Each exposed module is a thin wrapper that imports shared
+components from `Containers/` and adds plugin-specific concerns like namespace
+scoping and analytics tracking.
+
+#### Adding a new plugin extension
+
+To add a new UI surface to the console plugin (e.g. a new tab on a Kubernetes
+resource, or a new route), follow these steps. For the full list of available
+extension types, see the
+[Console SDK extension docs](https://github.com/openshift/console/tree/main/frontend/packages/console-dynamic-plugin-sdk/docs).
+
+1. **Create the entry point component** in `src/ConsolePlugin/YourExtension/YourExtension.tsx`.
+
+    Keep it minimal -- import shared components and add only what's plugin-specific.
+    Use existing entry points as templates. For example, a resource tab:
+
+    ```tsx
+    // src/ConsolePlugin/MyResourceSecurityTab/MyResourceSecurityTab.tsx
+    import { useParams } from 'react-router-dom-v5-compat';
+
+    import SomeSharedComponent from 'Containers/SomeArea/SomeSharedComponent';
+    import { useAnalyticsPageView } from '../hooks/useAnalyticsPageView';
+
+    export function MyResourceSecurityTab() {
+        useAnalyticsPageView();
+        const { ns, name } = useParams();
+
+        return <SomeSharedComponent namespace={ns} name={name} />;
+    }
+    ```
+
+2. **Register the exposed module** in `webpack.ocp-plugin.config.js` under
+   `pluginMetadata.exposedModules`:
+
+    ```js
+    exposedModules: {
+        // ...existing modules
+        MyResourceSecurityTab: './ConsolePlugin/MyResourceSecurityTab/MyResourceSecurityTab',
+    },
+    ```
+
+3. **Add the console extension** in the `extensions` array in the same file.
+
+    For a horizontal nav tab on a Kubernetes resource:
+
+    ```js
+    {
+        type: 'console.tab/horizontalNav',
+        properties: {
+            model: {
+                group: 'apps',
+                kind: 'MyResource',
+                version: 'v1',
+            },
+            page: {
+                name: 'Security',
+                href: 'security',
+            },
+            component: { $codeRef: 'MyResourceSecurityTab.MyResourceSecurityTab' },
+        },
+    },
+    ```
+
+    For a new route:
+
+    ```js
+    {
+        type: 'console.page/route',
+        properties: {
+            exact: true,
+            path: '/acs/my-area/my-page',
+            component: { $codeRef: 'MyPage.MyPage' },
+        },
+    },
+    ```
+
+4. **Test it** by running the plugin dev environment (see [Running the plugin](#running-the-plugin)
+   below) and navigating to the resource or route in the console.
+
+#### Compatibility
+
+The plugin's runtime environment is controlled by the OpenShift Console, not by
+us. The console provides a set of
+[shared singleton modules](https://github.com/openshift/console/blob/release-4.19/frontend/packages/console-dynamic-plugin-sdk/src/shared-modules/shared-modules-meta.ts)
+that plugins **must** use -- you cannot bundle your own copy of these libraries.
+At runtime, the console's version is what executes, regardless of what version
+is in our `package.json`.
+
+The shared modules ([shared-modules-meta.ts](https://github.com/openshift/console/blob/main/frontend/packages/console-dynamic-plugin-sdk/src/shared-modules/shared-modules-meta.ts)) (as of console 4.19) are:
+
+- `react` / `react-dom`
+- `react-redux`
+- `react-router`
+- `react-router-dom`
+- `react-router-dom-v5-compat`
+- `react-i18next`
+- `redux`
+- `redux-thunk`
+- `@openshift-console/dynamic-plugin-sdk`
+- `@openshift-console/dynamic-plugin-sdk-internal`
+- `@patternfly/react-topology`
+
+All are singletons with no fallback allowed.
+
+Libraries **not** in this list (e.g. `@patternfly/react-core`,
+`@patternfly/react-table`, `@patternfly/react-icons`, `axios`, `@apollo/client`)
+are bundled in our plugin and can be versioned independently.
+
+**Note that although _we_ provide `@patterfly/react-core`, the console plugin build strips out PatternFlyCSS.
+This means that although we do ship the PatternFly runtime code, we are still limited to the styles provided
+by the console.**
+
+**What this means in practice:**
+
+- **React version**: Console 4.19 ships React 17. Our `package.json` declares
+  React 18, but the plugin runs on React 17 at runtime. Avoid React 18-only
+  APIs (`useId`, `useDeferredValue`, `useTransition`, `createRoot`, automatic
+  batching) in any code path reachable from the plugin.
+- **react-router**: Console 4.19 ships react-router v5. We use
+  `react-router-dom-v5-compat` for v6-style APIs (`useParams`, `useNavigate`).
+  Note that both `react-router-dom` and `react-router-dom-v5-compat` are
+  deprecated in newer console versions in favor of `react-router` (v7+).
+- **PatternFly**: Non-shared PF packages (react-core, react-table, etc.) are
+  bundled by us, so minor version differences are fine. However, large version
+  gaps between our bundled PF and the console's PF can cause visual
+  inconsistencies (spacing, colors, component behavior).
+  major version bumps that will require migration work when we target newer
+  console releases.
+
+Our webpack config declares `dependencies: { '@console/pluginAPI': '>=4.19.0' }`,
+which means the console will only load our plugin if its API version satisfies
+that constraint.
+
+#### Prerequisites
+
+You need:
+
+1. A running OpenShift cluster and kubeconfig available in order to run the plugin.
+2. `podman` or `docker`
+3. `oc`
+
+#### Architecture
+
+A plugin development environment has the following network components:
+
+1. A running OpenShift installation with StackRox secured cluster services installed
+2. A local OpenShift console container
+3. A local development server for the plugin
+4. An exposed `sensor-proxy` service via LoadBalancer
+
+The plugin uses OpenShift user authentication and proxies all API requests through the `sensor-proxy` service, which handles authentication/authorization and forwards requests to Central. This matches the production flow where the console plugin communicates through sensor-proxy rather than directly to Central.
+
+#### Running the plugin
+
+First, start the webpack dev server to make the plugin configuration files and js bundles available:
+
+```sh
+# In a new terminal
+npm run start:ocp-plugin
+```
+
+This will run a webpack development server on http://localhost:9001 serving the plugin files.
+
+Next, start a local development version of the console in another terminal:
+
+**Note: running the below `./scripts/start-ocp-console.sh` script will create a LoadBalancer that exposes `sensor-proxy` to the internet. Ensure you are only connected to a development cluster before proceeding.**
+
+
+```sh
+# With kubectx pointing to your OpenShift cluster, login via web browser
+oc login --web
+
+# Run the following script to start a local instance of the OCP console.
+# This will automatically:
+# - Expose sensor-proxy via a LoadBalancer with NetworkPolicy
+# - Configure the console to use the sensor-proxy endpoint
+# - Clean up resources when the defined expiration time has elapsed
+./scripts/start-ocp-console.sh
+```
+
+This will start the console on http://localhost:9000 with user authentication disabled; you will be logged in automatically using the token retrieved via `oc login --web` above. The script handles all backend connectivity automatically. Visit http://localhost:9000 in your browser to develop and test the plugin.
+
+**Configuration options**
+
+The console startup script supports the following environment variables:
+
+- `SENSOR_PROXY_NAMESPACE` - Namespace containing sensor-proxy (default: `stackrox`)
+- `SENSOR_PROXY_EXPIRY_HOURS` - Hours until LoadBalancer auto-cleanup (default: `8`)
+- `CONSOLE_PORT` - Local console port (default: `9000`)
+- `CONSOLE_IMAGE` - Console container image (default: `quay.io/openshift/origin-console:latest`)
+
+Example with custom configuration:
+
+```sh
+SENSOR_PROXY_EXPIRY_HOURS=12 ./scripts/start-ocp-console.sh
+```
+
+_Note: At this time https is not supported for local plugin development._
+
 ### Testing
 
-#### Unit Tests
+See [TESTING.md](./TESTING.md) for test strategy, run commands, and shared principles. Level-specific guides:
 
-Use `npm run test` to run all unit tests and show test coverage. To run tests and
-continuously watch for changes use `npm run test-watch`.
+- [TESTING_UNIT.md](./TESTING_UNIT.md) — Vitest unit tests
+- [TESTING_COMPONENT.md](./TESTING_COMPONENT.md) — Cypress component tests
+- [TESTING_E2E.md](./TESTING_E2E.md) — Cypress e2e tests (standalone + OCP plugin)
 
-#### End-to-end Tests (Cypress)
-
-To bring up [Cypress](https://www.cypress.io/) UI use `npm run cypress-open`. To
-run all end-to-end tests in a headless mode use `npm run test-e2e-local`. To run
-one test suite specifically in headless mode, use
-`npm run cypress-spec <spec-file>`.
+For OCP plugin e2e setup (env vars, auth scenarios), see [TESTING_E2E.md — Running OCP Tests](./TESTING_E2E.md#running-ocp-tests).
 
 ### Feature flags
 
@@ -88,6 +388,8 @@ Given a feature flag environment variable `"ROX_WHATEVER"` in pkg/features/list.
 ```
 
 1. Add `'ROX_WHATEVER'` to string enumeration type `FeatureFlagEnvVar` in ui/apps/platform/src/types/featureFlag.ts
+
+    Add string in alphabetical order on its own line to minimize merge conflicts when multiple people add or delete strings.
 
 2. To include frontend code when the feature flag is enabled, do any of the following:
 
@@ -138,42 +440,19 @@ Given a feature flag environment variable `"ROX_WHATEVER"` in pkg/features/list.
                     )}
                     ```
 
-3. To skip integration tests:
-
-    * Add `import { hasFeatureFlag } from '../…/helpers/features';` in cypress/integration/…/whatever.test.js
-    * And then at the beginning of `describe` block do either or both of the following:
-
-        * To skip **older** tests which are not relevant when feature flag is **enabled**
-
-            ```js
-            before(function beforeHook() {
-                if (hasFeatureFlag('ROX_WHATEVER')) {
-                    this.skip();
-                }
-            });
-            ```
-
-        * Skip **newer** tests which are not relevant when feature flag is **disabled**
-
-            ```js
-            before(function beforeHook() {
-                if (!hasFeatureFlag('ROX_WHATEVER')) {
-                    this.skip();
-                }
-            });
-            ```
+3. To skip integration tests, see [TESTING_E2E.md — Feature Flag Gating](./TESTING_E2E.md#feature-flag-gating)
 
 4. To turn on a feature flag for continuous integration in **branch** and **master** builds:
 
     * Add `ci_export ROX_WHATEVER "${ROX_WHATEVER:-true}"` to `export_test_environment` function in tests/e2e/lib.sh
     * Add code below to `deploy_central_via_operator` function in tests/e2e/lib.sh
 
-        ```
+        ```sh
         customize_envVars+=$'\n      - name: ROX_WHATEVER'
         customize_envVars+=$'\n        value: "true"'
         ```
 
-    The value of feature flags for **demo** and **release** builds is in pkg/features/list.go 
+    The value of feature flags for **demo** and **release** builds is in pkg/features/list.go
 
 5. To turn on a feature flag for **local deployment**, do either or both of the following:
 
@@ -232,41 +511,14 @@ Given a feature flag environment variable `"ROX_WHATEVER"` in pkg/features/list.
 
                     Replace `{isWhateverEnabled ? (<Whatever />) : (<WhateverItHasBeen />)}` with `<Whatever />`
 
-3. In integration tests:
-
-    * Delete `import { hasFeatureFlag } from '../…/helpers/features';` in cypress/integration/…/whatever.test.js
-    * And then at the beginning of `describe` block do either or both of the following:
-
-        * For **older** tests which were not relevant when feature flag is **enabled**
-
-            Delete obsolete `describe` block (or possibly entire test file) which has the following:
-
-            ```js
-            before(function beforeHook() {
-                if (hasFeatureFlag('ROX_WHATEVER')) {
-                    this.skip();
-                }
-            });
-            ```
-
-        * For **newer** tests which were not relevant when feature flag is **disabled**
-
-            To run tests unconditionally, delete the following:
-
-            ```js
-            before(function beforeHook() {
-                if (!hasFeatureFlag('ROX_WHATEVER')) {
-                    this.skip();
-                }
-            });
-            ```
+3. In integration tests: remove `hasFeatureFlag` guards and obsolete test blocks. See [TESTING_E2E.md — Feature Flag Gating](./TESTING_E2E.md#feature-flag-gating) for the patterns to look for.
 
 4. For continuous integration:
 
     * Delete `ci_export ROX_WHATEVER "${ROX_WHATEVER:-true}"` from `export_test_environment` function in tests/e2e/lib.sh
     * Delete code below from `deploy_central_via_operator` function in tests/e2e/lib.sh
 
-        ```
+        ```sh
         customize_envVars+=$'\n      - name: ROX_WHATEVER'
         customize_envVars+=$'\n        value: "true"'
         ```
@@ -280,7 +532,6 @@ Read and obey comments to add strings or properties **in alphabetical order to m
 1. Edit ui/apps/platform/src/routePaths.ts file.
 
     * Add a path **without** params for link from sidebar navigation and, if needed, path **with** param for the `Route` element.
-
         * Use a **plural** noun for something like **clusters**.
         * Use a **singular** noun for something like **compliance**.
 
@@ -329,7 +580,7 @@ Read and obey comments to add strings or properties **in alphabetical order to m
         },
         ```
 
-3. Edit ui/apps/platform/src/Containers/MainPage/Sidebar/NavigationSidebar.tsx file, **if** the route has a link.
+3. Edit ui/apps/platform/src/Containers/MainPage/Navigation/NavigationSidebar.tsx file, **if** the route has a link.
 
     * Import a path **without params**.
 

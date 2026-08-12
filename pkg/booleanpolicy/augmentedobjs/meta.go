@@ -11,6 +11,7 @@ const (
 	kubeEventAugKey           = "KubernetesEvent"
 	networkFlowAugKey         = "NetworkFlow"
 	networkPoliciesAppliedKey = "NetworkPoliciesApplied"
+	fileAccessKey             = "FileAccess"
 
 	// Custom augments
 	dockerfileLineAugmentKey      = "DockerfileLine"
@@ -19,6 +20,10 @@ const (
 	baselineResultAugmentKey      = "BaselineResult"
 	envVarAugmentKey              = "EnvironmentVariable"
 	impersonatedEventResultKey    = "ImpersonatedEventResult"
+	fileAccessPathKey             = "FilePath"
+	// fileAccessOperationKey must match the proto field name "Operation"
+	// so that the augment clobbers the proto's Operation enum field.
+	fileAccessOperationKey = "Operation"
 )
 
 // This block enumerates metadata about the augmented objects we use in policies.
@@ -30,6 +35,19 @@ var (
 			AddPlainObjectAt([]string{kubeEventAugKey}, (*storage.KubernetesEvent)(nil)).
 			AddAugmentedObjectAt([]string{networkFlowAugKey}, NetworkFlowMeta).
 			AddAugmentedObjectAt([]string{networkPoliciesAppliedKey}, NetworkPoliciesAppliedMeta)
+
+	// This is a specialized version of DeploymentMeta for file access events.
+	// FileAccessMeta has been added which includes both file access criteria and process criteria
+	// (since FileAccess events contain process information).
+	//
+	// This enables policies to detect file access events based on both file and process criteria.
+	DeploymentFileAccessMeta = pathutil.NewAugmentedObjMeta((*storage.Deployment)(nil)).
+					AddAugmentedObjectAt([]string{"Containers", imageAugmentKey}, ImageMeta).
+					AddPlainObjectAt([]string{"Containers", "Config", "Env", envVarAugmentKey}, (*envVar)(nil)).
+					AddPlainObjectAt([]string{kubeEventAugKey}, (*storage.KubernetesEvent)(nil)).
+					AddAugmentedObjectAt([]string{networkFlowAugKey}, NetworkFlowMeta).
+					AddAugmentedObjectAt([]string{networkPoliciesAppliedKey}, NetworkPoliciesAppliedMeta).
+					AddAugmentedObjectAt([]string{fileAccessKey}, FileAccessMeta)
 
 	ImageMeta = pathutil.NewAugmentedObjMeta((*storage.Image)(nil)).
 			AddPlainObjectAt([]string{"Metadata", "V1", "Layers", dockerfileLineAugmentKey}, (*dockerfileLine)(nil)).
@@ -45,4 +63,11 @@ var (
 	NetworkFlowMeta = pathutil.NewAugmentedObjMeta((*NetworkFlowDetails)(nil))
 
 	NetworkPoliciesAppliedMeta = pathutil.NewAugmentedObjMeta((*NetworkPoliciesApplied)(nil))
+
+	FileAccessMeta = pathutil.NewAugmentedObjMeta((*storage.FileAccess)(nil)).
+			AddPlainObjectAt([]string{fileAccessPathKey}, (*fileAccessPath)(nil)).
+			AddPlainObjectAt([]string{fileAccessOperationKey}, (*fileAccessOperation)(nil))
+
+	NodeMeta = pathutil.NewAugmentedObjMeta((*NodeDetails)(nil)).
+			AddAugmentedObjectAt([]string{fileAccessKey}, FileAccessMeta)
 )

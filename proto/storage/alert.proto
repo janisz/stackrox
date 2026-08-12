@@ -4,6 +4,7 @@ package storage;
 
 import "google/protobuf/timestamp.proto";
 import "storage/deployment.proto";
+import "storage/file_access.proto";
 import "storage/network_flow.proto";
 import "storage/policy.proto";
 import "storage/process_indicator.proto";
@@ -11,12 +12,12 @@ import "storage/process_indicator.proto";
 option go_package = "./storage;storage";
 option java_package = "io.stackrox.proto.storage";
 
-// Next available tag: 24
+// Next available tag: 26
 message Alert {
   message Deployment {
-    string id = 1; // @gotags: search:"Deployment ID,store,hidden" sql:"index=hash,type(uuid)"
-    string name = 2; // @gotags: search:"Deployment,store"
-    string type = 4;
+    string id = 1; // @gotags: search:"Deployment ID,hidden" sql:"index,type(uuid)"
+    string name = 2; // @gotags: search:"Deployment"
+    string type = 4; // @gotags: search:"Deployment Type"
     string namespace = 5; // This field has to be duplicated in Alert for scope management and search.
     string namespace_id = 16; // This field has to be duplicated in Alert for scope management and search.
     map<string, string> labels = 7; // @gotags: sensorhash:"ignore"
@@ -44,12 +45,19 @@ message Alert {
       EGRESS_FIREWALLS = 7;
     }
 
-    ResourceType resource_type = 1; // @gotags: search:"Resource Type,store"
+    ResourceType resource_type = 1; // @gotags: search:"Resource Type"
     string name = 2; // @gotags: search:"Resource"
     string cluster_id = 3; // This field has to be duplicated in Alert for scope management and search.
     string cluster_name = 4; // This field has to be duplicated in Alert for scope management and search.
     string namespace = 5; // This field has to be duplicated in Alert for scope management and search.
     string namespace_id = 6; // This field has to be duplicated in Alert for scope management and search.
+  }
+
+  message Node {
+    string id = 1; // @gotags: search:"Node ID"
+    string name = 2; // @gotags: search:"Node"
+    string cluster_id = 3; // This field has to be duplicated in Alert for scope management and search.
+    string cluster_name = 4; // This field has to be duplicated in Alert for scope management and search.
   }
 
   message Violation {
@@ -58,6 +66,7 @@ message Alert {
       K8S_EVENT = 1;
       NETWORK_FLOW = 2;
       NETWORK_POLICY = 3;
+      FILE_ACCESS = 4;
     }
     message KeyValueAttrs {
       message KeyValueAttr {
@@ -85,6 +94,7 @@ message Alert {
     oneof MessageAttributes {
       KeyValueAttrs key_value_attrs = 4;
       NetworkFlowInfo network_flow_info = 7; // @gotags: search:"-" sql:"-"
+      FileAccess file_access = 8; // @gotags: search:"-" sql:"-"
     }
     // 'type' is for internal use only.
     Type type = 5;
@@ -100,7 +110,7 @@ message Alert {
   }
 
   message Enforcement {
-    storage.EnforcementAction action = 1; // @gotags: search:"Enforcement"
+    storage.EnforcementAction action = 1; // @gotags: search:"Enforcement Action"
     string message = 2;
   }
 
@@ -110,9 +120,9 @@ message Alert {
 
   // Scoping information
 
-  string cluster_id = 18; // @gotags: search:"Cluster ID,store" sql:"type(uuid)"
-  string cluster_name = 19; // @gotags: search:"Cluster,store"
-  string namespace = 20; // @gotags: search:"Namespace,store"
+  string cluster_id = 18; // @gotags: search:"Cluster ID" sql:"type(uuid)"
+  string cluster_name = 19; // @gotags: search:"Cluster"
+  string namespace = 20; // @gotags: search:"Namespace"
   string namespace_id = 21; // @gotags: search:"Namespace ID" sql:"type(uuid)"
 
   enum EntityType {
@@ -120,6 +130,7 @@ message Alert {
     DEPLOYMENT = 1;
     CONTAINER_IMAGE = 2;
     RESOURCE = 3;
+    NODE = 4;
   }
 
   oneof Entity {
@@ -132,6 +143,9 @@ message Alert {
     // Represents an alert on a kubernetes resource (configmaps, secrets, etc.)
     // An alert cannot be on more than one entity (deployment, container image, resource, etc.)
     Resource resource = 16;
+    // Represents an alert on a node.
+    // An alert cannot be on more than one entity (deployment, container image, resource, etc.)
+    Node node = 24;
   }
 
   // For run-time phase alert, a maximum of 40 violations are retained.
@@ -146,13 +160,18 @@ message Alert {
   // The time at which the alert was resolved. Only set if ViolationState is RESOLVED.
   google.protobuf.Timestamp resolved_at = 17; // @gotags: sensorhash:"ignore"
 
-  ViolationState state = 11; // @gotags: search:"Violation State,store" sql:"index=btree"
+  ViolationState state = 11; // @gotags: search:"Violation State" sql:"index=btree"
   reserved 12;
   reserved "snooze_till";
   reserved 14; // was tags
 
   bool platform_component = 22; // @gotags: search:"Platform Component"
   EntityType entity_type = 23; // @gotags: search:"Entity Type"
+
+  // Cached enforcement count, computed on upsert. For RUNTIME+KILL_POD alerts
+  // this is the number of unique pods killed. For DEPLOY alerts with enforcement
+  // this is 1. Avoids deserializing the full alert blob for ListAlert queries.
+  int32 enforcement_count = 25; // @gotags: search:"Enforcement Count"
 }
 
 message ListAlert {
@@ -165,8 +184,8 @@ message ListAlert {
     ResourceType resource_type = 5;
   }
 
-  // A special ListAlert-only enumeration of all resource types. Unlike Alert.Resource.ResourceType this also includes deployment as a type
-  // This must be kept in sync with Alert.Resource.ResourceType (excluding the deployment value)
+  // A special ListAlert-only enumeration of all resource types. Unlike Alert.Resource.ResourceType this also includes deployment and node as types
+  // This must be kept in sync with Alert.Resource.ResourceType (excluding the deployment and node values)
   enum ResourceType {
     DEPLOYMENT = 0;
     SECRETS = 1;
@@ -176,9 +195,14 @@ message ListAlert {
     NETWORK_POLICIES = 5;
     SECURITY_CONTEXT_CONSTRAINTS = 6;
     EGRESS_FIREWALLS = 7;
+    NODE = 8;
   }
 
   message ResourceEntity {
+    string name = 1;
+  }
+
+  message NodeEntity {
     string name = 1;
   }
 
@@ -200,6 +224,9 @@ message ListAlert {
     // Represents an alert on a kubernetes resource (configmaps, secrets, etc.)
     // An alert cannot be on more than one entity (deployment, container image, resource, etc.)
     ResourceEntity resource = 11;
+    // Represents an alert on a node
+    // An alert cannot be on more than one entity (deployment, container image, resource, etc.)
+    NodeEntity node = 12;
   }
 
   // Next available tag: 16

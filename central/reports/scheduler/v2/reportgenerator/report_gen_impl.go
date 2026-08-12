@@ -3,17 +3,15 @@ package reportgenerator
 import (
 	"bytes"
 	"context"
-	"encoding/json"
-	"fmt"
-	"sort"
-	"strings"
+	"slices"
 	"time"
 
 	"github.com/graph-gophers/graphql-go"
 	"github.com/pkg/errors"
 	blobDS "github.com/stackrox/rox/central/blob/datastore"
 	clusterDS "github.com/stackrox/rox/central/cluster/datastore"
-	imageCVEDS "github.com/stackrox/rox/central/cve/image/datastore"
+	"github.com/stackrox/rox/central/convert/storagetoeffectiveaccessscope"
+	imageCVE2DS "github.com/stackrox/rox/central/cve/image/v2/datastore"
 	deploymentDS "github.com/stackrox/rox/central/deployment/datastore"
 	"github.com/stackrox/rox/central/graphql/resolvers"
 	"github.com/stackrox/rox/central/graphql/resolvers/loaders"
@@ -24,6 +22,7 @@ import (
 	watchedImageDS "github.com/stackrox/rox/central/watchedimage/datastore"
 	v1 "github.com/stackrox/rox/generated/api/v1"
 	"github.com/stackrox/rox/generated/storage"
+	"github.com/stackrox/rox/pkg/env"
 	"github.com/stackrox/rox/pkg/errorhelpers"
 	"github.com/stackrox/rox/pkg/grpc/authz/allow"
 	"github.com/stackrox/rox/pkg/logging"
@@ -31,9 +30,11 @@ import (
 	"github.com/stackrox/rox/pkg/notifiers"
 	"github.com/stackrox/rox/pkg/postgres"
 	pkgSchema "github.com/stackrox/rox/pkg/postgres/schema"
+	"github.com/stackrox/rox/pkg/postgres/walker"
 	"github.com/stackrox/rox/pkg/protocompat"
 	"github.com/stackrox/rox/pkg/retry"
 	"github.com/stackrox/rox/pkg/sac"
+	"github.com/stackrox/rox/pkg/sac/effectiveaccessscope"
 	"github.com/stackrox/rox/pkg/search"
 	pgSearch "github.com/stackrox/rox/pkg/search/postgres"
 	"github.com/stackrox/rox/pkg/set"
@@ -46,44 +47,21 @@ var (
 	reportGenCtx = resolvers.SetAuthorizerOverride(loaders.WithLoaderContext(sac.WithAllAccess(context.Background())), allow.Anonymous())
 
 	deployedImagesQueryParts = &ReportQueryParts{
-		Schema: pkgSchema.ImageCvesSchema,
-		Selects: []*v1.QuerySelect{
-			search.NewQuerySelect(search.ImageName).Proto(),
-			search.NewQuerySelect(search.Component).Proto(),
-			search.NewQuerySelect(search.CVEID).Proto(),
-			search.NewQuerySelect(search.CVE).Proto(),
-			search.NewQuerySelect(search.Fixable).Proto(),
-			search.NewQuerySelect(search.FixedBy).Proto(),
-			search.NewQuerySelect(search.Severity).Proto(),
-			search.NewQuerySelect(search.CVSS).Proto(),
-			search.NewQuerySelect(search.NVDCVSS).Proto(),
-			search.NewQuerySelect(search.FirstImageOccurrenceTimestamp).Proto(),
-			search.NewQuerySelect(search.Cluster).Proto(),
-			search.NewQuerySelect(search.Namespace).Proto(),
-			search.NewQuerySelect(search.DeploymentName).Proto(),
-			search.NewQuerySelect(search.EPSSProbablity).Proto(),
-		},
+		Schema:  selectSchema(),
+		Selects: getSelectsDeployedImages(),
 		Pagination: search.NewPagination().
+			Limit(int32(env.ReportMaxRows.IntegerSetting())).
+			Offset(int32(0)).
 			AddSortOption(search.NewSortOption(search.Cluster)).
 			AddSortOption(search.NewSortOption(search.Namespace)).Proto(),
 	}
 
 	watchedImagesQueryParts = &ReportQueryParts{
-		Schema: pkgSchema.ImageCvesSchema,
-		Selects: []*v1.QuerySelect{
-			search.NewQuerySelect(search.ImageName).Proto(),
-			search.NewQuerySelect(search.Component).Proto(),
-			search.NewQuerySelect(search.CVEID).Proto(),
-			search.NewQuerySelect(search.CVE).Proto(),
-			search.NewQuerySelect(search.Fixable).Proto(),
-			search.NewQuerySelect(search.FixedBy).Proto(),
-			search.NewQuerySelect(search.Severity).Proto(),
-			search.NewQuerySelect(search.CVSS).Proto(),
-			search.NewQuerySelect(search.NVDCVSS).Proto(),
-			search.NewQuerySelect(search.FirstImageOccurrenceTimestamp).Proto(),
-			search.NewQuerySelect(search.EPSSProbablity).Proto(),
-		},
+		Schema:  selectSchema(),
+		Selects: getSelectsWatchedImages(),
 		Pagination: search.NewPagination().
+			Limit(int32(env.ReportMaxRows.IntegerSetting())).
+			Offset(int32(0)).
 			AddSortOption(search.NewSortOption(search.ImageName)).Proto(),
 	}
 )
@@ -97,66 +75,90 @@ type reportGeneratorImpl struct {
 	blobStore               blobDS.Datastore
 	clusterDatastore        clusterDS.DataStore
 	namespaceDatastore      namespaceDS.DataStore
-	imageCVEDatastore       imageCVEDS.DataStore
+	imageCVE2Datastore      imageCVE2DS.DataStore
 	db                      postgres.DB
 
 	Schema *graphql.Schema
 }
 
-func (rg *reportGeneratorImpl) ProcessReportRequest(req *ReportRequest) {
+type ImageCVEInterface interface {
+	GetId() string
+	GetCveBaseInfo() *storage.CVEInfo
+}
+
+func (rg *reportGeneratorImpl) ProcessReportRequest(ctx context.Context, req *ReportRequest) {
+	ctx = resolvers.SetAuthorizerOverride(loaders.WithLoaderContext(sac.WithAllAccess(ctx)), allow.Anonymous())
+
 	// First do some basic validation checks on the request.
 	err := ValidateReportRequest(req)
 	if err != nil {
-		rg.logAndUpsertError(errors.Wrap(err, "Invalid report request"), req)
+		rg.logAndUpsertError(ctx, errors.Wrap(err, "Invalid report request"), req)
 		return
 	}
 
-	if req.ReportSnapshot.GetVulnReportFilters().GetSinceLastSentScheduledReport() {
-		req.DataStartTime, err = rg.lastSuccessfulScheduledReportTime(req.ReportSnapshot)
-		if err != nil {
-			rg.logAndUpsertError(errors.Wrap(err, "Error finding last successful scheduled report time"), req)
-			return
-		}
-	} else if req.ReportSnapshot.GetVulnReportFilters().GetSinceStartDate() != nil {
-		sinceStartDate := req.ReportSnapshot.GetVulnReportFilters().GetSinceStartDate()
-		req.DataStartTime, err = protocompat.ConvertTimestampToTimeOrError(sinceStartDate)
-		if err != nil {
-			rg.logAndUpsertError(errors.Wrap(err, "Error finding last successful scheduled report time"), req)
-			return
+	if req.ReportSnapshot.GetVulnReportFilters() != nil {
+		if req.ReportSnapshot.GetVulnReportFilters().GetSinceLastSentScheduledReport() {
+			req.DataStartTime, err = rg.lastSuccessfulScheduledReportTime(req.ReportSnapshot)
+			if err != nil {
+				rg.logAndUpsertError(ctx, errors.Wrap(err, "Error finding last successful scheduled report time"), req)
+				return
+			}
+		} else if req.ReportSnapshot.GetVulnReportFilters().GetSinceStartDate() != nil {
+			sinceStartDate := req.ReportSnapshot.GetVulnReportFilters().GetSinceStartDate()
+			req.DataStartTime, err = protocompat.ConvertTimestampToTimeOrError(sinceStartDate)
+			if err != nil {
+				rg.logAndUpsertError(ctx, errors.Wrap(err, "Error finding last successful scheduled report time"), req)
+				return
+			}
 		}
 	}
 
 	// Change report status to PREPARING
 	err = rg.updateReportStatus(req.ReportSnapshot, storage.ReportStatus_PREPARING)
 	if err != nil {
-		rg.logAndUpsertError(errors.Wrap(err, "Error changing report status to PREPARING"), req)
+		rg.logAndUpsertError(ctx, errors.Wrap(err, "Error changing report status to PREPARING"), req)
 		return
 	}
 
-	err = rg.generateReportAndNotify(req)
+	err = rg.generateReportAndNotify(ctx, req)
 	if err != nil {
-		rg.logAndUpsertError(err, req)
+		rg.logAndUpsertError(ctx, err, req)
 		return
 	}
 
 	if req.ReportSnapshot.GetReportStatus().GetReportNotificationMethod() == storage.ReportStatus_EMAIL {
 		err = rg.updateReportStatus(req.ReportSnapshot, storage.ReportStatus_DELIVERED)
 		if err != nil {
-			rg.logAndUpsertError(errors.Wrap(err, "Error changing report status to DELIVERED"), req)
+			rg.logAndUpsertError(ctx, errors.Wrap(err, "Error changing report status to DELIVERED"), req)
 		}
 	}
 }
 
 /* Report generation helper functions */
-func (rg *reportGeneratorImpl) generateReportAndNotify(req *ReportRequest) error {
+func (rg *reportGeneratorImpl) generateReportAndNotify(ctx context.Context, req *ReportRequest) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
 	// Get the results of running the report query
-	reportData, err := rg.getReportDataSQF(req.ReportSnapshot, req.Collection, req.DataStartTime)
+	var err error
+	var reportData *ReportData
+	if req.ReportSnapshot.GetVulnReportFilters() != nil {
+		reportData, err = rg.getReportDataSQF(ctx, req.ReportSnapshot, req.Collection, req.DataStartTime)
+	}
+	if req.ReportSnapshot.GetViewBasedVulnReportFilters() != nil {
+		reportData, err = rg.getReportDataViewBased(ctx, req.ReportSnapshot)
+	}
 	if err != nil {
 		return err
 	}
 
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
 	// Format results into CSV
-	zippedCSVData, err := GenerateCSV(reportData.CVEResponses, req.ReportSnapshot.Name, req.ReportSnapshot.GetVulnReportFilters())
+	zippedCSVData, err := GenerateCSV(reportData.CVEResponses, req.ReportSnapshot.GetName())
 	if err != nil {
 		return err
 	}
@@ -166,10 +168,17 @@ func (rg *reportGeneratorImpl) generateReportAndNotify(req *ReportRequest) error
 	if err != nil {
 		return errors.Wrap(err, "Error changing report status to GENERATED")
 	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 
-	switch req.ReportSnapshot.ReportStatus.ReportNotificationMethod {
+	switch req.ReportSnapshot.GetReportStatus().GetReportNotificationMethod() {
 	case storage.ReportStatus_DOWNLOAD:
-		if err = rg.saveReportData(req.ReportSnapshot.GetReportConfigurationId(),
+		parentDir := req.ReportSnapshot.GetReportConfigurationId()
+		if req.ReportSnapshot.GetVulnReportFilters() == nil {
+			parentDir = "view-based-report"
+		}
+		if err = rg.saveReportData(ctx, parentDir,
 			req.ReportSnapshot.GetReportId(), zippedCSVData); err != nil {
 			return errors.Wrap(err, "error persisting blob")
 		}
@@ -218,7 +227,7 @@ func (rg *reportGeneratorImpl) generateReportAndNotify(req *ReportRequest) error
 				emailSubject = customSubject
 			}
 			emailBodyWithConfigDetails := addReportConfigDetails(emailBody, configDetailsHTML)
-			reportName := req.ReportSnapshot.Name
+			reportName := req.ReportSnapshot.GetName()
 			err := rg.retryableSendReportResults(reportNotifier, notifierSnap.GetEmailConfig().GetMailingLists(),
 				zippedCSVData, emailSubject, emailBodyWithConfigDetails, reportName)
 			if err != nil {
@@ -233,7 +242,7 @@ func (rg *reportGeneratorImpl) generateReportAndNotify(req *ReportRequest) error
 	return nil
 }
 
-func (rg *reportGeneratorImpl) saveReportData(configID, reportID string, data *bytes.Buffer) error {
+func (rg *reportGeneratorImpl) saveReportData(ctx context.Context, configID, reportID string, data *bytes.Buffer) error {
 	if data == nil {
 		return errors.Errorf("No data found for report config %q and id %q", configID, reportID)
 	}
@@ -245,57 +254,12 @@ func (rg *reportGeneratorImpl) saveReportData(configID, reportID string, data *b
 		ModifiedTime: protocompat.TimestampNow(),
 		Length:       int64(data.Len()),
 	}
-	return rg.blobStore.Upsert(reportGenCtx, b, data)
+	return rg.blobStore.Upsert(ctx, b, data)
 }
 
-func (rg *reportGeneratorImpl) getReportData(snap *storage.ReportSnapshot, collection *storage.ResourceCollection,
-	dataStartTime time.Time) ([]common.DeployedImagesResult, []common.WatchedImagesResult, error) {
-	var deployedImgResults []common.DeployedImagesResult
-	var watchedImgResults []common.WatchedImagesResult
-	rQuery, err := rg.buildReportQuery(snap, collection, dataStartTime)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	if filterOnImageType(snap.GetVulnReportFilters().GetImageTypes(), storage.VulnerabilityReportFilters_DEPLOYED) {
-		// We first get deploymentIDs using a DeploymentsQuery and then again run graphQL queries with deploymentIDs to get the deployment objects.
-		// Why do we not directly create a queryString directly from the collection and pass that to graphQL?
-		// The  query language we support for graphQL has some limitations that prevent us from doing that.
-		// DeploymentsQuery is of type *v1.Query and can support complex queries like the one below.
-		// [(Cluster: c1 AND Namespace: n1 AND Deployment: d1) OR (Cluster: c2 AND Namespace: n2 AND Deployment: d2)]
-		// This query is a 'disjunction of conjunctions' where all conjunctions involve same fields.
-		// Current query language for graphQL does not have semantics to define such a query. Due to this we need to fetch deploymentIDs first
-		// and then pass them to graphQL.
-		deploymentIds, err := rg.getDeploymentIDs(rQuery.DeploymentsQuery)
-		if err != nil {
-			return nil, nil, err
-		}
-		result, err := rg.runPaginatedDeploymentsQuery(rQuery.CveFieldsQuery, deploymentIds)
-		if err != nil {
-			return nil, nil, err
-		}
-		result.Deployments = orderByClusterAndNamespace(result.Deployments)
-		deployedImgResults = append(deployedImgResults, result)
-	}
-
-	if filterOnImageType(snap.GetVulnReportFilters().GetImageTypes(), storage.VulnerabilityReportFilters_WATCHED) {
-		watchedImages, err := rg.getWatchedImages()
-		if err != nil {
-			return nil, nil, err
-		}
-		result, err := rg.runPaginatedImagesQuery(rQuery.CveFieldsQuery, watchedImages)
-		if err != nil {
-			return nil, nil, err
-		}
-		watchedImgResults = append(watchedImgResults, result)
-	}
-
-	return deployedImgResults, watchedImgResults, nil
-}
-
-func (rg *reportGeneratorImpl) getReportDataSQF(snap *storage.ReportSnapshot, collection *storage.ResourceCollection,
+func (rg *reportGeneratorImpl) getReportDataSQF(ctx context.Context, snap *storage.ReportSnapshot, collection *storage.ResourceCollection,
 	dataStartTime time.Time) (*ReportData, error) {
-	rQuery, err := rg.buildReportQuery(snap, collection, dataStartTime)
+	rQuery, err := rg.buildReportQuery(ctx, snap, collection, dataStartTime)
 	if err != nil {
 		return nil, err
 	}
@@ -307,21 +271,28 @@ func (rg *reportGeneratorImpl) getReportDataSQF(snap *storage.ReportSnapshot, co
 
 	numDeployedImageResults := 0
 	var cveResponses []*ImageCVEQueryResponse
-	if filterOnImageType(snap.GetVulnReportFilters().GetImageTypes(), storage.VulnerabilityReportFilters_DEPLOYED) {
+	if slices.Contains(snap.GetVulnReportFilters().GetImageTypes(), storage.VulnerabilityReportFilters_DEPLOYED) {
 		query := search.ConjunctionQuery(rQuery.DeploymentsQuery, cveFilterQuery)
 		query.Pagination = deployedImagesQueryParts.Pagination
 		query.Selects = deployedImagesQueryParts.Selects
-		cveResponses, err = pgSearch.RunSelectRequestForSchema[ImageCVEQueryResponse](reportGenCtx, rg.db,
-			deployedImagesQueryParts.Schema, query)
+		err = pgSearch.RunSelectRequestForSchemaFn[ImageCVEQueryResponse](ctx, rg.db,
+			deployedImagesQueryParts.Schema, query, func(r *ImageCVEQueryResponse) error {
+				cveResponses = append(cveResponses, r)
+				numDeployedImageResults++
+				return nil
+			})
 		if err != nil {
 			return nil, errors.Wrap(err, "Failed to collect report data for deployed images")
 		}
-		numDeployedImageResults = len(cveResponses)
+	}
+
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
 
 	numWatchedImageResults := 0
-	if filterOnImageType(snap.GetVulnReportFilters().GetImageTypes(), storage.VulnerabilityReportFilters_WATCHED) {
-		watchedImages, err := rg.getWatchedImages()
+	if slices.Contains(snap.GetVulnReportFilters().GetImageTypes(), storage.VulnerabilityReportFilters_WATCHED) {
+		watchedImages, err := rg.getWatchedImages(ctx)
 		if err != nil {
 			return nil, err
 		}
@@ -331,17 +302,19 @@ func (rg *reportGeneratorImpl) getReportDataSQF(snap *storage.ReportSnapshot, co
 				cveFilterQuery)
 			query.Pagination = watchedImagesQueryParts.Pagination
 			query.Selects = watchedImagesQueryParts.Selects
-			watchedImageCVEResponses, err := pgSearch.RunSelectRequestForSchema[ImageCVEQueryResponse](reportGenCtx, rg.db,
-				watchedImagesQueryParts.Schema, query)
+			err := pgSearch.RunSelectRequestForSchemaFn[ImageCVEQueryResponse](ctx, rg.db,
+				watchedImagesQueryParts.Schema, query, func(r *ImageCVEQueryResponse) error {
+					cveResponses = append(cveResponses, r)
+					numWatchedImageResults++
+					return nil
+				})
 			if err != nil {
 				return nil, errors.Wrap(err, "Failed to collect report data for watched images")
 			}
-			numWatchedImageResults = len(watchedImageCVEResponses)
-			cveResponses = append(cveResponses, watchedImageCVEResponses...)
 		}
 	}
 
-	cveResponses, err = rg.withCVEReferenceLinks(cveResponses)
+	cveResponses, err = rg.withCVEReferenceLinks(ctx, cveResponses)
 	if err != nil {
 		return nil, err
 	}
@@ -353,101 +326,104 @@ func (rg *reportGeneratorImpl) getReportDataSQF(snap *storage.ReportSnapshot, co
 	}, nil
 }
 
-func (rg *reportGeneratorImpl) buildReportQuery(snap *storage.ReportSnapshot,
-	collection *storage.ResourceCollection, dataStartTime time.Time) (*common.ReportQuery, error) {
-	qb := common.NewVulnReportQueryBuilder(collection, snap.GetVulnReportFilters(), rg.collectionQueryResolver,
-		dataStartTime)
-	allClusters, err := rg.clusterDatastore.GetClusters(reportGenCtx)
+func (rg *reportGeneratorImpl) getReportDataViewBased(ctx context.Context, snap *storage.ReportSnapshot) (*ReportData, error) {
+	watchedImages, err := rg.getWatchedImages(ctx)
 	if err != nil {
-		return nil, errors.Wrap(err, "error fetching clusters to build report query")
+		return nil, err
 	}
-	allNamespaces, err := rg.namespaceDatastore.GetAllNamespaces(reportGenCtx)
+	query, err := rg.buildReportQueryViewBased(ctx, snap, watchedImages)
 	if err != nil {
-		return nil, errors.Wrap(err, "error fetching namespaces to build report query")
+		return nil, err
 	}
-	rQuery, err := qb.BuildQuery(reportGenCtx, allClusters, allNamespaces)
+
+	numDeployedImageResults := 0
+	var cveResponses []*ImageCVEQueryResponse
+
+	query.DeployedImagesQuery.Pagination = deployedImagesQueryParts.Pagination
+	query.DeployedImagesQuery.Selects = deployedImagesQueryParts.Selects
+	err = pgSearch.RunSelectRequestForSchemaFn[ImageCVEQueryResponse](ctx, rg.db,
+		deployedImagesQueryParts.Schema, query.DeployedImagesQuery, func(r *ImageCVEQueryResponse) error {
+			cveResponses = append(cveResponses, r)
+			return nil
+		})
+	if err != nil {
+		return nil, errors.Wrap(err, "Failed to collect report data for deployed images")
+	}
+	numDeployedImageResults = len(cveResponses)
+
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	numWatchedImageResults := 0
+
+	if len(watchedImages) != 0 {
+		query.WatchedImagesQuery.Pagination = watchedImagesQueryParts.Pagination
+		query.WatchedImagesQuery.Selects = watchedImagesQueryParts.Selects
+		err := pgSearch.RunSelectRequestForSchemaFn[ImageCVEQueryResponse](ctx, rg.db,
+			watchedImagesQueryParts.Schema, query.WatchedImagesQuery, func(r *ImageCVEQueryResponse) error {
+				cveResponses = append(cveResponses, r)
+				numWatchedImageResults++
+				return nil
+			})
+		if err != nil {
+			return nil, errors.Wrap(err, "Failed to collect report data for watched images")
+		}
+	}
+
+	cveResponses, err = rg.withCVEReferenceLinks(ctx, cveResponses)
+	if err != nil {
+		return nil, err
+	}
+
+	return &ReportData{
+		CVEResponses:            cveResponses,
+		NumDeployedImageResults: numDeployedImageResults,
+		NumWatchedImageResults:  numWatchedImageResults,
+	}, nil
+
+}
+
+func (rg *reportGeneratorImpl) getClustersAndNamespacesForSAC(ctx context.Context) ([]effectiveaccessscope.Cluster, []effectiveaccessscope.Namespace, error) {
+	allClusters, err := rg.clusterDatastore.GetClusters(ctx)
+	if err != nil {
+		return nil, nil, errors.Wrap(err, "error fetching clusters to build report query")
+	}
+	sacClusters := storagetoeffectiveaccessscope.Clusters(allClusters)
+	allNamespaces, err := rg.namespaceDatastore.GetAllNamespaces(ctx)
+	if err != nil {
+		return nil, nil, errors.Wrap(err, "error fetching namespaces to build report query")
+	}
+	sacNamespaces := storagetoeffectiveaccessscope.Namespaces(allNamespaces)
+	return sacClusters, sacNamespaces, nil
+}
+
+func (rg *reportGeneratorImpl) buildReportQueryViewBased(ctx context.Context, snap *storage.ReportSnapshot, watchedImages []string) (*common.ReportQueryViewBased, error) {
+	qb := common.NewVulnReportQueryBuilderViewBased(snap.GetViewBasedVulnReportFilters())
+	allClusters, allNamespaces, err := rg.getClustersAndNamespacesForSAC(ctx)
+	if err != nil {
+		return nil, err
+	}
+	rQuery, err := qb.BuildQueryViewBased(allClusters, allNamespaces, watchedImages)
 	if err != nil {
 		return nil, errors.Wrap(err, "error building report query")
 	}
 	return rQuery, nil
 }
 
-// Returns vuln report data from deployments matched by the collection.
-func (rg *reportGeneratorImpl) runPaginatedDeploymentsQuery(cveQuery string, deploymentIds []string) (common.DeployedImagesResult, error) {
-	offset := paginatedQueryStartOffset
-	var resultData common.DeployedImagesResult
-	for {
-		if offset >= len(deploymentIds) {
-			break
-		}
-		scopeQuery := fmt.Sprintf("%s:%s", search.DeploymentID.String(),
-			strings.Join(deploymentIds[offset:min(offset+paginationLimit, len(deploymentIds))], ","))
-		r, err := execQuery[common.DeployedImagesResult](rg, deployedImagesReportQuery, deployedImagesReportQueryOpName,
-			scopeQuery, cveQuery, nil)
-		if err != nil {
-			return r, err
-		}
-		resultData.Deployments = append(resultData.Deployments, r.Deployments...)
-		offset += paginationLimit
+func (rg *reportGeneratorImpl) buildReportQuery(ctx context.Context, snap *storage.ReportSnapshot,
+	collection *storage.ResourceCollection, dataStartTime time.Time) (*common.ReportQuery, error) {
+	qb := common.NewVulnReportQueryBuilder(collection, snap.GetResourceScope().GetEntityScope(), snap.GetVulnReportFilters(), rg.collectionQueryResolver,
+		dataStartTime)
+	allClusters, allNamespaces, err := rg.getClustersAndNamespacesForSAC(ctx)
+	if err != nil {
+		return nil, err
 	}
-	return resultData, nil
-}
-
-// Returns vuln report data for watched images
-func (rg *reportGeneratorImpl) runPaginatedImagesQuery(cveQuery string, watchedImages []string) (common.WatchedImagesResult, error) {
-	offset := paginatedQueryStartOffset
-	var resultData common.WatchedImagesResult
-	for {
-		if offset >= len(watchedImages) {
-			break
-		}
-		scopeQuery := fmt.Sprintf("%s:%s", search.ImageName.String(),
-			strings.Join(watchedImages[offset:min(offset+paginationLimit, len(watchedImages))], ","))
-		sortOpt := map[string]interface{}{
-			"field": search.ImageName.String(),
-			"aggregateBy": map[string]interface{}{
-				"aggregateFunc": "",
-				"distinct":      true,
-			},
-		}
-		r, err := execQuery[common.WatchedImagesResult](rg, watchedImagesReportQuery, watchedImagesReportQueryOpName,
-			scopeQuery, cveQuery, sortOpt)
-		if err != nil {
-			return r, err
-		}
-		resultData.Images = append(resultData.Images, r.Images...)
-		offset += paginationLimit
+	rQuery, err := qb.BuildQuery(ctx, allClusters, allNamespaces)
+	if err != nil {
+		return nil, errors.Wrap(err, "error building report query")
 	}
-	return resultData, nil
-}
-
-func execQuery[T any](rg *reportGeneratorImpl, gqlQuery, opName, scopeQuery, cveQuery string,
-	sortOpt map[string]interface{}) (T, error) {
-	pagination := map[string]interface{}{
-		"offset": paginatedQueryStartOffset,
-		"limit":  paginationLimit,
-	}
-	if sortOpt != nil {
-		pagination["sortOptions"] = []interface{}{
-			sortOpt,
-		}
-	}
-
-	response := rg.Schema.Exec(reportGenCtx,
-		gqlQuery, opName, map[string]interface{}{
-			"scopequery": scopeQuery,
-			"cvequery":   cveQuery,
-			"pagination": pagination,
-		})
-	if len(response.Errors) > 0 {
-		log.Errorf("error running graphql query: %s", response.Errors[0].Message)
-		return getZero[T](), response.Errors[0].Err
-	}
-	var res T
-	if err := json.Unmarshal(response.Data, &res); err != nil {
-		return getZero[T](), err
-	}
-	return res, nil
+	return rQuery, nil
 }
 
 /* Utility Functions */
@@ -492,16 +468,8 @@ func (rg *reportGeneratorImpl) lastSuccessfulScheduledReportTime(snap *storage.R
 	return completedAt, nil
 }
 
-func (rg *reportGeneratorImpl) getDeploymentIDs(deploymentsQuery *v1.Query) ([]string, error) {
-	results, err := rg.deploymentDatastore.Search(reportGenCtx, deploymentsQuery)
-	if err != nil {
-		return nil, err
-	}
-	return search.ResultsToIDs(results), nil
-}
-
-func (rg *reportGeneratorImpl) getWatchedImages() ([]string, error) {
-	watched, err := rg.watchedImageDatastore.GetAllWatchedImages(reportGenCtx)
+func (rg *reportGeneratorImpl) getWatchedImages(ctx context.Context) ([]string, error) {
+	watched, err := rg.watchedImageDatastore.GetAllWatchedImages(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -512,7 +480,7 @@ func (rg *reportGeneratorImpl) getWatchedImages() ([]string, error) {
 	return results, nil
 }
 
-func (rg *reportGeneratorImpl) withCVEReferenceLinks(imageCVEResponses []*ImageCVEQueryResponse) ([]*ImageCVEQueryResponse, error) {
+func (rg *reportGeneratorImpl) withCVEReferenceLinks(ctx context.Context, imageCVEResponses []*ImageCVEQueryResponse) ([]*ImageCVEQueryResponse, error) {
 	cveIDs := set.NewStringSet()
 	for _, res := range imageCVEResponses {
 		if res.GetCVEID() != "" {
@@ -520,9 +488,13 @@ func (rg *reportGeneratorImpl) withCVEReferenceLinks(imageCVEResponses []*ImageC
 		}
 	}
 
-	cves, err := rg.imageCVEDatastore.GetBatch(reportGenCtx, cveIDs.AsSlice())
+	var cves []ImageCVEInterface
+	imageCVEV2, err := rg.imageCVE2Datastore.GetBatch(ctx, cveIDs.AsSlice())
 	if err != nil {
 		return nil, err
+	}
+	for _, v2 := range imageCVEV2 {
+		cves = append(cves, v2)
 	}
 
 	cveRefLinks := make(map[string]string)
@@ -543,16 +515,20 @@ func (rg *reportGeneratorImpl) updateReportStatus(snapshot *storage.ReportSnapsh
 	return rg.reportSnapshotStore.UpdateReportSnapshot(reportGenCtx, snapshot)
 }
 
-func (rg *reportGeneratorImpl) logAndUpsertError(reportErr error, req *ReportRequest) {
-	if req.ReportSnapshot == nil || req.ReportSnapshot.ReportStatus == nil {
+func (rg *reportGeneratorImpl) logAndUpsertError(ctx context.Context, reportErr error, req *ReportRequest) {
+	if req.ReportSnapshot == nil || req.ReportSnapshot.GetReportStatus() == nil {
 		utils.Should(errors.New("Request does not have non-nil report snapshot with a non-nil report status"))
 		return
 	}
-	if reportErr != nil {
+	if errors.Is(context.Cause(ctx), ErrUserCancelled) {
+		log.Infof("Report for config '%s' was cancelled by user", req.ReportSnapshot.GetName())
+		req.ReportSnapshot.ReportStatus.ErrorMsg = ErrUserCancelled.Error()
+	} else if reportErr != nil {
 		log.Errorf("Error while running report for config '%s': %s", req.ReportSnapshot.GetName(), reportErr)
 		req.ReportSnapshot.ReportStatus.ErrorMsg = reportErr.Error()
 	}
 	req.ReportSnapshot.ReportStatus.CompletedAt = protocompat.TimestampNow()
+	// Use reportGenCtx for status update since the request context may be cancelled
 	err := rg.updateReportStatus(req.ReportSnapshot, storage.ReportStatus_FAILURE)
 
 	if err != nil {
@@ -561,27 +537,49 @@ func (rg *reportGeneratorImpl) logAndUpsertError(reportErr error, req *ReportReq
 	}
 }
 
-func filterOnImageType(imageTypes []storage.VulnerabilityReportFilters_ImageType,
-	target storage.VulnerabilityReportFilters_ImageType) bool {
-	for _, typ := range imageTypes {
-		if typ == target {
-			return true
-		}
+func selectSchema() *walker.Schema {
+	return pkgSchema.ImageCvesV2Schema
+}
+
+func getSelectsWatchedImages() []*v1.QuerySelect {
+	ret := []*v1.QuerySelect{
+		search.NewQuerySelect(search.ImageName).Proto(),
+		search.NewQuerySelect(search.Component).Proto(),
+		search.NewQuerySelect(search.ComponentVersion).Proto(),
+		search.NewQuerySelect(search.CVEID).Proto(),
+		search.NewQuerySelect(search.CVE).Proto(),
+		search.NewQuerySelect(search.Fixable).Proto(),
+		search.NewQuerySelect(search.FixedBy).Proto(),
+		search.NewQuerySelect(search.Severity).Proto(),
+		search.NewQuerySelect(search.CVSS).Proto(),
+		search.NewQuerySelect(search.NVDCVSS).Proto(),
+		search.NewQuerySelect(search.FirstImageOccurrenceTimestamp).Proto(),
+		search.NewQuerySelect(search.EPSSProbablity).Proto(),
+		search.NewQuerySelect(search.AdvisoryName).Proto(),
+		search.NewQuerySelect(search.AdvisoryLink).Proto(),
 	}
-	return false
+	return ret
 }
 
-func orderByClusterAndNamespace(deployments []*common.Deployment) []*common.Deployment {
-	sort.SliceStable(deployments, func(i, j int) bool {
-		if deployments[i].Cluster.GetName() == deployments[j].Cluster.GetName() {
-			return deployments[i].Namespace < deployments[j].Namespace
-		}
-		return deployments[i].Cluster.GetName() < deployments[j].Cluster.GetName()
-	})
-	return deployments
-}
-
-func getZero[T any]() T {
-	var result T
-	return result
+func getSelectsDeployedImages() []*v1.QuerySelect {
+	ret := []*v1.QuerySelect{
+		search.NewQuerySelect(search.ImageName).Proto(),
+		search.NewQuerySelect(search.Component).Proto(),
+		search.NewQuerySelect(search.ComponentVersion).Proto(),
+		search.NewQuerySelect(search.CVEID).Proto(),
+		search.NewQuerySelect(search.CVE).Proto(),
+		search.NewQuerySelect(search.Fixable).Proto(),
+		search.NewQuerySelect(search.FixedBy).Proto(),
+		search.NewQuerySelect(search.Severity).Proto(),
+		search.NewQuerySelect(search.CVSS).Proto(),
+		search.NewQuerySelect(search.NVDCVSS).Proto(),
+		search.NewQuerySelect(search.FirstImageOccurrenceTimestamp).Proto(),
+		search.NewQuerySelect(search.Cluster).Proto(),
+		search.NewQuerySelect(search.Namespace).Proto(),
+		search.NewQuerySelect(search.DeploymentName).Proto(),
+		search.NewQuerySelect(search.EPSSProbablity).Proto(),
+		search.NewQuerySelect(search.AdvisoryName).Proto(),
+		search.NewQuerySelect(search.AdvisoryLink).Proto(),
+	}
+	return ret
 }

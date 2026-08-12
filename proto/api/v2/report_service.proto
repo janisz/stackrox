@@ -56,8 +56,18 @@ message VulnerabilityReportFilters {
     bool since_last_sent_scheduled_report = 5;
     google.protobuf.Timestamp since_start_date = 6;
   }
-  bool include_nvd_cvss = 7;
-  bool include_epss_probability = 8;
+  // Deprecated: These fields are no longer used.
+  // NVD CVSS, EPSS Probability and Advisory columns are always included in reports.
+  bool include_nvd_cvss = 7 [deprecated = true];
+  bool include_epss_probability = 8 [deprecated = true];
+  bool include_advisory = 9 [deprecated = true];
+  // Filters related to image, cve etc for non-collection-based scopes
+  string query = 12;
+}
+
+//filter for ondemand view based reports
+message ViewBasedVulnerabilityReportFilters {
+  string query = 5;
 }
 
 message ReportSchedule {
@@ -65,6 +75,7 @@ message ReportSchedule {
     UNSET = 0;
     WEEKLY = 1;
     MONTHLY = 2;
+    DAILY = 3;
   }
 
   // Sunday = 0, Monday = 1, .... Saturday =  6
@@ -86,15 +97,54 @@ message ReportSchedule {
   }
 }
 
+// Reports are transitioning to a modernized architecture in a future release.
+// To prepare for future updates, we recommend transitioning your collections-based reports to the “Entity Scope” method.
+// When the “Collection scope” option is removed in a future release, existing reports will not automatically convert to the “Entity scope” method.
 message ResourceScope {
   oneof scope_reference {
     CollectionReference collection_scope = 1;
+    EntityScope entity_scope = 2; // scope for deployment, namespace, cluster
   }
 }
 
 message CollectionReference {
   string collection_id = 1;
   string collection_name = 2;
+}
+
+message EntityScope {
+  repeated EntityScopeRule rules = 1;
+}
+
+enum MatchType {
+  EXACT = 0;
+  REGEX = 1;
+}
+
+message RuleValue {
+  string value = 1;
+  MatchType match_type = 2;
+}
+
+message EntityScopeRule {
+  ScopeEntity entity = 1;
+  ScopeField field = 2;
+  repeated RuleValue values = 3;
+}
+
+enum ScopeEntity {
+  SCOPE_ENTITY_UNSET = 0;
+  SCOPE_ENTITY_DEPLOYMENT = 1;
+  SCOPE_ENTITY_NAMESPACE = 2;
+  SCOPE_ENTITY_CLUSTER = 3;
+}
+
+enum ScopeField {
+  FIELD_UNSET = 0;
+  FIELD_ID = 1;
+  FIELD_NAME = 2;
+  FIELD_LABEL = 3;
+  FIELD_ANNOTATION = 4;
 }
 
 message NotifierConfiguration {
@@ -124,6 +174,10 @@ message GetReportHistoryRequest {
   RawQuery report_param_query = 2;
 }
 
+message GetViewBasedReportHistoryRequest {
+  RawQuery report_param_query = 1;
+}
+
 message ReportHistoryResponse {
   repeated ReportSnapshot report_snapshots = 1;
 }
@@ -144,6 +198,7 @@ message ReportSnapshot {
   string description = 4;
   oneof filter {
     VulnerabilityReportFilters vuln_report_filters = 5;
+    ViewBasedVulnerabilityReportFilters view_based_vuln_report_filters = 12;
   }
   CollectionSnapshot collection_snapshot = 6;
   ReportSchedule schedule = 7;
@@ -151,6 +206,8 @@ message ReportSnapshot {
   repeated NotifierConfiguration notifiers = 9;
   SlimUser user = 10;
   bool is_download_available = 11;
+  string area_of_concern = 13;
+  ResourceScope resource_scope = 14;
 }
 
 message ReportStatus {
@@ -191,6 +248,23 @@ message RunReportResponse {
 
 message DeleteReportRequest {
   string id = 1;
+}
+
+message ReportRequestViewBased {
+  enum ReportType {
+    VULNERABILITY = 0;
+  }
+  ReportType type = 1;
+  oneof filter {
+    ViewBasedVulnerabilityReportFilters view_based_vuln_report_filters = 2;
+  }
+
+  string area_of_concern = 3;
+}
+
+message RunReportResponseViewBased {
+  string reportID = 1;
+  string requestName = 2;
 }
 
 service ReportService {
@@ -263,5 +337,20 @@ service ReportService {
   // Deletes a generated report for the given report id
   rpc DeleteReport(DeleteReportRequest) returns (Empty) {
     option (google.api.http) = {delete: "/v2/reports/jobs/{id}/delete"};
+  }
+
+  rpc PostViewBasedReport(ReportRequestViewBased) returns (RunReportResponseViewBased) {
+    option (google.api.http) = {
+      post: "/v2/reports/view-based/run"
+      body: "*"
+    };
+  }
+
+  rpc GetViewBasedMyReportHistory(GetViewBasedReportHistoryRequest) returns (ReportHistoryResponse) {
+    option (google.api.http) = {get: "/v2/reports/view-based/my-history"};
+  }
+
+  rpc GetViewBasedReportHistory(GetViewBasedReportHistoryRequest) returns (ReportHistoryResponse) {
+    option (google.api.http) = {get: "/v2/reports/view-based/history"};
   }
 }

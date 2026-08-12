@@ -1,4 +1,5 @@
-import React, { ReactElement, useState } from 'react';
+import { useState } from 'react';
+import type { ReactElement } from 'react';
 import {
     Divider,
     Flex,
@@ -13,11 +14,11 @@ import {
 import AdvancedFlowsFilter, {
     defaultAdvancedFlowsFilters,
 } from '../common/AdvancedFlowsFilter/AdvancedFlowsFilter';
-import { AdvancedFlowsFilterType } from '../common/AdvancedFlowsFilter/types';
+import type { AdvancedFlowsFilterType } from '../common/AdvancedFlowsFilter/types';
 import EntityNameSearchInput from '../common/EntityNameSearchInput';
 import FlowsTable from '../common/FlowsTable';
 import FlowsTableHeaderText from '../common/FlowsTableHeaderText';
-import { CustomEdgeModel, CustomNodeModel } from '../types/topology.type';
+import type { CustomEdgeModel, CustomNodeModel } from '../types/topology.type';
 import {
     filterNetworkFlows,
     getAllUniquePorts,
@@ -78,10 +79,10 @@ function ExternalFlowsTable({
                     </FlexItem>
                 </Flex>
             </StackItem>
-            <Divider component="hr" className="pf-v5-u-py-md" />
-            <StackItem className="pf-v5-u-pb-md">
-                <Toolbar className="pf-v5-u-p-0">
-                    <ToolbarContent className="pf-v5-u-px-0">
+            <Divider component="hr" className="pf-v6-u-py-md" />
+            <StackItem className="pf-v6-u-pb-md">
+                <Toolbar className="pf-v6-u-p-0">
+                    <ToolbarContent className="pf-v6-u-px-0">
                         <ToolbarItem>
                             <FlowsTableHeaderText type="active" numFlows={numFlows} />
                         </ToolbarItem>

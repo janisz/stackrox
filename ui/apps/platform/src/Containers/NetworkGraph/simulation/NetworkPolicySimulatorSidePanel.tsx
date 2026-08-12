@@ -1,11 +1,12 @@
-import React, { useCallback } from 'react';
+import { useCallback, useState } from 'react';
 import {
     Alert,
     Bullseye,
     Button,
     Checkbox,
+    CodeBlockAction,
+    Content,
     Divider,
-    DropEvent,
     Flex,
     FlexItem,
     Popover,
@@ -14,25 +15,26 @@ import {
     StackItem,
     Tab,
     TabContent,
-    Tabs,
     TabTitleText,
-    Text,
+    Tabs,
     Title,
 } from '@patternfly/react-core';
+import type { DropEvent } from '@patternfly/react-core';
 import { HelpIcon } from '@patternfly/react-icons';
 import sortBy from 'lodash/sortBy';
+import type { ParsedQs } from 'qs';
 
 import PopoverBodyContent from 'Components/PopoverBodyContent';
+import usePermissions from 'hooks/usePermissions';
 import useRestQuery from 'hooks/useRestQuery';
 import useAnalytics, { GENERATE_NETWORK_POLICIES } from 'hooks/useAnalytics';
-import useURLSearch from 'hooks/useURLSearch';
 import useTabs from 'hooks/patternfly/useTabs';
 import { getRequestQueryStringForSearchFilter } from 'utils/searchUtils';
-import { getQueryObject, getQueryString } from 'utils/queryStringUtils';
+import { getQueryObject } from 'utils/queryStringUtils';
 import { fetchNetworkPoliciesByClusterId } from 'services/NetworkService';
 
 import ViewActiveYAMLs from './ViewActiveYAMLs';
-import {
+import type {
     NetworkPolicySimulator,
     SetNetworkPolicyModification,
 } from '../hooks/useNetworkPolicySimulator';
@@ -44,18 +46,26 @@ import {
 import UploadYAMLButton from './UploadYAMLButton';
 import NetworkSimulatorActions from './NetworkSimulatorActions';
 import NotifyYAMLModal from './NotifyYAMLModal';
-import { NetworkScopeHierarchy } from '../types/networkScopeHierarchy';
+import type { NetworkScopeHierarchy } from '../types/networkScopeHierarchy';
 import CompareYAMLModal from './CompareYAMLModal';
 import CodeCompareIcon from './CodeCompareIcon';
 import NetworkPoliciesGenerationScope from './NetworkPoliciesGenerationScope';
 import { getPropertiesForAnalytics } from '../utils/networkGraphURLUtils';
 
-// @TODO: Consider a better approach to managing the side panel related state (simulation + URL path for entities)
-export function clearSimulationQuery(search: string): string {
+import { useSearchFilter } from '../NetworkGraphURLStateContext';
+
+// @TODO: Consider a better approach to managing the side panel related state
+export function clearSidePanelQuery(search: string): ParsedQs {
     const modifiedSearchFilter = getQueryObject(search);
     delete modifiedSearchFilter.simulation;
-    const queryString = getQueryString(modifiedSearchFilter);
-    return queryString;
+    delete modifiedSearchFilter.sidePanelTabState;
+    delete modifiedSearchFilter.sidePanelToggleState;
+    delete modifiedSearchFilter.sidePanel;
+    delete modifiedSearchFilter.page;
+    delete modifiedSearchFilter.perPage;
+    delete modifiedSearchFilter.secondaryPage;
+    delete modifiedSearchFilter.secondaryPerPage;
+    return modifiedSearchFilter;
 }
 
 export type NetworkPolicySimulatorSidePanelProps = {
@@ -80,15 +90,18 @@ function NetworkPolicySimulatorSidePanel({
     scopeDeploymentCount,
 }: NetworkPolicySimulatorSidePanelProps) {
     const { analyticsTrack } = useAnalytics();
-    const { searchFilter } = useURLSearch();
+    const { searchFilter } = useSearchFilter();
+
+    const { hasReadAccess } = usePermissions();
+    const hasReadAccessForNotifiers = hasReadAccess('Integration');
 
     const { activeKeyTab, onSelectTab } = useTabs({
         defaultTab: tabs.SIMULATE_NETWORK_POLICIES,
     });
     const [isExcludingPortsAndProtocols, setIsExcludingPortsAndProtocols] =
-        React.useState<boolean>(false);
-    const [isNotifyModalOpen, setIsNotifyModalOpen] = React.useState(false);
-    const [compareModalYAMLs, setCompareModalYAMLs] = React.useState<{
+        useState<boolean>(false);
+    const [isNotifyModalOpen, setIsNotifyModalOpen] = useState(false);
+    const [compareModalYAMLs, setCompareModalYAMLs] = useState<{
         generated: string;
         current: string;
     } | null>(null);
@@ -108,12 +121,15 @@ function NetworkPolicySimulatorSidePanel({
     const { data: currentNetworkPolicies } = useRestQuery(fetchNetworkPolicies);
 
     function handleFileInputChange(_event: DropEvent, file: File) {
-        if (file && !file.name.includes('.yaml')) {
+        const fileName = file?.name.toLowerCase();
+        const isYaml = fileName?.endsWith('.yaml') || fileName?.endsWith('.yml');
+
+        if (!isYaml) {
             setNetworkPolicyModification({
                 state: 'UPLOAD',
                 options: {
                     modification: null,
-                    error: 'File must be .yaml',
+                    error: 'File must be .yaml or .yml',
                 },
             });
         } else {
@@ -195,13 +211,15 @@ function NetworkPolicySimulatorSidePanel({
                 <Flex
                     direction={{ default: 'column' }}
                     spaceItems={{ default: 'spaceItemsSm' }}
-                    className="pf-v5-u-p-md pf-v5-u-pb-sm pf-v5-u-mb-0"
+                    className="pf-v6-u-p-md pf-v6-u-pb-sm pf-v6-u-mb-0"
                 >
                     <FlexItem>
                         <Title headingLevel="h2" id={labelledById}>
                             Generated network policies
                         </Title>
-                        <Text className="pf-v5-u-font-weight-bold">Scope of baseline:</Text>
+                        <Content component="p" className="pf-v6-u-font-weight-bold">
+                            Scope of baseline:
+                        </Content>
                     </FlexItem>
                     <NetworkPoliciesGenerationScope
                         scopeHierarchy={scopeHierarchy}
@@ -213,12 +231,7 @@ function NetworkPolicySimulatorSidePanel({
                         <NetworkPoliciesYAML
                             yaml={generatedYaml}
                             additionalControls={[
-                                <Flex
-                                    justifyContent={{ default: 'justifyContentFlexEnd' }}
-                                    alignItems={{ default: 'alignItemsCenter' }}
-                                    spaceItems={{ default: 'spaceItemsNone' }}
-                                    className="pf-v5-u-flex-1"
-                                >
+                                <CodeBlockAction>
                                     <Button
                                         variant="link"
                                         onClick={() =>
@@ -241,14 +254,14 @@ function NetworkPolicySimulatorSidePanel({
                                         }
                                     >
                                         <button
-                                            className="pf-v5-u-color-200"
+                                            className="pf-v6-u-color-200 pf-v6-u-pr-md"
                                             type="button"
                                             aria-label="More info on comparing changes"
                                         >
                                             <HelpIcon />
                                         </button>
                                     </Popover>
-                                </Flex>,
+                                </CodeBlockAction>,
                             ]}
                         />
                     </FlexItem>
@@ -257,16 +270,20 @@ function NetworkPolicySimulatorSidePanel({
                             generateNetworkPolicies={generateNetworkPolicies}
                             undoNetworkPolicies={undoNetworkPolicies}
                             onFileInputChange={handleFileInputChange}
-                            openNotifyYAMLModal={openNotifyYAMLModal}
+                            openNotifyYAMLModal={
+                                hasReadAccessForNotifiers ? openNotifyYAMLModal : undefined
+                            }
                         />
                     </FlexItem>
                 </Flex>
-                <NotifyYAMLModal
-                    isModalOpen={isNotifyModalOpen}
-                    setIsModalOpen={setIsNotifyModalOpen}
-                    clusterId={scopeHierarchy.cluster.id}
-                    modification={simulator.modification}
-                />
+                {hasReadAccessForNotifiers && (
+                    <NotifyYAMLModal
+                        isModalOpen={isNotifyModalOpen}
+                        setIsModalOpen={setIsNotifyModalOpen}
+                        clusterId={scopeHierarchy.cluster.id}
+                        modification={simulator.modification}
+                    />
+                )}
                 {compareModalYAMLs && (
                     <CompareYAMLModal
                         generated={compareModalYAMLs.generated}
@@ -288,7 +305,7 @@ function NetworkPolicySimulatorSidePanel({
                 <Flex
                     direction={{ default: 'row' }}
                     alignItems={{ default: 'alignItemsFlexEnd' }}
-                    className="pf-v5-u-p-lg pf-v5-u-mb-0"
+                    className="pf-v6-u-p-lg pf-v6-u-mb-0"
                 >
                     <FlexItem>
                         <Title headingLevel="h2" id={labelledById}>
@@ -298,7 +315,7 @@ function NetworkPolicySimulatorSidePanel({
                 </Flex>
                 <Divider component="div" />
                 <Stack hasGutter>
-                    <StackItem className="pf-v5-u-p-md">
+                    <StackItem className="pf-v6-u-p-md">
                         <Alert
                             variant={simulator.error ? 'danger' : 'success'}
                             isInline
@@ -319,16 +336,20 @@ function NetworkPolicySimulatorSidePanel({
                             generateNetworkPolicies={generateNetworkPolicies}
                             undoNetworkPolicies={undoNetworkPolicies}
                             onFileInputChange={handleFileInputChange}
-                            openNotifyYAMLModal={openNotifyYAMLModal}
+                            openNotifyYAMLModal={
+                                hasReadAccessForNotifiers ? openNotifyYAMLModal : undefined
+                            }
                         />
                     </StackItem>
                 </Stack>
-                <NotifyYAMLModal
-                    isModalOpen={isNotifyModalOpen}
-                    setIsModalOpen={setIsNotifyModalOpen}
-                    clusterId={scopeHierarchy.cluster.id}
-                    modification={simulator.modification}
-                />
+                {hasReadAccessForNotifiers && (
+                    <NotifyYAMLModal
+                        isModalOpen={isNotifyModalOpen}
+                        setIsModalOpen={setIsNotifyModalOpen}
+                        clusterId={scopeHierarchy.cluster.id}
+                        modification={simulator.modification}
+                    />
+                )}
             </div>
         );
     }
@@ -340,7 +361,7 @@ function NetworkPolicySimulatorSidePanel({
                 <Flex
                     direction={{ default: 'row' }}
                     alignItems={{ default: 'alignItemsFlexEnd' }}
-                    className="pf-v5-u-p-lg pf-v5-u-mb-0"
+                    className="pf-v6-u-p-lg pf-v6-u-mb-0"
                 >
                     <FlexItem>
                         <Title headingLevel="h2" id={labelledById}>
@@ -350,7 +371,7 @@ function NetworkPolicySimulatorSidePanel({
                 </Flex>
                 <Divider component="div" />
                 <Stack hasGutter>
-                    <StackItem className="pf-v5-u-p-md">
+                    <StackItem className="pf-v6-u-p-md">
                         <Alert
                             variant={simulator.error ? 'danger' : 'success'}
                             isInline
@@ -369,16 +390,20 @@ function NetworkPolicySimulatorSidePanel({
                             generateNetworkPolicies={generateNetworkPolicies}
                             undoNetworkPolicies={undoNetworkPolicies}
                             onFileInputChange={handleFileInputChange}
-                            openNotifyYAMLModal={openNotifyYAMLModal}
+                            openNotifyYAMLModal={
+                                hasReadAccessForNotifiers ? openNotifyYAMLModal : undefined
+                            }
                         />
                     </StackItem>
                 </Stack>
-                <NotifyYAMLModal
-                    isModalOpen={isNotifyModalOpen}
-                    setIsModalOpen={setIsNotifyModalOpen}
-                    clusterId={scopeHierarchy.cluster.id}
-                    modification={simulator.modification}
-                />
+                {hasReadAccessForNotifiers && (
+                    <NotifyYAMLModal
+                        isModalOpen={isNotifyModalOpen}
+                        setIsModalOpen={setIsNotifyModalOpen}
+                        clusterId={scopeHierarchy.cluster.id}
+                        modification={simulator.modification}
+                    />
+                )}
             </div>
         );
     }
@@ -389,12 +414,14 @@ function NetworkPolicySimulatorSidePanel({
                 <Flex
                     direction={{ default: 'column' }}
                     spaceItems={{ default: 'spaceItemsSm' }}
-                    className="pf-v5-u-p-md pf-v5-u-pb-sm pf-v5-u-mb-0"
+                    className="pf-v6-u-p-md pf-v6-u-pb-sm pf-v6-u-mb-0"
                 >
                     <Title headingLevel="h2" id={labelledById}>
                         Generate network policies
                     </Title>
-                    <Text className="pf-v5-u-font-weight-bold">Scope of baseline:</Text>
+                    <Content component="p" className="pf-v6-u-font-weight-bold">
+                        Scope of baseline:
+                    </Content>
                     <NetworkPoliciesGenerationScope
                         scopeHierarchy={scopeHierarchy}
                         scopeDeploymentCount={scopeDeploymentCount}
@@ -416,89 +443,88 @@ function NetworkPolicySimulatorSidePanel({
                 </Tabs>
             </StackItem>
             <StackItem isFilled style={{ overflow: 'auto' }}>
-                <TabContent
-                    eventKey={tabs.SIMULATE_NETWORK_POLICIES}
-                    id="Simulate_network_policies"
-                    hidden={activeKeyTab !== tabs.SIMULATE_NETWORK_POLICIES}
-                >
-                    <div className="pf-v5-u-p-lg pf-v5-u-h-100">
-                        <Stack hasGutter>
-                            <StackItem>
-                                <Stack hasGutter>
-                                    <StackItem>
-                                        <Title headingLevel="h3">
-                                            Generate network policies from the traffic
-                                        </Title>
-                                    </StackItem>
-                                    <StackItem>
-                                        <Text>
-                                            Generate a set of recommended network policies based on
-                                            your cluster&apos;s traffic. Only deployments that are
-                                            part of the current scope will be included in generated
-                                            policies.
-                                        </Text>
-                                    </StackItem>
-                                    <StackItem>
-                                        <Checkbox
-                                            label="Exclude ports & protocols"
-                                            isChecked={isExcludingPortsAndProtocols}
-                                            onChange={(_event, val) =>
-                                                setIsExcludingPortsAndProtocols(val)
-                                            }
-                                            id="controlled-check-1"
-                                            name="check1"
-                                        />
-                                    </StackItem>
-                                    <StackItem>
-                                        <Button
-                                            variant="secondary"
-                                            onClick={generateNetworkPolicies}
-                                        >
-                                            Generate and simulate network policies
-                                        </Button>
-                                    </StackItem>
-                                </Stack>
-                            </StackItem>
-                            <StackItem>
-                                <Divider component="div" />
-                            </StackItem>
-                            <StackItem>
-                                <Stack hasGutter>
-                                    <StackItem>
-                                        <Title headingLevel="h3">
-                                            Upload a network policy YAML
-                                        </Title>
-                                    </StackItem>
-                                    <StackItem>
-                                        <Text>
-                                            Upload your network policies to quickly preview your
-                                            environment under different policy configurations and
-                                            time windows. When ready, apply the network policies
-                                            directly or share them with your team.
-                                        </Text>
-                                    </StackItem>
-                                    <StackItem>
-                                        <UploadYAMLButton
-                                            onFileInputChange={handleFileInputChange}
-                                        />
-                                    </StackItem>
-                                </Stack>
-                            </StackItem>
-                        </Stack>
-                    </div>
-                </TabContent>
-                <TabContent
-                    eventKey={tabs.VIEW_ACTIVE_YAMLS}
-                    id="View_active_YAMLS"
-                    hidden={activeKeyTab !== tabs.VIEW_ACTIVE_YAMLS}
-                >
-                    <ViewActiveYAMLs
-                        networkPolicies={currentNetworkPolicies ?? []}
-                        generateNetworkPolicies={generateNetworkPolicies}
-                        undoNetworkPolicies={undoNetworkPolicies}
-                        onFileInputChange={handleFileInputChange}
-                    />
-                </TabContent>
+                {activeKeyTab === tabs.SIMULATE_NETWORK_POLICIES && (
+                    <TabContent
+                        eventKey={tabs.SIMULATE_NETWORK_POLICIES}
+                        id="Simulate_network_policies"
+                    >
+                        <div className="pf-v6-u-p-lg pf-v6-u-h-100">
+                            <Stack hasGutter>
+                                <StackItem>
+                                    <Stack hasGutter>
+                                        <StackItem>
+                                            <Title headingLevel="h3">
+                                                Generate network policies from the traffic
+                                            </Title>
+                                        </StackItem>
+                                        <StackItem>
+                                            <Content component="p">
+                                                Generate a set of recommended network policies based
+                                                on your cluster&apos;s traffic. Only deployments
+                                                that are part of the current scope will be included
+                                                in generated policies.
+                                            </Content>
+                                        </StackItem>
+                                        <StackItem>
+                                            <Checkbox
+                                                label="Exclude ports & protocols"
+                                                isChecked={isExcludingPortsAndProtocols}
+                                                onChange={(_event, val) =>
+                                                    setIsExcludingPortsAndProtocols(val)
+                                                }
+                                                id="controlled-check-1"
+                                                name="check1"
+                                            />
+                                        </StackItem>
+                                        <StackItem>
+                                            <Button
+                                                variant="secondary"
+                                                onClick={generateNetworkPolicies}
+                                            >
+                                                Generate and simulate network policies
+                                            </Button>
+                                        </StackItem>
+                                    </Stack>
+                                </StackItem>
+                                <StackItem>
+                                    <Divider component="div" />
+                                </StackItem>
+                                <StackItem>
+                                    <Stack hasGutter>
+                                        <StackItem>
+                                            <Title headingLevel="h3">
+                                                Upload a network policy YAML
+                                            </Title>
+                                        </StackItem>
+                                        <StackItem>
+                                            <Content component="p">
+                                                Upload your network policies to quickly preview your
+                                                environment under different policy configurations
+                                                and time windows. When ready, apply the network
+                                                policies directly or share them with your team.
+                                            </Content>
+                                        </StackItem>
+                                        <StackItem>
+                                            <UploadYAMLButton
+                                                onFileInputChange={handleFileInputChange}
+                                            />
+                                        </StackItem>
+                                    </Stack>
+                                </StackItem>
+                            </Stack>
+                        </div>
+                    </TabContent>
+                )}
+                {activeKeyTab === tabs.VIEW_ACTIVE_YAMLS && (
+                    <TabContent eventKey={tabs.VIEW_ACTIVE_YAMLS} id="View_active_YAMLS">
+                        <ViewActiveYAMLs
+                            networkPolicies={currentNetworkPolicies ?? []}
+                            generateNetworkPolicies={generateNetworkPolicies}
+                            undoNetworkPolicies={undoNetworkPolicies}
+                            onFileInputChange={handleFileInputChange}
+                        />
+                    </TabContent>
+                )}
             </StackItem>
         </Stack>
     );

@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/pkg/errors"
+	"github.com/stackrox/rox/central/networkgraph/entity/networktree"
 	"github.com/stackrox/rox/central/networkgraph/flow/datastore/internal/store"
 	"github.com/stackrox/rox/pkg/postgres"
 	"github.com/stackrox/rox/pkg/sync"
@@ -23,6 +24,8 @@ type clusterStoreImpl struct {
 	flowStore map[string]store.FlowStore
 }
 
+var _ store.ClusterStore = (*clusterStoreImpl)(nil)
+
 // GetFlowStore returns the FlowStore for the cluster ID, or nil if none exists.
 func (s *clusterStoreImpl) GetFlowStore(clusterID string) store.FlowStore {
 	s.lock.Lock()
@@ -30,7 +33,7 @@ func (s *clusterStoreImpl) GetFlowStore(clusterID string) store.FlowStore {
 
 	flowStore, found := s.flowStore[clusterID]
 	if !found || flowStore == nil {
-		flowStore = New(s.db, clusterID)
+		flowStore = New(s.db, clusterID, networktree.Singleton())
 		s.flowStore[clusterID] = flowStore
 	}
 	return flowStore
@@ -43,4 +46,12 @@ func (s *clusterStoreImpl) CreateFlowStore(_ context.Context, clusterID string) 
 		return nil, errors.Errorf("unable to create store for cluster %s", clusterID)
 	}
 	return flowStore, nil
+}
+
+func (s *clusterStoreImpl) RemoveFlowStore(ctx context.Context, clusterID string) error {
+	s.lock.Lock()
+	defer s.lock.Unlock()
+
+	delete(s.flowStore, clusterID)
+	return dropPartition(ctx, s.db, clusterID)
 }

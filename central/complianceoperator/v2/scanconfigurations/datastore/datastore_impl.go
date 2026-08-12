@@ -21,6 +21,7 @@ import (
 	"github.com/stackrox/rox/pkg/search/postgres/aggregatefunc"
 	"github.com/stackrox/rox/pkg/set"
 	"github.com/stackrox/rox/pkg/sliceutils"
+	"github.com/stackrox/rox/pkg/telemetry/phonehome"
 	"github.com/stackrox/rox/pkg/uuid"
 )
 
@@ -34,6 +35,8 @@ type datastoreImpl struct {
 	statusStorage statusStore.Store
 	keyedMutex    *concurrency.KeyedMutex
 }
+
+var _ DataStore = (*datastoreImpl)(nil)
 
 // GetScanConfiguration retrieves the scan configuration specified by id
 func (ds *datastoreImpl) GetScanConfiguration(ctx context.Context, id string) (*storage.ComplianceOperatorScanConfigurationV2, bool, error) {
@@ -68,7 +71,7 @@ func (ds *datastoreImpl) GetScanConfigurationByName(ctx context.Context, scanNam
 
 // ScanConfigurationProfileExists takes all the profiles being referenced by the scan configuration and checks if any cluster in the configuration is using it in any existing scan configurations.
 func (ds *datastoreImpl) ScanConfigurationProfileExists(ctx context.Context, id string, profiles []string, clusters []string) error {
-	for i := 0; i < len(profiles); i++ {
+	for i := range profiles {
 		for j := i + 1; j < len(profiles); j++ {
 			if strings.EqualFold(profiles[i], profiles[j]) {
 				return errors.Errorf("the scan configuration contains duplicate profiles.  Profile %q and profile %q", profiles[i], profiles[j])
@@ -172,7 +175,7 @@ func (ds *datastoreImpl) DeleteScanConfiguration(ctx context.Context, id string)
 	defer ds.keyedMutex.Unlock(id)
 
 	// remove scan data from scan status table first
-	_, err = ds.statusStorage.DeleteByQuery(ctx, search.NewQueryBuilder().
+	err = ds.statusStorage.DeleteByQuery(ctx, search.NewQueryBuilder().
 		AddExactMatches(search.ComplianceOperatorScanConfig, id).ProtoQuery())
 	if err != nil {
 		return "", errors.Wrapf(err, "Unable to delete scan status for scan configuration id %q", id)
@@ -224,12 +227,10 @@ func (ds *datastoreImpl) UpdateClusterStatus(ctx context.Context, scanConfigID s
 
 // RemoveClusterStatus removes the scan configuration status for the given cluster
 func (ds *datastoreImpl) RemoveClusterStatus(ctx context.Context, scanConfigID string, clusterID string) error {
-	_, err := ds.statusStorage.DeleteByQuery(ctx, search.NewQueryBuilder().
+	return ds.statusStorage.DeleteByQuery(ctx, search.NewQueryBuilder().
 		AddExactMatches(search.ComplianceOperatorScanConfig, scanConfigID).
 		AddExactMatches(search.ClusterID, clusterID).
 		ProtoQuery())
-
-	return err
 }
 
 // GetScanConfigClusterStatus retrieves the scan configurations status per cluster specified by scan id
@@ -295,7 +296,7 @@ type distinctProfileName struct {
 }
 
 // GetProfilesNames gets the list of distinct profile names for the query
-func (d *datastoreImpl) GetProfilesNames(ctx context.Context, q *v1.Query) ([]string, error) {
+func (ds *datastoreImpl) GetProfilesNames(ctx context.Context, q *v1.Query) ([]string, error) {
 	var err error
 	q, err = withSACFilter(ctx, resources.Compliance, q)
 	if err != nil {
@@ -316,17 +317,16 @@ func (d *datastoreImpl) GetProfilesNames(ctx context.Context, q *v1.Query) ([]st
 
 	clonedQuery.Pagination = q.GetPagination()
 
-	var results []*distinctProfileName
-	results, err = pgSearch.RunSelectRequestForSchema[distinctProfileName](ctx, d.db, schema.ComplianceOperatorScanConfigurationV2Schema, clonedQuery)
+	var profileNames []string
+	err = pgSearch.RunSelectRequestForSchemaFn[distinctProfileName](ctx, ds.db, schema.ComplianceOperatorScanConfigurationV2Schema, clonedQuery, func(r *distinctProfileName) error {
+		profileNames = append(profileNames, r.ProfileName)
+		return nil
+	})
 	if err != nil {
 		return nil, err
 	}
-	if len(results) == 0 {
+	if len(profileNames) == 0 {
 		return nil, nil
-	}
-	profileNames := make([]string, 0, len(results))
-	for _, result := range results {
-		profileNames = append(profileNames, result.ProfileName)
 	}
 
 	return profileNames, err
@@ -337,12 +337,12 @@ type distinctProfileCount struct {
 	Name       string `db:"compliance_config_profile_name"`
 }
 
-// CountDistinctProfiles returns count of distinct profiles matching query
-func (d *datastoreImpl) CountDistinctProfiles(ctx context.Context, q *v1.Query) (int, error) {
+// DistinctProfiles returns a map where the keys are profile names and the values are their counts, for profiles matching the query.
+func (ds *datastoreImpl) DistinctProfiles(ctx context.Context, q *v1.Query) (map[string]int, error) {
 	var err error
 	q, err = withSACFilter(ctx, resources.Compliance, q)
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
 
 	query := q.CloneVT()
@@ -353,12 +353,15 @@ func (d *datastoreImpl) CountDistinctProfiles(ctx context.Context, q *v1.Query) 
 		},
 	}
 
-	var results []*distinctProfileCount
-	results, err = pgSearch.RunSelectRequestForSchema[distinctProfileCount](ctx, d.db, schema.ComplianceOperatorScanConfigurationV2Schema, withCountQuery(query, search.ComplianceOperatorConfigProfileName))
+	countMap := make(map[string]int)
+	err = pgSearch.RunSelectRequestForSchemaFn[distinctProfileCount](ctx, ds.db, schema.ComplianceOperatorScanConfigurationV2Schema, withCountQuery(query, search.ComplianceOperatorConfigProfileName), func(dp *distinctProfileCount) error {
+		countMap[dp.Name] = dp.TotalCount
+		return nil
+	})
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
-	return len(results), nil
+	return countMap, nil
 }
 
 func withCountQuery(query *v1.Query, field search.FieldLabel) *v1.Query {
@@ -375,4 +378,69 @@ func withSACFilter(ctx context.Context, targetResource permissions.ResourceMetad
 		return nil, err
 	}
 	return search.FilterQueryByQuery(query, sacQueryFilter), nil
+}
+
+func GatherProfiles(ds DataStore) phonehome.GatherFunc {
+	return func(ctx context.Context) (map[string]any, error) {
+		if ds == nil {
+			return map[string]any{}, nil
+		}
+		scanConfigs, err := ds.GetScanConfigurations(sac.WithAllAccess(ctx), search.EmptyQuery())
+		if err != nil {
+			return nil, errors.Wrap(err, "gathering compliance operator profiles for telemetry")
+		}
+
+		profiles := make(map[string]int)
+		for _, sc := range scanConfigs {
+			refs := sc.GetProfileRefs()
+			// If ProfileRefs is empty, this scan configuration was created before adding Tailored Profiles support.
+			// Therefore, profiles are stored in the legacy "profiles" field, and all of them are non-tailored profiles.
+			if len(refs) == 0 {
+				for _, p := range sc.GetProfiles() {
+					profiles[p.GetProfileName()]++
+				}
+				continue
+			}
+			for _, ref := range refs {
+				if ref.GetKind() == storage.ComplianceOperatorProfileV2_PROFILE {
+					profiles[ref.GetName()]++
+				}
+			}
+		}
+
+		r := make(map[string]any)
+		for name, count := range profiles {
+			r["Compliance Operator Profile "+name] = count
+		}
+		return r, nil
+	}
+}
+
+// GatherTailoredProfiles reports the total number of tailored profile references across all scan configurations
+// (not the number of distinct tailored profiles - this mimics GatherProfiles where we count the same profile being
+// present in several scan configs). Individual tailored profile names are not collected because they are user-defined
+// (unlike standard Compliance Operator profiles) and would expose customer data.
+func GatherTailoredProfiles(ds DataStore) phonehome.GatherFunc {
+	return func(ctx context.Context) (map[string]any, error) {
+		if ds == nil {
+			return map[string]any{}, nil
+		}
+		scanConfigs, err := ds.GetScanConfigurations(sac.WithAllAccess(ctx), search.EmptyQuery())
+		if err != nil {
+			return nil, errors.Wrap(err, "gathering compliance operator tailored profiles for telemetry")
+		}
+
+		tpCount := 0
+		for _, sc := range scanConfigs {
+			for _, ref := range sc.GetProfileRefs() {
+				if ref.GetKind() == storage.ComplianceOperatorProfileV2_TAILORED_PROFILE {
+					tpCount++
+				}
+			}
+		}
+
+		return map[string]any{
+			"Compliance Operator Tailored Profiles": tpCount,
+		}, nil
+	}
 }

@@ -23,9 +23,9 @@ teardown() {
   rm -f "$ofile"
 }
 
-@test "roxctl-development netpol generate should not show deprecation info" {
+@test "roxctl-development netpol generate shows deprecation info" {
     run roxctl-development netpol generate
-    refute_line --partial "is deprecated"
+    assert_line --partial "is deprecated"
 }
 
 @test "roxctl-development netpol generate should return error on empty or non-existing directory" {
@@ -47,6 +47,7 @@ teardown() {
     run roxctl-development netpol generate "${test_data}/np-guard/scenario-minimal-service"
     assert_success
 
+    output=$(strip_deprecation_notice "$output")
     echo "$output" > "$ofile"
     assert_file_exist "$ofile"
     yaml_valid "$ofile"
@@ -59,7 +60,7 @@ teardown() {
     assert_line '2'
 
     # Ensure that all yaml docs are of kind 'NetworkPolicy'
-    run yq e '.kind | ({"match": ., "doc": di})' "${ofile}"
+    run yq_multidoc e '.kind | ({"match": ., "doc": di})' "${ofile}"
     assert_line --index 0 'match: NetworkPolicy'
     assert_line --index 1 'doc: 0'
     assert_line --index 2 'match: NetworkPolicy'
@@ -68,7 +69,7 @@ teardown() {
     assert_line --index 5 'doc: 2'
 
     # Ensure that all NetworkPolicies have the generated-by-stackrox label
-    run yq e '.metadata.labels | ({"match": ."network-policy-buildtime-generator.stackrox.io/generated", "doc": di})' "${ofile}"
+    run yq_multidoc e '.metadata.labels | ({"match": ."network-policy-buildtime-generator.stackrox.io/generated", "doc": di})' "${ofile}"
     assert_line --index 0 'match: "true"'
     assert_line --index 1 'doc: 0'
     assert_line --index 2 'match: "true"'
@@ -85,6 +86,7 @@ teardown() {
     run roxctl-development netpol generate "${test_data}/np-guard/scenario-minimal-service" --dnsport ${dns_port}
     assert_success
 
+    output=$(strip_deprecation_notice "$output")
     echo "$output" > "$ofile"
     assert_file_exist "$ofile"
     yaml_valid "$ofile"
@@ -97,7 +99,7 @@ teardown() {
     assert_line '2'
 
     # Ensure that all yaml docs are of kind 'NetworkPolicy'
-    run yq e '.kind | ({"match": ., "doc": di})' "${ofile}"
+    run yq_multidoc e '.kind | ({"match": ., "doc": di})' "${ofile}"
     assert_line --index 0 'match: NetworkPolicy'
     assert_line --index 1 'doc: 0'
     assert_line --index 2 'match: NetworkPolicy'
@@ -106,7 +108,7 @@ teardown() {
     assert_line --index 5 'doc: 2'
 
     # Ensure that dns ports are properly set
-    run yq e '.spec.egress[1].ports[0].port | ({"match": ., "doc": di})' "${ofile}"
+    run yq_multidoc e '.spec.egress[1].ports[0].port | ({"match": ., "doc": di})' "${ofile}"
     assert_line --index 0 'match: null'
     assert_line --index 1 'doc: 0'
     assert_line --index 2 'match: '${dns_port}
@@ -123,12 +125,13 @@ teardown() {
     run roxctl-development netpol generate "${test_data}/np-guard/scenario-minimal-service" --dnsport ${dns_port}
     assert_success
 
+    output=$(strip_deprecation_notice "$output")
     echo "$output" > "$ofile"
     assert_file_exist "$ofile"
     yaml_valid "$ofile"
 
     # Ensure that dns ports are properly set
-    run yq e '.spec.egress[1].ports[0].port | ({"match": ., "doc": di})' "${ofile}"
+    run yq_multidoc e '.spec.egress[1].ports[0].port | ({"match": ., "doc": di})' "${ofile}"
     assert_line --index 0 'match: null'
     assert_line --index 1 'doc: 0'
     assert_line --index 2 'match: '${dns_port}

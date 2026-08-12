@@ -1,5 +1,7 @@
 package objects
 
+import groovy.transform.CompileStatic
+
 import common.Constants
 import groovy.transform.AutoClone
 import groovy.util.logging.Slf4j
@@ -7,6 +9,7 @@ import orchestratormanager.OrchestratorType
 
 @AutoClone
 @Slf4j
+@CompileStatic
 class Deployment {
     String name
     String namespace = Constants.ORCHESTRATOR_NAMESPACE
@@ -31,11 +34,14 @@ class Deployment {
     Map<String, String> envValueFromResourceFieldRef = [:]
     Boolean isPrivileged = false
     Boolean readOnlyRootFilesystem = false
+    Boolean stdin = false
+    Boolean tty = false
     Map<String , String> limits = [:]
     Map<String , String> request = [:]
     Boolean hostNetwork = false
     List<String> addCapabilities = []
     List<String> dropCapabilities = []
+    Map<String, String> nodeAntiAffinity = [:]
 
     // Misc
     String loadBalancerIP = null
@@ -50,8 +56,10 @@ class Deployment {
     Boolean automountServiceAccountToken = true
     Boolean livenessProbeDefined = false
     Boolean readinessProbeDefined = false
+    Integer readinessProbeTcpPort = null
     String serviceName
     String serviceAccountName
+    List<Map<String, Object>> initContainers = []
 
     Deployment setName(String n) {
         this.name = n
@@ -108,6 +116,12 @@ class Deployment {
 
     Deployment setTargetPort(int port) {
         this.targetport = port
+        return this
+    }
+
+    Deployment addHostMount(String name, String mountPath, boolean readOnly = false) {
+        this.volumes.add(new Volume(name: name, hostPath: true, mountPath: "/"))
+        this.volumeMounts.add(new VolumeMount(name: name, mountPath: mountPath, readOnly: readOnly))
         return this
     }
 
@@ -232,6 +246,16 @@ class Deployment {
         return this
     }
 
+    Deployment setStdin(boolean val) {
+        this.stdin = val
+        return this
+    }
+
+    Deployment setTty(boolean val) {
+        this.tty = val
+        return this
+    }
+
     Deployment addLimits(String key, String val) {
         this.limits.put(key, val)
         return this
@@ -305,14 +329,33 @@ class Deployment {
         return this
     }
 
+    Deployment setReadinessProbeTcpPort(Integer port) {
+        this.readinessProbeTcpPort = port
+        return this
+    }
+
     Deployment setServiceName(String name) {
         this.serviceName = name
+        return this
+    }
+
+    Deployment addInitContainer(String name, String image, List<String> command = ["sh", "-c", "echo init done"]) {
+        this.initContainers.add([
+            name   : name,
+            image  : image,
+            command: command,
+        ])
         return this
     }
 
     Deployment setCapabilities(List<String> add, List<String> drop) {
         this.addCapabilities = add
         this.dropCapabilities = drop
+        return this
+    }
+
+    Deployment setImagePrefetcherAffinity() {
+        this.nodeAntiAffinity = ["image-prefetcher.stackrox.io/stackrox-images": "failed"]
         return this
     }
 
@@ -326,6 +369,7 @@ class Deployment {
     }
 }
 
+@CompileStatic
 class DaemonSet extends Deployment {
     @Override
     DaemonSet create() {
@@ -339,6 +383,7 @@ class DaemonSet extends Deployment {
     }
 }
 
+@CompileStatic
 class Job extends Deployment {
     @Override
     Job create() {

@@ -56,8 +56,8 @@ func ScrubSecretsFromStructWithReplacement(obj interface{}, replacement string, 
 			if field.Kind() != reflect.String {
 				utils.CrashOnError(errors.Errorf("expected string kind, got %s", field.Kind()))
 			}
-			if field.Type() != reflect.TypeOf(replacement) {
-				utils.CrashOnError(errors.Errorf("field type mismatch %s!=%s", field.Type(), reflect.TypeOf(replacement)))
+			if field.Type() != reflect.TypeFor[string]() {
+				utils.CrashOnError(errors.Errorf("field type mismatch %s!=%s", field.Type(), reflect.TypeFor[string]()))
 			}
 			if cfg.scrubZeroValues || !field.IsZero() {
 				field.Set(reflect.ValueOf(replacement))
@@ -66,8 +66,8 @@ func ScrubSecretsFromStructWithReplacement(obj interface{}, replacement string, 
 			if field.Kind() != reflect.Map {
 				utils.CrashOnError(errors.Errorf("expected map kind, got %s", field.Kind()))
 			}
-			if field.Type() != reflect.TypeOf(map[string]string{}) {
-				utils.CrashOnError(errors.Errorf("field type mismatch %s!=%s", field.Type(), reflect.TypeOf(map[string]string{})))
+			if field.Type() != reflect.TypeFor[map[string]string]() {
+				utils.CrashOnError(errors.Errorf("field type mismatch %s!=%s", field.Type(), reflect.TypeFor[map[string]string]()))
 			}
 
 			if field.IsNil() {
@@ -87,7 +87,7 @@ func ScrubSecretsFromStructWithReplacement(obj interface{}, replacement string, 
 }
 
 func visitStructTags(value reflect.Value, visitor func(field reflect.Value, tag string)) {
-	if value.Kind() == reflect.Ptr {
+	if value.Kind() == reflect.Pointer {
 		value = value.Elem()
 	}
 	if value.Kind() != reflect.Struct {
@@ -99,7 +99,7 @@ func visitStructTags(value reflect.Value, visitor func(field reflect.Value, tag 
 		switch fieldValue.Kind() {
 		case reflect.Struct:
 			visitStructTags(fieldValue, visitor)
-		case reflect.Ptr, reflect.Interface:
+		case reflect.Pointer, reflect.Interface:
 			if !fieldValue.IsNil() {
 				visitStructTags(fieldValue.Elem(), visitor)
 			}

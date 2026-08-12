@@ -15,17 +15,15 @@ func TestHeapDump(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	var limitBytes int64 = 2 // to be sure the test blows this limit
-	p := NewHeapProfiler(0.80, uint64(limitBytes), tmpDir, time.Duration(DefaultHeapProfilerBackoff)*time.Second)
+	p := NewHeapProfiler(0.80, uint64(limitBytes), tmpDir, DefaultHeapProfilerBackoff*time.Second)
 	runCheck := make(chan time.Time)
 	ctx, cancelCtx := context.WithCancel(context.Background())
 	now := time.Now()
 	wg := sync.WaitGroup{}
 
-	wg.Add(1)
-	go func() {
+	wg.Go(func() {
 		p.dumpHeapOnThreshhold(ctx, runCheck)
-		wg.Done()
-	}()
+	})
 
 	runCheck <- now
 	cancelCtx()

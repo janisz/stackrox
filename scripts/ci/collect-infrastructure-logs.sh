@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/usr/bin/env bash
 set -eu
 
 # Collect k8s infrastructure Logs script
@@ -7,20 +7,24 @@ set -eu
 # future examination.
 #
 # Usage:
-#   collect-infrastructure-logs.sh [<output-dir>]
+#   collect-infrastructure-logs.sh <output-dir>
 #
 # Example:
-# $ ./scripts/ci/collect-infrastructure-logs.sh
+# $ ./scripts/ci/collect-infrastructure-logs.sh /tmp/logs-dir
 #
 # Assumptions:
 # - Must be called from the root of the Apollo git repository.
-# - Logs are saved under /tmp/k8s-service-logs/ by default
+# - Requires a single argument: path to save logs to.
 
 
-if [ $# -gt 0 ]; then
-    log_dir="$1"
+SCRIPTS_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")"/../.. && pwd)"
+# shellcheck source=../../scripts/ci/lib.sh
+source "$SCRIPTS_ROOT/scripts/lib.sh"
+
+if [ $# -eq 0 ]; then
+    die "Usage: $0 <path-to-collect-logs-to>"
 else
-    log_dir="/tmp/k8s-service-logs"
+    log_dir="$1"
 fi
 
 # This will attempt to collect kube API server audit logs on OpenShift.
@@ -34,7 +38,9 @@ proxy_pid=$!
 
 sleep 5 # Let kubectl proxy stabilize
 mkdir -p "${log_dir}"/infrastructure
-curl -s http://localhost:8001/logs/kube-apiserver.log > "${log_dir}"/infrastructure/kube-apiserver.log
+retry 5 true curl -v --retry 2 --retry-all-errors --continue-at - \
+    -s http://localhost:8001/logs/kube-apiserver.log \
+    -o "${log_dir}"/infrastructure/kube-apiserver.log
 
 kill $proxy_pid
 

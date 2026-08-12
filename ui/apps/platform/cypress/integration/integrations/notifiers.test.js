@@ -3,6 +3,8 @@ import {
     generateNameWithDate,
     getHelperElementByLabel,
     getInputByLabel,
+    getSelectButtonByLabel,
+    getSelectOption,
 } from '../../helpers/formHelpers';
 import sampleCert from '../../helpers/sampleCert';
 import fakeGCPServiceAccount from '../../helpers/fakeGCPServiceAccount';
@@ -11,8 +13,8 @@ import {
     clickCreateNewIntegrationInTable,
     deleteIntegrationInTable,
     saveCreatedIntegrationInForm,
-    testIntegrationInFormWithoutStoredCredentials,
     testIntegrationInFormWithStoredCredentials,
+    testIntegrationInFormWithoutStoredCredentials,
     visitIntegrationsTable,
 } from './integrations.helpers';
 import { selectors } from './integrations.selectors';
@@ -44,7 +46,6 @@ describe('Notifier Integrations', () => {
             // Step 1, check empty fields
             getInputByLabel('Integration name').click().blur();
             getInputByLabel('AWS account number').click().blur();
-            getInputByLabel('AWS region').focus().blur(); // focus, then blur, select in order to trigger validation
             getInputByLabel('Access key ID').click().blur();
             getInputByLabel('Secret access key').click().blur();
 
@@ -52,7 +53,6 @@ describe('Notifier Integrations', () => {
             getHelperElementByLabel('AWS account number').contains(
                 'An AWS account number is required'
             );
-            getHelperElementByLabel('AWS region').contains('An AWS region is required');
             getHelperElementByLabel('Access key ID').contains('An access key ID is required');
             getHelperElementByLabel('Secret access key').contains(
                 'A secret access key is required'
@@ -65,10 +65,10 @@ describe('Notifier Integrations', () => {
             // Step 2.1, enable container IAM role, this should remove the AWS credentials fields
             getInputByLabel('Use container IAM role').click();
             cy.get(
-                `.pf-v5-c-form__group:has('.pf-v5-c-form__control:contains("Access key ID")') input`
+                `.pf-v6-c-form__group:has('.pf-v6-c-form__control:contains("Access key ID")') input`
             ).should('not.exist');
             cy.get(
-                `.pf-v5-c-form__group:has('.pf-v5-c-form__control:contains("Secret access key")') input`
+                `.pf-v6-c-form__group:has('.pf-v6-c-form__control:contains("Secret access key")') input`
             ).should('not.exist');
             // Step 2.2, disable container IAM role, this should render the AWS credentials fields again
             getInputByLabel('Use container IAM role').click();
@@ -77,7 +77,8 @@ describe('Notifier Integrations', () => {
 
             // Step 3, check fields for invalid formats
             getInputByLabel('Integration name').clear().type(integrationName);
-            getInputByLabel('AWS region').select('US East (N. Virginia) us-east-1');
+            getSelectButtonByLabel('AWS region').click();
+            getSelectOption('US East (N. Virginia) us-east-1').click();
             getInputByLabel('Access key ID').click().type('AKIA5VNQSYCDODH7VKMK');
             getInputByLabel('Secret access key')
                 .click()
@@ -168,7 +169,8 @@ describe('Notifier Integrations', () => {
                 parseSpecialCharSequences: false,
             });
             getInputByLabel('Annotation key for recipient').clear().type('email');
-            getInputByLabel('Disable TLS certificate validation (insecure)').click();
+            getInputByLabel('Disable TLS (insecure)').click();
+            getInputByLabel('Hostname for SMTP HELO/EHLO').type('client.example.com');
 
             testIntegrationInFormWithStoredCredentials(
                 integrationSource,
@@ -585,10 +587,10 @@ describe('Notifier Integrations', () => {
 
             // check format toggle
             cy.get(
-                '.pf-v5-c-form__group-label .pf-v5-c-form__label-text:contains("Message Format")'
+                '.pf-v6-c-form__group-label .pf-v6-c-form__label-text:contains("Message Format")'
             );
             cy.get(
-                '#messageFormat .pf-v5-c-toggle-group__item .pf-v5-c-toggle-group__button.pf-m-selected:contains("CEF")'
+                '#messageFormat .pf-v6-c-toggle-group__item .pf-v6-c-toggle-group__button.pf-m-selected:contains("CEF")'
             );
 
             getHelperElementByLabel('Integration name').contains('Integration name is required');
@@ -616,10 +618,10 @@ describe('Notifier Integrations', () => {
             getInputByLabel('Key').type('vehicle');
             getInputByLabel('Value').type('vanagon').blur();
             cy.get(
-                '#messageFormat .pf-v5-c-toggle-group__item .pf-v5-c-toggle-group__button:contains("CEF (legacy field order)")'
+                '#messageFormat .pf-v6-c-toggle-group__item .pf-v6-c-toggle-group__button:contains("CEF (legacy field order)")'
             ).click();
             cy.get(
-                '#messageFormat .pf-v5-c-toggle-group__item .pf-v5-c-toggle-group__button:contains("CEF (legacy field order)")'
+                '#messageFormat .pf-v6-c-toggle-group__item .pf-v6-c-toggle-group__button:contains("CEF (legacy field order)")'
             ).should('have.class', 'pf-m-selected');
 
             testIntegrationInFormWithoutStoredCredentials(

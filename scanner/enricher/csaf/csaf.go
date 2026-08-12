@@ -8,14 +8,14 @@ package csaf
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strings"
 
 	"github.com/quay/claircore"
 	"github.com/quay/claircore/libvuln/driver"
-	"github.com/quay/zlog"
-	"github.com/stackrox/rox/pkg/features"
+	"github.com/quay/claircore/toolkit/log"
 	"github.com/stackrox/rox/pkg/scannerv4/enricher/csaf"
 	"github.com/stackrox/rox/pkg/scannerv4/mappers"
 )
@@ -93,8 +93,6 @@ func (*Enricher) Name() string {
 // For each vulnerability in the report, determine if there is a Red Hat advisory associated with it and map that vulnerability
 // to the advisory's data, if applicable.
 func (e *Enricher) Enrich(ctx context.Context, g driver.EnrichmentGetter, r *claircore.VulnerabilityReport) (string, []json.RawMessage, error) {
-	ctx = zlog.ContextWithValues(ctx, "component", "enricher/csaf/Enricher/Enrich")
-
 	m := make(map[string][]json.RawMessage)
 
 	erCache := make(map[string][]driver.EnrichmentRecord)
@@ -106,7 +104,7 @@ func (e *Enricher) Enrich(ctx context.Context, g driver.EnrichmentGetter, r *cla
 			// Skipping...
 			continue
 		}
-		ctx := zlog.ContextWithValues(ctx, "original_vuln", v.Name, "advisory", advisoryName)
+		vulnCtx := log.With(ctx, "original_vuln", v.Name, "advisory", advisoryName)
 		rec, ok := erCache[advisoryName]
 		if !ok {
 			ts := []string{advisoryName}
@@ -117,9 +115,7 @@ func (e *Enricher) Enrich(ctx context.Context, g driver.EnrichmentGetter, r *cla
 			}
 			erCache[advisoryName] = rec
 		}
-		zlog.Debug(ctx).
-			Int("count", len(rec)).
-			Msg("found records")
+		slog.DebugContext(vulnCtx, "found records", "count", len(rec))
 		for _, r := range rec {
 			m[id] = append(m[id], r.Enrichment)
 		}
@@ -137,11 +133,6 @@ func (e *Enricher) Enrich(ctx context.Context, g driver.EnrichmentGetter, r *cla
 // advisory determines the vulnerability's related Red Hat advisory name.
 // Returns "" if an advisory cannot be determined.
 func advisory(vuln *claircore.Vulnerability) string {
-	// If we are not interested in Red Hat advisories,
-	// then there is no point in continuing.
-	if features.ScannerV4RedHatCVEs.Enabled() {
-		return ""
-	}
 	// We only find Red Hat advisories in - you guessed it - the Red Hat updater.
 	// End here if this vulnerability came from a different source.
 	if !strings.EqualFold(vuln.Updater, mappers.RedHatUpdaterName) {

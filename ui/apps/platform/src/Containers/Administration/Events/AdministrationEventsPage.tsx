@@ -1,5 +1,6 @@
-import React, { ReactElement, useCallback, useEffect, useState } from 'react';
-import { Alert, Bullseye, PageSection, Spinner, Text, Title } from '@patternfly/react-core';
+import { useCallback, useEffect, useState } from 'react';
+import type { ReactElement } from 'react';
+import { Alert, Bullseye, Content, PageSection, Spinner, Title } from '@patternfly/react-core';
 
 import PageTitle from 'Components/PageTitle';
 import useInterval from 'hooks/useInterval';
@@ -7,13 +8,13 @@ import useURLPagination from 'hooks/useURLPagination';
 import useURLSearch from 'hooks/useURLSearch';
 import useURLSort from 'hooks/useURLSort';
 import {
-    AdministrationEvent,
     countAdministrationEvents,
     defaultSortOption,
     getListAdministrationEventsArg,
     listAdministrationEvents,
     sortFields,
 } from 'services/AdministrationEventsService';
+import type { AdministrationEvent } from 'services/AdministrationEventsService';
 import { getAxiosErrorMessage } from 'utils/responseErrorUtils';
 
 import AdministrationEventsTable from './AdministrationEventsTable';
@@ -89,16 +90,15 @@ function AdministrationEventsPage(): ReactElement {
             .catch(() => {});
     }, 60000); // 60 seconds corresponds to backend reprocessing events.
 
-    /* eslint-disable no-nested-ternary */
     return (
         <>
             <PageTitle title="Administration Events" />
-            <PageSection component="div" variant="light">
+            <PageSection component="div">
                 <Title headingLevel="h1">Administration Events</Title>
-                <Text>
+                <Content component="p">
                     Troubleshoot platform issues by reviewing event logs. Events are purged after 4
                     days by default.
-                </Text>
+                </Content>
             </PageSection>
             <PageSection component="div">
                 {isLoading && !lastUpdatedTime ? (
@@ -139,7 +139,6 @@ function AdministrationEventsPage(): ReactElement {
             </PageSection>
         </>
     );
-    /* eslint-enable no-nested-ternary */
 }
 
 export default AdministrationEventsPage;

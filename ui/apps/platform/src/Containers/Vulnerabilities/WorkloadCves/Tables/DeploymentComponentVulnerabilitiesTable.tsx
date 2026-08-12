@@ -1,27 +1,26 @@
-import React from 'react';
+import type { ReactNode } from 'react';
+import { LabelGroup } from '@patternfly/react-core';
 import { Table, Tbody, Td, Th, Thead, Tr } from '@patternfly/react-table';
 import { gql } from '@apollo/client';
 
 import useFeatureFlags from 'hooks/useFeatureFlags';
-import useTableSort from 'hooks/patternfly/useTableSort';
+import useTableSort from 'hooks/useTableSort';
 import VulnerabilitySeverityIconText from 'Components/PatternFly/IconText/VulnerabilitySeverityIconText';
-import { VulnerabilityState } from 'types/cve.proto';
+import type { VulnerabilityState } from 'types/cve.proto';
 import CvssFormatted from 'Components/CvssFormatted';
 
+import AdvisoryLinkOrText from '../../components/AdvisoryLinkOrText';
+import PendingExceptionLabel from '../../components/PendingExceptionLabel';
 import ImageNameLink from '../components/ImageNameLink';
 import {
-    imageMetadataContextFragment,
-    ImageMetadataContext,
-    DeploymentComponentVulnerability,
-    sortTableData,
     flattenDeploymentComponentVulns,
+    imageMetadataContextFragment,
+    sortTableData,
 } from './table.utils';
-import FixedByVersion from '../components/FixedByVersion';
+import type { DeploymentComponentVulnerability, ImageMetadataContext } from './table.utils';
 import DockerfileLayer from '../components/DockerfileLayer';
 import ComponentLocation from '../components/ComponentLocation';
-import PendingExceptionLabelLayout from '../components/PendingExceptionLabelLayout';
-
-import AdvisoryLinkOrText from './AdvisoryLinkOrText';
+import FixedByVersion from '../../components/FixedByVersion';
 
 export { imageMetadataContextFragment };
 export type { ImageMetadataContext, DeploymentComponentVulnerability };
@@ -38,6 +37,10 @@ export const deploymentComponentVulnerabilitiesFragment = gql`
             cvss
             scoreVersion
             fixedByVersion
+            advisory {
+                name
+                link
+            }
             discoveredAtImage
             publishedOn
             pendingExceptionCount: exceptionCount(requestStatus: $statusesForExceptionCount)
@@ -64,9 +67,9 @@ function DeploymentComponentVulnerabilitiesTable({
     vulnerabilityState,
 }: DeploymentComponentVulnerabilitiesTableProps) {
     const { isFeatureFlagEnabled } = useFeatureFlags();
-    const isAdvisoryColumnEnabled =
-        isFeatureFlagEnabled('ROX_SCANNER_V4') &&
-        isFeatureFlagEnabled('ROX_CVE_ADVISORY_SEPARATION');
+    const isAdvisoryColumnEnabled = isFeatureFlagEnabled('ROX_SCANNER_V4');
+
+    const colSpanForDockerfileLayer = 8 + (isAdvisoryColumnEnabled ? 1 : 0);
 
     const { sortOption, getSortParams } = useTableSort({ sortFields, defaultSortOption });
     const componentVulns = images.flatMap(({ imageMetadataContext, componentVulnerabilities }) =>
@@ -75,12 +78,7 @@ function DeploymentComponentVulnerabilitiesTable({
     const sortedComponentVulns = sortTableData(componentVulns, sortOption);
 
     return (
-        <Table
-            style={{
-                border: '1px solid var(--pf-v5-c-table--BorderColor)',
-            }}
-            borders={false}
-        >
+        <Table borders={false} variant="compact">
             <Thead noWrap>
                 <Tr>
                     <Th sort={getSortParams('Image')}>Image</Th>
@@ -103,32 +101,45 @@ function DeploymentComponentVulnerabilitiesTable({
                     cvss,
                     scoreVersion,
                     fixedByVersion,
+                    advisory,
                     location,
                     source,
                     layer,
                 } = componentVuln;
-                const advisory = undefined; // placeholder until response includes property
                 // No border on the last row
                 const style =
                     index !== componentVulns.length - 1
-                        ? { borderBottom: '1px solid var(--pf-v5-c-table--BorderColor)' }
+                        ? {
+                              borderBlockEnd:
+                                  '1px solid var(--pf-v6-c-table__tr--BorderBlockEndColor)',
+                          }
                         : {};
                 const hasPendingException = componentVulns.some(
                     (vuln) => vuln.pendingExceptionCount > 0
                 );
+                const labels: ReactNode[] = [];
+                if (hasPendingException) {
+                    labels.push(
+                        <PendingExceptionLabel
+                            cve={cve}
+                            isCompact
+                            vulnerabilityState={vulnerabilityState}
+                        />
+                    );
+                }
 
+                // Td style={{ paddingTop: 0 }} prop emulates vertical space when label was in cell instead of row
+                // and assumes adjacent empty cell has no paddingTop.
                 return (
-                    <Tbody key={`${image.id}:${name}:${version}`} style={style}>
+                    <Tbody key={`${image.id}:${name}:${version}`}>
                         <Tr>
                             <Td dataLabel="Image">
                                 {image.name ? (
-                                    <PendingExceptionLabelLayout
-                                        hasPendingException={hasPendingException}
-                                        cve={cve}
-                                        vulnerabilityState={vulnerabilityState}
-                                    >
-                                        <ImageNameLink name={image.name} id={image.id} />
-                                    </PendingExceptionLabelLayout>
+                                    <ImageNameLink
+                                        name={image.name}
+                                        id={image.id}
+                                        digest={image.digest}
+                                    />
                                 ) : (
                                     'Image name not available'
                                 )}
@@ -154,8 +165,15 @@ function DeploymentComponentVulnerabilitiesTable({
                                 <ComponentLocation location={location} source={source} />
                             </Td>
                         </Tr>
-                        <Tr>
-                            <Td colSpan={8} className="pf-v5-u-pt-0">
+                        {labels.length !== 0 && (
+                            <Tr>
+                                <Td colSpan={colSpanForDockerfileLayer} style={{ paddingTop: 0 }}>
+                                    <LabelGroup numLabels={labels.length}>{labels}</LabelGroup>
+                                </Td>
+                            </Tr>
+                        )}
+                        <Tr style={style}>
+                            <Td colSpan={colSpanForDockerfileLayer} className="pf-v6-u-pt-0">
                                 <DockerfileLayer layer={layer} />
                             </Td>
                         </Tr>

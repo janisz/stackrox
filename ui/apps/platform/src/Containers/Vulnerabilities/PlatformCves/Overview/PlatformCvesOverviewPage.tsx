@@ -1,18 +1,16 @@
-import React, { useEffect } from 'react';
+import { useEffect } from 'react';
 import {
-    PageSection,
-    Title,
-    Divider,
+    DropdownItem,
     Flex,
     FlexItem,
-    Card,
-    CardBody,
+    PageSection,
+    Title,
     ToolbarItem,
 } from '@patternfly/react-core';
-import { DropdownItem } from '@patternfly/react-core/deprecated';
 import { useApolloClient } from '@apollo/client';
 
 import PageTitle from 'Components/PageTitle';
+import MenuDropdown from 'Components/PatternFly/MenuDropdown';
 import useURLStringUnion from 'hooks/useURLStringUnion';
 import useURLPagination from 'hooks/useURLPagination';
 import useURLSearch from 'hooks/useURLSearch';
@@ -23,22 +21,18 @@ import useAnalytics, {
 } from 'hooks/useAnalytics';
 import { getHasSearchApplied } from 'utils/searchUtils';
 
-import TableEntityToolbar from 'Containers/Vulnerabilities/components/TableEntityToolbar';
 import useMap from 'hooks/useMap';
 import useURLSort from 'hooks/useURLSort';
 import { createFilterTracker } from 'utils/analyticsEventTracking';
-import useSnoozeCveModal from 'Containers/Vulnerabilities/components/SnoozeCvesModal/useSnoozeCveModal';
-import SnoozeCvesModal from 'Containers/Vulnerabilities/components/SnoozeCvesModal/SnoozeCvesModal';
-import BulkActionsDropdown from 'Components/PatternFly/BulkActionsDropdown';
+import useSnoozeCveModal from '../../components/SnoozeCvesModal/useSnoozeCveModal';
+import SnoozeCvesModal from '../../components/SnoozeCvesModal/SnoozeCvesModal';
+import TableEntityToolbar from '../../components/TableEntityToolbar';
 
-import { parseQuerySearchFilter } from 'Containers/Vulnerabilities/utils/searchUtils';
-import AdvancedFiltersToolbar from 'Containers/Vulnerabilities/components/AdvancedFiltersToolbar';
-import useSnoozedCveCount from 'Containers/Vulnerabilities/hooks/useSnoozedCveCount';
-import {
-    clusterSearchFilterConfig,
-    platformCVESearchFilterConfig,
-} from 'Containers/Vulnerabilities/searchFilterConfig';
-import SnoozeCveToggleButton from '../../components/SnoozedCveToggleButton';
+import { parseQuerySearchFilter } from '../../utils/searchUtils';
+import AdvancedFiltersToolbar from '../../components/AdvancedFiltersToolbar';
+import useSnoozedCveCount from '../../hooks/useSnoozedCveCount';
+import { clusterSearchFilterConfig, platformCVESearchFilterConfig } from '../../searchFilterConfig';
+import SnoozedCveToggleButton from '../../components/SnoozedCveToggleButton';
 import { DEFAULT_VM_PAGE_SIZE } from '../../constants';
 import EntityTypeToggleGroup from '../../components/EntityTypeToggleGroup';
 import { platformEntityTabValues } from '../../types';
@@ -94,9 +88,13 @@ function PlatformCvesOverviewPage() {
     }
 
     // Track the current entity tab when the page is initially visited.
+    /* eslint-disable react-hooks/exhaustive-deps */
     useEffect(() => {
         onEntityTabChange(activeEntityTabKey);
     }, []);
+    // activeEntityTabKey
+    // onEntityTabChange
+    /* eslint-enable react-hooks/exhaustive-deps */
 
     const { data } = usePlatformCveEntityCounts(querySearchFilter);
 
@@ -114,7 +112,8 @@ function PlatformCvesOverviewPage() {
         <AdvancedFiltersToolbar
             searchFilter={searchFilter}
             searchFilterConfig={searchFilterConfig}
-            cveStatusFilterField="CLUSTER CVE FIXABLE"
+            defaultSearchFilterEntity="CVE"
+            cveStatusFilterField="Cluster CVE Fixable"
             onFilterChange={(newFilter, searchPayload) => {
                 setSearchFilter(newFilter);
                 trackAppliedFilter(PLATFORM_CVE_FILTER_APPLIED, searchPayload);
@@ -153,18 +152,14 @@ function PlatformCvesOverviewPage() {
                 />
             )}
             <PageTitle title="Kubernetes Components Overview" />
-            <Divider component="div" />
-            <PageSection
-                className="pf-v5-u-display-flex pf-v5-u-flex-direction-row pf-v5-u-align-items-center"
-                variant="light"
-            >
-                <Flex alignItems={{ default: 'alignItemsCenter' }} className="pf-v5-u-flex-grow-1">
-                    <Flex direction={{ default: 'column' }} className="pf-v5-u-flex-grow-1">
+            <PageSection>
+                <Flex alignItems={{ default: 'alignItemsCenter' }} grow={{ default: 'grow' }}>
+                    <Flex direction={{ default: 'column' }} grow={{ default: 'grow' }}>
                         <Title headingLevel="h1">Kubernetes components</Title>
                         <FlexItem>Prioritize and manage scanned CVEs across clusters</FlexItem>
                     </Flex>
                     <FlexItem>
-                        <SnoozeCveToggleButton
+                        <SnoozedCveToggleButton
                             searchFilter={searchFilter}
                             setSearchFilter={setSearchFilter}
                             snoozedCveCount={snoozedCveCount}
@@ -172,71 +167,64 @@ function PlatformCvesOverviewPage() {
                     </FlexItem>
                 </Flex>
             </PageSection>
-            <PageSection isCenterAligned isFilled>
-                <Card>
-                    <CardBody>
-                        <TableEntityToolbar
-                            filterToolbar={filterToolbar}
-                            entityToggleGroup={entityToggleGroup}
-                            pagination={pagination}
-                            tableRowCount={
-                                activeEntityTabKey === 'CVE'
-                                    ? entityCounts.CVE
-                                    : entityCounts.Cluster
-                            }
-                            isFiltered={isFiltered}
-                        >
-                            {hasLegacySnoozeAbility && (
-                                <ToolbarItem align={{ default: 'alignRight' }}>
-                                    <BulkActionsDropdown isDisabled={selectedCves.size === 0}>
-                                        <DropdownItem
-                                            key="bulk-snooze-cve"
-                                            component="button"
-                                            onClick={() =>
-                                                setSnoozeModalOptions({
-                                                    action: isViewingSnoozedCves
-                                                        ? 'UNSNOOZE'
-                                                        : 'SNOOZE',
-                                                    cveType: 'CLUSTER_CVE',
-                                                    cves: Array.from(selectedCves.values()),
-                                                })
-                                            }
-                                        >
-                                            {isViewingSnoozedCves ? 'Unsnooze CVEs' : 'Snooze CVEs'}
-                                        </DropdownItem>
-                                    </BulkActionsDropdown>
-                                </ToolbarItem>
-                            )}
-                        </TableEntityToolbar>
-                        <Divider component="div" />
-                        {activeEntityTabKey === 'CVE' && (
-                            <CVEsTable
-                                querySearchFilter={querySearchFilter}
-                                isFiltered={isFiltered}
-                                pagination={pagination}
-                                selectedCves={selectedCves}
-                                canSelectRows={hasLegacySnoozeAbility}
-                                createRowActions={snoozeActionCreator(
-                                    'CLUSTER_CVE',
-                                    isViewingSnoozedCves ? 'UNSNOOZE' : 'SNOOZE'
-                                )}
-                                sortOption={sortOption}
-                                getSortParams={getSortParams}
-                                onClearFilters={onClearFilters}
-                            />
+            <PageSection isFilled>
+                <TableEntityToolbar
+                    filterToolbar={filterToolbar}
+                    entityToggleGroup={entityToggleGroup}
+                    pagination={pagination}
+                    tableRowCount={
+                        activeEntityTabKey === 'CVE' ? entityCounts.CVE : entityCounts.Cluster
+                    }
+                    isFiltered={isFiltered}
+                >
+                    {hasLegacySnoozeAbility && (
+                        <ToolbarItem align={{ default: 'alignEnd' }}>
+                            <MenuDropdown
+                                toggleText="Bulk actions"
+                                isDisabled={selectedCves.size === 0}
+                            >
+                                <DropdownItem
+                                    key="bulk-snooze-cve"
+                                    onClick={() =>
+                                        setSnoozeModalOptions({
+                                            action: isViewingSnoozedCves ? 'UNSNOOZE' : 'SNOOZE',
+                                            cveType: 'CLUSTER_CVE',
+                                            cves: Array.from(selectedCves.values()),
+                                        })
+                                    }
+                                >
+                                    {isViewingSnoozedCves ? 'Unsnooze CVEs' : 'Snooze CVEs'}
+                                </DropdownItem>
+                            </MenuDropdown>
+                        </ToolbarItem>
+                    )}
+                </TableEntityToolbar>
+                {activeEntityTabKey === 'CVE' && (
+                    <CVEsTable
+                        querySearchFilter={querySearchFilter}
+                        isFiltered={isFiltered}
+                        pagination={pagination}
+                        selectedCves={selectedCves}
+                        canSelectRows={hasLegacySnoozeAbility}
+                        createRowActions={snoozeActionCreator(
+                            'CLUSTER_CVE',
+                            isViewingSnoozedCves ? 'UNSNOOZE' : 'SNOOZE'
                         )}
-                        {activeEntityTabKey === 'Cluster' && (
-                            <ClustersTable
-                                querySearchFilter={querySearchFilter}
-                                isFiltered={isFiltered}
-                                pagination={pagination}
-                                sortOption={sortOption}
-                                getSortParams={getSortParams}
-                                onClearFilters={onClearFilters}
-                            />
-                        )}
-                    </CardBody>
-                </Card>
+                        sortOption={sortOption}
+                        getSortParams={getSortParams}
+                        onClearFilters={onClearFilters}
+                    />
+                )}
+                {activeEntityTabKey === 'Cluster' && (
+                    <ClustersTable
+                        querySearchFilter={querySearchFilter}
+                        isFiltered={isFiltered}
+                        pagination={pagination}
+                        sortOption={sortOption}
+                        getSortParams={getSortParams}
+                        onClearFilters={onClearFilters}
+                    />
+                )}
             </PageSection>
         </>
     );

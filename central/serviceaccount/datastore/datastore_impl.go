@@ -2,23 +2,19 @@ package datastore
 
 import (
 	"context"
+	"strings"
 
 	"github.com/stackrox/rox/central/serviceaccount/internal/store"
-	"github.com/stackrox/rox/central/serviceaccount/search"
 	v1 "github.com/stackrox/rox/generated/api/v1"
 	"github.com/stackrox/rox/generated/storage"
-	"github.com/stackrox/rox/pkg/sac"
-	"github.com/stackrox/rox/pkg/sac/resources"
 	searchPkg "github.com/stackrox/rox/pkg/search"
+	"github.com/stackrox/rox/pkg/search/paginated"
 )
 
-var (
-	serviceAccountsSAC = sac.ForResource(resources.ServiceAccount)
-)
+const whenUnlimited = 100
 
 type datastoreImpl struct {
-	storage  store.Store
-	searcher search.Searcher
+	storage store.Store
 }
 
 func (d *datastoreImpl) GetServiceAccount(ctx context.Context, id string) (*storage.ServiceAccount, bool, error) {
@@ -27,46 +23,80 @@ func (d *datastoreImpl) GetServiceAccount(ctx context.Context, id string) (*stor
 		return nil, false, err
 	}
 
-	if !serviceAccountsSAC.ScopeChecker(ctx, storage.Access_READ_ACCESS).ForNamespaceScopedObject(acc).IsAllowed() {
-		return nil, false, nil
-	}
-
 	return acc, true, nil
 }
 
 func (d *datastoreImpl) SearchRawServiceAccounts(ctx context.Context, q *v1.Query) ([]*storage.ServiceAccount, error) {
-	return d.searcher.SearchRawServiceAccounts(ctx, q)
+	serviceAccounts := make([]*storage.ServiceAccount, 0, paginated.GetLimit(q.GetPagination().GetLimit(), whenUnlimited))
+	err := d.storage.GetByQueryFn(ctx, q, func(serviceAccount *storage.ServiceAccount) error {
+		serviceAccounts = append(serviceAccounts, serviceAccount)
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return serviceAccounts, nil
 }
 
 func (d *datastoreImpl) SearchServiceAccounts(ctx context.Context, q *v1.Query) ([]*v1.SearchResult, error) {
-	return d.searcher.SearchServiceAccounts(ctx, q)
+	if q == nil {
+		q = searchPkg.EmptyQuery()
+	}
+	qClone := q.CloneVT()
+
+	// Add service account name field to select columns.
+	qClone.Selects = append(qClone.GetSelects(), searchPkg.NewQuerySelect(searchPkg.ServiceAccountName).Proto())
+
+	results, err := d.Search(ctx, qClone)
+	if err != nil {
+		return nil, err
+	}
+
+	// Extract name from FieldValues and populate Name in search results.
+	searchTag := strings.ToLower(searchPkg.ServiceAccountName.String())
+	for i := range results {
+		if results[i].FieldValues != nil {
+			if nameVal, ok := results[i].FieldValues[searchTag]; ok {
+				results[i].Name = nameVal
+			}
+		}
+	}
+
+	return searchPkg.ResultsToSearchResultProtos(results, &serviceAccountSearchResultConverter{}), nil
 }
 
 func (d *datastoreImpl) UpsertServiceAccount(ctx context.Context, request *storage.ServiceAccount) error {
-	if ok, err := serviceAccountsSAC.WriteAllowed(ctx); err != nil {
-		return err
-	} else if !ok {
-		return sac.ErrResourceAccessDenied
-	}
-
 	return d.storage.Upsert(ctx, request)
 }
 
 func (d *datastoreImpl) RemoveServiceAccount(ctx context.Context, id string) error {
-	if ok, err := serviceAccountsSAC.WriteAllowed(ctx); err != nil {
-		return err
-	} else if !ok {
-		return sac.ErrResourceAccessDenied
-	}
-
 	return d.storage.Delete(ctx, id)
 }
 
 func (d *datastoreImpl) Search(ctx context.Context, q *v1.Query) ([]searchPkg.Result, error) {
-	return d.searcher.Search(ctx, q)
+	return d.storage.Search(ctx, q)
 }
 
 // Count returns the number of search results from the query
 func (d *datastoreImpl) Count(ctx context.Context, q *v1.Query) (int, error) {
-	return d.searcher.Count(ctx, q)
+	return d.storage.Count(ctx, q)
+}
+
+// serviceAccountSearchResultConverter implements searchPkg.SearchResultConverter for service accounts.
+// It extracts name from Result.Name and does not set a location.
+// Category is SERVICE_ACCOUNTS.
+
+type serviceAccountSearchResultConverter struct{}
+
+func (c *serviceAccountSearchResultConverter) BuildName(result *searchPkg.Result) string {
+	return result.Name
+}
+
+func (c *serviceAccountSearchResultConverter) BuildLocation(result *searchPkg.Result) string {
+	return ""
+}
+
+func (c *serviceAccountSearchResultConverter) GetCategory() v1.SearchCategory {
+	return v1.SearchCategory_SERVICE_ACCOUNTS
 }

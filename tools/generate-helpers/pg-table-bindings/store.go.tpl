@@ -1,31 +1,17 @@
 {{define "schemaVar"}}pkgSchema.{{.Table|upperCamelCase}}Schema{{end}}
-{{define "paramList"}}{{range $index, $pk := .}}{{if $index}}, {{end}}{{$pk.ColumnName|lowerCamelCase}} {{$pk.Type}}{{end}}{{end}}
-{{define "argList"}}{{range $index, $pk := .}}{{if $index}}, {{end}}{{$pk.ColumnName|lowerCamelCase}}{{end}}{{end}}
-{{define "whereMatch"}}{{range $index, $pk := .}}{{if $index}} AND {{end}}{{$pk.ColumnName}} = ${{add $index 1}}{{end}}{{end}}
 {{define "commaSeparatedColumns"}}{{range $index, $field := .}}{{if $index}}, {{end}}{{$field.ColumnName}}{{end}}{{end}}
-{{define "commandSeparatedRefs"}}{{range $index, $field := .}}{{if $index}}, {{end}}{{$field.Reference}}{{end}}{{end}}
 {{define "updateExclusions"}}{{range $index, $field := .}}{{if $index}}, {{end}}{{$field.ColumnName}} = EXCLUDED.{{$field.ColumnName}}{{end}}{{end}}
-{{define "matchQuery" -}}
-    {{- $pks := index . 0 -}}
-    {{- $singlePK := index . 1 -}}
-    {{- range $index, $pk := $pks -}}
-    {{- if eq $pk.Name $singlePK.Name -}}
-        search.NewQueryBuilder().AddDocIDs({{ $singlePK.ColumnName|lowerCamelCase }}).ProtoQuery(),
-    {{- else }}
-        search.NewQueryBuilder().AddExactMatches(search.FieldLabel("{{ searchFieldNameInOtherSchema $pk }}"), {{ $pk.ColumnName|lowerCamelCase }}).ProtoQuery(),
-    {{- end -}}
-    {{- end -}}
-{{end}}
 
 {{- $ := . }}
-{{- $pks := .Schema.PrimaryKeys }}
-
-{{ $singlePK := index $pks 0 }}
+{{ $singlePK := index .Schema.PrimaryKeys 0 }}
+{{ $primaryKeyName := $singlePK.ColumnName|lowerCamelCase }}
+{{ $primaryKeyType := $singlePK.Type }}
 
 package postgres
 
 import (
     "context"
+    "slices"
     "strings"
     "time"
 
@@ -59,49 +45,60 @@ const (
 var (
     log = logging.LoggerForModule()
     schema = {{ template "schemaVar" .Schema}}
-    {{- if or (.Obj.IsGloballyScoped) (.Obj.IsDirectlyScoped) (.Obj.IsIndirectlyScoped) }}
-        targetResource = resources.{{.Type | storageToResource}}
-    {{- end }}
+    targetResource = resources.{{.ScopingResource}}
 )
 
-type storeType = {{ .Type }}
+type (
+    storeType = {{ .Type }}
+    callback  = func(obj *storeType) error
+)
 
+{{- if .NoSerialized }}
+// Store is the interface to interact with the storage for {{ .Type }}
+type Store = pgSearch.NoSerializedStore[storeType]
+{{- else }}
 // Store is the interface to interact with the storage for {{ .Type }}
 type Store interface {
 {{- if not .JoinTable }}
     Upsert(ctx context.Context, obj *storeType) error
     UpsertMany(ctx context.Context, objs []*storeType) error
-    Delete(ctx context.Context, {{template "paramList" $pks}}) error
-    DeleteByQuery(ctx context.Context, q *v1.Query) ([]string, error)
-    DeleteMany(ctx context.Context, identifiers []{{$singlePK.Type}}) error
-    PruneMany(ctx context.Context, identifiers []{{$singlePK.Type}}) error
+    Delete(ctx context.Context, {{$primaryKeyName}} {{$primaryKeyType}}) error
+    DeleteByQuery(ctx context.Context, q *v1.Query) error
+    DeleteByQueryWithIDs(ctx context.Context, q *v1.Query) ([]string, error)
+    DeleteMany(ctx context.Context, identifiers []{{$primaryKeyType}}) error
+    PruneMany(ctx context.Context, identifiers []{{$primaryKeyType}}) error
 {{- end }}
 
     Count(ctx context.Context, q *v1.Query) (int, error)
-    Exists(ctx context.Context, {{template "paramList" $pks}}) (bool, error)
+    Exists(ctx context.Context, {{$primaryKeyName}} {{$primaryKeyType}}) (bool, error)
     Search(ctx context.Context, q *v1.Query) ([]search.Result, error)
 
-    Get(ctx context.Context, {{template "paramList" $pks}}) (*storeType, bool, error)
+    Get(ctx context.Context, {{$primaryKeyName}} {{$primaryKeyType}}) (*storeType, bool, error)
 {{- if .SearchCategory }}
+    // Deprecated: use GetByQueryFn instead
     GetByQuery(ctx context.Context, query *v1.Query) ([]*storeType, error)
+    GetByQueryFn(ctx context.Context, query *v1.Query, fn callback) error
 {{- end }}
-    GetMany(ctx context.Context, identifiers []{{$singlePK.Type}}) ([]*storeType, []int, error)
-    GetIDs(ctx context.Context) ([]{{$singlePK.Type}}, error)
-{{- if .GetAll }}
-    GetAll(ctx context.Context) ([]*storeType, error)
-{{- end }}
+    GetMany(ctx context.Context, identifiers []{{$primaryKeyType}}) ([]*storeType, []int, error)
+    GetIDs(ctx context.Context) ([]{{$primaryKeyType}}, error)
 
-    Walk(ctx context.Context, fn func(obj *storeType) error) error
-    WalkByQuery(ctx context.Context, query *v1.Query, fn func(obj *storeType) error) error
+    Walk(ctx context.Context, fn callback) error
+    WalkByQuery(ctx context.Context, query *v1.Query, fn callback) error
+
+{{- if and .CachedStore .ForSAC }}
+    // Deprecated: Use for SAC only
+    GetAllFromCacheForSAC() []*storeType
+{{- end }}
 }
+{{- end }}
 
 {{ define "defineScopeChecker" }}scopeChecker := sac.GlobalAccessScopeChecker(ctx).AccessMode(storage.Access_{{ . }}_ACCESS).Resource(targetResource){{ end }}
 
 {{ define "storeCreator" -}}
-    {{- if and (.PermissionChecker) (.CachedStore) -}}
-        pgSearch.NewGenericStoreWithCacheAndPermissionChecker
-    {{- else if (.PermissionChecker) -}}
-        pgSearch.NewGenericStoreWithPermissionChecker
+    {{- if and (.CachedStore) (not .Obj.IsDirectlyScoped) -}}
+        pgSearch.NewGloballyScopedGenericStoreWithCache
+    {{- else if and (not .CachedStore) (not .Obj.IsDirectlyScoped) -}}
+        pgSearch.NewGloballyScopedGenericStore
     {{- else if .CachedStore -}}
         pgSearch.NewGenericStoreWithCache
     {{- else -}}
@@ -111,6 +108,74 @@ type Store interface {
 
 // New returns a new Store instance using the provided sql instance.
 func New(db postgres.DB) Store {
+    {{- if .NoSerialized }}
+    {{- if .Obj.IsDirectlyScoped }}
+    return pgSearch.NewNoSerializedGenericStore[storeType](
+            db,
+            schema,
+            pkGetter,
+            {{ template "insertFunctionName" .Schema }},
+            {{- if not .NoCopyFrom }}
+            {{ template "copyFunctionName" .Schema }},
+            {{- else }}
+            nil,
+            {{- end }}
+            scanRow,
+            scanRows,
+            {{- if .Schema.Children }}
+            fetchChildren,
+            {{- else }}
+            nil,
+            {{- end }}
+            metricsSetAcquireDBConnDuration,
+            metricsSetPostgresOperationDurationTime,
+            isUpsertAllowed,
+            targetResource,
+            {{- if .DefaultSortStore }}
+            pgSearch.GetDefaultSort({{.DefaultSort}}, {{.ReverseDefaultSort}}),
+            {{- else }}
+            nil,
+            {{- end }}
+            {{- if .DefaultTransform }}
+            pkgSchema.{{.TransformSortOptions}},
+            {{- else }}
+            nil,
+            {{- end }}
+    )
+    {{- else }}
+    return pgSearch.NewNoSerializedGloballyScopedGenericStore[storeType](
+            db,
+            schema,
+            pkGetter,
+            {{ template "insertFunctionName" .Schema }},
+            {{- if not .NoCopyFrom }}
+            {{ template "copyFunctionName" .Schema }},
+            {{- else }}
+            nil,
+            {{- end }}
+            scanRow,
+            scanRows,
+            {{- if .Schema.Children }}
+            fetchChildren,
+            {{- else }}
+            nil,
+            {{- end }}
+            metricsSetAcquireDBConnDuration,
+            metricsSetPostgresOperationDurationTime,
+            targetResource,
+            {{- if .DefaultSortStore }}
+            pgSearch.GetDefaultSort({{.DefaultSort}}, {{.ReverseDefaultSort}}),
+            {{- else }}
+            nil,
+            {{- end }}
+            {{- if .DefaultTransform }}
+            pkgSchema.{{.TransformSortOptions}},
+            {{- else }}
+            nil,
+            {{- end }}
+    )
+    {{- end }}
+    {{- else }}
     {{ if .CachedStore -}}
     // Use of {{ template "storeCreator" . }} can be dangerous with high cardinality stores,
     // and be the source of memory pressure. Think twice about the need for in-memory caching
@@ -135,19 +200,28 @@ func New(db postgres.DB) Store {
             metricsSetPostgresOperationDurationTime,
             {{- if .CachedStore }}
             metricsSetCacheOperationDurationTime,
-            {{ end -}}
-            {{- if or (.Obj.IsGloballyScoped) (.Obj.IsIndirectlyScoped) }}
-            pgSearch.GloballyScopedUpsertChecker[storeType, *storeType](targetResource),
-            {{- else if .Obj.IsDirectlyScoped }}
+            {{- end }}
+            {{- if .Obj.IsDirectlyScoped }}
             isUpsertAllowed,
             {{- end }}
-            {{ if .PermissionChecker }}{{ .PermissionChecker }}{{ else }}targetResource{{ end }},
+            targetResource,
+            {{- if .DefaultSortStore }}
+            pgSearch.GetDefaultSort({{.DefaultSort}}, {{.ReverseDefaultSort}}),
+            {{- else }}
+            nil,
+            {{- end }}
+            {{- if .DefaultTransform }}
+            pkgSchema.{{.TransformSortOptions}},
+            {{- else }}
+            nil,
+            {{- end }}
     )
+    {{- end }}
 }
 
 // region Helper functions
 
-func pkGetter(obj *storeType) {{$singlePK.Type}} {
+func pkGetter(obj *storeType) {{$primaryKeyType}} {
     return {{ $singlePK.Getter "obj" }}
 }
 
@@ -195,7 +269,7 @@ func isUpsertAllowed(ctx context.Context, objs ...*storeType) error {
 
 {{- define "insertValues"}}{{- $schema := . -}}
 {{- range $field := $schema.DBColumnFields -}}
-    {{- if eq $field.DataType "datetime" }}
+    {{- if or (eq $field.DataType "datetime") (eq $field.DataType "datetimetz") }}
         protocompat.NilOrTime({{$field.Getter "obj"}}),
     {{- else if eq $field.SQLType "uuid" }}
         pgutils.NilOrUUID({{$field.Getter "obj"}}),
@@ -203,6 +277,10 @@ func isUpsertAllowed(ctx context.Context, objs ...*storeType) error {
         pgutils.NilOrCIDR({{$field.Getter "obj"}}),
     {{- else if eq $field.DataType "map" }}
         pgutils.EmptyOrMap({{$field.Getter "obj"}}),
+    {{- else if and (eq $field.DataType "string") ($field.Options.Reference) ($field.Options.Reference.Nullable) }}
+        pgutils.NilOrString({{$field.Getter "obj"}}),
+    {{- else if isMessageBytes $field }}
+        pgutils.MustMarshalRepeatedMessages({{$field.Getter "obj"}}),
     {{- else }}
         {{$field.Getter "obj"}},{{end}}
 {{- end}}
@@ -211,7 +289,7 @@ func isUpsertAllowed(ctx context.Context, objs ...*storeType) error {
 {{- define "insertObject"}}
 {{- $schema := .schema }}
 func {{ template "insertFunctionName" $schema }}(batch *pgx.Batch, obj {{$schema.Type}}{{ range $field := $schema.FieldsDeterminedByParent }}, {{$field.Name}} {{$field.Type}}{{end}}) error {
-    {{if not $schema.Parent }}
+    {{if and (not $schema.Parent) (not $schema.NoSerialized) }}
     serialized, marshalErr := obj.MarshalVT()
     if marshalErr != nil {
         return marshalErr
@@ -255,69 +333,58 @@ func {{ template "insertFunctionName" $schema }}(batch *pgx.Batch, obj {{$schema
 
 {{- define "copyObject"}}
 {{- $schema := .schema }}
+{{- $singlePK := index $schema.PrimaryKeys 0 }}
+var copyCols{{$schema.Table|upperCamelCase}} = []string{
+{{- range $index, $field := $schema.DBColumnFields }}
+    "{{$field.ColumnName|lowerCase}}",
+{{- end }}
+}
+
 func {{ template "copyFunctionName" $schema }}(ctx context.Context, s pgSearch.Deleter, tx *postgres.Tx, {{ range $index, $field := $schema.FieldsReferringToParent }} {{$field.Name}} {{$field.Type}},{{end}} objs ...{{$schema.Type}}) error {
-    batchSize := pgSearch.MaxBatchSize
-    if len(objs) < batchSize {
-        batchSize = len(objs)
+    if len(objs) == 0 {
+        return nil
     }
-    inputRows := make([][]interface{}, 0, batchSize)
     {{if not $schema.Parent }}
-    // This is a copy so first we must delete the rows and re-add them
-    // Which is essentially the desired behaviour of an upsert.
-    deletes := make([]string, 0, batchSize)
+    {
+        // CopyFrom does not upsert, so delete existing rows first to achieve upsert behavior.
+        // Parent deletion cascades to children, so only the top-level parent needs deletion.
+        deletes := make([]string, 0, len(objs))
+        for _, obj := range objs {
+            deletes = append(deletes, {{ $singlePK.Getter "obj" }})
+        }
+        if err := s.DeleteMany(ctx, deletes); err != nil {
+            return err
+        }
+    }
     {{end}}
 
-    copyCols := []string {
-    {{- range $index, $field := $schema.DBColumnFields }}
-        "{{$field.ColumnName|lowerCase}}",
-    {{- end }}
-    }
+    idx := 0
+    inputRows := pgx.CopyFromFunc(func() ([]any, error) {
+        if idx >= len(objs) {
+            return nil, nil
+        }
+        obj := objs[idx]
+        idx++
 
-    for idx, obj := range objs {
-        // Todo: ROX-9499 Figure out how to more cleanly template around this issue.
-        log.Debugf("This is here for now because there is an issue with pods_TerminatedInstances where the obj "+
-		"in the loop is not used as it only consists of the parent ID and the index.  Putting this here as a stop gap "+
-		"to simply use the object.  %s", obj)
-        {{/* If embedded, the top-level has the full serialized object */}}
-        {{if not $schema.Parent }}
+        {{if and (not $schema.Parent) (not $schema.NoSerialized) }}
         serialized, marshalErr := obj.MarshalVT()
         if marshalErr != nil {
-            return marshalErr
+            return nil, marshalErr
         }
         {{end}}
 
-        inputRows = append(inputRows, []interface{}{
+        return []interface{}{
             {{- template "insertValues" $schema }}
-        })
+        }, nil
+    })
 
-        {{ if not $schema.Parent }}
-        // Add the ID to be deleted.
-        deletes = append(deletes, {{ range $field := $schema.PrimaryKeys }}{{$field.Getter "obj"}}, {{end}})
-        {{end}}
-
-        // if we hit our batch size we need to push the data
-        if (idx + 1) % batchSize == 0 || idx == len(objs) - 1  {
-            // copy does not upsert so have to delete first.  parent deletion cascades so only need to
-            // delete for the top level parent
-            {{if not $schema.Parent }}
-            if err := s.DeleteMany(ctx, deletes); err != nil {
-                return err
-            }
-            // clear the inserts and vals for the next batch
-            deletes = deletes[:0]
-            {{end}}
-            if _, err := tx.CopyFrom(ctx, pgx.Identifier{"{{$schema.Table|lowerCase}}"}, copyCols, pgx.CopyFromRows(inputRows)); err != nil {
-                return err
-            }
-            // clear the input rows for the next batch
-            inputRows = inputRows[:0]
-        }
+    if _, err := tx.CopyFrom(ctx, pgx.Identifier{"{{$schema.Table|lowerCase}}"}, copyCols{{$schema.Table|upperCamelCase}}, inputRows); err != nil {
+        return err
     }
 
     {{if $schema.Children }}
-    for idx, obj := range objs {
-        _ = idx // idx may or may not be used depending on how nested we are, so avoid compile-time errors.
-        {{range $child := $schema.Children }}
+    for _, obj := range objs {
+        {{- range $child := $schema.Children }}
         if err := {{ template "copyFunctionName" $child }}(ctx, s, tx{{ range $index, $field := $schema.PrimaryKeys }}, {{$field.Getter "obj"}}{{end}}, obj.{{$child.ObjectGetter}}...); err != nil {
             return err
         }
@@ -335,23 +402,175 @@ func {{ template "copyFunctionName" $schema }}(ctx context.Context, s pgSearch.D
 {{- end }}
 {{- end }}
 
+{{- if .NoSerialized }}
+// region No-serialized scan functions
+
+func scanRow(row pgx.Row) (*storeType, error) {
+    obj := &storeType{}
+
+    // Initialize sub-messages before scanning
+    {{- range $init := subMessageInits .Schema }}
+    {{$init.SetterPath}} = &{{$init.GoType}}{}
+    {{- end }}
+
+    // Declare intermediate scan variables for types needing conversion
+    {{- range $field := .Schema.DBColumnFields }}
+    {{- if or (eq $field.DataType "datetime") (eq $field.DataType "datetimetz") }}
+    var col_{{$field.ColumnName}} *time.Time
+    {{- else if eq $field.SQLType "uuid" }}
+    var col_{{$field.ColumnName}} *string
+    {{- else if eq $field.SQLType "cidr" }}
+    var col_{{$field.ColumnName}} *string
+    {{- else if isMessageBytes $field }}
+    var col_{{$field.ColumnName}} []byte
+    {{- end }}
+    {{- end }}
+
+    if err := row.Scan(
+        {{- range $field := .Schema.DBColumnFields }}
+        {{- if or (eq $field.DataType "datetime") (eq $field.DataType "datetimetz") }}
+        &col_{{$field.ColumnName}},
+        {{- else if eq $field.SQLType "uuid" }}
+        &col_{{$field.ColumnName}},
+        {{- else if eq $field.SQLType "cidr" }}
+        &col_{{$field.ColumnName}},
+        {{- else if isMessageBytes $field }}
+        &col_{{$field.ColumnName}},
+        {{- else }}
+        &{{$field.Setter "obj"}},
+        {{- end }}
+        {{- end }}
+    ); err != nil {
+        return nil, err
+    }
+
+    // Post-scan conversions
+    {{- range $field := .Schema.DBColumnFields }}
+    {{- if or (eq $field.DataType "datetime") (eq $field.DataType "datetimetz") }}
+    if col_{{$field.ColumnName}} != nil {
+        {{$field.Setter "obj"}} = protocompat.ConvertTimeToTimestampOrNil(col_{{$field.ColumnName}})
+    }
+    {{- else if eq $field.SQLType "uuid" }}
+    if col_{{$field.ColumnName}} != nil {
+        {{$field.Setter "obj"}} = *col_{{$field.ColumnName}}
+    }
+    {{- else if eq $field.SQLType "cidr" }}
+    if col_{{$field.ColumnName}} != nil {
+        {{$field.Setter "obj"}} = *col_{{$field.ColumnName}}
+    }
+    {{- else if isMessageBytes $field }}
+    if col_{{$field.ColumnName}} != nil {
+        unmarshaled, unmarshalErr := pgutils.UnmarshalRepeatedMessages(col_{{$field.ColumnName}}, func() {{messageBytesElemType $field}} { return new({{messageBytesElemType $field | trimPrefix "*"}}) })
+        if unmarshalErr != nil {
+            return nil, unmarshalErr
+        }
+        {{$field.Setter "obj"}} = unmarshaled
+    }
+    {{- end }}
+    {{- end }}
+
+    return obj, nil
+}
+
+func scanRows(rows pgx.Rows) ([]*storeType, error) {
+    return pgx.CollectRows(rows, func(r pgx.CollectableRow) (*storeType, error) {
+        return scanRow(r)
+    })
+}
+
+// endregion No-serialized scan functions
+
+{{- if .Schema.Children }}
+// region Child table fetching
+
+func fetchChildren(ctx context.Context, db postgres.Queryable, objs []*storeType) error {
+    if len(objs) == 0 {
+        return nil
+    }
+    objsByID := make(map[string]*storeType, len(objs))
+    ids := make([]string, 0, len(objs))
+    for _, obj := range objs {
+        id := pkGetter(obj)
+        objsByID[id] = obj
+        ids = append(ids, id)
+    }
+
+    {{- range $child := .Schema.Children }}
+    {
+        {{- $fkFields := $child.FieldsReferringToParent }}
+        {{- $fkField := index $fkFields 0 }}
+        rows, err := db.Query(ctx,
+            "SELECT {{template "commaSeparatedColumns" $child.DBColumnFields}} FROM {{$child.Table}} WHERE {{$fkField.ColumnName}} = ANY($1::uuid[]) ORDER BY {{$fkField.ColumnName}}, idx",
+            ids)
+        if err != nil {
+            return err
+        }
+        defer rows.Close()
+        for rows.Next() {
+            var parentID string
+            var idx int
+            child := &{{trimPrefix "*" $child.Type}}{}
+            {{- range $field := $child.DBColumnFields }}
+            {{- if $field.Options.Reference }}
+            {{- else if eq $field.ColumnName "idx" }}
+            {{- else if or (eq $field.DataType "datetime") (eq $field.DataType "datetimetz") }}
+            var col_{{$field.ColumnName}} *time.Time
+            {{- else if eq $field.SQLType "uuid" }}
+            var col_{{$field.ColumnName}} *string
+            {{- end }}
+            {{- end }}
+
+            if err := rows.Scan(
+                &parentID,
+                &idx,
+                {{- range $field := $child.DBColumnFields }}
+                {{- if $field.Options.Reference }}
+                {{- else if eq $field.ColumnName "idx" }}
+                {{- else if or (eq $field.DataType "datetime") (eq $field.DataType "datetimetz") }}
+                &col_{{$field.ColumnName}},
+                {{- else if eq $field.SQLType "uuid" }}
+                &col_{{$field.ColumnName}},
+                {{- else }}
+                &{{$field.Setter "child"}},
+                {{- end }}
+                {{- end }}
+            ); err != nil {
+                return err
+            }
+            {{- range $field := $child.DBColumnFields }}
+            {{- if $field.Options.Reference }}
+            {{- else if eq $field.ColumnName "idx" }}
+            {{- else if or (eq $field.DataType "datetime") (eq $field.DataType "datetimetz") }}
+            if col_{{$field.ColumnName}} != nil {
+                {{$field.Setter "child"}} = protocompat.ConvertTimeToTimestampOrNil(col_{{$field.ColumnName}})
+            }
+            {{- else if eq $field.SQLType "uuid" }}
+            if col_{{$field.ColumnName}} != nil {
+                {{$field.Setter "child"}} = *col_{{$field.ColumnName}}
+            }
+            {{- end }}
+            {{- end }}
+            parent, ok := objsByID[parentID]
+            if !ok {
+                continue
+            }
+            parent.{{objectGetterToSetter $child.ObjectGetter}} = append(parent.{{objectGetterToSetter $child.ObjectGetter}}, child)
+        }
+        if err := rows.Err(); err != nil {
+            return err
+        }
+    }
+    {{- end }}
+    return nil
+}
+
+// endregion Child table fetching
+{{- end }}
+{{- end }}
+
 // endregion Helper functions
 
-// region Used for testing
-
-// CreateTableAndNewStore returns a new Store instance for testing.
-func CreateTableAndNewStore(ctx context.Context, db postgres.DB, gormDB *gorm.DB) Store {
-	pkgSchema.ApplySchemaForTable(ctx, gormDB, baseTable)
-	return New(db)
-}
-
 {{- define "dropTableFunctionName"}}dropTable{{.Table | upperCamelCase}}{{end}}
-
-
-// Destroy drops the tables associated with the target object type.
-func Destroy(ctx context.Context, db postgres.DB) {
-    {{template "dropTableFunctionName" .Schema}}(ctx, db)
-}
 
 {{- define "dropTable"}}
 {{- $schema := . }}
@@ -363,6 +582,21 @@ func {{ template "dropTableFunctionName" $schema }}(ctx context.Context, db post
 {{range $child := $schema.Children}}{{ template "dropTable" $child }}{{end}}
 {{- end}}
 
+{{ if .GenerateDataModelHelpers -}}
+// region Used for testing
+
+// CreateTableAndNewStore returns a new Store instance for testing.
+func CreateTableAndNewStore(ctx context.Context, db postgres.DB, gormDB *gorm.DB) Store {
+	pkgSchema.ApplySchemaForTable(ctx, gormDB, baseTable)
+	return New(db)
+}
+
+// Destroy drops the tables associated with the target object type.
+func Destroy(ctx context.Context, db postgres.DB) {
+    {{template "dropTableFunctionName" .Schema}}(ctx, db)
+}
+
 {{template "dropTable" .Schema}}
 
 // endregion Used for testing
+{{- end }}

@@ -13,7 +13,6 @@ import (
 )
 
 func TestGetMetadata_NotOnAzure(t *testing.T) {
-	t.Parallel()
 
 	_, err := GetMetadata(context.Background())
 	// We might not get metadata info, but we should not get an error.
@@ -21,10 +20,9 @@ func TestGetMetadata_NotOnAzure(t *testing.T) {
 }
 
 func TestGetClusterMetadata(t *testing.T) {
-	t.Parallel()
 
 	ctx := context.Background()
-	k8sClient := fake.NewSimpleClientset()
+	k8sClient := fake.NewClientset()
 	expectedClusterName := "my-rg_my-cluster"
 	expectedClusterID := "1234_MC_my-rg_my-cluster_eastus"
 

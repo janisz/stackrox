@@ -41,10 +41,6 @@ func (s *ClusterCvesStoreSuite) SetupTest() {
 	s.NoError(err)
 }
 
-func (s *ClusterCvesStoreSuite) TearDownSuite() {
-	s.testDB.Teardown(s.T())
-}
-
 func (s *ClusterCvesStoreSuite) TestStore() {
 	ctx := sac.WithAllAccess(context.Background())
 
@@ -96,6 +92,11 @@ func (s *ClusterCvesStoreSuite) TestStore() {
 	}
 
 	s.NoError(store.UpsertMany(ctx, clusterCVEs))
+
+	foundClusterCVEs, missing, err := store.GetMany(ctx, clusterCVEIDs)
+	s.NoError(err)
+	s.Empty(missing)
+	protoassert.ElementsMatch(s.T(), clusterCVEs, foundClusterCVEs)
 
 	clusterCVECount, err = store.Count(ctx, search.EmptyQuery())
 	s.NoError(err)

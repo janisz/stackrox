@@ -1,4 +1,4 @@
-import React, { ReactElement } from 'react';
+import type { ReactElement } from 'react';
 import { ExclamationCircleIcon, ExclamationTriangleIcon } from '@patternfly/react-icons';
 import { Td, Th, Thead, Tr } from '@patternfly/react-table';
 
@@ -19,25 +19,23 @@ export function TheadClustersHealth({
     return (
         <Thead>
             <Tr>
-                <Th width={35}>
-                    <span className="pf-v5-screen-reader">Clusters</span>
-                </Th>
-                <Th width={10} className="pf-v5-u-text-align-right">
+                <Th width={35} screenReaderText="Clusters" />
+                <Th width={10} className="pf-v6-u-text-align-right">
                     {dataLabelHealthy || 'Healthy'}
                 </Th>
-                <Th width={10} className="pf-v5-u-text-align-right">
+                <Th width={10} className="pf-v6-u-text-align-right">
                     {dataLabelUnhealthy || 'Unhealthy'}
                 </Th>
-                <Th width={10} className="pf-v5-u-text-align-right">
+                <Th width={10} className="pf-v6-u-text-align-right">
                     {dataLabelDegraded || 'Degraded'}
                 </Th>
-                <Th width={10} className="pf-v5-u-text-align-right">
+                <Th width={10} className="pf-v6-u-text-align-right">
                     Unavailable
                 </Th>
-                <Th width={10} className="pf-v5-u-text-align-right">
+                <Th width={10} className="pf-v6-u-text-align-right">
                     Uninitialized
                 </Th>
-                <Th width={15} className="pf-v5-u-text-align-right">
+                <Th width={15} className="pf-v6-u-text-align-right">
                     Total
                 </Th>
             </Tr>
@@ -45,6 +43,8 @@ export function TheadClustersHealth({
     );
 }
 
+// Component props have inconsistent name but we will postpone improvements to minimize code churm.
+/* eslint-disable generic/react-props-name */
 type TdStatusWithDataLabelProps = {
     count: number;
     dataLabel?: string;
@@ -52,7 +52,7 @@ type TdStatusWithDataLabelProps = {
 
 export function TdHealthy({ count, dataLabel }: TdStatusWithDataLabelProps): ReactElement {
     return (
-        <Td className="pf-v5-u-text-align-right" dataLabel={dataLabel || 'Healthy'}>
+        <Td className="pf-v6-u-text-align-right" dataLabel={dataLabel || 'Healthy'}>
             {count}
         </Td>
     );
@@ -60,12 +60,12 @@ export function TdHealthy({ count, dataLabel }: TdStatusWithDataLabelProps): Rea
 
 export function TdUnhealthy({ count, dataLabel }: TdStatusWithDataLabelProps): ReactElement {
     return (
-        <Td className="pf-v5-u-text-align-right" dataLabel={dataLabel || 'Unhealthy'}>
+        <Td className="pf-v6-u-text-align-right" dataLabel={dataLabel || 'Unhealthy'}>
             {count !== 0 ? (
                 <IconText
                     icon={
                         <Icon>
-                            <ExclamationCircleIcon color="var(--pf-v5-global--danger-color--100)" />
+                            <ExclamationCircleIcon color="var(--pf-t--global--icon--color--status--danger--default)" />
                         </Icon>
                     }
                     text={String(count)}
@@ -79,12 +79,12 @@ export function TdUnhealthy({ count, dataLabel }: TdStatusWithDataLabelProps): R
 
 export function TdDegraded({ count, dataLabel }: TdStatusWithDataLabelProps): ReactElement {
     return (
-        <Td className="pf-v5-u-text-align-right" dataLabel={dataLabel || 'Degraded'}>
+        <Td className="pf-v6-u-text-align-right" dataLabel={dataLabel || 'Degraded'}>
             {count !== 0 ? (
                 <IconText
                     icon={
                         <Icon>
-                            <ExclamationTriangleIcon color="var(--pf-v5-global--warning-color--100)" />
+                            <ExclamationTriangleIcon color="var(--pf-t--global--icon--color--status--warning--default)" />
                         </Icon>
                     }
                     text={String(count)}
@@ -102,7 +102,7 @@ type TdStatusWithoutDataLabelProps = {
 
 export function TdUnavailable({ count }: TdStatusWithoutDataLabelProps): ReactElement {
     return (
-        <Td className="pf-v5-u-text-align-right" dataLabel="Unavailable">
+        <Td className="pf-v6-u-text-align-right" dataLabel="Unavailable">
             {count}
         </Td>
     );
@@ -110,7 +110,7 @@ export function TdUnavailable({ count }: TdStatusWithoutDataLabelProps): ReactEl
 
 export function TdUninitialized({ count }: TdStatusWithoutDataLabelProps): ReactElement {
     return (
-        <Td className="pf-v5-u-text-align-right" dataLabel="Uninitialized">
+        <Td className="pf-v6-u-text-align-right" dataLabel="Uninitialized">
             {count}
         </Td>
     );
@@ -118,8 +118,9 @@ export function TdUninitialized({ count }: TdStatusWithoutDataLabelProps): React
 
 export function TdTotal({ count }: TdStatusWithoutDataLabelProps): ReactElement {
     return (
-        <Td className="pf-v5-u-text-align-right" dataLabel="Total">
+        <Td className="pf-v6-u-text-align-right" dataLabel="Total">
             {count}
         </Td>
     );
 }
+/* eslint-enable generic/react-props-name */

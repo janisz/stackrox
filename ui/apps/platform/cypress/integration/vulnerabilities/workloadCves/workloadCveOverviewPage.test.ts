@@ -5,8 +5,9 @@ import { graphql } from '../../../constants/apiEndpoints';
 import {
     applyDefaultFilters,
     applyLocalSeverityFilters,
-    interactAndWaitForImageList,
     interactAndWaitForDeploymentList,
+    interactAndWaitForImageList,
+    mockSbomGenerationRequest,
     selectEntityTab,
     visitWorkloadCveOverview,
 } from './WorkloadCves.helpers';
@@ -18,12 +19,14 @@ import {
     verifyColumnManagement,
 } from '../../../helpers/tableHelpers';
 import {
-    getRouteMatcherMapForGraphQL,
     expectRequestedSort,
-    interceptAndWatchRequests,
-    interceptAndOverridePermissions,
+    getRouteMatcherMapForGraphQL,
     interceptAndOverrideFeatureFlags,
+    interceptAndOverridePermissions,
+    interceptAndWatchRequests,
 } from '../../../helpers/request';
+import { addCheckboxSelectFilter } from '../../../helpers/compoundFilters';
+import { visit } from '../../../helpers/visit';
 
 const visitFromMoreViewsDropdown = visitFromHorizontalNavExpandable('More Views');
 
@@ -31,6 +34,7 @@ describe('Workload CVE overview page tests', () => {
     withAuth();
 
     it('should satisfy initial page load defaults', () => {
+        cy.spyTelemetry();
         visitWorkloadCveOverview();
 
         // TODO Test that the default tab is set to "Observed"
@@ -51,6 +55,19 @@ describe('Workload CVE overview page tests', () => {
             'aria-pressed',
             'true'
         );
+        cy.getTelemetryEvents().should((telemetryEvents) => {
+            // TODO - This is not working as expected. We should only have one page view event, but the page view event is being emitted twice.
+            expect(telemetryEvents.page).to.have.length(2);
+
+            expect(telemetryEvents.page[0].properties.path).to.contain(
+                '/main/vulnerabilities/platform'
+            );
+
+            expect(telemetryEvents.track).to.have.length(1);
+            expect(telemetryEvents.track[0].event).to.equal('Workload CVE Entity Context View');
+            expect(telemetryEvents.track[0].properties.type).to.equal('CVE');
+            expect(telemetryEvents.track[0].properties.page).to.equal('Overview');
+        });
     });
 
     it('should correctly handle applied filters across entity tabs', () => {
@@ -77,10 +94,13 @@ describe('Workload CVE overview page tests', () => {
             // @ts-ignore
             selectEntityTab(entity);
 
-            // Ensure that only the correct filter chip is present
-            const filterChipGroupName = 'CVE severity';
-            cy.get(selectors.filterChipGroupItem(filterChipGroupName, 'Critical'));
-            cy.get(selectors.filterChipGroupItems(filterChipGroupName)).should('have.lengthOf', 1);
+            // Ensure that only the correct filter label is present
+            const filterLabelGroupName = 'CVE severity';
+            cy.get(selectors.filterLabelGroupItem(filterLabelGroupName, 'Critical'));
+            cy.get(selectors.filterLabelGroupItems(filterLabelGroupName)).should(
+                'have.lengthOf',
+                1
+            );
 
             // TODO - See if there is a clean way to re-enable this to handle both cases where the
             // feature flag is not enabled and not enabled
@@ -88,24 +108,24 @@ describe('Workload CVE overview page tests', () => {
             // Ensure the correct search filter is present in the request
             cy.wait(`@${opname}`).should((xhr) => {
                 expect(xhr.request.body.variables.query).to.contain(
-                    'SEVERITY:CRITICAL_VULNERABILITY_SEVERITY'
+                    'Severity:CRITICAL_VULNERABILITY_SEVERITY'
                 );
             });
             */
         });
     });
 
-    it('should apply the correct baseline filters when switching between built in views using the user-workload based template', function () {
-        if (!hasFeatureFlag('ROX_PLATFORM_CVE_SPLIT')) {
-            this.skip();
-        }
+    it('should apply the correct baseline filters when switching between built in views using the user-workload based template', () => {
+        // Direct visit without using helper since we do not care about global mocking for this test, and
+        // the mocking interferes with the granular waits used in this test
+        visit('/main/vulnerabilities/platform/');
 
         interceptAndWatchRequests(
             getRouteMatcherMapForGraphQL(['getImageCVEList', 'getImageList'])
         ).then(({ waitForRequests, waitAndYieldRequestBodyVariables }) => {
-            visitWorkloadCveOverview();
-            waitForRequests(['getImageCVEList']); // Wait for the initial request to complete
-            waitForRequests(['getImageCVEList']); // Wait for the second request after the default filters load to complete
+            // Initial request
+            waitForRequests(['getImageCVEList']); // Wait for the third request after the filters have been changed to complete
+
             applyDefaultFilters(['Critical', 'Important'], ['Fixable']); // Set the default filters to none to prevent multiple requests on each page visit
             waitForRequests(['getImageCVEList']); // Wait for the third request after the filters have been changed to complete
 
@@ -179,17 +199,11 @@ describe('Workload CVE overview page tests', () => {
         const rowMenuSbomModalButton = 'button[role="menuitem"]:contains("Generate SBOM")';
         const generateSbomButton = '[role="dialog"] button:contains("Generate SBOM")';
 
-        before(function () {
-            if (!hasFeatureFlag('ROX_SBOM_GENERATION')) {
-                this.skip();
-            }
-        });
-
         it('should hide the SBOM generation menu item when the user does not have write access to the Image resource', () => {
             interceptAndOverridePermissions({ Image: 'READ_ACCESS' });
 
             visitWorkloadCveOverview();
-            selectEntityTab('Image');
+            interactAndWaitForImageList(() => selectEntityTab('Image'));
             openTableRowActionMenu(selectors.firstTableRow);
 
             cy.get(rowMenuSbomModalButton).should('not.exist');
@@ -199,7 +213,7 @@ describe('Workload CVE overview page tests', () => {
             interceptAndOverrideFeatureFlags({ ROX_SCANNER_V4: false });
 
             visitWorkloadCveOverview();
-            selectEntityTab('Image');
+            interactAndWaitForImageList(() => selectEntityTab('Image'));
             openTableRowActionMenu(selectors.firstTableRow);
 
             cy.get(rowMenuSbomModalButton).should('have.attr', 'aria-disabled', 'true');
@@ -211,7 +225,8 @@ describe('Workload CVE overview page tests', () => {
             }
 
             visitWorkloadCveOverview();
-            selectEntityTab('Image');
+            interactAndWaitForImageList(() => selectEntityTab('Image'));
+            mockSbomGenerationRequest();
 
             cy.get(selectors.firstTableRow)
                 .find('td[data-label="Image"] a')
@@ -229,28 +244,24 @@ describe('Workload CVE overview page tests', () => {
     });
 
     describe('Images without CVEs view tests', () => {
-        it('should remove cve-related UI elements when viewing the "without cves" view', function () {
-            if (!hasFeatureFlag('ROX_PLATFORM_CVE_SPLIT')) {
-                this.skip();
-            }
-
+        it('should remove cve-related UI elements when viewing the "without cves" view', () => {
             visitWorkloadCveOverview();
 
             const cvesBySeverityHeader = 'th:contains("CVEs by severity")';
-            const prioritizeByNamespaceButton = 'a:contains("Prioritize by namespace view")';
+            const namespaceViewLink = 'a:contains("Namespace view")';
             const defaultFiltersButton = 'button:contains("Default filters")';
 
             function assertCveElementsArePresent() {
                 cy.get(cvesBySeverityHeader);
-                cy.get(prioritizeByNamespaceButton);
+                cy.get(namespaceViewLink);
                 cy.get(defaultFiltersButton);
                 cy.get(selectors.severityDropdown);
                 cy.get(selectors.fixabilityDropdown);
             }
 
             function assertCveElementsAreNotPresent() {
-                cy.get(cvesBySeverityHeader).should('not.exist');
-                cy.get(prioritizeByNamespaceButton).should('not.exist');
+                cy.get(cvesBySeverityHeader).should('not.be.visible');
+                cy.get(namespaceViewLink).should('not.exist');
                 cy.get(defaultFiltersButton).should('not.exist');
                 cy.get(selectors.severityDropdown).should('not.exist');
                 cy.get(selectors.fixabilityDropdown).should('not.exist');
@@ -285,65 +296,89 @@ describe('Workload CVE overview page tests', () => {
         });
 
         it('should default to multi-severity sort and keep in sync with applied filters', () => {
-            interceptAndWatchRequests(getRouteMatcherMapForGraphQL(['getImageCVEList'])).then(
-                ({ waitForRequests, waitAndYieldRequestBodyVariables }) => {
-                    visitWorkloadCveOverview({ clearFiltersOnVisit: false });
-                    // Wait for the initial request to complete, this fires twice due to the default filters being applied.
-                    // Ideally we fix this in the future to avoid the additional overhead.
-                    waitForRequests();
+            interceptAndWatchRequests(getRouteMatcherMapForGraphQL(['getImageCVEList']), {
+                getImageCVEList: {
+                    fixture: 'vulnerabilities/workloadCves/getImageCVEList.json',
+                },
+            }).then(({ waitAndYieldRequestBodyVariables }) => {
+                const basePath = '/main/vulnerabilities/platform/';
+                visit(basePath);
 
-                    // Check the default sort
-                    waitAndYieldRequestBodyVariables().then(
-                        expectRequestedSort([
-                            { field: 'Critical Severity Count', reversed: true },
-                            { field: 'Important Severity Count', reversed: true },
-                        ])
-                    );
+                // Check the default sort
+                waitAndYieldRequestBodyVariables().then(
+                    expectRequestedSort([
+                        { field: 'Critical Severity Count', reversed: true },
+                        { field: 'Important Severity Count', reversed: true },
+                    ])
+                );
 
-                    // Check that adding a severity filter changes the sort
-                    applyLocalSeverityFilters('Moderate');
-                    waitAndYieldRequestBodyVariables().then(
-                        expectRequestedSort([
-                            { field: 'Critical Severity Count', reversed: true },
-                            { field: 'Important Severity Count', reversed: true },
-                            { field: 'Moderate Severity Count', reversed: true },
-                        ])
-                    );
+                // Check that adding a severity filter changes the sort
+                applyLocalSeverityFilters('Moderate');
+                waitAndYieldRequestBodyVariables().then(
+                    expectRequestedSort([
+                        { field: 'Critical Severity Count', reversed: true },
+                        { field: 'Important Severity Count', reversed: true },
+                        { field: 'Moderate Severity Count', reversed: true },
+                    ])
+                );
 
-                    // Check that the severity sort is reversible
-                    sortByTableHeader('Images by severity');
-                    waitAndYieldRequestBodyVariables().then(
-                        expectRequestedSort([
-                            { field: 'Critical Severity Count', reversed: false },
-                            { field: 'Important Severity Count', reversed: false },
-                            { field: 'Moderate Severity Count', reversed: false },
-                        ])
-                    );
+                // Check that the severity sort is reversible
+                sortByTableHeader('Images by severity');
+                waitAndYieldRequestBodyVariables().then(
+                    expectRequestedSort([
+                        { field: 'Critical Severity Count', reversed: false },
+                        { field: 'Important Severity Count', reversed: false },
+                        { field: 'Moderate Severity Count', reversed: false },
+                    ])
+                );
 
-                    // Check that sorting by another column works as intended
-                    sortByTableHeader('CVE');
-                    waitAndYieldRequestBodyVariables().then(
-                        expectRequestedSort({ field: 'CVE', reversed: true })
-                    );
+                // Check that sorting by another column works as intended
+                sortByTableHeader('CVE');
+                waitAndYieldRequestBodyVariables().then(
+                    expectRequestedSort({ field: 'CVE', reversed: true })
+                );
 
-                    // Check that changing the severity filter when a non-severity sort is applied
-                    // maintains the current sort
-                    applyLocalSeverityFilters('Low');
-                    waitAndYieldRequestBodyVariables().then(
-                        expectRequestedSort({ field: 'CVE', reversed: true })
-                    );
+                // Check that changing the severity filter when a non-severity sort is applied
+                // maintains the current sort
+                applyLocalSeverityFilters('Low');
+                waitAndYieldRequestBodyVariables().then(
+                    expectRequestedSort({ field: 'CVE', reversed: true })
+                );
 
-                    // Check that visiting via a direct link that includes a severity filter maintains
-                    // the correct sort
-                    visitWorkloadCveOverview({
-                        clearFiltersOnVisit: false,
-                        urlSearch: '?s[SEVERITY][0]=Important',
-                    });
-                    waitAndYieldRequestBodyVariables().then(
-                        expectRequestedSort([{ field: 'Important Severity Count', reversed: true }])
-                    );
-                }
+                // Check that visiting via a direct link that includes a severity filter maintains
+                // the correct sort
+                visit(`${basePath}?s[Severity][0]=Important`);
+                waitAndYieldRequestBodyVariables().then(
+                    expectRequestedSort([{ field: 'Important Severity Count', reversed: true }])
+                );
+
+                // Check that visiting via a legacy link with SEVERITY (uppercase) still works
+                visit(`${basePath}?s[SEVERITY][0]=Important`);
+                waitAndYieldRequestBodyVariables().then(
+                    expectRequestedSort([{ field: 'Important Severity Count', reversed: true }])
+                );
+            });
+        });
+    });
+
+    describe('Layer type filter tests', () => {
+        it('should apply Layer type filter correctly', () => {
+            interceptAndOverrideFeatureFlags({ ROX_BASE_IMAGE_DETECTION: true });
+
+            visitWorkloadCveOverview();
+
+            addCheckboxSelectFilter('Image component', 'Layer type', 'Base image');
+
+            // Verify filter chip is applied
+            cy.get(selectors.filterLabelGroupForCategory('Image component layer type')).should(
+                'be.visible'
             );
+            cy.get(
+                selectors.filterLabelGroupItem('Image component layer type', 'Base image')
+            ).should('be.visible');
+
+            // Verify filtered view label is shown
+            cy.get(selectors.filteredViewLabel).should('be.visible');
         });
     });
 });

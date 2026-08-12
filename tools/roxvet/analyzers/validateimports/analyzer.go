@@ -37,7 +37,6 @@ var (
 		"sensor/admission-control",
 		"sensor/common",
 		"sensor/debugger",
-		"sensor/init-tls-certs",
 		"sensor/kubernetes",
 		"sensor/tests",
 		"sensor/testutils",
@@ -104,6 +103,9 @@ var (
 		},
 		"github.com/golang/protobuf/jsonpb": {
 			replacement: "google.golang.org/protobuf/encoding/protojson",
+		},
+		"go.uber.org/goleak": {
+			replacement: "github.com/stackrox/rox/pkg/testutils/goleak",
 		},
 		"k8s.io/helm/...": {
 			replacement: "package from helm.sh/v3",
@@ -247,7 +249,7 @@ func checkForbidden(impPath, packageName string) error {
 
 // verifyImportsFromAllowedPackagesOnly verifies that all Go files in (subdirectories of) root
 // only import StackRox code from allowedPackages
-func verifyImportsFromAllowedPackagesOnly(pass *analysis.Pass, imports []*ast.ImportSpec, validImportRoot, packageName string) {
+func verifyImportsFromAllowedPackagesOnly(pass *analysis.Pass, imports []*ast.ImportSpec, validImportRoot, packageName string, isTestFile bool) {
 	allowedPackages := []*allowedPackage{{path: validImportRoot}, {path: "generated"}, {path: "image"}}
 	// The migrator is NOT allowed to import all codes from pkg except isolated packages.
 	if validImportRoot != "pkg" && !strings.HasPrefix(validImportRoot, "migrator") {
@@ -261,7 +263,6 @@ func verifyImportsFromAllowedPackagesOnly(pass *analysis.Pass, imports []*ast.Im
 	if strings.HasPrefix(validImportRoot, "migrator") {
 		allowedPackages = appendPackageWithChildren(allowedPackages,
 			"pkg/auth",
-			"pkg/batcher",
 			"pkg/binenc",
 			"pkg/booleanpolicy/policyversion",
 			"pkg/buildinfo",
@@ -271,6 +272,7 @@ func verifyImportsFromAllowedPackagesOnly(pass *analysis.Pass, imports []*ast.Im
 			"pkg/cvss/cvssv2",
 			"pkg/cvss/cvssv3",
 			"pkg/db",
+			"pkg/dblock",
 			"pkg/dberrors",
 			"pkg/dbhelper",
 			"pkg/defaults/policies",
@@ -280,6 +282,7 @@ func verifyImportsFromAllowedPackagesOnly(pass *analysis.Pass, imports []*ast.Im
 			// Migration code should not depend on features being activated or not.
 			// See the migrator README for more details.
 			"pkg/fileutils",
+			"pkg/fixtures",
 			"pkg/fsutils",
 			"pkg/grpc/routes",
 			"pkg/images/types",
@@ -342,8 +345,8 @@ func verifyImportsFromAllowedPackagesOnly(pass *analysis.Pass, imports []*ast.Im
 	if validImportRoot == "tools" {
 		allowedPackages = appendPackageWithChildren(allowedPackages,
 			"central/globaldb", "central/metrics", "central/postgres", "pkg/sac/resources",
-			"sensor/common/sensor", "sensor/common/centralclient", "sensor/kubernetes/client", "sensor/kubernetes/fake",
-			"sensor/kubernetes/sensor", "sensor/debugger", "sensor/testutils",
+			"sensor/common/sensor", "sensor/common/centralclient", "sensor/kubernetes/client", "sensor/common/clusterid",
+			"sensor/kubernetes/fake", "sensor/kubernetes/sensor", "sensor/debugger", "sensor/testutils",
 			"compliance", "compliance/utils", "compliance/node")
 	}
 
@@ -365,6 +368,13 @@ func verifyImportsFromAllowedPackagesOnly(pass *analysis.Pass, imports []*ast.Im
 	if validImportRoot == "sensor/common" {
 		// Need this for unit tests.
 		allowedPackages = appendPackageWithChildren(allowedPackages, "sensor/debugger")
+		if isTestFile {
+			// vsockclient's integration test drives a real roxagent vsockserver
+			// handler over net.Pipe() to validate the wire protocol contract.
+			// roxagent ships as a separate binary from Sensor, so this exception
+			// is scoped to test files only.
+			allowedPackages = appendPackageWithoutChildren(allowedPackages, "compliance/virtualmachines/roxagent/vsockserver")
+		}
 	}
 
 	if validImportRoot == "central" {
@@ -374,6 +384,9 @@ func verifyImportsFromAllowedPackagesOnly(pass *analysis.Pass, imports []*ast.Im
 
 	if validImportRoot == "pkg" {
 		allowedPackages = appendPackageWithChildren(allowedPackages, "operator/api")
+		if isTestFile {
+			allowedPackages = appendPackageWithChildren(allowedPackages, "tools/generate-helpers/pg-table-bindings")
+		}
 	}
 
 	for _, imp := range imports {
@@ -395,7 +408,9 @@ func run(pass *analysis.Pass) (interface{}, error) {
 	}
 
 	for _, file := range pass.Files {
-		verifyImportsFromAllowedPackagesOnly(pass, file.Imports, root, pass.Pkg.Path())
+		fileName := pass.Fset.File(file.Pos()).Name()
+		isTestFile := strings.HasSuffix(fileName, "_test.go")
+		verifyImportsFromAllowedPackagesOnly(pass, file.Imports, root, pass.Pkg.Path(), isTestFile)
 	}
 
 	return nil, nil

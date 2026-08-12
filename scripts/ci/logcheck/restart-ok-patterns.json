@@ -1,11 +1,5 @@
 [
     {
-        "comment": "collector initialization restart with download failure",
-        "job": ".*",
-        "logfile": "collector-previous",
-        "logline": "All attempts to download the (kernel module|eBPF probe) have failed."
-    },
-    {
         "comment": "collector restart due to slow sensor start",
         "job": "^(ocp|openshift)",
         "logfile": "collector-previous",
@@ -13,7 +7,7 @@
     },
     {
         "comment": "scanner restart due to slow postgres db start",
-        "job": "^(ibmcloudz)",
+        "job": ".*",
         "logfile": "scanner-previous",
         "logline": "Failed to open database despite multiple retries"
     },
@@ -21,13 +15,7 @@
         "comment": "sensor is up before central in scale-tests",
         "job": "scale-tests",
         "logfile": "sensor-previous",
-        "logline": "checking central status failed after"
-    },
-    {
-        "comment": "collector initialization restart with download failure due to bouncing in upgrade test",
-        "job": "upgrade",
-        "logfile": "collector-previous",
-        "logline": "No suitable kernel object downloaded for kernel"
+        "logline": "checking central status over HTTP failed"
     },
     {
         "comment": "collector restart due to sensor connection failure (likely slow start)",
@@ -45,12 +33,48 @@
         "comment": "Central images may be slow to pull",
         "job": "upgrade",
         "logfile": "sensor-previous",
-        "logline": "checking central status failed after"
+        "logline": "checking central status over HTTP failed"
+    },
+    {
+        "comment": "Central may still hold handle to closed connection due to various db restarts",
+        "job": "upgrade",
+        "logfile": "central-previous",
+        "logline": "panic: close of closed channel"
     },
     {
         "comment": "collector restart due to sensor bounce in compliance test",
         "job": "compliance-e2e-tests",
         "logfile": "collector-previous",
         "logline": "Socket closed"
+    },
+    {
+        "comment": "Scanner V4 slow to start indexer with external DB",
+        "job": "(gke-external-pg-17-qa-e2e-tests|gke-byodb-qa-e2e-tests)",
+        "logfile": "indexer-previous",
+        "logline": "panic: migrate: failed to connect to"
+    },
+    {
+        "comment": "Scanner V4 slow to start matcher with external DB",
+        "job": "(gke-external-pg-17-qa-e2e-tests|gke-byodb-qa-e2e-tests)",
+        "logfile": "matcher-previous",
+        "logline": "panic: migrate: failed to connect to"
+    },
+    {
+        "comment": "config-controller restart due to m2m auth OIDC discovery failure - ROX-32040",
+        "job": ".*",
+        "logfile": "config-controller.*-manager-previous",
+        "logline": "could not exchange token.*forbidden.*openid"
+    },
+    {
+        "comment": "Scanner V4 crash on DB connection refused in 4.9/4.10 (remove once 4.10 no longer included in compatability tests)",
+        "job": "compatibility",
+        "logfile": "400\\.(9|10)\\..*indexer-previous",
+        "logline": "unable to connect to database.*connection refused"
+    },
+    {
+        "comment": "Scanner V4 crash on DB connection refused in 4.9/4.10  (remove once 4.10 no longer included in compatability tests)",
+        "job": "compatibility",
+        "logfile": "400\\.(9|10)\\..*matcher-previous",
+        "logline": "unable to connect to database.*connection refused"
     }
 ]

@@ -12,8 +12,8 @@ from post_tests import PostClusterTest, FinalPost
 
 # set required test parameters
 os.environ["ORCHESTRATOR_FLAVOR"] = "k8s"
-
-os.environ["ROX_ACTIVE_VULN_MGMT"] = "true"
+os.environ["KUBERNETES_PROVIDER"] = "gke"
+os.environ["SCANNER_V4_DB_STORAGE_CLASS"] = "faster"
 
 # delegated scanning support in the secured cluster
 os.environ["SENSOR_SCANNER_SUPPORT"] = "true"

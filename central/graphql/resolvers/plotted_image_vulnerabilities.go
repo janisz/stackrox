@@ -52,12 +52,13 @@ func (resolver *Resolver) PlottedImageVulnerabilities(ctx context.Context, args 
 			},
 		},
 	}
-	query = tryUnsuppressedQuery(query)
 
-	vulnLoader, err := loaders.GetImageCVELoader(ctx)
+	// get loader
+	vulnLoader, err := loaders.GetImageCVEV2Loader(ctx)
 	if err != nil {
 		return nil, err
 	}
+
 	allCveIds, err := vulnLoader.GetIDs(ctx, query)
 	if err != nil {
 		return nil, err

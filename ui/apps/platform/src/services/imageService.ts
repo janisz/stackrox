@@ -1,7 +1,7 @@
-import { ListImage, WatchedImage } from 'types/image.proto';
+import type { ListImage, WatchedImage } from 'types/image.proto';
 
 import axios from './instance';
-import { Empty } from './types';
+import type { Empty } from './types';
 
 const imagesUrl = '/v1/images';
 const watchedImagesUrl = '/v1/watchedimages';
@@ -24,7 +24,7 @@ export function getImages(): Promise<ListImage[]> {
 export function getWatchedImages(): Promise<WatchedImage[]> {
     return axios
         .get<{ watchedImages: WatchedImage[] }>(watchedImagesUrl)
-        .then((response) => response.data.watchedImages || []);
+        .then((response) => response.data.watchedImages ?? []);
 }
 
 /*

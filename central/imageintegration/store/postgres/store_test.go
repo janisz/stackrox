@@ -41,10 +41,6 @@ func (s *ImageIntegrationsStoreSuite) SetupTest() {
 	s.NoError(err)
 }
 
-func (s *ImageIntegrationsStoreSuite) TearDownSuite() {
-	s.testDB.Teardown(s.T())
-}
-
 func (s *ImageIntegrationsStoreSuite) TestStore() {
 	ctx := sac.WithAllAccess(context.Background())
 
@@ -96,9 +92,11 @@ func (s *ImageIntegrationsStoreSuite) TestStore() {
 	}
 
 	s.NoError(store.UpsertMany(ctx, imageIntegrations))
-	allImageIntegration, err := store.GetAll(ctx)
+
+	foundImageIntegrations, missing, err := store.GetMany(ctx, imageIntegrationIDs)
 	s.NoError(err)
-	protoassert.ElementsMatch(s.T(), imageIntegrations, allImageIntegration)
+	s.Empty(missing)
+	protoassert.ElementsMatch(s.T(), imageIntegrations, foundImageIntegrations)
 
 	imageIntegrationCount, err = store.Count(ctx, search.EmptyQuery())
 	s.NoError(err)

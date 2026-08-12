@@ -1,4 +1,5 @@
-import React, { ReactElement, useState } from 'react';
+import { useState } from 'react';
+import type { ReactElement } from 'react';
 import {
     Alert,
     Button,
@@ -9,15 +10,12 @@ import {
     Flex,
     List,
     ListItem,
-    Modal,
 } from '@patternfly/react-core';
+import { Modal } from '@patternfly/react-core/deprecated';
 
 import useAnalytics, { REVOKE_INIT_BUNDLE } from 'hooks/useAnalytics';
-import {
-    ClusterInitBundle,
-    ImpactedCluster,
-    revokeClusterInitBundles,
-} from 'services/ClustersService';
+import { revokeClusterInitBundles } from 'services/ClustersService';
+import type { ClusterInitBundle, ImpactedCluster } from 'services/ClustersService';
 import { getAxiosErrorMessage } from 'utils/responseErrorUtils';
 
 export type RevokeBundleModalProps = {
@@ -129,7 +127,7 @@ function RevokeBundleModal({ initBundle, onCloseModal }: RevokeBundleModalProps)
                                     In clusters that depend on this bundle, secured cluster services
                                     like Sensor will lose connectivity to Central.
                                 </p>
-                                <p className="pf-v5-u-mt-md">
+                                <p className="pf-v6-u-mt-md">
                                     We recommend that you <strong>replace</strong> this bundle in
                                     the following secured clusters <strong>before</strong> you
                                     revoke it.

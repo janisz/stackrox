@@ -2,7 +2,6 @@ package postgres
 
 import (
 	"context"
-	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -23,9 +22,10 @@ import (
 	"github.com/stackrox/rox/pkg/sac"
 	"github.com/stackrox/rox/pkg/sac/resources"
 	"github.com/stackrox/rox/pkg/search"
+	"github.com/stackrox/rox/pkg/search/paginated"
 	pgSearch "github.com/stackrox/rox/pkg/search/postgres"
+	"github.com/stackrox/rox/pkg/search/sortfields"
 	"github.com/stackrox/rox/pkg/set"
-	"gorm.io/gorm"
 )
 
 const (
@@ -41,8 +41,6 @@ const (
 	// to deal with failures if we just sent it all.  Something to think about as we
 	// proceed and move into more e2e and larger performance testing
 	batchSize = 500
-
-	cursorBatchSize = 50
 )
 
 var (
@@ -531,7 +529,7 @@ func (s *storeImpl) isUpdated(ctx context.Context, node *storage.Node) (bool, er
 	// We skip rewriting components and vulnerabilities if the node scan is older.
 	scanUpdated := protocompat.CompareTimestamps(oldNode.GetScan().GetScanTime(), node.GetScan().GetScanTime()) <= 0
 	if !scanUpdated {
-		node.Scan = oldNode.Scan
+		node.Scan = oldNode.GetScan()
 		node.RiskScore = oldNode.GetRiskScore()
 		node.SetComponents = oldNode.GetSetComponents()
 		node.SetCves = oldNode.GetSetCves()
@@ -556,22 +554,16 @@ func (s *storeImpl) upsert(ctx context.Context, obj *storage.Node) error {
 	keys := gatherKeys(nodeParts)
 
 	return s.keyFence.DoStatusWithLock(concurrency.DiscreteKeySet(keys...), func() error {
-		conn, release, err := s.acquireConn(ctx, ops.Upsert, "Node")
-		if err != nil {
-			return err
-		}
-		defer release()
-
-		tx, err := conn.Begin(ctx)
+		tx, ctx, err := s.begin(ctx)
 		if err != nil {
 			return err
 		}
 
 		if err := s.insertIntoNodes(ctx, tx, nodeParts, scanUpdated, iTime); err != nil {
-			if err := tx.Rollback(ctx); err != nil {
-				return err
+			if errTx := tx.Rollback(ctx); errTx != nil {
+				return errors.Wrapf(errTx, "rolling back transaction due to: %v", err)
 			}
-			return err
+			return errors.Wrap(err, "inserting into nodes")
 		}
 		return tx.Commit(ctx)
 	})
@@ -602,6 +594,8 @@ func (s *storeImpl) retryableCount(ctx context.Context, q *v1.Query) (int, error
 // Search returns the result matching the query.
 func (s *storeImpl) Search(ctx context.Context, q *v1.Query) ([]search.Result, error) {
 	defer metrics.SetPostgresOperationDurationTime(time.Now(), ops.Search, "Node")
+
+	q = applyDefaultSort(q)
 
 	return pgutils.Retry2(ctx, func() ([]search.Result, error) {
 		return s.retryableSearch(ctx, q)
@@ -640,22 +634,14 @@ func (s *storeImpl) Get(ctx context.Context, id string) (*storage.Node, bool, er
 }
 
 func (s *storeImpl) retryableGet(ctx context.Context, id string) (*storage.Node, bool, error) {
-	conn, release, err := s.acquireConn(ctx, ops.Get, "Node")
+	tx, ctx, err := s.begin(ctx)
 	if err != nil {
 		return nil, false, err
 	}
-	defer release()
+	defer postgres.FinishReadOnlyTransaction(tx)
 
-	tx, err := conn.Begin(ctx)
-	if err != nil {
-		return nil, false, err
-	}
-	node, found, getErr := s.getFullNode(ctx, tx, id)
-	// No changes are made to the database, so COMMIT or ROLLBACK have same effect.
-	if err := tx.Commit(ctx); err != nil {
-		return nil, false, err
-	}
-	return node, found, getErr
+	node, found, err := s.getFullNode(ctx, tx, id)
+	return node, found, err
 }
 
 func (s *storeImpl) populateNode(ctx context.Context, tx *postgres.Tx, node *storage.Node) error {
@@ -803,13 +789,8 @@ func getComponentCVEEdges(ctx context.Context, tx *postgres.Tx, componentIDs []s
 	return componentIDToEdgesMap, rows.Err()
 }
 
-func (s *storeImpl) acquireConn(ctx context.Context, op ops.Op, typ string) (*postgres.Conn, func(), error) {
-	defer metrics.SetAcquireDBConnDuration(time.Now(), op, typ)
-	conn, err := s.db.Acquire(ctx)
-	if err != nil {
-		return nil, nil, err
-	}
-	return conn, conn.Release, nil
+func (s *storeImpl) begin(ctx context.Context) (*postgres.Tx, context.Context, error) {
+	return postgres.GetTransaction(ctx, s.db)
 }
 
 // Delete removes the specified ID from the store
@@ -822,22 +803,16 @@ func (s *storeImpl) Delete(ctx context.Context, id string) error {
 }
 
 func (s *storeImpl) retryableDelete(ctx context.Context, id string) error {
-	conn, release, err := s.acquireConn(ctx, ops.Remove, "Node")
-	if err != nil {
-		return err
-	}
-	defer release()
-
-	tx, err := conn.Begin(ctx)
+	tx, ctx, err := s.begin(ctx)
 	if err != nil {
 		return err
 	}
 
 	if err := s.deleteNodeTree(ctx, tx, id); err != nil {
-		if err := tx.Rollback(ctx); err != nil {
-			return err
+		if errTx := tx.Rollback(ctx); errTx != nil {
+			return errors.Wrapf(errTx, "rolling back transaction due to: %v", err)
 		}
-		return err
+		return errors.Wrap(err, "deleting node tree")
 	}
 	return tx.Commit(ctx)
 }
@@ -870,35 +845,22 @@ func (s *storeImpl) GetMany(ctx context.Context, ids []string) ([]*storage.Node,
 }
 
 func (s *storeImpl) retryableGetMany(ctx context.Context, ids []string) ([]*storage.Node, []int, error) {
-	conn, release, err := s.acquireConn(ctx, ops.GetMany, "Node")
+	tx, ctx, err := s.begin(ctx)
 	if err != nil {
 		return nil, nil, err
 	}
-	defer release()
-
-	tx, err := conn.Begin(ctx)
-	if err != nil {
-		return nil, nil, err
-	}
+	defer postgres.FinishReadOnlyTransaction(tx)
 
 	resultsByID := make(map[string]*storage.Node)
 	for _, id := range ids {
 		msg, found, err := s.getFullNode(ctx, tx, id)
 		if err != nil {
-			// No changes are made to the database, so COMMIT or ROLLBACK have the same effect.
-			if err := tx.Commit(ctx); err != nil {
-				return nil, nil, err
-			}
 			return nil, nil, err
 		}
 		if !found {
 			continue
 		}
 		resultsByID[msg.GetId()] = msg
-	}
-	// No changes are made to the database, so COMMIT or ROLLBACK have the same effect.
-	if err := tx.Commit(ctx); err != nil {
-		return nil, nil, err
 	}
 
 	missingIndices := make([]int, 0, len(ids)-len(resultsByID))
@@ -919,45 +881,28 @@ func (s *storeImpl) retryableGetMany(ctx context.Context, ids []string) ([]*stor
 func (s *storeImpl) WalkByQuery(ctx context.Context, q *v1.Query, fn func(node *storage.Node) error) error {
 	defer metrics.SetPostgresOperationDurationTime(time.Now(), ops.WalkByQuery, "Node")
 
-	conn, release, err := s.acquireConn(ctx, ops.WalkByQuery, "Node")
-	if err != nil {
-		return err
-	}
-	defer release()
+	q = applyDefaultSort(q)
 
-	tx, err := conn.Begin(ctx)
+	tx, ctx, err := s.begin(ctx)
 	if err != nil {
 		return err
 	}
-	defer func() {
-		if err := tx.Rollback(ctx); err != nil {
-			log.Errorf("error rolling back: %v", err)
-		}
-	}()
+	defer postgres.FinishReadOnlyTransaction(tx)
 
-	ctxWithTx := postgres.ContextWithTx(ctx, tx)
-	fetcher, closer, err := pgSearch.RunCursorQueryForSchema[storage.Node, *storage.Node](ctxWithTx, pkgSchema.NodesSchema, q, s.db)
-	if err != nil {
-		return err
-	}
-	defer closer()
-	for {
-		rows, err := fetcher(cursorBatchSize)
+	callback := func(node *storage.Node) error {
+		err := s.populateNode(ctx, tx, node)
 		if err != nil {
-			return pgutils.ErrNilIfNoRows(err)
+			return errors.Wrap(err, "populate node")
 		}
-		for _, node := range rows {
-			err := s.populateNode(ctx, tx, node)
-			if err != nil {
-				return err
-			}
-			if err := fn(node); err != nil {
-				return err
-			}
+		if err := fn(node); err != nil {
+			return errors.Wrap(err, "failed to process node")
 		}
-		if len(rows) != cursorBatchSize {
-			break
-		}
+		return nil
+	}
+
+	err = pgSearch.RunCursorQueryForSchemaFn(ctx, pkgSchema.NodesSchema, q, s.db, "WalkByQuery", callback)
+	if err != nil {
+		return errors.Wrap(err, "cursor by query")
 	}
 	return nil
 }
@@ -972,13 +917,7 @@ func (s *storeImpl) GetNodeMetadata(ctx context.Context, id string) (*storage.No
 }
 
 func (s *storeImpl) retryableGetNodeMetadata(ctx context.Context, id string) (*storage.Node, bool, error) {
-	conn, release, err := s.acquireConn(ctx, ops.Get, "NodeMetadata")
-	if err != nil {
-		return nil, false, err
-	}
-	defer release()
-
-	row := conn.QueryRow(ctx, getNodeMetaStmt, id)
+	row := s.db.QueryRow(ctx, getNodeMetaStmt, id)
 	var data []byte
 	if err := row.Scan(&data); err != nil {
 		return nil, false, pgutils.ErrNilIfNoRows(err)
@@ -1053,51 +992,6 @@ func (s *storeImpl) retryableGetManyNodeMetadata(ctx context.Context, ids []stri
 
 //// Used for testing
 
-// CreateTableAndNewStore returns a new Store instance for testing
-func CreateTableAndNewStore(ctx context.Context, _ testing.TB, db postgres.DB, gormDB *gorm.DB, noUpdateTimestamps bool) Store {
-	pgutils.CreateTableFromModel(ctx, gormDB, pkgSchema.CreateTableClustersStmt)
-	pgutils.CreateTableFromModel(ctx, gormDB, pkgSchema.CreateTableNodesStmt)
-	pgutils.CreateTableFromModel(ctx, gormDB, pkgSchema.CreateTableNodeComponentsStmt)
-	pgutils.CreateTableFromModel(ctx, gormDB, pkgSchema.CreateTableNodeCvesStmt)
-	pgutils.CreateTableFromModel(ctx, gormDB, pkgSchema.CreateTableNodeComponentEdgesStmt)
-	pgutils.CreateTableFromModel(ctx, gormDB, pkgSchema.CreateTableNodeComponentsCvesEdgesStmt)
-	return New(db, noUpdateTimestamps, concurrency.NewKeyFence())
-}
-
-func dropTableNodes(ctx context.Context, db postgres.DB) {
-	_, _ = db.Exec(ctx, "DROP TABLE IF EXISTS nodes CASCADE")
-	dropTableNodesTaints(ctx, db)
-	dropTableNodesComponents(ctx, db)
-	dropTableNodeCVEs(ctx, db)
-	dropTableNodeComponentEdges(ctx, db)
-	dropTableComponentCVEEdges(ctx, db)
-}
-
-func dropTableNodesTaints(ctx context.Context, db postgres.DB) {
-	_, _ = db.Exec(ctx, "DROP TABLE IF EXISTS nodes_taints CASCADE")
-}
-
-func dropTableNodesComponents(ctx context.Context, db postgres.DB) {
-	_, _ = db.Exec(ctx, "DROP TABLE IF EXISTS "+nodeComponentsTable+" CASCADE")
-}
-
-func dropTableNodeCVEs(ctx context.Context, db postgres.DB) {
-	_, _ = db.Exec(ctx, "DROP TABLE IF EXISTS "+nodeCVEsTable+" CASCADE")
-}
-
-func dropTableComponentCVEEdges(ctx context.Context, db postgres.DB) {
-	_, _ = db.Exec(ctx, "DROP TABLE IF EXISTS "+componentCVEEdgesTable+" CASCADE")
-}
-
-func dropTableNodeComponentEdges(ctx context.Context, db postgres.DB) {
-	_, _ = db.Exec(ctx, "DROP TABLE IF EXISTS "+nodeComponentEdgesTable+" CASCADE")
-}
-
-// Destroy drops all node tree tables.
-func Destroy(ctx context.Context, db postgres.DB) {
-	dropTableNodes(ctx, db)
-}
-
 func getCVEs(ctx context.Context, tx *postgres.Tx, cveIDs []string) (map[string]*storage.NodeCVE, error) {
 	defer metrics.SetPostgresOperationDurationTime(time.Now(), ops.GetMany, "NodeCVEs")
 
@@ -1133,4 +1027,14 @@ func gatherKeys(parts *nodePartsAsSlice) [][]byte {
 		keys = append(keys, []byte(vuln.GetId()))
 	}
 	return keys
+}
+
+func applyDefaultSort(q *v1.Query) *v1.Query {
+	q = sortfields.TransformSortOptions(q, pkgSchema.NodesSchema.OptionsMap)
+
+	defaultSortOption := &v1.QuerySortOption{
+		Field: search.LastUpdatedTime.String(),
+	}
+	// Add pagination sort order if needed.
+	return paginated.FillDefaultSortOption(q, defaultSortOption.CloneVT())
 }

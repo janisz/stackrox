@@ -31,6 +31,7 @@ function launch_service {
           return 1
         fi
 
+        echo "Deploying $service using Helm (\$OUTPUT_FORMAT=helm)..."
         for _ in {1..5}; do
             if helm_install "$service"; then
                 break
@@ -39,6 +40,7 @@ function launch_service {
             echo "Waiting for helm to respond"
         done
     else
+        echo "Deploying $service using manifests..."
         ${ORCH_CMD} apply -R -f "$dir/$service"
     fi
 }
@@ -151,14 +153,6 @@ function launch_central {
         prompt_if_central_exists "${central_namespace}"
     fi
 
-    echo "Installing SecurityPolicy CRD..."
-
-    # Manifest instllation does not include this CRD, so we need to install it in this script.
-    # Helm would install the CRD, but since we add it here, Helm won't touch it.
-    # Note that Helm is VERY conservative in that it will NEVER update a CRD, so applying a CRD here in this script is a divergence from Helm behavior!
-    crd_path=$(realpath "$(git rev-parse --show-toplevel)/config-controller/config/crd/bases/config.stackrox.io_securitypolicies.yaml")
-    kubectl apply -f "$crd_path"
-
     echo "Generating central config..."
 
     local EXTRA_ARGS=()
@@ -180,7 +174,7 @@ function launch_central {
       fi
 
       local images_to_check=("${MAIN_IMAGE}" "${CENTRAL_DB_IMAGE}")
-      if [[ "$SCANNER_SUPPORT" == "true" && "$ROX_SCANNER_V4" == "true" ]]; then
+      if [[ "$SCANNER_SUPPORT" == "true" && "$ROX_SCANNER_V4" != "false" ]]; then
         images_to_check+=("${DEFAULT_IMAGE_REGISTRY}/scanner-v4:${MAIN_IMAGE_TAG}" "${DEFAULT_IMAGE_REGISTRY}/scanner-v4-db:${MAIN_IMAGE_TAG}")
       fi
 
@@ -227,6 +221,8 @@ function launch_central {
     add_args -i "${MAIN_IMAGE}"
 
     add_args "--central-db-image=${CENTRAL_DB_IMAGE}"
+    add_args "--scanner-image=${SCANNER_IMAGE}"
+    add_args "--scanner-db-image=${SCANNER_DB_IMAGE}"
 
     add_args "--image-defaults=${ROXCTL_ROX_IMAGE_FLAVOR}"
 
@@ -235,7 +231,7 @@ function launch_central {
     { command -v oc >/dev/null && pkill -f oc'.*port-forward.*'; } || true    # terminate stale port forwarding from earlier runs
     { command -v oc >/dev/null && pkill -9 -f oc'.*port-forward.*'; } || true
 
-    if [[ "${STORAGE_CLASS}" == "faster" ]]; then
+    if [[ "${STORAGE_CLASS}" == "faster" || "${SCANNER_V4_DB_STORAGE_CLASS}" == "faster" ]]; then
         kubectl apply -f "${common_dir}/ssd-storageclass.yaml"
     fi
 
@@ -312,7 +308,6 @@ function launch_central {
         fi
     fi
 
-
     # Do not default to running monitoring locally for resource reasons, which can be overridden
     # with MONITORING_SUPPORT=true, otherwise default it to true on all other systems
     is_local_dev=$(local_dev)
@@ -349,6 +344,7 @@ function launch_central {
       ${KUBE_COMMAND:-kubectl} create namespace "${central_namespace}"
 
     if [[ -f "$unzip_dir/values-public.yaml" ]]; then
+      echo "Deploying central using Helm..."
       if [[ -n "${REGISTRY_USERNAME}" ]]; then
         ROX_NAMESPACE="${central_namespace}" "${unzip_dir}/scripts/setup.sh"
       fi
@@ -362,12 +358,6 @@ function launch_central {
       fi
       if [[ "$SCANNER_SUPPORT" != "true" ]]; then
         helm_args+=(--set scanner.disable=true)
-      fi
-
-      if [[ "${is_local_dev}" == "true" ]]; then
-        helm_args+=(-f "${COMMON_DIR}/local-dev-values.yaml")
-      elif [[ -n "$CI" ]]; then
-        helm_args+=(-f "${COMMON_DIR}/ci-values.yaml")
       fi
 
       if [[ "${CGO_CHECKS}" == "true" ]]; then
@@ -416,13 +406,34 @@ function launch_central {
       fi
 
       if [[ -n "$ROX_SCANNER_V4" ]]; then
-        local _disable=true
-        if [[ "$ROX_SCANNER_V4" == "true" ]]; then
-          _disable=false
+        local _disable=false
+        if [[ "$ROX_SCANNER_V4" == "false" ]]; then
+          _disable=true
         fi
         helm_args+=(
           --set scannerV4.disable="${_disable}"
         )
+      fi
+
+      if [[ "${ROX_SCANNER_V4:-}" != "false" ]]; then
+        if [[ "${SCANNER_V4_VULN_READINESS:-false}" == "true" ]]; then
+          helm_args+=(
+            --set customize.envVars.SCANNER_V4_MATCHER_READINESS=vulnerability
+          )
+        fi
+        if [[ -n "${SCANNER_V4_CI_VULN_BUNDLE_ALLOWLIST:-}" ]]; then
+          helm_args+=(
+            --set-json "customize.envVars.SCANNER_V4_MATCHER_VULN_BUNDLE_ALLOWLIST=\"${SCANNER_V4_CI_VULN_BUNDLE_ALLOWLIST}\""
+          )
+        fi
+      fi
+
+      if [[ -n "$EXTERNAL_DB" ]]; then
+          helm_args+=(
+            --set "central.db.password.value=${EXTERNAL_DB_PASSWORD}"
+            --set "central.db.external=true"
+            --set "central.db.source.connectionString=host=${EXTERNAL_DATABASE_HOST} client_encoding=UTF8 user=${EXTERNAL_DB_USER} dbname=${EXTERNAL_DATABASE_NAME} statement_timeout=1200000"
+          )
       fi
 
       local helm_chart="$unzip_dir/chart"
@@ -457,6 +468,17 @@ function launch_central {
           -f "$unzip_dir/values-private.yaml"
           --set-string imagePullSecrets.useExisting="stackrox;stackrox-scanner"
         )
+      fi
+
+      # Specify CI value overrides after the default generated values-public.yaml/values-private.yaml above because Helm will prioritize the last (right-most) file specified.
+      if [[ "${is_local_dev}" == "true" ]]; then
+        helm_args+=(-f "${COMMON_DIR}/local-dev-values.yaml")
+      elif [[ -n "$CI" ]]; then
+        helm_args+=(-f "${COMMON_DIR}/ci-values.yaml")
+      fi
+
+      if [[ -n "${SCANNER_V4_DB_STORAGE_CLASS}" ]]; then
+        helm_args+=(--set "scannerV4.db.persistence.persistentVolumeClaim.storageClass=${SCANNER_V4_DB_STORAGE_CLASS}")
       fi
 
       # Add a custom values file to Helm
@@ -518,7 +540,30 @@ function launch_central {
               if [[ -x "${unzip_dir}/scanner-v4/scripts/setup.sh" ]]; then
                 "${unzip_dir}/scanner-v4/scripts/setup.sh"
               fi
+              if [[ -n "${SCANNER_V4_DB_STORAGE_CLASS}" ]]; then
+                pvc_file="${unzip_dir}/scanner-v4/02-scanner-v4-06-db-pvc.yaml"
+                if [[ -f "${pvc_file}" ]]; then
+                  sed -i "s|^spec:$|spec:\n  storageClassName: ${SCANNER_V4_DB_STORAGE_CLASS}|" "${pvc_file}"
+                else
+                  echo >&2 "WARNING: SCANNER_V4_DB_STORAGE_CLASS is set but ${pvc_file} not found; storage class will not be applied."
+                fi
+              fi
               launch_service "${unzip_dir}" scanner-v4
+
+              if [[ -n "$CI" ]]; then
+                ${ORCH_CMD} -n stackrox patch hpa scanner-v4-indexer --patch "$(cat "${common_dir}/scanner-v4-hpa-patch.yaml")"
+                ${ORCH_CMD} -n stackrox patch hpa scanner-v4-matcher --patch "$(cat "${common_dir}/scanner-v4-hpa-patch.yaml")"
+                ${ORCH_CMD} -n stackrox patch deployment scanner-v4-indexer --patch "$(cat "${common_dir}/scanner-v4-indexer-patch.yaml")"
+                ${ORCH_CMD} -n stackrox patch deployment scanner-v4-matcher --patch "$(cat "${common_dir}/scanner-v4-matcher-patch.yaml")"
+                ${ORCH_CMD} -n stackrox patch deployment scanner-v4-db --patch "$(cat "${common_dir}/scanner-v4-db-patch.yaml")"
+                if [[ "${SCANNER_V4_VULN_READINESS:-false}" == "true" ]]; then
+                  ${ORCH_CMD} -n stackrox set env deploy/scanner-v4-matcher SCANNER_V4_MATCHER_READINESS=vulnerability
+                fi
+                if [[ -n "${SCANNER_V4_CI_VULN_BUNDLE_ALLOWLIST:-}" ]]; then
+                  ${ORCH_CMD} -n stackrox set env deploy/scanner-v4-matcher \
+                    "SCANNER_V4_MATCHER_VULN_BUNDLE_ALLOWLIST=${SCANNER_V4_CI_VULN_BUNDLE_ALLOWLIST}"
+                fi
+              fi
             else
               echo >&2 "WARNING: Deployment bundle does not seem to contain support for Scanner V4."
               echo >&2 "WARNING: Scanner V4 will not be deployed now."
@@ -581,14 +626,14 @@ function launch_central {
         echo
         export API_ENDPOINT="${ROUTE_HOST}:443"
     else
-        "${central_scripts_dir}/port-forward.sh" 8000
+        "${central_scripts_dir}/port-forward.sh" "${LOCAL_PORT:-8000}"
     fi
 
     if [[ "${needs_monitoring}" == "true" ]]; then
       "${COMMON_DIR}/monitoring.sh"
     fi
 
-    if [[ -n "$CI" ]]; then
+    if [[ -n "$CI" ]] && ! kubectl config current-context | grep -q kind; then
         # Needed for GKE and OpenShift clusters
         echo "Sleep for 2 minutes to allow for stabilization"
         sleep 120
@@ -600,6 +645,21 @@ function launch_central {
     echo "Access the UI at: https://${API_ENDPOINT}"
 }
 
+function ensure_collector_priority_class {
+    local priority_class_name="$1"
+    ${ORCH_CMD} get priorityclass -o=name "$priority_class_name" >/dev/null 2>&1 && return 0
+    ${ORCH_CMD} apply -f - <<EOT
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: ${priority_class_name}
+value: 1000000
+preemptionPolicy: PreemptLowerPriority
+globalDefault: false
+description: "This priority class shall be used for collector pods, which must be able to preempt other pods to fit exactly one collector on each node."
+EOT
+}
+
 function launch_sensor {
     local k8s_dir="$1"
     local sensor_namespace=${SENSOR_NAMESPACE:-stackrox}
@@ -608,7 +668,10 @@ function launch_sensor {
     local extra_config=()
     local scanner_extra_config=()
     local extra_json_config=''
+    local extra_json_dynamic_config=''
     local extra_helm_config=()
+
+    local collector_priority_class_name="stackrox-collector-dev"
 
     verify_orch
 
@@ -632,6 +695,24 @@ function launch_sensor {
     	extra_json_config+=", \"admissionControllerEvents\": ${bool_val}"
     	extra_helm_config+=(--set "admissionControl.listenOnEvents=${bool_val}")
     fi
+    # Default to true if not set
+    local enforce_val="${ADMISSION_CONTROLLER_ENFORCE:-true}"
+    enforce_val="$(echo "$enforce_val" | tr '[:upper:]' '[:lower:]')"
+    if [[ "$enforce_val" != "false" ]]; then
+      enforce_val="true"
+    fi
+    extra_helm_config+=(--set "admissionControl.enforce=${enforce_val}")
+
+    if [[ "${SECURED_CLUSTER_AUTO_LOCK_PROCESS_BASELINES:-}" == "true" ]]; then
+        extra_config+=("--auto-lock-process-baselines=true")
+        extra_json_dynamic_config+='"autoLockProcessBaselinesConfig": {"enabled": true}'
+        extra_helm_config+=(--set "autoLockProcessBaselines.enabled=true")
+    fi
+
+    if [[ -n "$extra_json_dynamic_config" ]]; then
+        extra_json_dynamic_config+=", "
+    fi
+    extra_json_dynamic_config+='"admissionControllerConfig": {"enabled": '"${enforce_val}"', "enforceOnUpdates": '"${enforce_val}"'}'
 
     if [[ -n "$ROXCTL_TIMEOUT" ]]; then
       echo "Extending roxctl timeout to $ROXCTL_TIMEOUT"
@@ -814,9 +895,29 @@ function launch_sensor {
         helm_args+=(--set scannerV4.disable=false)
       fi
 
+      if [[ "${ROX_VIRTUAL_MACHINES:-}" == "true" ]]; then
+        # Enables Sensor VSOCK RBAC and ROX_VIRTUAL_MACHINES on Sensor.
+        extra_helm_config+=(--set "virtualMachines.enabled=true")
+        # Shorten pull-mode scraper cadence for VM e2e (production default is 5m).
+        # Floor is 1m (vmscraper.clampPollInterval); values below that are raised to 1m.
+        extra_helm_config+=(--set "customize.envVars.ROX_VIRTUAL_MACHINES_SCRAPER_POLL_INTERVAL=${ROX_VIRTUAL_MACHINES_SCRAPER_POLL_INTERVAL:-1m}")
+      fi
+
       if [[ -n "$LOGLEVEL" ]]; then
         helm_args+=(
           --set customize.envVars.LOGLEVEL="${LOGLEVEL}"
+        )
+      fi
+
+      if [[ -n "${ROX_NETFLOW_BATCHING:-}" ]]; then
+        helm_args+=(
+          --set customize.envVars.ROX_NETFLOW_BATCHING="${ROX_NETFLOW_BATCHING}"
+        )
+      fi
+
+      if [[ -n "${ROX_NETFLOW_CACHE_LIMITING:-}" ]]; then
+        helm_args+=(
+          --set customize.envVars.ROX_NETFLOW_CACHE_LIMITING="${ROX_NETFLOW_CACHE_LIMITING}"
         )
       fi
 
@@ -830,6 +931,16 @@ function launch_sensor {
       if [[ "${FORCE_COLLECTION_METHOD:-false}" == "true" ]]; then
         echo "Forcing collection method"
         extra_helm_config+=(--set "collector.forceCollectionMethod=true")
+      fi
+
+      if [[ "${DEDICATED_COLLECTOR_PRIORITY_CLASS:-}" == "true" ]]; then
+        ensure_collector_priority_class "$collector_priority_class_name"
+        extra_helm_config+=(--set "collector.priorityClassName=$collector_priority_class_name")
+      fi
+
+      if [[ "${SFA_AGENT:-false}" == "true" ]]; then
+        echo "Enable File Activity Monitoring"
+        extra_helm_config+=(--set "collector.famEnabled=true")
       fi
 
       if [[ -n "$CI" ]]; then
@@ -846,18 +957,49 @@ function launch_sensor {
         kubectl -n "${sensor_namespace}" get secret stackrox &>/dev/null || kubectl -n "${sensor_namespace}" create -f - < <("${common_dir}/pull-secret.sh" stackrox docker.io)
       fi
 
+      if [[ -n "${ROX_PROCESS_INDICATORS_PER_NAMESPACE}" ]]; then
+        extra_helm_config+=(--set "processIndicators.excludeNamespaceFilter=namespace-without-persistence")
+      fi
+
+      echo "Deploying sensor using Helm..."
       helm upgrade --install -n "${sensor_namespace}" --create-namespace stackrox-secured-cluster-services "${sensor_helm_chart}" \
           "${helm_args[@]}" "${extra_helm_config[@]}"
     else
+      if [[ -n "${ROX_PROCESS_INDICATORS_PER_NAMESPACE}" ]]; then
+        if [[ -n "$extra_json_dynamic_config" ]]; then
+            extra_json_dynamic_config+=", "
+        fi
+        extra_json_dynamic_config+='"processIndicators": {"excludeNamespaceFilter": "namespace-without-persistence"}'
+      fi
+
       if [[ -x "$(command -v roxctl)" && "$(roxctl version)" == "$MAIN_IMAGE_TAG" ]]; then
         [[ -n "${ROX_ADMIN_PASSWORD}" ]] || { echo >&2 "ROX_ADMIN_PASSWORD not found! Cannot launch sensor."; return 1; }
-        roxctl --endpoint "${API_ENDPOINT}" sensor generate --main-image-repository="${MAIN_IMAGE_REPO}" --central="$CLUSTER_API_ENDPOINT" --name="$CLUSTER" \
+        roxctl --endpoint "${API_ENDPOINT}" --ca "" --insecure-skip-tls-verify sensor generate --main-image-repository="${MAIN_IMAGE_REPO}" --central="$CLUSTER_API_ENDPOINT" --name="$CLUSTER" \
              --collection-method="$COLLECTION_METHOD" \
              "${ORCH}" \
              "${extra_config[@]+"${extra_config[@]}"}"
         mv "sensor-${CLUSTER}" "$k8s_dir/sensor-deploy"
+
+        # roxctl sensor generate does not support setting dynamicConfig fields
+        # (e.g. processIndicators.excludeNamespaceFilter), so we patch the
+        # cluster via the API after creation.
+        if [[ -n "$extra_json_dynamic_config" ]]; then
+          echo "Updating cluster dynamic config after roxctl sensor generate..."
+          local cluster_json
+          cluster_json="$(curl_central_retry \
+              "https://${API_ENDPOINT}/v1/clusters" \
+            | jq -r ".clusters[] | select(.name == \"${CLUSTER}\")")"
+          local cluster_id
+          cluster_id="$(echo "$cluster_json" | jq -r '.id')"
+          local updated_cluster
+          updated_cluster="$(echo "$cluster_json" | jq ".dynamicConfig += {${extra_json_dynamic_config}}")"
+          curl_central_retry -X PUT \
+              -d "$updated_cluster" \
+              "https://${API_ENDPOINT}/v1/clusters/${cluster_id}"
+        fi
+
         if [[ "${GENERATE_SCANNER_DEPLOYMENT_BUNDLE:-}" == "true" ]]; then
-            roxctl --endpoint "${API_ENDPOINT}" scanner generate \
+            roxctl --endpoint "${API_ENDPOINT}" --ca "" --insecure-skip-tls-verify scanner generate \
                   --output-dir="scanner-deploy" "${scanner_extra_config[@]+"${scanner_extra_config[@]}"}"
             mv "scanner-deploy" "${k8s_dir}/scanner-deploy"
             echo "Note: A Scanner deployment bundle has been stored at ${k8s_dir}/scanner-deploy"
@@ -868,6 +1010,8 @@ function launch_sensor {
             echo >&2 "Please make sure to have a roxctl version ${MAIN_IMAGE_TAG} in PATH."
             exit 1
         fi
+
+        extra_json_config="${extra_json_config}, "'"dynamicConfig"'": {${extra_json_dynamic_config}}"
         get_cluster_zip "$API_ENDPOINT" "$CLUSTER" "${CLUSTER_TYPE}" "${MAIN_IMAGE}" "$CLUSTER_API_ENDPOINT" "$k8s_dir" "$COLLECTION_METHOD" "$extra_json_config"
         unzip "$k8s_dir/sensor-deploy.zip" -d "$k8s_dir/sensor-deploy"
         rm "$k8s_dir/sensor-deploy.zip"
@@ -886,33 +1030,56 @@ function launch_sensor {
         sed -itmp.bak 's/set -e//g' "${k8s_dir}/sensor-deploy/sensor.sh"
       fi
 
-      echo "Deploying Sensor..."
+      echo "Deploying sensor using manifests..."
       NAMESPACE="${sensor_namespace}" "${k8s_dir}/sensor-deploy/sensor.sh"
     fi
 
+    # Only apply sensor env vars via kubectl for non-Helm deployments.
+    # Helm deployments already have these set via customize.envVars.
+    if [[ "${SENSOR_HELM_DEPLOY:-}" != "true" ]]; then
+      sensor_env=()
+
+      if [[ -n "${ROX_NETFLOW_BATCHING:-}" ]]; then
+        sensor_env+=("ROX_NETFLOW_BATCHING=${ROX_NETFLOW_BATCHING}")
+      fi
+
+      if [[ -n "${ROX_NETFLOW_CACHE_LIMITING:-}" ]]; then
+        sensor_env+=("ROX_NETFLOW_CACHE_LIMITING=${ROX_NETFLOW_CACHE_LIMITING}")
+      fi
+
+      if [[ "${#sensor_env[@]}" -gt 0 ]]; then
+        kubectl -n "${sensor_namespace}" set env deploy/sensor "${sensor_env[@]}"
+      fi
+    fi
+
+    collector_env=()
+
     if [[ -n "${ROX_AFTERGLOW_PERIOD}" ]]; then
-       kubectl -n "${sensor_namespace}" set env ds/collector ROX_AFTERGLOW_PERIOD="${ROX_AFTERGLOW_PERIOD}"
+      collector_env+=("ROX_AFTERGLOW_PERIOD=${ROX_AFTERGLOW_PERIOD}")
     fi
 
     if [[ -n "${ROX_NON_AGGREGATED_NETWORKS}" ]]; then
-      kubectl -n "${sensor_namespace}" set env ds/collector ROX_NON_AGGREGATED_NETWORKS="${ROX_NON_AGGREGATED_NETWORKS}"
+      collector_env+=("ROX_NON_AGGREGATED_NETWORKS=${ROX_NON_AGGREGATED_NETWORKS}")
     fi
 
-    # For local installations (e.g. on Colima): hotload binary and update resource requests
+    if [[ -n "${ROX_COLLECTOR_INTROSPECTION_ENABLE}" ]]; then
+      collector_env+=("ROX_COLLECTOR_INTROSPECTION_ENABLE=${ROX_COLLECTOR_INTROSPECTION_ENABLE}")
+    fi
+
+    if [[ "${#collector_env[@]}" -gt 0 ]]; then
+      kubectl -n "${sensor_namespace}" set env ds/collector "${collector_env[@]}"
+    fi
+
+    # For local installations (e.g. on Colima): hotload binary
     if [[ "$(local_dev)" == "true" ]]; then
         if [[ "${ROX_HOTRELOAD}" == "true" ]]; then
             hotload_binary bin/kubernetes-sensor kubernetes sensor "${sensor_namespace}"
         fi
-        if [[ -z "${IS_RACE_BUILD}" ]]; then
-           kubectl -n "${sensor_namespace}" patch deploy/sensor --patch '{"spec":{"template":{"spec":{"containers":[{"name":"sensor","resources":{"limits":{"cpu":"500m","memory":"500Mi"},"requests":{"cpu":"500m","memory":"500Mi"}}}]}}}}'
-        fi
     fi
 
-    # When running CI steps or when SENSOR_DEV_RESOURCES is set to true: only update resource requests
-    if [[ -n "${CI}" || "${SENSOR_DEV_RESOURCES}" == "true" ]]; then
-        if [[ -z "${IS_RACE_BUILD}" ]]; then
-            kubectl -n "${sensor_namespace}" patch deploy/sensor --patch '{"spec":{"template":{"spec":{"containers":[{"name":"sensor","resources":{"limits":{"cpu":"500m","memory":"500Mi"},"requests":{"cpu":"500m","memory":"500Mi"}}}]}}}}'
-        fi
+    # When running CI steps, local installations, or when SENSOR_DEV_RESOURCES is set to true: only update resource requests
+    if [[ -n "${CI}" || "$(local_dev)" == "true" || "${SENSOR_DEV_RESOURCES}" == "true" ]]; then
+        ${ORCH_CMD} -n "${sensor_namespace}" patch deploy/sensor --patch "$(cat "${common_dir}/sensor-local-patch.yaml")"
     fi
 
     if [[ "$MONITORING_SUPPORT" == "true" || ( "$(local_dev)" != "true" && -z "$MONITORING_SUPPORT" ) ]]; then

@@ -29,11 +29,11 @@ export const IMAGE_FRAGMENT = gql`
             tag
         }
         scan {
-            components {
+            imageComponents {
                 name
                 layerIndex
                 version
-                vulns {
+                imageVulnerabilities {
                     cve
                     cvss
                     link
@@ -53,15 +53,6 @@ export const IMAGE_NAME = gql`
             }
         }
     }
-`;
-
-export const IMAGE_QUERY = gql`
-    query image($id: ID!) {
-        image(id: $id) {
-            ...imageFields
-        }
-    }
-    ${IMAGE_FRAGMENT}
 `;
 
 export const IMAGES_QUERY = gql`

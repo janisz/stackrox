@@ -1,6 +1,8 @@
 package flags
 
 import (
+	"slices"
+
 	"github.com/spf13/cobra"
 	"github.com/stackrox/rox/pkg/env"
 )
@@ -17,15 +19,13 @@ func AddNoColor(c *cobra.Command) {
 	// Printer is required to initialize commands thus we cannot follow
 	// https://github.com/fatih/color/blob/v1.13.0/doc.go#L109-L119
 	var noColor bool
-	c.PersistentFlags().BoolVar(&noColor, noColorName, false, "Disable color output. Alternately disable the color output by setting the ROX_NO_COLOR environment variable")
+	c.PersistentFlags().BoolVar(&noColor, noColorName, false, "Disable color output. Alternately disable the color output by setting the ROX_NO_COLOR environment variable.")
 }
 
 // HasNoColor returns true is passed args contain noColorFlag
 func HasNoColor(args []string) bool {
-	for _, arg := range args {
-		if arg == noColorFlag {
-			return true
-		}
+	if slices.Contains(args, noColorFlag) {
+		return true
 	}
 	if env.NoColorEnv.BooleanSetting() != env.NoColorEnv.DefaultBooleanSetting() {
 		return env.NoColorEnv.BooleanSetting()

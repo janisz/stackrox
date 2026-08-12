@@ -10,18 +10,22 @@ import (
 	_ "embed"
 
 	"github.com/hashicorp/go-multierror"
+	consolev1 "github.com/openshift/api/console/v1"
 	"github.com/pkg/errors"
 	"github.com/stackrox/rox/generated/storage"
 	platform "github.com/stackrox/rox/operator/api/v1alpha1"
+	"github.com/stackrox/rox/operator/internal/securedcluster"
 	"github.com/stackrox/rox/operator/internal/securedcluster/scanner"
 	"github.com/stackrox/rox/operator/internal/values/translation"
 	"github.com/stackrox/rox/pkg/crs"
+	"github.com/stackrox/rox/pkg/features"
 	helmUtil "github.com/stackrox/rox/pkg/helm/util"
-	"github.com/stackrox/rox/pkg/pointers"
+	pkgKubernetes "github.com/stackrox/rox/pkg/kubernetes"
 	"github.com/stackrox/rox/pkg/utils"
 	"helm.sh/helm/v3/pkg/chartutil"
 	corev1 "k8s.io/api/core/v1"
 	k8sErrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrlClient "sigs.k8s.io/controller-runtime/pkg/client"
@@ -66,8 +70,19 @@ func (t Translator) Translate(ctx context.Context, u *unstructured.Unstructured)
 	if err != nil {
 		return nil, err
 	}
+	// For translation purposes, enrich SecuredCluster with defaults, which are not implicitly marshalled/unmarshaled.
+	if err := platform.AddUnstructuredDefaultsToSecuredCluster(&sc, u); err != nil {
+		return nil, err
+	}
 
-	valsFromCR, err := t.translate(ctx, sc)
+	// At this point we don't need the Defaults in the unstructured object anymore and simply get rid of it to prevent
+	// Kube API warnings of the form:
+	//
+	//   KubeAPIWarningLogger    unknown field "defaults"
+	delete(u.Object, "defaults")
+
+	scCopy := sc.DeepCopy()
+	valsFromCR, err := t.translate(ctx, *scCopy)
 	if err != nil {
 		return nil, err
 	}
@@ -82,15 +97,20 @@ func (t Translator) Translate(ctx context.Context, u *unstructured.Unstructured)
 
 // translate translates a SecuredCluster CR into helm values.
 func (t Translator) translate(ctx context.Context, sc platform.SecuredCluster) (chartutil.Values, error) {
-	t.setDefaults(&sc)
+	if err := platform.MergeSecuredClusterDefaultsIntoSpec(&sc); err != nil {
+		return nil, err
+	}
+	scanner.SetScannerDefaults(&sc.Spec)
 
 	v := translation.NewValuesBuilder()
 
-	v.SetStringValue("clusterName", sc.Spec.ClusterName)
+	if sc.Spec.ClusterName != nil {
+		v.SetStringValue("clusterName", *sc.Spec.ClusterName)
+	}
 	v.SetStringMap("clusterLabels", sc.Spec.ClusterLabels)
 
-	if sc.Spec.CentralEndpoint != "" {
-		v.SetStringValue("centralEndpoint", sc.Spec.CentralEndpoint)
+	if sc.Spec.CentralEndpoint != nil && *sc.Spec.CentralEndpoint != "" {
+		v.SetStringValue("centralEndpoint", *sc.Spec.CentralEndpoint)
 	}
 
 	v.AddAllFrom(t.getTLSValues(ctx, sc))
@@ -98,6 +118,10 @@ func (t Translator) translate(ctx context.Context, sc platform.SecuredCluster) (
 	v.AddAllFrom(translation.GetImagePullSecrets(sc.Spec.ImagePullSecrets))
 
 	customize := translation.NewValuesBuilder()
+	deploymentDefaults, err := translation.GetDeploymentDefaults(sc.Spec.Customize)
+	if err != nil {
+		return nil, err
+	}
 
 	scannerAutoSenseConfig, err := scanner.AutoSenseLocalScannerConfig(ctx, t.client, sc)
 	if err != nil {
@@ -109,11 +133,8 @@ func (t Translator) translate(ctx context.Context, sc platform.SecuredCluster) (
 		return nil, err
 	}
 
-	v.AddChild("sensor", t.getSensorValues(sc.Spec.Sensor, scannerAutoSenseConfig, scannerV4AutoSenseConfig))
-
-	if sc.Spec.AdmissionControl != nil {
-		v.AddChild("admissionControl", t.getAdmissionControlValues(sc.Spec.AdmissionControl))
-	}
+	v.AddChild("sensor", t.getSensorValues(sc.Spec.Sensor, scannerAutoSenseConfig, scannerV4AutoSenseConfig, deploymentDefaults))
+	v.AddChild("admissionControl", t.getAdmissionControlValues(sc.Spec.AdmissionControl, deploymentDefaults))
 
 	if sc.Spec.AuditLogs != nil {
 		v.AddChild("auditLogs", t.getAuditLogsValues(sc.Spec.AuditLogs))
@@ -123,10 +144,8 @@ func (t Translator) translate(ctx context.Context, sc platform.SecuredCluster) (
 		v.AddChild("collector", t.getCollectorValues(sc.Spec.PerNode))
 	}
 
-	v.AddChild("scanner", t.getLocalScannerComponentValues(sc, scannerAutoSenseConfig))
-	if sc.Spec.ScannerV4 != nil {
-		v.AddChild("scannerV4", t.getLocalScannerV4ComponentValues(ctx, sc, scannerV4AutoSenseConfig))
-	}
+	v.AddChild("scanner", t.getLocalScannerComponentValues(sc, scannerAutoSenseConfig, deploymentDefaults))
+	v.AddChild("scannerV4", t.getLocalScannerV4ComponentValues(ctx, sc, scannerV4AutoSenseConfig, deploymentDefaults))
 
 	customize.AddAllFrom(translation.GetCustomize(sc.Spec.Customize))
 
@@ -135,13 +154,19 @@ func (t Translator) translate(ctx context.Context, sc platform.SecuredCluster) (
 
 	v.AddChild("monitoring", translation.GetGlobalMonitoring(sc.Spec.Monitoring))
 
-	if sc.Spec.RegistryOverride != "" {
-		v.SetStringValue("registryOverride", sc.Spec.RegistryOverride)
+	if sc.Spec.RegistryOverride != nil && *sc.Spec.RegistryOverride != "" {
+		v.SetStringValue("registryOverride", *sc.Spec.RegistryOverride)
 	}
 
 	if sc.Spec.Network != nil {
 		v.AddChild("network", translation.GetGlobalNetwork(sc.Spec.Network))
 	}
+
+	v.AddChild("autoLockProcessBaselines", getProcessBaselinesValues(sc.Spec.ProcessBaselines))
+
+	v.AddChild("consolePlugin", t.getConsolePluginValues(ctx))
+
+	v.AddChild("processIndicators", getProcessIndicatorsValues(sc.Spec.ProcessIndicators))
 
 	return v.Build()
 }
@@ -173,9 +198,47 @@ func (t Translator) getTLSValues(ctx context.Context, sc platform.SecuredCluster
 		}
 		centralCA = string(ca)
 	}
+
+	// Attempt to get the CA bundle from the tls-ca-bundle ConfigMap, which is created by Sensor at runtime
+	// based on data received from Central, and may contain multiple CA certificates.
+	// This is needed so that the Operator can update the ValidatingWebhookConfiguration's caBundle field.
+	caBundle, err := t.getCABundleFromConfigMap(ctx, sc)
+	if err != nil {
+		return v.SetError(errors.Wrapf(err, "failed to get CA bundle from %q ConfigMap", pkgKubernetes.TLSCABundleConfigMapName))
+	} else if caBundle != "" {
+		centralCA = caBundle
+	}
+
 	v.SetStringMap("ca", map[string]string{"cert": centralCA})
 
 	return &v
+}
+
+// getCABundleFromConfigMap reads the CA bundle from the ConfigMap created by Sensor
+func (t Translator) getCABundleFromConfigMap(ctx context.Context, sc platform.SecuredCluster) (string, error) {
+	var configMap corev1.ConfigMap
+	key := ctrlClient.ObjectKey{
+		Namespace: sc.Namespace,
+		Name:      pkgKubernetes.TLSCABundleConfigMapName,
+	}
+
+	if err := t.client.Get(ctx, key, &configMap); err != nil {
+		if k8sErrors.IsNotFound(err) {
+			return "", nil // ConfigMap doesn't exist yet - this is normal for fresh installs
+		}
+		return "", errors.Wrapf(err, "failed to get CA bundle ConfigMap %s", key)
+	}
+
+	caBundlePEM, ok := configMap.Data[pkgKubernetes.TLSCABundleKey]
+	if !ok {
+		return "", errors.Errorf("key %q not found in ConfigMap %s", pkgKubernetes.TLSCABundleKey, key)
+	}
+
+	if caBundlePEM == "" {
+		return "", errors.Errorf("CA bundle is empty in ConfigMap %s", key)
+	}
+
+	return caBundlePEM, nil
 }
 
 func (t Translator) checkRequiredTLSSecrets(ctx context.Context, sc platform.SecuredCluster) (*crs.CRS, error) {
@@ -198,7 +261,7 @@ func (t Translator) checkRequiredTLSSecrets(ctx context.Context, sc platform.Sec
 
 	if multiErr != nil {
 		if notFound {
-			return nil, errors.Wrapf(multiErr, "some init-bundle secrets missing in namespace %q, please make sure you have downloaded init-bundle secrets (from UI or with roxctl) and created corresponding resources in the correct namespace", sc.Namespace)
+			return nil, errors.Wrapf(multiErr, "%v", securedcluster.InitBundleSecretsMissingError(sc.Namespace))
 		}
 		return nil, multiErr
 	}
@@ -238,50 +301,57 @@ func (t Translator) checkInitBundleSecret(ctx context.Context, sc platform.Secur
 	return nil
 }
 
-func (t Translator) getSensorValues(sensor *platform.SensorComponentSpec, scannerAutosense scanner.AutoSenseResult, scannerV4Autosense scanner.AutoSenseResult) *translation.ValuesBuilder {
+func (t Translator) getSensorValues(sensor *platform.SensorComponentSpec, scannerAutosense scanner.AutoSenseResult, scannerV4Autosense scanner.AutoSenseResult, defaults translation.SchedulingConstraints) *translation.ValuesBuilder {
 	sv := translation.NewValuesBuilder()
-
-	if sensor != nil {
-		sv.AddChild(translation.ResourcesKey, translation.GetResources(sensor.Resources))
-		sv.SetStringMap("nodeSelector", sensor.NodeSelector)
-		sv.AddAllFrom(translation.GetTolerations(translation.TolerationsKey, sensor.Tolerations))
-		if len(sensor.HostAliases) > 0 {
-			sv.AddAllFrom(translation.GetHostAliases(translation.HostAliasesKey, sensor.HostAliases))
-		}
-	}
 
 	if scannerAutosense.EnableLocalImageScanning || scannerV4Autosense.EnableLocalImageScanning {
 		sv.SetPathValue("localImageScanning.enabled", strconv.FormatBool(true))
 	}
 
+	if sensor == nil && !defaults.IsSet() {
+		return &sv
+	}
+	if sensor == nil {
+		sensor = &platform.SensorComponentSpec{}
+	}
+
+	sv.AddChild(translation.ResourcesKey, translation.GetResources(sensor.Resources))
+
+	sv.SetScheduling("nodeSelector", translation.TolerationsKey, &sensor.DeploymentSpec, defaults)
+
+	if len(sensor.HostAliases) > 0 {
+		sv.AddAllFrom(translation.GetHostAliases(translation.HostAliasesKey, sensor.HostAliases))
+	}
+
 	return &sv
 }
 
-func (t Translator) getAdmissionControlValues(admissionControl *platform.AdmissionControlComponentSpec) *translation.ValuesBuilder {
+func (t Translator) getAdmissionControlValues(admissionControl *platform.AdmissionControlComponentSpec, defaults translation.SchedulingConstraints) *translation.ValuesBuilder {
+	if admissionControl == nil && !defaults.IsSet() {
+		return nil
+	}
+	if admissionControl == nil {
+		admissionControl = &platform.AdmissionControlComponentSpec{}
+	}
+
 	acv := translation.NewValuesBuilder()
 
 	acv.AddChild(translation.ResourcesKey, translation.GetResources(admissionControl.Resources))
-	acv.SetBool("listenOnCreates", admissionControl.ListenOnCreates)
-	acv.SetBool("listenOnUpdates", admissionControl.ListenOnUpdates)
-	acv.SetBool("listenOnEvents", admissionControl.ListenOnEvents)
 	dynamic := translation.NewValuesBuilder()
 	// Unlike in the UI, both static and dynamic parts of config are driven by
-	// the single spec.admissionControl.listenOn* setting in CR. This is because
+	// the CR fields directly below spec.admissionControl. This is because
 	// redeployment is natively part of the CR lifecycle when we have an operator, so
 	// no need to distinguish between the static and dynamic part.
-	dynamic.SetBool("enforceOnCreates", admissionControl.ListenOnCreates)
-	dynamic.SetBool("enforceOnUpdates", admissionControl.ListenOnUpdates)
-	if admissionControl.ContactImageScanners != nil {
-		switch *admissionControl.ContactImageScanners {
-		case platform.ScanIfMissing:
-			dynamic.SetBoolValue("scanInline", true)
-		case platform.DoNotScanInline:
-			dynamic.SetBoolValue("scanInline", false)
+	if admissionControl.Enforcement != nil {
+		switch *admissionControl.Enforcement {
+		case platform.PolicyEnforcementEnabled:
+			acv.SetBoolValue("enforce", true)
+		case platform.PolicyEnforcementDisabled:
+			acv.SetBoolValue("enforce", false)
 		default:
-			return dynamic.SetError(errors.Errorf("invalid spec.admissionControl.contactImageScanners setting %q", *admissionControl.ContactImageScanners))
+			return dynamic.SetError(errors.Errorf("invalid spec.admissionControl.enforcement setting %q", *admissionControl.Enforcement))
 		}
 	}
-	dynamic.SetInt32("timeout", admissionControl.TimeoutSeconds)
 	if admissionControl.Bypass != nil {
 		switch *admissionControl.Bypass {
 		case platform.BypassBreakGlassAnnotation:
@@ -292,9 +362,11 @@ func (t Translator) getAdmissionControlValues(admissionControl *platform.Admissi
 			return dynamic.SetError(errors.Errorf("invalid spec.admissionControl.bypass setting %q", *admissionControl.Bypass))
 		}
 	}
+	acv.SetString("failurePolicy", (*string)(admissionControl.FailurePolicy))
 	acv.AddChild("dynamic", &dynamic)
-	acv.SetStringMap("nodeSelector", admissionControl.NodeSelector)
-	acv.AddAllFrom(translation.GetTolerations(translation.TolerationsKey, admissionControl.Tolerations))
+
+	acv.SetScheduling("nodeSelector", translation.TolerationsKey, &admissionControl.DeploymentSpec, defaults)
+
 	if len(admissionControl.HostAliases) > 0 {
 		acv.AddAllFrom(translation.GetHostAliases(translation.HostAliasesKey, admissionControl.HostAliases))
 	}
@@ -320,6 +392,16 @@ func (t Translator) getAuditLogsValues(auditLogs *platform.AuditLogsSpec) *trans
 	return &cv
 }
 
+func getProcessBaselinesValues(processBaselines *platform.ProcessBaselinesSpec) *translation.ValuesBuilder {
+	if processBaselines == nil || processBaselines.AutoLock == nil {
+		return nil
+	}
+	cv := translation.NewValuesBuilder()
+	cv.SetBoolValue("enabled", *processBaselines.AutoLock == platform.ProcessBaselinesAutoLockModeEnabled)
+
+	return &cv
+}
+
 func (t Translator) getCollectorValues(perNode *platform.PerNodeSpec) *translation.ValuesBuilder {
 	cv := translation.NewValuesBuilder()
 
@@ -340,6 +422,7 @@ func (t Translator) getCollectorValues(perNode *platform.PerNodeSpec) *translati
 	cv.AddAllFrom(t.getCollectorContainerValues(perNode.Collector))
 	cv.AddAllFrom(t.getComplianceContainerValues(perNode.Compliance))
 	cv.AddAllFrom(t.getNodeInventoryContainerValues(perNode.NodeInventory))
+	cv.AddAllFrom(t.getFAMContainerValues(perNode.FileActivityMonitoring))
 
 	return &cv
 }
@@ -395,26 +478,52 @@ func (t Translator) getNodeInventoryContainerValues(nodeInventory *platform.Cont
 	return &cv
 }
 
-func (t Translator) getLocalScannerComponentValues(securedCluster platform.SecuredCluster, config scanner.AutoSenseResult) *translation.ValuesBuilder {
+func (t Translator) getFAMContainerValues(famContainerSpec *platform.FAMContainerSpec) *translation.ValuesBuilder {
+	if famContainerSpec == nil {
+		return nil
+	}
+
+	cv := translation.NewValuesBuilder()
+	switch *famContainerSpec.Mode {
+	case platform.FileActivityMonitoringEnabled:
+		cv.SetBoolValue("famEnabled", true)
+	case platform.FileActivityMonitoringDisabled:
+		cv.SetBoolValue("famEnabled", false)
+	default:
+		return cv.SetError(errors.Errorf("invalid spec.perNode.fileActivityMonitoring.mode setting %q", *famContainerSpec.Mode))
+	}
+
+	cv.AddChild("famResources", translation.GetResources(famContainerSpec.Resources))
+
+	return &cv
+}
+
+func (t Translator) getLocalScannerComponentValues(securedCluster platform.SecuredCluster, config scanner.AutoSenseResult, defaults translation.SchedulingConstraints) *translation.ValuesBuilder {
 	sv := translation.NewValuesBuilder()
 	s := securedCluster.Spec.Scanner
 
 	sv.SetBoolValue("disable", !config.DeployScannerResources)
-
-	translation.SetScannerAnalyzerValues(&sv, s.Analyzer)
-	translation.SetScannerDBValues(&sv, s.DB)
+	translation.SetScannerAnalyzerValues(&sv, s.Analyzer, defaults)
+	translation.SetScannerDBValues(&sv, s.DB, defaults)
 
 	return &sv
 }
 
-func (t Translator) getLocalScannerV4ComponentValues(ctx context.Context, securedCluster platform.SecuredCluster, config scanner.AutoSenseResult) *translation.ValuesBuilder {
-	sv := translation.NewValuesBuilder()
+func (t Translator) getLocalScannerV4ComponentValues(ctx context.Context, securedCluster platform.SecuredCluster, config scanner.AutoSenseResult, defaults translation.SchedulingConstraints) *translation.ValuesBuilder {
 	s := securedCluster.Spec.ScannerV4
+	if s == nil && !defaults.IsSet() {
+		return nil
+	}
+	sv := translation.NewValuesBuilder()
+	if s == nil {
+		s = &platform.LocalScannerV4ComponentSpec{}
+	}
+
 	sv.SetBoolValue("disable", !config.EnableLocalImageScanning)
 
 	if config.DeployScannerResources {
-		translation.SetScannerV4ComponentValues(&sv, "indexer", s.Indexer)
-		translation.SetScannerV4DBValues(ctx, &sv, s.DB, platform.SecuredClusterGVK.Kind, securedCluster.GetNamespace(), t.client)
+		translation.SetScannerV4ComponentValues(&sv, "indexer", s.Indexer, defaults)
+		translation.SetScannerV4DBValues(ctx, &sv, s.DB, platform.SecuredClusterGVK.Kind, securedCluster.GetNamespace(), t.client, defaults)
 	} else if config.EnableLocalImageScanning {
 		translation.DisableScannerV4Component(&sv, "indexer")
 	}
@@ -424,22 +533,6 @@ func (t Translator) getLocalScannerV4ComponentValues(ctx context.Context, secure
 	}
 
 	return &sv
-}
-
-// Sets defaults that might not be applied on the resource due to ROX-8046.
-// Only defaults that result in behaviour different from the Helm chart defaults should be included here.
-func (t Translator) setDefaults(sc *platform.SecuredCluster) {
-	scanner.SetScannerDefaults(&sc.Spec)
-	scanner.SetScannerV4Defaults(&sc.Spec)
-	if sc.Spec.AdmissionControl == nil {
-		sc.Spec.AdmissionControl = &platform.AdmissionControlComponentSpec{}
-	}
-	if sc.Spec.AdmissionControl.ListenOnCreates == nil {
-		sc.Spec.AdmissionControl.ListenOnCreates = pointers.Bool(true)
-	}
-	if sc.Spec.AdmissionControl.ListenOnUpdates == nil {
-		sc.Spec.AdmissionControl.ListenOnUpdates = pointers.Bool(true)
-	}
 }
 
 func getMetaValues(sc platform.SecuredCluster) *translation.ValuesBuilder {
@@ -458,4 +551,66 @@ func createConfigFingerprint(sc platform.SecuredCluster) (string, error) {
 		return "", errors.Wrap(err, "marshaling SecuredCluster spec")
 	}
 	return fmt.Sprintf("%x", sha256.Sum256(specAsYaml)), nil
+}
+
+func (t Translator) getConsolePluginValues(ctx context.Context) *translation.ValuesBuilder {
+	v := translation.NewValuesBuilder()
+
+	if !features.OCPConsoleIntegration.Enabled() {
+		return &v
+	}
+
+	available, err := t.isConsolePluginAPIAvailable(ctx)
+	if err != nil {
+		return v.SetError(err)
+	}
+	if !available {
+		return &v
+	}
+
+	v.SetBoolValue("enabled", true)
+	return &v
+}
+
+func (t Translator) isConsolePluginAPIAvailable(ctx context.Context) (bool, error) {
+	list := &consolev1.ConsolePluginList{}
+	if err := t.direct.List(ctx, list); err != nil {
+		if meta.IsNoMatchError(err) {
+			return false, nil
+		}
+		return false, errors.Wrap(err, "listing ConsolePlugin resources")
+	}
+	return true, nil
+}
+
+func getProcessIndicatorsValues(processIndicators *platform.ProcessIndicatorsSpec) *translation.ValuesBuilder {
+	if processIndicators == nil {
+		return nil
+	}
+	v := translation.NewValuesBuilder()
+
+	if processIndicators.Persistence != nil {
+		// Note that we reverse the logic here: SecuredClusterCR comes with the
+		// field Persistence, while the ProcessIndicatorsConfig has
+		// "no_persistence" field. The reason is that there is no way to
+		// specify default values for protobuf, thus we need to stick with a
+		// false as a default for booleans, hence "no_persistence" at the
+		// config level. But at the CRD level as a user interface it's easier
+		// to operate with a positive meaning, thus SecuredClusterCR has
+		// Persistence. It's somewhat tricky, but below is the only place where
+		// it might be relevant.
+		v.SetBoolValue("noPersistence",
+			*processIndicators.Persistence == platform.ProcessIndicatorConfigDisabled)
+	}
+
+	if processIndicators.ExcludeOpenshiftNs != nil {
+		v.SetBoolValue("excludeOpenshiftNs",
+			*processIndicators.ExcludeOpenshiftNs == platform.ProcessIndicatorConfigEnabled)
+	}
+
+	if processIndicators.ExcludeNamespaceRegex != nil && *processIndicators.ExcludeNamespaceRegex != "" {
+		v.SetStringValue("excludeNamespaceFilter", *processIndicators.ExcludeNamespaceRegex)
+	}
+
+	return &v
 }

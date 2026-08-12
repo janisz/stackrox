@@ -1,12 +1,13 @@
-import { ContainerImage } from './deployment.proto';
-import { L4Protocol, NetworkEntityInfoType } from './networkFlow.proto';
-import { EnforcementAction, LifecycleStage, Policy, PolicySeverity } from './policy.proto';
-import { ProcessIndicator } from './processIndicator.proto';
+import type { ContainerImage } from './deployment.proto';
+import type { L4Protocol, NetworkEntityInfoType } from './networkFlow.proto';
+import type { EnforcementAction, LifecycleStage, Policy, PolicySeverity } from './policy.proto';
+import type { ProcessIndicator } from './processIndicator.proto';
+import type { FileAccess } from './fileAccess.proto';
 
 // Alert is for violation page.
 
 // An alert cannot be on more than one entity (deployment, container image, resource, etc.)
-export type Alert = DeploymentAlert | ImageAlert | ResourceAlert;
+export type Alert = DeploymentAlert | ImageAlert | ResourceAlert | NodeAlert;
 
 export type DeploymentAlert = {
     deployment: AlertDeployment;
@@ -36,6 +37,17 @@ export type ImageAlert = {
 export type ResourceAlert = {
     resource: AlertResource;
 } & BaseAlert;
+
+export type NodeAlert = {
+    node: AlertNode;
+} & BaseAlert;
+
+export type AlertNode = {
+    id: string;
+    name: string;
+    clusterId: string;
+    clusterName: string;
+};
 
 export type AlertResource = {
     resourceType: AlertResourceType;
@@ -68,12 +80,17 @@ export function isResourceAlert(alert: Alert): alert is ResourceAlert {
     return 'resource' in alert && Boolean(alert.resource);
 }
 
+export function isNodeAlert(alert: Alert): alert is NodeAlert {
+    return 'node' in alert && Boolean(alert.node);
+}
+
 export type BaseAlert = {
     id: string;
     policy: Policy;
     lifecycleStage: LifecycleStage;
     violations: Violation[]; // For run-time phase alert, a maximum of 40 violations are retained.
     processViolation: ProcessViolation | null;
+    fileAccessViolation: FileAccessViolation | null;
     enforcement: AlertEnforcement | null;
     time: string; // ISO 8601 date string
     firstOccurred: string; // ISO 8601 date string
@@ -82,7 +99,11 @@ export type BaseAlert = {
     snoozeTill: string | null; // ISO 8601 date string
 };
 
-export type Violation = GenericViolation | K8sEventViolation | NetworkFlowViolation;
+export type Violation =
+    | GenericViolation
+    | K8sEventViolation
+    | NetworkFlowViolation
+    | FileAccessViolation;
 
 export type GenericViolation = {
     type: 'GENERIC';
@@ -117,6 +138,11 @@ export type NetworkFlowInfoEntity = {
     port: string | number; // int32 TODO verify is it just number?
 };
 
+export type FileAccessViolation = {
+    type: 'FILE_ACCESS';
+    fileAccess: FileAccess;
+} & BaseViolation;
+
 type BaseViolation = {
     type: ViolationType;
     message: string;
@@ -126,7 +152,12 @@ type BaseViolation = {
     time: string | null; // ISO 8601 date string
 };
 
-export type ViolationType = 'GENERIC' | 'K8S_EVENT' | 'NETWORK_FLOW' | 'NETWORK_POLICY';
+export type ViolationType =
+    | 'GENERIC'
+    | 'K8S_EVENT'
+    | 'NETWORK_FLOW'
+    | 'NETWORK_POLICY'
+    | 'FILE_ACCESS';
 
 export type ProcessViolation = {
     message: string;
@@ -142,7 +173,7 @@ export type ViolationState = 'ACTIVE' | 'SNOOZED' | 'RESOLVED' | 'ATTEMPTED';
 
 // ListAlert is for violations list.
 
-export type ListAlert = DeploymentListAlert | ResourceListAlert;
+export type ListAlert = DeploymentListAlert | ResourceListAlert | NodeListAlert;
 
 export type DeploymentListAlert = {
     commonEntityInfo: CommonEntityInfo & {
@@ -175,6 +206,15 @@ export type ResourceListAlert = {
     };
 } & BaseListAlert;
 
+export type NodeListAlert = {
+    commonEntityInfo: CommonEntityInfo & {
+        resourceType: 'NODE';
+    };
+    node: {
+        name: string;
+    };
+} & BaseListAlert;
+
 export type CommonEntityInfo = {
     clusterName: string;
     namespace: string;
@@ -190,6 +230,7 @@ export type CommonEntityInfo = {
  */
 export type ListAlertResourceType =
     | 'DEPLOYMENT'
+    | 'NODE'
     | 'SECRETS'
     | 'CONFIGMAPS'
     | 'CLUSTER_ROLES'

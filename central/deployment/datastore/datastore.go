@@ -4,10 +4,11 @@ import (
 	"context"
 
 	"github.com/stackrox/rox/central/deployment/cache"
-	"github.com/stackrox/rox/central/deployment/datastore/internal/search"
 	"github.com/stackrox/rox/central/deployment/datastore/internal/store"
 	pgStore "github.com/stackrox/rox/central/deployment/datastore/internal/store/postgres"
+	"github.com/stackrox/rox/central/deployment/views"
 	imageDS "github.com/stackrox/rox/central/image/datastore"
+	imageV2DS "github.com/stackrox/rox/central/imagev2/datastore"
 	nfDS "github.com/stackrox/rox/central/networkgraph/flow/datastore"
 	platformmatcher "github.com/stackrox/rox/central/platform/matcher"
 	pbDS "github.com/stackrox/rox/central/processbaseline/datastore"
@@ -45,11 +46,14 @@ type DataStore interface {
 	GetDeploymentIDs(ctx context.Context) ([]string, error)
 
 	WalkByQuery(ctx context.Context, query *v1.Query, fn func(deployment *storage.Deployment) error) error
+
+	GetContainerImageViews(ctx context.Context, q *v1.Query) ([]*views.ContainerImageView, error)
 }
 
 func newDataStore(
 	storage store.Store,
 	images imageDS.DataStore,
+	imagesV2 imageV2DS.DataStore,
 	baselines pbDS.DataStore,
 	networkFlows nfDS.ClusterDataStore,
 	risks riskDS.DataStore,
@@ -59,16 +63,16 @@ func newDataStore(
 	nsRanker *ranking.Ranker,
 	deploymentRanker *ranking.Ranker,
 	platformMatcher platformmatcher.PlatformMatcher) (DataStore, error) {
-	searcher := search.NewV2(storage)
-	ds := newDatastoreImpl(storage, searcher, images, baselines, networkFlows, risks, deletedDeploymentCache, processFilter, clusterRanker, nsRanker, deploymentRanker, platformMatcher)
+	ds := newDatastoreImpl(storage, images, imagesV2, baselines, networkFlows, risks, deletedDeploymentCache, processFilter, clusterRanker, nsRanker, deploymentRanker, platformMatcher)
 
-	ds.initializeRanker()
+	go ds.initializeRanker()
 	return ds, nil
 }
 
 // New creates a deployment datastore using postgres.
 func New(pool postgres.DB,
 	images imageDS.DataStore,
+	imagesV2 imageV2DS.DataStore,
 	baselines pbDS.DataStore,
 	networkFlows nfDS.ClusterDataStore,
 	risks riskDS.DataStore,
@@ -78,5 +82,5 @@ func New(pool postgres.DB,
 	nsRanker *ranking.Ranker,
 	deploymentRanker *ranking.Ranker,
 	platformMatcher platformmatcher.PlatformMatcher) (DataStore, error) {
-	return newDataStore(pgStore.NewFullStore(pool), images, baselines, networkFlows, risks, deletedDeploymentCache, processFilter, clusterRanker, nsRanker, deploymentRanker, platformMatcher)
+	return newDataStore(pgStore.NewFullStore(pool), images, imagesV2, baselines, networkFlows, risks, deletedDeploymentCache, processFilter, clusterRanker, nsRanker, deploymentRanker, platformMatcher)
 }

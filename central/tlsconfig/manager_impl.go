@@ -26,11 +26,14 @@ type providerData struct {
 type managerImpl struct {
 	mutex sync.RWMutex
 
+	namespace string
+
 	internalTrustRoots []*x509.Certificate
 	userTrustRoots     []*x509.Certificate
 
-	defaultCerts  []tls.Certificate
-	internalCerts []tls.Certificate
+	defaultCerts   []tls.Certificate
+	internalCerts  []tls.Certificate
+	openShiftCerts []tls.Certificate
 
 	providerIDToProviderData  map[string]providerData
 	certFingerprintToProvider map[string]providerData
@@ -45,6 +48,11 @@ func newManager(namespace string) (*managerImpl, error) {
 	}
 	trustRoots := []*x509.Certificate{ca}
 
+	secondaryCA, _, err := mtls.SecondaryCACert()
+	if err == nil {
+		trustRoots = append(trustRoots, secondaryCA)
+	}
+
 	internalCerts, err := getInternalCertificates(namespace)
 	if err != nil {
 		return nil, err
@@ -52,11 +60,14 @@ func newManager(namespace string) (*managerImpl, error) {
 
 	mgr := &managerImpl{
 		providerIDToProviderData: make(map[string]providerData),
+		namespace:                namespace,
 		internalTrustRoots:       trustRoots,
 		internalCerts:            internalCerts,
 	}
 
-	certwatch.WatchCertDir(DefaultCertPath, MaybeGetDefaultTLSCertificateFromDirectory, mgr.UpdateDefaultTLSCertificate)
+	certwatch.WatchCertDir("default TLS", DefaultCertPath, MaybeGetDefaultTLSCertificateFromDirectory, mgr.UpdateDefaultTLSCertificate)
+	certwatch.WatchCertDir("internal service", mtls.CertsPrefix, LoadInternalCertificateFromDirectory, mgr.UpdateInternalCertificate, certwatch.WithVerify(false))
+	mgr.initOpenShiftTLS()
 
 	return mgr, nil
 }
@@ -71,6 +82,23 @@ func (m *managerImpl) UpdateDefaultTLSCertificate(defaultCert *tls.Certificate) 
 		m.defaultCerts = []tls.Certificate{*defaultCert}
 	}
 
+	m.updateConfigurersNoLock()
+}
+
+func (m *managerImpl) UpdateInternalCertificate(cert *tls.Certificate) {
+	if cert == nil {
+		return
+	}
+
+	internalCerts, err := buildInternalCerts(cert, m.namespace)
+	if err != nil {
+		log.Errorf("Failed to build internal certificates (keeping previous certs): %v", err)
+		return
+	}
+
+	m.mutex.Lock()
+	defer m.mutex.Unlock()
+	m.internalCerts = internalCerts
 	m.updateConfigurersNoLock()
 }
 
@@ -157,6 +185,8 @@ func (m *managerImpl) TLSConfigurer(opts Options) (verifier.TLSConfigurer, error
 			configurer.AddServerCertSource(&m.defaultCerts)
 		case ServiceCertSource:
 			configurer.AddServerCertSource(&m.internalCerts)
+		case OpenShiftTLSCertSource:
+			configurer.AddServerCertSource(&m.openShiftCerts)
 		default:
 			return nil, errors.Errorf("invalid server cert source %v", serverCert)
 		}

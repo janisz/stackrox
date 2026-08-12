@@ -2,16 +2,17 @@ package indexer
 
 import (
 	"context"
+	"log/slog"
 
 	"github.com/quay/claircore"
-	"github.com/quay/zlog"
+	"github.com/quay/claircore/toolkit/log"
 	"github.com/stackrox/rox/pkg/scannerv4/client"
 	"github.com/stackrox/rox/pkg/scannerv4/mappers"
 )
 
 // RemoteIndexer represents the interface offered by remote indexers.
 type RemoteIndexer interface {
-	ReportGetter
+	ReportProvider
 	Close(context.Context) error
 }
 
@@ -38,12 +39,9 @@ func (r *remoteIndexer) Close(_ context.Context) error {
 }
 
 // GetIndexReport calls the remote service to retrieve an IndexReport for the given hash ID.
-func (r *remoteIndexer) GetIndexReport(ctx context.Context, hashID string) (*claircore.IndexReport, bool, error) {
-	ctx = zlog.ContextWithValues(ctx,
-		"component", "scanner/backend/remoteIndexer.GetIndexReport",
-		"hash_id", hashID,
-	)
-	zlog.Info(ctx).Msg("fetching index report from remote indexer")
+func (r *remoteIndexer) GetIndexReport(ctx context.Context, hashID string, _ bool) (*claircore.IndexReport, bool, error) {
+	ctx = log.With(ctx, "hash_id", hashID)
+	slog.InfoContext(ctx, "fetching index report from remote indexer")
 	resp, exists, err := r.indexer.GetImageIndex(ctx, hashID)
 	if err != nil {
 		return nil, false, err
@@ -59,4 +57,20 @@ func (r *remoteIndexer) GetIndexReport(ctx context.Context, hashID string) (*cla
 	ir.Success = resp.GetSuccess()
 	ir.Err = resp.GetErr()
 	return ir, true, nil
+}
+
+// GetRepositoryToCPEMapping fetches the repository-to-CPE mapping from the remote indexer.
+func (r *remoteIndexer) GetRepositoryToCPEMapping(ctx context.Context, ifModifiedSince string) (*FetchResult, error) {
+	slog.InfoContext(ctx, "fetching repo-to-CPE mapping from remote indexer")
+
+	result, err := r.indexer.GetRepositoryToCPEMapping(ctx, ifModifiedSince)
+	if err != nil {
+		return nil, err
+	}
+
+	return &FetchResult{
+		Modified:     result.Modified,
+		LastModified: result.LastModified,
+		Data:         result.Data,
+	}, nil
 }

@@ -2,6 +2,7 @@ package endpoints
 
 import (
 	"fmt"
+	"net"
 	"net/url"
 	"reflect"
 
@@ -42,7 +43,7 @@ func ValidateEndpoints(obj interface{}) error {
 }
 
 func visitStructTags(value reflect.Value, visitor func(field reflect.Value, tag string) error) error {
-	if value.Kind() == reflect.Ptr {
+	if value.Kind() == reflect.Pointer {
 		value = value.Elem()
 	}
 	if value.Kind() != reflect.Struct {
@@ -55,7 +56,7 @@ func visitStructTags(value reflect.Value, visitor func(field reflect.Value, tag 
 		switch fieldValue.Kind() {
 		case reflect.Struct:
 			err = visitStructTags(fieldValue, visitor)
-		case reflect.Ptr, reflect.Interface:
+		case reflect.Pointer, reflect.Interface:
 			if !fieldValue.IsNil() {
 				err = visitStructTags(fieldValue.Elem(), visitor)
 			}
@@ -72,10 +73,18 @@ func visitStructTags(value reflect.Value, visitor func(field reflect.Value, tag 
 }
 
 func validate(hostname string) error {
-	if hostname == "127.0.0.1" || hostname == "localhost" {
+	if hostname == "localhost" {
 		return errors.New("endpoint cannot reference localhost")
 	}
-	if hostname == "169.254.169.254" || hostname == "metadata.google.internal" {
+	if ip := net.ParseIP(hostname); ip != nil {
+		if ip.IsLoopback() {
+			return errors.New("endpoint cannot reference localhost")
+		}
+		if ip.Equal(net.ParseIP("169.254.169.254")) {
+			return errors.New("endpoint cannot reference the cluster metadata service")
+		}
+	}
+	if hostname == "metadata.google.internal" {
 		return errors.New("endpoint cannot reference the cluster metadata service")
 	}
 	return nil

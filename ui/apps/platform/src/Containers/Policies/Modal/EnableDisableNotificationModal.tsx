@@ -1,13 +1,12 @@
-import React from 'react';
-import { Table, Thead, Tbody, Tr, Th, Td } from '@patternfly/react-table';
+import { Table, Tbody, Td, Th, Thead, Tr } from '@patternfly/react-table';
 import pluralize from 'pluralize';
 import capitalize from 'lodash/capitalize';
 
 import { enableDisableNotificationsForPolicies } from 'services/PoliciesService';
 import ConfirmationModal from 'Components/PatternFly/ConfirmationModal';
-import { AlertVariantType } from 'hooks/patternfly/useToasts';
+import type { AlertVariantType } from 'hooks/patternfly/useToasts';
 import useTableSelection from 'hooks/useTableSelection';
-import { NotifierIntegration } from 'types/notifier.proto';
+import type { NotifierIntegration } from 'types/notifier.proto';
 
 export type EnableDisableType = 'enable' | 'disable';
 
@@ -116,7 +115,7 @@ function EnableDisableNotificationModal({
                 </Table>
             )}
             {notifiers.length > 0 && enableDisableType === 'disable' && (
-                <div className="pf-v5-u-pt-sm">
+                <div>
                     Are you sure you want to disable notification for {selectedPolicyIds.length}{' '}
                     {pluralize('policy', selectedPolicyIds.length)}?
                 </div>

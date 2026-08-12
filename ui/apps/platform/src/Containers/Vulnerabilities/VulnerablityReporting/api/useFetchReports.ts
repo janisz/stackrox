@@ -1,10 +1,9 @@
-/* eslint-disable no-void */
 import { useCallback, useEffect, useState } from 'react';
 
 import { fetchReportConfigurations, fetchReportConfigurationsCount } from 'services/ReportsService';
 
-import { ApiSortOption, SearchFilter } from 'types/search';
-import { ReportConfiguration } from 'services/ReportsService.types';
+import type { ApiSortOption, SearchFilter } from 'types/search';
+import type { ReportConfiguration } from 'services/ReportsService.types';
 import { getErrorMessage } from '../errorUtils';
 import { getRequestQueryString } from './apiUtils';
 
@@ -76,7 +75,7 @@ function useFetchReports({
     }, [searchFilter, page, perPage, sortOption]);
 
     useEffect(() => {
-        void fetchReports();
+        fetchReports().catch(() => {});
     }, [fetchReports, searchFilter, page, perPage]);
 
     return {

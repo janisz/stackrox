@@ -9,11 +9,14 @@ import (
 
 	"github.com/pkg/errors"
 	"github.com/stackrox/rox/central/globaldb/v2backuprestore/common"
+	"github.com/stackrox/rox/central/globaldb/v2backuprestore/restore"
 	v1 "github.com/stackrox/rox/generated/api/v1"
 	"github.com/stackrox/rox/pkg/backup"
 	"github.com/stackrox/rox/pkg/concurrency"
 	"github.com/stackrox/rox/pkg/grpc/authn"
 	"github.com/stackrox/rox/pkg/ioutils"
+	"github.com/stackrox/rox/pkg/postgres/pgadmin"
+	"github.com/stackrox/rox/pkg/postgres/pgconfig"
 	"github.com/stackrox/rox/pkg/protocompat"
 	"github.com/stackrox/rox/pkg/sync"
 	"github.com/stackrox/rox/pkg/timeutil"
@@ -68,7 +71,7 @@ type restoreProcess struct {
 
 	// For statistics (atomic access; approximate only)
 	bytesRead      int64
-	filesProcessed int64
+	filesProcessed atomic.Int64
 
 	// Informs whether processing a RocksDB or Postgres backup bundle
 	postgresBundle bool
@@ -153,6 +156,12 @@ func (p *restoreProcess) run(tempOutputDir string) {
 	go p.resumeCtrl()
 
 	err := p.doRun(ctx, tempOutputDir)
+
+	// If the restore failed for a Postgres bundle, clean up the restore database
+	if err != nil && p.postgresBundle {
+		p.cleanupRestoreDatabase()
+	}
+
 	p.currentAttemptSig.SignalWithError(err)
 	p.completionSig.SignalWithError(err)
 }
@@ -166,6 +175,22 @@ func (p *restoreProcess) doRun(ctx context.Context, tempOutputDir string) error 
 	}
 
 	return restoreCtx.waitForAsyncChecks()
+}
+
+func (p *restoreProcess) cleanupRestoreDatabase() {
+	log.Info("Cleaning up restore database after failed restore attempt")
+	sourceMap, dbConfig, err := pgconfig.GetPostgresConfig()
+	if err != nil {
+		log.Errorf("Failed to get postgres config for cleanup: %v", err)
+		return
+	}
+
+	// Drop the restore database - use the same name as in restore/postgres.go
+	if err := pgadmin.DropDB(sourceMap, dbConfig, restore.GetRestoreDBName()); err != nil {
+		log.Errorf("Failed to drop restore database during cleanup: %v", err)
+	} else {
+		log.Info("Successfully cleaned up restore database")
+	}
 }
 
 func (p *restoreProcess) Cancel() {
@@ -391,7 +416,7 @@ func (p *restoreProcess) processSingleFile(ctx *restoreProcessContext, file *res
 		return errors.New("not all bytes in file chunk were read")
 	}
 
-	atomic.AddInt64(&p.filesProcessed, 1)
+	p.filesProcessed.Add(1)
 
 	return nil
 }
@@ -400,7 +425,7 @@ func (p *restoreProcess) ProtoStatus() *v1.DBRestoreProcessStatus {
 	status := &v1.DBRestoreProcessStatus{
 		Metadata:       p.Metadata(),
 		BytesRead:      atomic.LoadInt64(&p.bytesRead),
-		FilesProcessed: atomic.LoadInt64(&p.filesProcessed),
+		FilesProcessed: p.filesProcessed.Load(),
 	}
 
 	if !p.started.Get() {

@@ -6,7 +6,6 @@ import (
 	"context"
 	"testing"
 
-	"github.com/stackrox/rox/central/networkpolicies/datastore/internal/search"
 	"github.com/stackrox/rox/central/networkpolicies/datastore/internal/store"
 	pgdbStore "github.com/stackrox/rox/central/networkpolicies/datastore/internal/store/postgres"
 	undodeploymentstoremock "github.com/stackrox/rox/central/networkpolicies/datastore/internal/undodeploymentstore/mocks"
@@ -42,25 +41,14 @@ type networkPolicySACSuite struct {
 }
 
 func (s *networkPolicySACSuite) SetupSuite() {
-	var err error
-	var searcher search.Searcher
-	ctx := context.Background()
-	src := pgtest.GetConnectionString(s.T())
-	cfg, err := postgres.ParseConfig(src)
-	s.Require().NoError(err)
-	s.pool, err = postgres.New(ctx, cfg)
-	s.Require().NoError(err)
-	pgdbStore.Destroy(ctx, s.pool)
-	gormDB := pgtest.OpenGormDB(s.T(), src)
-	defer pgtest.CloseGormDB(s.T(), gormDB)
-	s.storage = pgdbStore.CreateTableAndNewStore(ctx, s.pool, gormDB)
-	searcher = search.New(s.storage)
+	s.pool = pgtest.ForT(s.T())
+	s.storage = pgdbStore.New(s.pool)
 
 	mockCtrl := gomock.NewController(s.T())
 	undomock := undostoremock.NewMockUndoStore(mockCtrl)
 	undodeploymentmock := undodeploymentstoremock.NewMockUndoDeploymentStore(mockCtrl)
 
-	s.datastore = New(s.storage, searcher, undomock, undodeploymentmock)
+	s.datastore = New(s.storage, undomock, undodeploymentmock)
 
 	s.testContexts = testutils.GetNamespaceScopedTestContexts(context.Background(), s.T(), resources.NetworkPolicy)
 }

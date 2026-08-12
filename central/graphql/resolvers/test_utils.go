@@ -10,6 +10,7 @@ import (
 	"github.com/stackrox/rox/central/cve/converter/v2"
 	"github.com/stackrox/rox/central/graphql/resolvers/loaders"
 	"github.com/stackrox/rox/generated/storage"
+	"github.com/stackrox/rox/pkg/cve"
 	"github.com/stackrox/rox/pkg/fixtures"
 	"github.com/stackrox/rox/pkg/fixtures/fixtureconsts"
 	"github.com/stackrox/rox/pkg/grpc/authn"
@@ -18,6 +19,7 @@ import (
 	nodeConverter "github.com/stackrox/rox/pkg/nodes/converter"
 	"github.com/stackrox/rox/pkg/protocompat"
 	"github.com/stackrox/rox/pkg/sac"
+	"github.com/stackrox/rox/pkg/scancomponent"
 	"github.com/stackrox/rox/pkg/search"
 	pgSearch "github.com/stackrox/rox/pkg/search/postgres"
 	"github.com/stackrox/rox/pkg/utils"
@@ -93,6 +95,8 @@ func testImages() []*storage.Image {
 	t1, err := protocompat.ConvertTimeToTimestampOrError(time.Unix(0, 1000))
 	utils.CrashOnError(err)
 	t2, err := protocompat.ConvertTimeToTimestampOrError(time.Unix(0, 2000))
+	utils.CrashOnError(err)
+	t3, err := protocompat.ConvertTimeToTimestampOrError(time.Unix(0, 3000))
 	utils.CrashOnError(err)
 	return []*storage.Image{
 		{
@@ -227,6 +231,22 @@ func testImages() []*storage.Image {
 					},
 				},
 				ScanTime: t2,
+			},
+			BaseImageInfo: []*storage.BaseImageInfo{
+				{
+					BaseImageId:       "base-sha2",
+					BaseImageFullName: "busybox:latest",
+					BaseImageDigest:   "sha256:alpine312",
+					Created:           t3,
+					MaxLayerIndex:     10,
+				},
+				{
+					BaseImageId:       "base-sha3",
+					BaseImageFullName: "alpine:3.12",
+					BaseImageDigest:   "sha256:busybox1",
+					Created:           t3,
+					MaxLayerIndex:     10,
+				},
 			},
 		},
 	}
@@ -607,11 +627,11 @@ func testClustersWithNodes(includeCVEsToOrphan bool) ([]*storage.Cluster, []*sto
 	}
 
 	nodes := testNodes(includeCVEsToOrphan)
-	nodes[0].ClusterId = clusters[0].Id
-	nodes[0].ClusterName = clusters[0].Name
+	nodes[0].ClusterId = clusters[0].GetId()
+	nodes[0].ClusterName = clusters[0].GetName()
 
-	nodes[1].ClusterId = clusters[1].Id
-	nodes[1].ClusterName = clusters[1].Name
+	nodes[1].ClusterId = clusters[1].GetId()
+	nodes[1].ClusterName = clusters[1].GetName()
 
 	return clusters, nodes
 }
@@ -638,7 +658,7 @@ func getIDList(ctx context.Context, resolvers interface{}) []string {
 		for _, r := range res {
 			list = append(list, string(r.Id(ctx)))
 		}
-	case []*imageResolver:
+	case []ImageResolver:
 		for _, r := range res {
 			list = append(list, string(r.Id(ctx)))
 		}
@@ -712,10 +732,21 @@ func getNodeVulnerabilityResolver(ctx context.Context, t *testing.T, resolver *R
 
 func getTestImages(imageCount int) []*storage.Image {
 	images := make([]*storage.Image, 0, imageCount)
-	for i := 0; i < imageCount; i++ {
+	for i := range imageCount {
 		img := fixtures.GetImageWithUniqueComponents(100)
 		id := fmt.Sprintf("%d", i)
 		img.Id = id
+		images = append(images, img)
+	}
+	return images
+}
+
+func getTestImagesV2(imageCount int) []*storage.ImageV2 {
+	images := make([]*storage.ImageV2, 0, imageCount)
+	for i := range imageCount {
+		img := fixtures.GetImageV2WithUniqueComponents(100)
+		img.Digest = fmt.Sprintf("%d", i)
+		img.Id = uuid.NewV5FromNonUUIDs(img.GetName().GetFullName(), img.GetDigest()).String()
 		images = append(images, img)
 	}
 	return images
@@ -729,7 +760,7 @@ func contextWithImagePerm(t testing.TB, ctrl *gomock.Controller) context.Context
 
 func getTestNodes(nodeCount int) []*storage.Node {
 	nodes := make([]*storage.Node, 0, nodeCount)
-	for i := 0; i < nodeCount; i++ {
+	for range nodeCount {
 		node := fixtures.GetNodeWithUniqueComponents(100, 5)
 		nodeConverter.MoveNodeVulnsToNewField(node)
 		id := uuid.NewV4().String()
@@ -749,4 +780,12 @@ func contextWithClusterPerm(t testing.TB, ctrl *gomock.Controller) context.Conte
 	id := mockIdentity.NewMockIdentity(ctrl)
 	id.EXPECT().Permissions().Return(map[string]storage.Access{"Cluster": storage.Access_READ_ACCESS}).AnyTimes()
 	return authn.ContextWithIdentity(sac.WithAllAccess(loaders.WithLoaderContext(context.Background())), id, t)
+}
+
+func getTestComponentID(testComponent *storage.EmbeddedImageScanComponent, imageID string, index int) string {
+	return scancomponent.ComponentIDV2(testComponent, imageID, index)
+}
+
+func getTestCVEID(testCVE *storage.EmbeddedVulnerability, componentID string, index int) string {
+	return cve.IDV2(testCVE, componentID, index)
 }

@@ -1,12 +1,21 @@
-import { AuthMachineToMachineConfig } from 'services/MachineAccessService';
+import type { AuthMachineToMachineConfig } from 'services/MachineAccessService';
 
-export type IntegrationSource =
-    | 'authProviders'
-    | 'notifiers'
-    | 'imageIntegrations'
-    | 'backups'
-    | 'signatureIntegrations'
-    | 'cloudSources';
+// Render tabs in order of sources.
+export const integrationSources = [
+    'imageIntegrations',
+    'signatureIntegrations',
+    'notifiers',
+    'backups',
+    'cloudSources',
+    'authProviders',
+    'apiClients',
+] as const;
+
+export type IntegrationSource = (typeof integrationSources)[number];
+
+export function isIntegrationSource(source: unknown): source is IntegrationSource {
+    return integrationSources.some((s) => s === source);
+}
 
 export type IntegrationType =
     | AuthProviderType
@@ -16,7 +25,7 @@ export type IntegrationType =
     | SignatureIntegrationType
     | CloudSourceIntegrationType;
 
-export type AuthProviderType = 'apitoken' | 'clusterInitBundle' | 'machineAccess';
+export type AuthProviderType = 'apitoken' | 'machineAccess';
 
 // Investigate why the following occur in tableColumnDescriptor but not in integrationsList:
 /*

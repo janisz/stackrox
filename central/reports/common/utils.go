@@ -5,6 +5,8 @@ import (
 	v1 "github.com/stackrox/rox/generated/api/v1"
 	"github.com/stackrox/rox/generated/storage"
 	"github.com/stackrox/rox/pkg/grpc/authn"
+	"github.com/stackrox/rox/pkg/sac"
+	"github.com/stackrox/rox/pkg/sac/effectiveaccessscope"
 	"github.com/stackrox/rox/pkg/search"
 )
 
@@ -21,9 +23,9 @@ func ExtractAccessScopeRules(identity authn.Identity) []*storage.SimpleAccessSco
 		accessScope := role.GetAccessScope()
 		if accessScope == nil {
 			accessScopeRulesList = append(accessScopeRulesList, rolePkg.AccessScopeExcludeAll.GetRules())
-		} else if accessScope.Id == rolePkg.AccessScopeIncludeAll.Id {
+		} else if accessScope.GetId() == rolePkg.AccessScopeIncludeAll.GetId() {
 			return nil
-		} else if accessScope.Id == rolePkg.AccessScopeExcludeAll.Id || accessScope.GetRules() == nil {
+		} else if accessScope.GetId() == rolePkg.AccessScopeExcludeAll.GetId() || accessScope.GetRules() == nil {
 			// nil/empty rules in a non-nil access scope means exclude all clusters/namespaces
 			// if the access scope is not same as rolePkg.AccessScopeIncludeAll
 			accessScopeRulesList = append(accessScopeRulesList, rolePkg.AccessScopeExcludeAll.GetRules())
@@ -37,26 +39,43 @@ func ExtractAccessScopeRules(identity authn.Identity) []*storage.SimpleAccessSco
 	return accessScopeRulesList
 }
 
-// IsV1ReportConfig returns true if the given config belongs to reporting version 1.0
-func IsV1ReportConfig(config *storage.ReportConfiguration) bool {
-	return config.GetResourceScope() == nil
+// HasValidResourceScope returns true if the report config has a non-empty resource scope
+// containing either a collection ID , entity scope etc. Returns false when ResourceScope
+// is nil or is an empty message with no scope_reference set. Later can happen in downgrade scenarios.
+func HasValidResourceScope(scope *storage.ResourceScope) bool {
+	if scope == nil || scope.GetScopeReference() == nil {
+		return false
+	}
+	return true
 }
 
-// IsV2ReportConfig returns true if the given config belongs to reporting version 2.0
-func IsV2ReportConfig(config *storage.ReportConfiguration) bool {
-	return config.GetResourceScope() != nil
-}
-
-// WithoutV2ReportConfigs adds a conjunction query to exclude v2 report configs
-func WithoutV2ReportConfigs(query *v1.Query) *v1.Query {
-	return search.ConjunctionQuery(
-		query,
-		search.NewQueryBuilder().AddExactMatches(search.CollectionID, "").ProtoQuery())
-}
-
-// WithoutV1ReportConfigs adds a conjunction query to exclude v1 report configs
-func WithoutV1ReportConfigs(query *v1.Query) *v1.Query {
-	return search.ConjunctionQuery(
-		query,
-		search.NewQueryBuilder().AddExactMatches(search.EmbeddedCollectionID, "").ProtoQuery())
+// BuildAccessScopeQuery builds v1 query for given access scope rules
+func BuildAccessScopeQuery(
+	accessScopeRules []*storage.SimpleAccessScope_Rules,
+	clusters []effectiveaccessscope.Cluster,
+	namespaces []effectiveaccessscope.Namespace,
+) (*v1.Query, error) {
+	if accessScopeRules == nil {
+		return search.EmptyQuery(), nil
+	}
+	var scopeTree *effectiveaccessscope.ScopeTree
+	for _, rules := range accessScopeRules {
+		sct, err := effectiveaccessscope.ComputeEffectiveAccessScope(rules, clusters, namespaces, v1.ComputeEffectiveAccessScopeRequest_MINIMAL)
+		if err != nil {
+			return nil, err
+		}
+		if scopeTree == nil {
+			scopeTree = sct
+		} else {
+			scopeTree.Merge(sct)
+		}
+	}
+	scopeQuery, err := sac.BuildClusterNamespaceLevelSACQueryFilter(scopeTree)
+	if err != nil {
+		return nil, err
+	}
+	if scopeQuery == nil {
+		return search.EmptyQuery(), nil
+	}
+	return scopeQuery, nil
 }

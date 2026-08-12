@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"slices"
 
 	"github.com/pkg/errors"
 	"github.com/stackrox/rox/pkg/clientconn"
@@ -12,6 +13,7 @@ import (
 	"github.com/stackrox/rox/pkg/k8sutil/k8sobjects"
 	"github.com/stackrox/rox/pkg/logging"
 	"github.com/stackrox/rox/pkg/mtls"
+	"github.com/stackrox/rox/pkg/retryablehttp"
 	"github.com/stackrox/rox/sensor/upgrader/common"
 	"github.com/stackrox/rox/sensor/upgrader/config"
 	"github.com/stackrox/rox/sensor/upgrader/resources"
@@ -50,8 +52,11 @@ type UpgradeContext struct {
 
 // Create creates a new upgrader context from the given config.
 func Create(ctx context.Context, config *config.UpgraderConfig) (*UpgradeContext, error) {
-	// Ensure that the context lifetime has an effect.
 	restConfigShallowCopy := *config.K8sRESTConfig
+	// Add retry logic to Kubernetes clients for resilience against transient network errors.
+	// This applies to both the Kubernetes clientset and dynamic client.
+	retryablehttp.ConfigureRESTConfig(&restConfigShallowCopy)
+	// Ensure that the context lifetime has an effect.
 	oldWrapTransport := restConfigShallowCopy.WrapTransport
 	restConfigShallowCopy.WrapTransport = func(rt http.RoundTripper) http.RoundTripper {
 		if oldWrapTransport != nil {
@@ -119,8 +124,7 @@ func Create(ctx context.Context, config *config.UpgraderConfig) (*UpgradeContext
 	}
 
 	unversionedGKs := make(map[schema.GroupKind]schema.GroupVersionKind)
-	for i := len(common.OrderedBundleResourceTypes) - 1; i >= 0; i-- {
-		gvk := common.OrderedBundleResourceTypes[i]
+	for _, gvk := range slices.Backward(common.OrderedBundleResourceTypes) {
 		gk := gvk.GroupKind()
 		if canonicalGVK, exists := unversionedGKs[gk]; exists {
 			log.Infof("Disregarding obsolete resource type %s in favor of %s", gvk, canonicalGVK)
@@ -275,7 +279,11 @@ func (c *UpgradeContext) DoCentralHTTPRequest(req *http.Request) (*http.Response
 
 	req.Header.Set("User-Agent", clientconn.GetUserAgent())
 
-	return c.centralHTTPClient.Do(req)
+	resp, err := c.centralHTTPClient.Do(req)
+	if err != nil {
+		return nil, errors.Wrap(err, "performing HTTP request to Central")
+	}
+	return resp, nil
 }
 
 // GetGRPCClient gets the gRPC client that can be used to make requests to Central.
@@ -292,7 +300,7 @@ func (c *UpgradeContext) Validator() validation.Schema {
 func (c *UpgradeContext) ParseAndValidateObject(data []byte) (*unstructured.Unstructured, error) {
 	k8sObj, err := k8sutil.UnstructuredFromYAML(string(data))
 	if err != nil {
-		return nil, err
+		return nil, errors.Wrap(err, "parsing object from YAML")
 	}
 	if err := c.schemaValidator.ValidateBytes(data); err != nil {
 		return nil, errors.Wrap(err, "schema validation failed")

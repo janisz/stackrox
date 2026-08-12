@@ -34,7 +34,7 @@ func handleInitialScanResults(id string, scanDS *scanMocks.MockDataStore, profil
 		scanDS.EXPECT().SearchScans(gomock.Any(), gomock.Any()).Times(1).
 			DoAndReturn(func(_, _ any) ([]*storage.ComplianceOperatorScanV2, error) {
 				ret := make([]*storage.ComplianceOperatorScanV2, numOfScans)
-				for i := 0; i < numOfScans; i++ {
+				for i := range numOfScans {
 					ret[i] = &storage.ComplianceOperatorScanV2{
 						Id: fmt.Sprintf("scan-%d", i),
 					}
@@ -129,8 +129,7 @@ func TestScanConfigWatcher(t *testing.T) {
 			scanConfig := &storage.ComplianceOperatorScanConfigurationV2{
 				Id: watcherID,
 			}
-			ctx, cancel := context.WithCancel(context.Background())
-			defer cancel()
+			ctx := t.Context()
 			resultsQueue := queue.NewQueue[*ScanConfigWatcherResults]()
 			scanConfigWatcher := NewScanConfigWatcher(ctx, ctx, watcherID, scanConfig, scanDS, profileDS, snapshotDS, resultsQueue)
 			for _, id := range tCase.snapshotIDs {

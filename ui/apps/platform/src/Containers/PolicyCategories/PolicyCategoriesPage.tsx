@@ -1,29 +1,31 @@
-import React, { useState, useEffect } from 'react';
+import { useEffect, useState } from 'react';
+import type { ReactElement } from 'react';
 import {
-    PageSection,
-    Bullseye,
-    Spinner,
-    Divider,
-    Button,
-    Flex,
-    Toolbar,
-    ToolbarContent,
-    ToolbarItem,
-    AlertGroup,
     Alert,
     AlertActionCloseButton,
+    AlertGroup,
+    Bullseye,
+    Button,
+    Content,
+    Divider,
+    Flex,
+    FlexItem,
+    PageSection,
+    Spinner,
 } from '@patternfly/react-core';
 
+import PageTitle from 'Components/PageTitle';
 import usePermissions from 'hooks/usePermissions';
-import useToasts, { Toast } from 'hooks/patternfly/useToasts';
+import useToasts from 'hooks/patternfly/useToasts';
+import type { Toast } from 'hooks/patternfly/useToasts';
 import { getAxiosErrorMessage } from 'utils/responseErrorUtils';
-import { PolicyCategory } from 'types/policy.proto';
+import type { PolicyCategory } from 'types/policy.proto';
 import { getPolicyCategories } from 'services/PolicyCategoriesService';
 import PolicyManagementHeader from 'Containers/PolicyManagement/PolicyManagementHeader';
 import PolicyCategoriesListSection from './PolicyCategoriesListSection';
 import CreatePolicyCategoryModal from './CreatePolicyCategoryModal';
 
-function PolicyCategoriesPage(): React.ReactElement {
+function PolicyCategoriesPage(): ReactElement {
     const { hasReadWriteAccess } = usePermissions();
     const hasWriteAccessForPolicy = hasReadWriteAccess('WorkflowAdministration');
 
@@ -35,7 +37,7 @@ function PolicyCategoriesPage(): React.ReactElement {
     const [selectedCategory, setSelectedCategory] = useState<PolicyCategory>();
 
     let listContent = (
-        <PageSection variant="light" isFilled id="policies-table-loading">
+        <PageSection isFilled id="policies-table-loading">
             <Bullseye>
                 <Spinner />
             </Bullseye>
@@ -44,7 +46,7 @@ function PolicyCategoriesPage(): React.ReactElement {
 
     if (errorMessage) {
         listContent = (
-            <PageSection variant="light" isFilled id="policies-table-error">
+            <PageSection isFilled id="policies-table-error">
                 <Bullseye>
                     <Alert variant="danger" title={errorMessage} component="p" />
                 </Bullseye>
@@ -84,31 +86,21 @@ function PolicyCategoriesPage(): React.ReactElement {
 
     return (
         <>
+            <PageTitle title="Policy management - Policy categories" />
             <PolicyManagementHeader currentTabTitle="Policy categories" />
-            <Divider component="div" />
-            <PageSection variant="light" className="pf-v5-u-py-0">
-                <Toolbar inset={{ default: 'insetNone' }}>
-                    <ToolbarContent>
-                        <ToolbarItem>
-                            <div className="pf-v5-u-font-size-sm">
-                                Manage categories for your policies.
-                            </div>
-                        </ToolbarItem>
-                        {hasWriteAccessForPolicy && (
-                            <ToolbarItem align={{ default: 'alignRight' }}>
-                                <Flex>
-                                    <Button
-                                        variant="primary"
-                                        onClick={() => setIsCreateModalOpen(true)}
-                                        isDisabled={isCreateModalOpen || !!selectedCategory}
-                                    >
-                                        Create category
-                                    </Button>
-                                </Flex>
-                            </ToolbarItem>
-                        )}
-                    </ToolbarContent>
-                </Toolbar>
+            <PageSection>
+                <Flex alignItems={{ default: 'alignItemsCenter' }}>
+                    <FlexItem grow={{ default: 'grow' }}>
+                        <Content component="p">Manage categories for your policies.</Content>
+                    </FlexItem>
+                    {hasWriteAccessForPolicy && (
+                        <FlexItem alignSelf={{ default: 'alignSelfFlexEnd' }}>
+                            <Button variant="primary" onClick={() => setIsCreateModalOpen(true)}>
+                                Create category
+                            </Button>
+                        </FlexItem>
+                    )}
+                </Flex>
             </PageSection>
             <Divider component="div" />
             {listContent}

@@ -1,10 +1,9 @@
-import React, { useState } from 'react';
+import { useState } from 'react';
 import { Alert, Button, Flex, SearchInput } from '@patternfly/react-core';
 
-import BacklogListSelector, {
-    BacklogListSelectorProps,
-} from 'Components/PatternFly/BacklogListSelector';
-import { Collection } from 'services/CollectionsService';
+import BacklogListSelector from 'Components/PatternFly/BacklogListSelector';
+import type { BacklogListSelectorProps } from 'Components/PatternFly/BacklogListSelector';
+import type { Collection } from 'services/CollectionsService';
 import { getAxiosErrorMessage } from 'utils/responseErrorUtils';
 import useEmbeddedCollections from './hooks/useEmbeddedCollections';
 
@@ -41,57 +40,59 @@ function CollectionAttacher({
     }
 
     return (
-        <Flex direction={{ default: 'column' }} spaceItems={{ default: 'spaceItemsXl' }}>
-            <SearchInput
-                aria-label="Filter by name"
-                placeholder="Filter by name"
-                value={searchInput}
-                onChange={onSearchInputChange}
-                onSearch={() => {
-                    onSearch(searchInput);
-                    setSearchValue(searchInput);
-                }}
-                onClear={() => {
-                    onSearch('');
-                    setSearchValue('');
-                    setSearchInput('');
-                }}
-            />
-            <BacklogListSelector
-                selectedOptions={attached}
-                deselectedOptions={detached}
-                onSelectItem={({ id }) => attach(id)}
-                onDeselectItem={({ id }) => detach(id)}
-                onSelectionChange={onSelectionChange}
-                rowKey={({ id }) => id}
-                cells={collectionTableCells}
-                selectedLabel="Attached collections"
-                deselectedLabel="Available collections"
-                selectButtonText="Attach"
-                deselectButtonText="Detach"
-                searchFilter={(item) => compareNameLowercase(searchValue, item)}
-            />
-            {fetchMoreError && (
-                <Alert
-                    variant="danger"
-                    isInline
-                    title="There was an error loading more collections"
-                    component="p"
-                >
-                    {getAxiosErrorMessage(fetchMoreError)}
-                </Alert>
-            )}
-            {hasMore && (
-                <Button
-                    className="pf-v5-u-align-self-flex-start"
-                    variant="secondary"
-                    onClick={() => fetchMore(searchValue)}
-                    isLoading={isFetchingMore}
-                >
-                    View more
-                </Button>
-            )}
-        </Flex>
+        <div className="pf-v6-u-p-lg">
+            <Flex direction={{ default: 'column' }} spaceItems={{ default: 'spaceItemsXl' }}>
+                <SearchInput
+                    aria-label="Filter by name"
+                    placeholder="Filter by name"
+                    value={searchInput}
+                    onChange={onSearchInputChange}
+                    onSearch={() => {
+                        onSearch(searchInput);
+                        setSearchValue(searchInput);
+                    }}
+                    onClear={() => {
+                        onSearch('');
+                        setSearchValue('');
+                        setSearchInput('');
+                    }}
+                />
+                <BacklogListSelector
+                    selectedOptions={attached}
+                    deselectedOptions={detached}
+                    onSelectItem={({ id }) => attach(id)}
+                    onDeselectItem={({ id }) => detach(id)}
+                    onSelectionChange={onSelectionChange}
+                    rowKey={({ id }) => id}
+                    cells={collectionTableCells}
+                    selectedLabel="Attached collections"
+                    deselectedLabel="Available collections"
+                    selectButtonText="Attach"
+                    deselectButtonText="Detach"
+                    searchFilter={(item) => compareNameLowercase(searchValue, item)}
+                />
+                {fetchMoreError && (
+                    <Alert
+                        variant="danger"
+                        isInline
+                        title="There was an error loading more collections"
+                        component="p"
+                    >
+                        {getAxiosErrorMessage(fetchMoreError)}
+                    </Alert>
+                )}
+                {hasMore && (
+                    <Button
+                        className="pf-v6-u-align-self-flex-start"
+                        variant="secondary"
+                        onClick={() => fetchMore(searchValue)}
+                        isLoading={isFetchingMore}
+                    >
+                        View more
+                    </Button>
+                )}
+            </Flex>
+        </div>
     );
 }
 

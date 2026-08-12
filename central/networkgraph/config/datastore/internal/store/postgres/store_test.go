@@ -41,10 +41,6 @@ func (s *NetworkGraphConfigsStoreSuite) SetupTest() {
 	s.NoError(err)
 }
 
-func (s *NetworkGraphConfigsStoreSuite) TearDownSuite() {
-	s.testDB.Teardown(s.T())
-}
-
 func (s *NetworkGraphConfigsStoreSuite) TestStore() {
 	ctx := sac.WithAllAccess(context.Background())
 
@@ -96,6 +92,11 @@ func (s *NetworkGraphConfigsStoreSuite) TestStore() {
 	}
 
 	s.NoError(store.UpsertMany(ctx, networkGraphConfigs))
+
+	foundNetworkGraphConfigs, missing, err := store.GetMany(ctx, networkGraphConfigIDs)
+	s.NoError(err)
+	s.Empty(missing)
+	protoassert.ElementsMatch(s.T(), networkGraphConfigs, foundNetworkGraphConfigs)
 
 	networkGraphConfigCount, err = store.Count(ctx, search.EmptyQuery())
 	s.NoError(err)

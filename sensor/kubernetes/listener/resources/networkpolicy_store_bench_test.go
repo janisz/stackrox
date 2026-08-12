@@ -25,7 +25,7 @@ func getRandom(arr []string) string {
 
 func randomLabels(num int64, arrLabels, arrValues []string) map[string]string {
 	m := make(map[string]string)
-	for i := int64(0); i < num; i++ {
+	for range num {
 		m[getRandom(arrLabels)] = getRandom(arrValues)
 	}
 	return m
@@ -33,7 +33,7 @@ func randomLabels(num int64, arrLabels, arrValues []string) map[string]string {
 
 func generateSetOfAllLabels(num int) []string {
 	arr := make([]string, num)
-	for i := 0; i < num; i++ {
+	for i := range num {
 		arr[i] = fmt.Sprintf("L%d", i)
 	}
 	return arr
@@ -41,14 +41,14 @@ func generateSetOfAllLabels(num int) []string {
 
 func generateSetOfAllValues(num int) []string {
 	arr := make([]string, num)
-	for i := 0; i < num; i++ {
+	for i := range num {
 		arr[i] = fmt.Sprintf("V%d", i)
 	}
 	return arr
 }
 
 func populateStore(s store.NetworkPolicyStore, num, numLabels int64, allLabels, allValues []string) {
-	for i := int64(0); i < num; i++ {
+	for range num {
 		np := newNPDummy(uuid.NewV4().String(), getRandom(namespaces), randomLabels(numLabels, allLabels, allValues))
 		s.Upsert(np)
 	}
@@ -94,7 +94,7 @@ func BenchmarkFind(b *testing.B) {
 			s := newNetworkPoliciesStore()
 			populateStore(s, int64(math.Pow(10, float64(scale))), scale, allLabels16, allValues16)
 			b.Run(fmt.Sprintf("K=%d-N=10^%d", numLabels, scale), func(b *testing.B) {
-				for i := 0; i < b.N; i++ {
+				for b.Loop() {
 					_ = s.Find(defaultNS, selectors[labelIdx])
 				}
 			})
@@ -115,7 +115,7 @@ func BenchmarkUpsert_Update(b *testing.B) {
 			}
 			newPolicy := newNPDummy(oldPolicy.GetId(), defaultNS, selectors[labelIdx])
 			b.Run(fmt.Sprintf("L=%d-N=10^%d", numLabels, scale), func(b *testing.B) {
-				for i := 0; i < b.N; i++ {
+				for b.Loop() {
 					s.Upsert(newPolicy)
 				}
 			})
@@ -129,7 +129,7 @@ func BenchmarkUpsert_Add(b *testing.B) {
 			s := newNetworkPoliciesStore()
 			populateStore(s, int64(math.Pow(10, float64(scale))), scale, allLabels16, allValues16)
 			b.Run(fmt.Sprintf("L=%d-N=10^%d", numLabels, scale), func(b *testing.B) {
-				for i := 0; i < b.N; i++ {
+				for b.Loop() {
 					np := newNPDummy(uuid.NewV4().String(), getRandom(namespaces), selectors[labelIdx])
 					s.Upsert(np)
 				}

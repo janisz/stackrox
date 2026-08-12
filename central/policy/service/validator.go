@@ -14,6 +14,7 @@ import (
 	"github.com/stackrox/rox/pkg/booleanpolicy/fieldnames"
 	"github.com/stackrox/rox/pkg/booleanpolicy/policyversion"
 	"github.com/stackrox/rox/pkg/errorhelpers"
+	"github.com/stackrox/rox/pkg/features"
 	"github.com/stackrox/rox/pkg/policies"
 	"github.com/stackrox/rox/pkg/scopecomp"
 	"github.com/stackrox/rox/pkg/set"
@@ -95,6 +96,7 @@ func (s *policyValidator) internalValidate(policy *storage.Policy, additionalVal
 	errorList.AddError(s.validateCapabilities(policy))
 	errorList.AddError(s.validateEventSource(policy))
 	errorList.AddError(s.validateEnforcement(policy))
+	errorList.AddError(s.validateEvaluationFilter(policy))
 
 	for _, validator := range additionalValidators {
 		errorList.AddError(validator(policy))
@@ -116,7 +118,7 @@ func (s *policyValidator) validateVersion(policy *storage.Policy) error {
 }
 
 func (s *policyValidator) validateName(policy *storage.Policy) error {
-	policy.Name = strings.TrimSpace(policy.Name)
+	policy.Name = strings.TrimSpace(policy.GetName())
 	return nameValidator.Validate(policy.GetName())
 }
 
@@ -156,7 +158,7 @@ func (s *policyValidator) removeEnforcementsForMissingLifecycles(policy *storage
 
 func (s *policyValidator) validateEventSource(policy *storage.Policy) error {
 	if policies.AppliesAtRunTime(policy) && policy.GetEventSource() == storage.EventSource_NOT_APPLICABLE {
-		return errors.New("event source must be deployment or audit event for runtime policies")
+		return s.eventSourceError()
 	}
 
 	if (policies.AppliesAtBuildTime(policy) || policies.AppliesAtDeployTime(policy)) &&
@@ -185,6 +187,11 @@ func (s *policyValidator) validateEventSource(policy *storage.Policy) error {
 			}
 		}
 	}
+
+	if err := s.validateNodeEventPolicy(policy); err != nil {
+		return err
+	}
+
 	// TODO(@khushboo): ROX-7252: Modify this validation once migration to account for new policy field event source is in
 	return nil
 }
@@ -208,7 +215,7 @@ func (s *policyValidator) getCaps(policy *storage.Policy, capsTypes string) []*s
 	for _, section := range policy.GetPolicySections() {
 		for _, group := range section.GetPolicyGroups() {
 			if group.GetFieldName() == capsTypes {
-				capsValues = append(capsValues, group.Values...)
+				capsValues = append(capsValues, group.GetValues()...)
 			}
 		}
 	}
@@ -307,7 +314,16 @@ func (s *policyValidator) validateDeploymentExclusion(exclusion *storage.Exclusi
 		return errors.New("at least one field of deployment exclusion scope must be defined")
 	}
 	if deployment.GetScope() != nil {
-		if err := s.validateScope(deployment.GetScope()); err != nil {
+		// No feature flag check — exclusion scopes do not
+		// support cluster and namespace labels.
+		scope := deployment.GetScope()
+		if scope.GetClusterLabel() != nil {
+			return errors.New("exclusion scopes do not support cluster labels")
+		}
+		if scope.GetNamespaceLabel() != nil {
+			return errors.New("exclusion scopes do not support namespace labels")
+		}
+		if err := s.validateScope(scope); err != nil {
 			return errors.Wrap(err, "deployment exclusion scope is invalid")
 		}
 	}
@@ -315,10 +331,27 @@ func (s *policyValidator) validateDeploymentExclusion(exclusion *storage.Exclusi
 }
 
 func (s *policyValidator) validateScope(scope *storage.Scope) error {
-	if scope.GetCluster() == "" && scope.GetNamespace() == "" && scope.GetLabel() == nil {
+	if scope.GetCluster() == "" && scope.GetNamespace() == "" && scope.GetLabel() == nil && scope.GetClusterLabel() == nil && scope.GetNamespaceLabel() == nil {
 		return errors.New("scope must have at least one field populated")
 	}
-	if _, err := scopecomp.CompileScope(scope); err != nil {
+	// Reject cluster_label and namespace_label if feature flag is disabled
+	if !features.LabelBasedPolicyScoping.Enabled() {
+		if scope.GetClusterLabel() != nil {
+			return errors.New("cluster_label field requires feature flag ROX_LABEL_BASED_POLICY_SCOPING to be enabled")
+		}
+		if scope.GetNamespaceLabel() != nil {
+			return errors.New("namespace_label field requires feature flag ROX_LABEL_BASED_POLICY_SCOPING to be enabled")
+		}
+	}
+	// Cluster and cluster_label are mutually exclusive
+	if scope.GetCluster() != "" && scope.GetClusterLabel() != nil {
+		return errors.New("scope cannot have both 'cluster' and 'cluster_label' fields populated")
+	}
+	// Namespace and namespace_label are mutually exclusive
+	if scope.GetNamespace() != "" && scope.GetNamespaceLabel() != nil {
+		return errors.New("scope cannot have both 'namespace' and 'namespace_label' fields populated")
+	}
+	if _, err := scopecomp.CompileScope(scope, nil, nil); err != nil {
 		return errors.Wrap(err, "could not compile scope")
 	}
 	return nil
@@ -349,16 +382,29 @@ func (s *policyValidator) compilesForRunTime(policy *storage.Policy, options ...
 		return errors.New("A runtime policy must contain at least one policy criterion from process, network flow, audit log events, or Kubernetes events criteria categories")
 	}
 
-	if !booleanpolicy.ContainsDiscreteRuntimeFieldCategorySections(policy) {
-		return errors.New("A runtime policy section must contain only one criterion from process, network flow, audit log events, or Kubernetes events criteria categories")
+	if !booleanpolicy.ContainsValidRuntimeFieldCategorySections(policy) {
+		return errors.New("A runtime policy must not mix incompatible runtime criteria: process and file criteria must be in the same section, and cannot coexist with network flow or Kubernetes events criteria")
+	}
+
+	if err := s.validateNodeEventPolicy(policy); err != nil {
+		return err
 	}
 
 	var err error
 	if s.isAuditEventPolicy(policy) {
 		_, err = booleanpolicy.BuildAuditLogEventMatcher(policy, booleanpolicy.ValidateSourceIsAuditLogEvents())
+	} else if s.isNodeEventPolicy(policy) {
+		_, err = booleanpolicy.BuildNodeEventMatcher(policy, options...)
 	} else {
-		// build a deployment matcher to check for all runtime fields that are evaluated against a deployment
-		_, err = booleanpolicy.BuildDeploymentMatcher(policy, options...)
+		if booleanpolicy.ContainsOneOf(policy, booleanpolicy.FileAccess) {
+			// FileAccesses are handled slightly differently and can't use the default
+			// deployment matcher because it is not aware of file access fields.
+			// Look at pkg/booleanpolicy/augmentedobjs/meta.go for more details.
+			_, err = booleanpolicy.BuildDeploymentWithFileAccessMatcher(policy, options...)
+		} else {
+			// build a deployment matcher to check for all runtime fields that are evaluated against a deployment
+			_, err = booleanpolicy.BuildDeploymentMatcher(policy, options...)
+		}
 	}
 	if err != nil {
 		return errors.Wrap(err, "policy configuration is invalid for runtime")
@@ -390,7 +436,7 @@ var enforcementToLifecycle = map[storage.EnforcementAction]storage.LifecycleStag
 }
 
 func removeEnforcementForLifecycle(policy *storage.Policy, stage storage.LifecycleStage) {
-	newActions := policy.EnforcementActions[:0]
+	newActions := policy.GetEnforcementActions()[:0]
 	for _, ea := range policy.GetEnforcementActions() {
 		if enforcementToLifecycle[ea] != stage {
 			newActions = append(newActions, ea)
@@ -401,6 +447,10 @@ func removeEnforcementForLifecycle(policy *storage.Policy, stage storage.Lifecyc
 
 func (s *policyValidator) isAuditEventPolicy(policy *storage.Policy) bool {
 	return policy.GetEventSource() == storage.EventSource_AUDIT_LOG_EVENT
+}
+
+func (s *policyValidator) isNodeEventPolicy(policy *storage.Policy) bool {
+	return policy.GetEventSource() == storage.EventSource_NODE_EVENT
 }
 
 func (s *policyValidator) validateEnforcement(policy *storage.Policy) error {
@@ -414,6 +464,60 @@ func (s *policyValidator) validateEnforcement(policy *storage.Policy) error {
 				}
 			}
 		}
+	}
+	return nil
+}
+
+func (s *policyValidator) validateNodeEventPolicy(policy *storage.Policy) error {
+	if !s.isNodeEventPolicy(policy) {
+		return nil
+	}
+
+	if !features.SensitiveFileActivity.Enabled() {
+		// There's a possibility that a node event policy is provided via the
+		// API without the feature flag enabled (via JSON import or CR) so prevent
+		// further validation
+		return fmt.Errorf("%s is disabled, Node event policies are unavailable.", features.SensitiveFileActivity.EnvVar())
+	}
+
+	if !booleanpolicy.HasDiscreteEventSource(policy, storage.EventSource_NODE_EVENT) {
+		return errors.New("Node event policies must contain only node fields")
+	}
+
+	for _, section := range policy.GetPolicySections() {
+		if booleanpolicy.SectionContainsFieldOfType(section, booleanpolicy.Process) &&
+			!booleanpolicy.SectionContainsFieldOfType(section, booleanpolicy.FileAccess) {
+			return errors.New("Node event policies with process criteria must include file access criteria in the same section")
+		}
+	}
+
+	return nil
+}
+
+func (s *policyValidator) eventSourceError() error {
+	eventSources := []string{
+		"deployment", "audit event",
+	}
+
+	if features.SensitiveFileActivity.Enabled() {
+		eventSources = append(eventSources, "node")
+	}
+
+	return fmt.Errorf("event source must be %s for runtime policies", strings.Join(eventSources, " or "))
+}
+
+func (s *policyValidator) validateEvaluationFilter(policy *storage.Policy) error {
+	if len(policy.GetEvaluationFilter().GetSkipContainerTypes()) == 0 {
+		return nil
+	}
+	if policies.AppliesAtBuildTime(policy) && !policies.AppliesAtDeployTime(policy) && !policies.AppliesAtRunTime(policy) {
+		return errors.New("container type filters in the evaluation filter are not applicable to build-only policies")
+	}
+	if s.isAuditEventPolicy(policy) {
+		return errors.New("container type filters in the evaluation filter are not applicable to audit log event policies")
+	}
+	if s.isNodeEventPolicy(policy) {
+		return errors.New("container type filters in the evaluation filter are not applicable to node event policies")
 	}
 	return nil
 }

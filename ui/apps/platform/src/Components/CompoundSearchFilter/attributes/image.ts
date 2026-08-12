@@ -1,6 +1,6 @@
 // If you're adding a new attribute, make sure to add it to "imageAttributes" as well
 
-import { CompoundSearchFilterAttribute } from '../types';
+import type { CompoundSearchFilterAttribute } from '../types';
 
 export const Name: CompoundSearchFilterAttribute = {
     displayName: 'Name',
@@ -20,7 +20,7 @@ export const Tag: CompoundSearchFilterAttribute = {
     displayName: 'Tag',
     filterChipLabel: 'Image tag',
     searchTerm: 'Image Tag',
-    inputType: 'text',
+    inputType: 'autocomplete',
 };
 
 export const Label: CompoundSearchFilterAttribute = {
@@ -34,7 +34,14 @@ export const Registry: CompoundSearchFilterAttribute = {
     displayName: 'Registry',
     filterChipLabel: 'Image registry',
     searchTerm: 'Image Registry',
-    inputType: 'text',
+    inputType: 'autocomplete',
 };
 
-export const imageAttributes = [Name, OperatingSystem, Tag, Label, Registry];
+export const CreatedTime: CompoundSearchFilterAttribute = {
+    displayName: 'Created time',
+    filterChipLabel: 'Image created time',
+    searchTerm: 'Image Created Time',
+    inputType: 'date-picker',
+};
+
+export const imageAttributes = [CreatedTime, Label, Name, OperatingSystem, Registry, Tag];

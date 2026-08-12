@@ -4,9 +4,9 @@ import (
 	"context"
 
 	alertDataStore "github.com/stackrox/rox/central/alert/datastore"
-	"github.com/stackrox/rox/central/cluster/datastore/internal/search"
 	clusterStore "github.com/stackrox/rox/central/cluster/store/cluster"
 	clusterHealthStore "github.com/stackrox/rox/central/cluster/store/clusterhealth"
+	clusterInitStore "github.com/stackrox/rox/central/clusterinit/store"
 	compliancePruning "github.com/stackrox/rox/central/complianceoperator/v2/pruner"
 	clusterCVEDS "github.com/stackrox/rox/central/cve/cluster/datastore"
 	deploymentDataStore "github.com/stackrox/rox/central/deployment/datastore"
@@ -30,6 +30,7 @@ import (
 	"github.com/stackrox/rox/pkg/logging"
 	notifierProcessor "github.com/stackrox/rox/pkg/notifier"
 	"github.com/stackrox/rox/pkg/sac"
+	"github.com/stackrox/rox/pkg/sac/effectiveaccessscope"
 	pkgSearch "github.com/stackrox/rox/pkg/search"
 	"github.com/stackrox/rox/pkg/simplecache"
 )
@@ -45,7 +46,8 @@ type DataStore interface {
 	GetCluster(ctx context.Context, id string) (*storage.Cluster, bool, error)
 	GetClusterName(ctx context.Context, id string) (string, bool, error)
 	GetClusters(ctx context.Context) ([]*storage.Cluster, error)
-	GetClustersForSAC(ctx context.Context) ([]*storage.Cluster, error)
+	GetClustersForSAC() ([]effectiveaccessscope.Cluster, error)
+	GetClusterLabels(ctx context.Context, clusterID string) (map[string]string, error)
 	CountClusters(ctx context.Context) (int, error)
 	Exists(ctx context.Context, id string) (bool, error)
 	WalkClusters(ctx context.Context, fn func(obj *storage.Cluster) error) error
@@ -71,6 +73,8 @@ type DataStore interface {
 	SearchResults(ctx context.Context, q *v1.Query) ([]*v1.SearchResult, error)
 
 	LookupOrCreateClusterFromConfig(ctx context.Context, clusterID, bundleID string, hello *central.SensorHello) (*storage.Cluster, error)
+
+	MatchProcessIndicator(ctx context.Context, indicator *storage.ProcessIndicator) (bool, error)
 }
 
 // New returns an instance of DataStore.
@@ -95,6 +99,7 @@ func New(
 	clusterRanker *ranking.Ranker,
 	networkBaselineMgr networkBaselineManager.Manager,
 	compliancePruner compliancePruning.Pruner,
+	clusterInitStore clusterInitStore.Store,
 ) (DataStore, error) {
 	ds := &datastoreImpl{
 		clusterStorage:            clusterStorage,
@@ -117,11 +122,12 @@ func New(
 		clusterRanker:             clusterRanker,
 		networkBaselineMgr:        networkBaselineMgr,
 		idToNameCache:             simplecache.New(),
+		idToNamespaceFilterCache:  simplecache.New(),
 		nameToIDCache:             simplecache.New(),
 		compliancePruner:          compliancePruner,
+		clusterInitStore:          clusterInitStore,
 	}
 
-	ds.searcher = search.NewV2(clusterStorage, clusterRanker)
 	if err := ds.buildCache(sac.WithAllAccess(context.Background())); err != nil {
 		return ds, err
 	}

@@ -76,6 +76,8 @@ type NodeComponentResolver interface {
 	Version(ctx context.Context) string
 }
 
+var _ NodeComponentResolver = (*nodeComponentResolver)(nil)
+
 // NodeComponent returns a node component based on an input id (name:version)
 func (resolver *Resolver) NodeComponent(ctx context.Context, args IDQuery) (NodeComponentResolver, error) {
 	defer metrics.SetGraphQLOperationDurationTime(time.Now(), pkgMetrics.Root, "NodeComponent")
@@ -156,7 +158,7 @@ func (resolver *nodeComponentResolver) nodeComponentScopeContext(ctx context.Con
 	}
 	return scoped.Context(resolver.ctx, scoped.Scope{
 		Level: v1.SearchCategory_NODE_COMPONENTS,
-		ID:    resolver.data.GetId(),
+		IDs:   []string{resolver.data.GetId()},
 	})
 }
 

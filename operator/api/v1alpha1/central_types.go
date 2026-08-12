@@ -17,6 +17,7 @@ limitations under the License.
 package v1alpha1
 
 import (
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/pointer"
 )
@@ -38,16 +39,14 @@ type CentralSpec struct {
 	Scanner *ScannerComponentSpec `json:"scanner,omitempty"`
 
 	// Settings for the Scanner V4 component, which can run in addition to the previously existing Scanner components
-	//+kubebuilder:default={"scannerComponent":"Default"}
 	//+operator-sdk:csv:customresourcedefinitions:type=spec,order=3,displayName="Scanner V4 Component Settings"
 	ScannerV4 *ScannerV4Spec `json:"scannerV4,omitempty"`
-	// Above default is necessary to make the nested default work see: https://github.com/kubernetes-sigs/controller-tools/issues/622
 
 	// Settings related to outgoing network traffic.
 	//+operator-sdk:csv:customresourcedefinitions:type=spec,order=4
 	Egress *Egress `json:"egress,omitempty"`
 
-	// Allows you to specify additional trusted Root CAs.
+	// Settings related to Transport Layer Security, such as Certificate Authorities.
 	//+operator-sdk:csv:customresourcedefinitions:type=spec,order=5
 	TLS *TLSConfig `json:"tls,omitempty"`
 
@@ -79,13 +78,18 @@ type CentralSpec struct {
 	// Config-as-Code configuration.
 	//+operator-sdk:csv:customresourcedefinitions:type=spec,displayName=Config-as-Code,order=11,xDescriptors={"urn:alm:descriptor:com.tectonic.ui:advanced"}
 	ConfigAsCode *ConfigAsCodeSpec `json:"configAsCode,omitempty"`
+
+	// Central Worker configuration. When enabled, pruning and reporting jobs run in a
+	// separate Deployment instead of inside Central.
+	//+operator-sdk:csv:customresourcedefinitions:type=spec,displayName="Central Worker",order=12,xDescriptors={"urn:alm:descriptor:com.tectonic.ui:advanced"}
+	CentralWorker *CentralWorkerSpec `json:"centralWorker,omitempty"`
 }
 
 // Egress defines settings related to outgoing network traffic.
 type Egress struct {
 	// Configures whether Red Hat Advanced Cluster Security should run in online or offline (disconnected) mode.
 	// In offline mode, automatic updates of vulnerability definitions and kernel modules are disabled.
-	//+kubebuilder:default=Online
+	// The default is: Online.
 	//+operator-sdk:csv:customresourcedefinitions:type=spec,displayName=Connectivity Policy,order=1
 	ConnectivityPolicy *ConnectivityPolicy `json:"connectivityPolicy,omitempty"`
 }
@@ -99,6 +103,21 @@ const (
 	ConnectivityOnline ConnectivityPolicy = "Online"
 	// ConnectivityOffline means that Central must not make outbound connections to the Internet.
 	ConnectivityOffline ConnectivityPolicy = "Offline"
+)
+
+func (p ConnectivityPolicy) Pointer() *ConnectivityPolicy {
+	return &p
+}
+
+// RolloutStrategy is a type for values of spec.central.rolloutStrategy.
+// +kubebuilder:validation:Enum=Recreate;RollingUpdate
+type RolloutStrategy string
+
+const (
+	// RolloutStrategyRecreate configures Central to use the Recreate deployment strategy.
+	RolloutStrategyRecreate RolloutStrategy = "Recreate"
+	// RolloutStrategyRollingUpdate configures Central to use the RollingUpdate deployment strategy.
+	RolloutStrategyRollingUpdate RolloutStrategy = "RollingUpdate"
 )
 
 // CentralComponentSpec defines settings for the "central" component.
@@ -134,7 +153,7 @@ type CentralComponentSpec struct {
 
 	// Unused field. This field exists solely for backward compatibility starting from version v4.6.0.
 	//+operator-sdk:csv:customresourcedefinitions:type=spec,xDescriptors={"urn:alm:descriptor:com.tectonic.ui:hidden"}
-	Persistence *Persistence `json:"persistence,omitempty"`
+	Persistence *ObsoletePersistence `json:"persistence,omitempty"`
 
 	// Settings for Central DB, which is responsible for data persistence.
 	//+operator-sdk:csv:customresourcedefinitions:type=spec,order=5,displayName="Central DB Settings"
@@ -152,6 +171,11 @@ type CentralComponentSpec struct {
 	// Configures the encryption of notifier secrets stored in the Central DB.
 	//+operator-sdk:csv:customresourcedefinitions:type=spec,order=8,displayName="Notifier Secrets Encryption",xDescriptors={"urn:alm:descriptor:com.tectonic.ui:hidden"}
 	NotifierSecretsEncryption *NotifierSecretsEncryption `json:"notifierSecretsEncryption,omitempty"`
+
+	// Configures the rollout strategy for the Central deployment.
+	// The default is: Recreate.
+	//+operator-sdk:csv:customresourcedefinitions:type=spec,displayName="Rollout Strategy",order=9
+	RolloutStrategy *RolloutStrategy `json:"rolloutStrategy,omitempty"`
 
 	//+operator-sdk:csv:customresourcedefinitions:type=spec,order=99
 	DeploymentSpec `json:",inline"`
@@ -208,7 +232,7 @@ type DeclarativeConfiguration struct {
 // NotifierSecretsEncryption defines settings for encrypting notifier secrets in the Central DB.
 type NotifierSecretsEncryption struct {
 	// Enables the encryption of notifier secrets stored in the Central DB.
-	//+kubebuilder:default=false
+	// The default is: false.
 	//+operator-sdk:csv:customresourcedefinitions:type=spec,order=1
 	Enabled *bool `json:"enabled,omitempty"`
 }
@@ -218,10 +242,8 @@ type NotifierSecretsEncryption struct {
 // isEnabled is effectively no-op starting from the version 3.74.0. It should be removed when we
 // bump API version of ACS custom resources. Removing it before is unsafe and may break compatibility.
 type CentralDBSpec struct {
-	// Deprecated field. It is no longer necessary to specify it.
+	// Obsolete field.
 	// This field will be removed in a future release.
-	// Central is configured to use PostgreSQL by default.
-	//+kubebuilder:default=Default
 	//+operator-sdk:csv:customresourcedefinitions:type=spec,xDescriptors={"urn:alm:descriptor:com.tectonic.ui:hidden"}
 	IsEnabled *CentralDBEnabled `json:"isEnabled,omitempty"`
 
@@ -245,7 +267,7 @@ type CentralDBSpec struct {
 
 	// Config map containing postgresql.conf and pg_hba.conf that will be used if modifications need to be applied.
 	//+operator-sdk:csv:customresourcedefinitions:type=spec,order=4,displayName="Config map that will override postgresql.conf and pg_hba.conf"
-	ConfigOverride LocalConfigMapReference `json:"configOverride,omitempty"`
+	ConfigOverride *LocalConfigMapReference `json:"configOverride,omitempty"`
 
 	// Configures the database connection pool size.
 	//+operator-sdk:csv:customresourcedefinitions:type=spec,order=5,displayName="Database Connection Pool Size Settings"
@@ -272,23 +294,16 @@ const (
 // DBConnectionPoolSize configures the database connection pool size.
 type DBConnectionPoolSize struct {
 	// Minimum number of connections in the connection pool.
-	//+kubebuilder:default=10
+	// The default is: 10.
 	//+kubebuilder:validation:Minimum=1
 	//+operator-sdk:csv:customresourcedefinitions:type=spec,displayName="Minimum Connections"
 	MinConnections *int32 `json:"minConnections"`
 
 	// Maximum number of connections in the connection pool.
-	//+kubebuilder:default=90
+	// The default is: 90.
 	//+kubebuilder:validation:Minimum=1
 	//+operator-sdk:csv:customresourcedefinitions:type=spec,displayName="Maximum Connections"
 	MaxConnections *int32 `json:"maxConnections"`
-}
-
-// CentralDBEnabledPtr return a pointer for the given CentralDBEnabled value
-func CentralDBEnabledPtr(c CentralDBEnabled) *CentralDBEnabled {
-	ptr := new(CentralDBEnabled)
-	*ptr = c
-	return ptr
 }
 
 // GetPasswordSecret provides a way to retrieve the admin password that is safe to use on a nil receiver object.
@@ -307,37 +322,15 @@ func (c *CentralDBSpec) GetPersistence() *DBPersistence {
 	return c.Persistence
 }
 
-// Persistence defines persistence settings for central.
-type Persistence struct {
-	// Uses a Kubernetes persistent volume claim (PVC) to manage the storage location of persistent data.
-	// Recommended for most users.
-	//+operator-sdk:csv:customresourcedefinitions:type=spec,displayName="Persistent volume claim",order=1
-	PersistentVolumeClaim *PersistentVolumeClaim `json:"persistentVolumeClaim,omitempty"`
+// ObsoletePersistence contains obsolete persistence settings for central.
+type ObsoletePersistence struct {
+	// Obsolete unused field.
+	//+operator-sdk:csv:customresourcedefinitions:type=spec,xDescriptors={"urn:alm:descriptor:com.tectonic.ui:hidden"}
+	PersistentVolumeClaim *ObsoletePersistentVolumeClaim `json:"persistentVolumeClaim,omitempty"`
 
-	// Stores persistent data on a directory on the host. This is not recommended, and should only
-	// be used together with a node selector (only available in YAML view).
-	//+operator-sdk:csv:customresourcedefinitions:type=spec,displayName="Host path",order=99
+	// Obsolete unused field.
+	//+operator-sdk:csv:customresourcedefinitions:type=spec,xDescriptors={"urn:alm:descriptor:com.tectonic.ui:hidden"}
 	HostPath *HostPathSpec `json:"hostPath,omitempty"`
-}
-
-// GetPersistentVolumeClaim returns the configured PVC
-func (p *Persistence) GetPersistentVolumeClaim() *PersistentVolumeClaim {
-	if p == nil {
-		return nil
-	}
-	return p.PersistentVolumeClaim
-}
-
-// GetHostPath returns the configured host path
-func (p *Persistence) GetHostPath() string {
-	if p == nil {
-		return ""
-	}
-	if p.HostPath == nil {
-		return ""
-	}
-
-	return pointer.StringDeref(p.HostPath.Path, "")
 }
 
 // HostPathSpec defines settings for host path config.
@@ -347,24 +340,18 @@ type HostPathSpec struct {
 	Path *string `json:"path,omitempty"`
 }
 
-// PersistentVolumeClaim defines PVC-based persistence settings.
-type PersistentVolumeClaim struct {
-	// The name of the PVC to manage persistent data. If no PVC with the given name exists, it will be
-	// created. Defaults to "stackrox-db" if not set.
-	//+operator-sdk:csv:customresourcedefinitions:type=spec,displayName="Claim Name",order=1
-	//+kubebuilder:default=stackrox-db
+// ObsoletePersistentVolumeClaim contains obsolete PVC-based persistence settings.
+type ObsoletePersistentVolumeClaim struct {
+	// Obsolete unused field.
+	//+operator-sdk:csv:customresourcedefinitions:type=spec,xDescriptors={"urn:alm:descriptor:com.tectonic.ui:hidden"}
 	ClaimName *string `json:"claimName,omitempty"`
 
-	// The size of the persistent volume when created through the claim. If a claim was automatically created,
-	// this can be used after the initial deployment to resize (grow) the volume (only supported by some
-	// storage class controllers).
-	//+kubebuilder:validation:Pattern=^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
-	//+operator-sdk:csv:customresourcedefinitions:type=spec,displayName="Size",order=2,xDescriptors={"urn:alm:descriptor:com.tectonic.ui:text"}
+	// Obsolete unused field.
+	//+operator-sdk:csv:customresourcedefinitions:type=spec,xDescriptors={"urn:alm:descriptor:com.tectonic.ui:hidden"}
 	Size *string `json:"size,omitempty"`
 
-	// The name of the storage class to use for the PVC. If your cluster is not configured with a default storage
-	// class, you must select a value here.
-	//+operator-sdk:csv:customresourcedefinitions:type=spec,displayName="Storage Class",order=3,xDescriptors={"urn:alm:descriptor:io.kubernetes:StorageClass"}
+	// Obsolete unused field.
+	//+operator-sdk:csv:customresourcedefinitions:type=spec,xDescriptors={"urn:alm:descriptor:com.tectonic.ui:hidden"}
 	StorageClassName *string `json:"storageClassName,omitempty"`
 }
 
@@ -375,7 +362,7 @@ type DBPersistence struct {
 	//+operator-sdk:csv:customresourcedefinitions:type=spec,displayName="Persistent volume claim",order=1
 	PersistentVolumeClaim *DBPersistentVolumeClaim `json:"persistentVolumeClaim,omitempty"`
 
-	// Stores persistent data on a directory on the host. This is not recommended, and should only
+	// Stores persistent data in a directory on the host. This is not recommended, and should only
 	// be used together with a node selector (only available in YAML view).
 	//+operator-sdk:csv:customresourcedefinitions:type=spec,displayName="Host path",order=99
 	HostPath *HostPathSpec `json:"hostPath,omitempty"`
@@ -404,9 +391,9 @@ func (p *DBPersistence) GetHostPath() string {
 // DBPersistentVolumeClaim defines PVC-based persistence settings for Central DB.
 type DBPersistentVolumeClaim struct {
 	// The name of the PVC to manage persistent data. If no PVC with the given name exists, it will be
-	// created. Defaults to "central-db" if not set.
+	// created.
+	// The default is: central-db.
 	//+operator-sdk:csv:customresourcedefinitions:type=spec,displayName="Claim Name",order=1
-	//+kubebuilder:default=central-db
 	ClaimName *string `json:"claimName,omitempty"`
 
 	// The size of the persistent volume when created through the claim. If a claim was automatically created,
@@ -422,7 +409,7 @@ type DBPersistentVolumeClaim struct {
 	StorageClassName *string `json:"storageClassName,omitempty"`
 }
 
-// Exposure defines how central is exposed.
+// Exposure defines how Central is exposed.
 type Exposure struct {
 	// Expose Central through an OpenShift route.
 	//+operator-sdk:csv:customresourcedefinitions:type=spec,order=1,displayName="Route"
@@ -439,14 +426,13 @@ type Exposure struct {
 
 // ExposureLoadBalancer defines settings for exposing central via a LoadBalancer.
 type ExposureLoadBalancer struct {
-	//+kubebuilder:default=false
+	// The default is: false.
 	//+operator-sdk:csv:customresourcedefinitions:type=spec,order=1
 	Enabled *bool `json:"enabled,omitempty"`
 
-	// Defaults to 443 if not set.
+	// The default is: 443.
 	//+kubebuilder:validation:Minimum=1
 	//+kubebuilder:validation:Maximum=65535
-	//+kubebuilder:default=443
 	//+operator-sdk:csv:customresourcedefinitions:type=spec,order=2,xDescriptors={"urn:alm:descriptor:com.tectonic.ui:fieldDependency:.enabled:true"}
 	Port *int32 `json:"port,omitempty"`
 
@@ -457,7 +443,7 @@ type ExposureLoadBalancer struct {
 
 // ExposureNodePort defines settings for exposing central via a NodePort.
 type ExposureNodePort struct {
-	//+kubebuilder:default=false
+	// The default is: false.
 	//+operator-sdk:csv:customresourcedefinitions:type=spec,order=1
 	Enabled *bool `json:"enabled,omitempty"`
 
@@ -468,22 +454,73 @@ type ExposureNodePort struct {
 	Port *int32 `json:"port,omitempty"`
 }
 
-// ExposureRoute defines settings for exposing central via a Route.
+// ExposureRoute defines settings for exposing Central via a Route.
 type ExposureRoute struct {
-	//+kubebuilder:default=false
+	// Expose Central with a passthrough route.
+	// The default is: false.
 	//+operator-sdk:csv:customresourcedefinitions:type=spec,order=1
 	Enabled *bool `json:"enabled,omitempty"`
 
-	// Specify a custom hostname for the central route.
-	// If unspecified, an appropriate default value will be automatically chosen by OpenShift route operator.
+	// Specify a custom hostname for the Central route.
+	// If unspecified, an appropriate default value will be automatically chosen by the OpenShift route operator.
 	//+operator-sdk:csv:customresourcedefinitions:type=spec,order=2
 	Host *string `json:"host,omitempty"`
+
+	// Set up a Central route with reencrypt TLS termination.
+	// For reencrypt routes, the request is terminated on the OpenShift router with a custom certificate.
+	// The request is then reencrypted by the OpenShift router and sent to Central.
+	// [user] --TLS--> [OpenShift router] --TLS--> [Central]
+	//+operator-sdk:csv:customresourcedefinitions:type=spec,order=3,displayName="Re-Encrypt Route"
+	Reencrypt *ExposureRouteReencrypt `json:"reencrypt,omitempty"`
+}
+
+// ExposureRouteReencrypt defines settings for exposing Central via a reencrypt Route.
+type ExposureRouteReencrypt struct {
+	// Expose Central with a reencrypt route.
+	// Should not be used for sensor communication.
+	// The default is: false.
+	//+operator-sdk:csv:customresourcedefinitions:type=spec,order=1
+	Enabled *bool `json:"enabled,omitempty"`
+
+	// Specify a custom hostname for the Central reencrypt route.
+	// If unspecified, an appropriate default value will be automatically chosen by the OpenShift route operator.
+	//+operator-sdk:csv:customresourcedefinitions:type=spec,order=2
+	Host *string `json:"host,omitempty"`
+
+	// TLS settings for exposing Central via a reencrypt Route.
+	//+operator-sdk:csv:customresourcedefinitions:type=spec,order=3,displayName="TLS Settings"
+	TLS *ExposureRouteReencryptTLS `json:"tls,omitempty"`
+}
+
+// ExposureRouteReencryptTLS defines TLS settings for exposing Central via a reencrypt Route.
+type ExposureRouteReencryptTLS struct {
+	// The PEM encoded certificate chain that may be used to establish a complete chain of trust.
+	// Defaults to the OpenShift certificate authority.
+	//+operator-sdk:csv:customresourcedefinitions:type=spec,order=1,displayName="CA Certificate"
+	CaCertificate *string `json:"caCertificate,omitempty"`
+
+	// The PEM encoded certificate that is served on the route. Must be a single serving
+	// certificate instead of a certificate chain.
+	// Defaults to a certificate signed by the OpenShift certificate authority.
+	//+operator-sdk:csv:customresourcedefinitions:type=spec,order=2,displayName="Certificate"
+	Certificate *string `json:"certificate,omitempty"`
+
+	// The CA certificate of the final destination, i.e. of Central.
+	// Used by the OpenShift router for health checks on the secure connection.
+	// Defaults to the Central certificate authority.
+	//+operator-sdk:csv:customresourcedefinitions:type=spec,order=3,displayName="Destination CA Certificate"
+	DestinationCACertificate *string `json:"destinationCACertificate,omitempty"`
+
+	// The PEM encoded private key of the certificate that is served on the route.
+	// Defaults to a certificate signed by the OpenShift certificate authority.
+	//+operator-sdk:csv:customresourcedefinitions:type=spec,order=4,displayName="Private Key"
+	Key *string `json:"key,omitempty"`
 }
 
 // Telemetry defines telemetry settings for Central.
 type Telemetry struct {
-	// Specifies if Telemetry is enabled.
-	//+kubebuilder:default=true
+	// Specifies whether Telemetry is enabled.
+	// The default is: true.
 	//+operator-sdk:csv:customresourcedefinitions:type=spec,order=1,xDescriptors={"urn:alm:descriptor:com.tectonic.ui:booleanSwitch"}
 	Enabled *bool `json:"enabled,omitempty"`
 
@@ -531,8 +568,10 @@ type ScannerComponentSpec struct {
 
 // ScannerV4Spec defines settings for the central "Scanner V4" component.
 type ScannerV4Spec struct {
-	// If you want to deploy Scanner V4 components set this to "Enabled"
-	//+kubebuilder:default=Default
+	// Can be specified as "Enabled" or "Disabled".
+	// If this field is not specified, the following defaulting takes place:
+	// * for upgrades to 4.8 from previous releases, the default is: Disabled;
+	// * for new installations starting with ACS 4.8, the default is: Enabled.
 	//+operator-sdk:csv:customresourcedefinitions:type=spec,order=1,displayName="Scanner V4 component"
 	ScannerComponent *ScannerV4ComponentPolicy `json:"scannerComponent,omitempty"`
 
@@ -595,10 +634,7 @@ const (
 type ScannerV4ComponentPolicy string
 
 const (
-	// ScannerV4ComponentDefault means that Scanner V4 uses the default semantics
-	// to identify whether Scanner V4 component should be used.
-	// Currently this defaults to "Disabled" semantics.
-	// TODO change default to "Enabled" semantics with version 4.5
+	// Keep this for compatibility and potentially for reasoning about expected defaults.
 	ScannerV4ComponentDefault ScannerV4ComponentPolicy = "Default"
 	// ScannerV4ComponentEnabled explicitly enables the Scanner V4 component.
 	ScannerV4ComponentEnabled ScannerV4ComponentPolicy = "Enabled"
@@ -606,11 +642,34 @@ const (
 	ScannerV4ComponentDisabled ScannerV4ComponentPolicy = "Disabled"
 )
 
+// CentralWorkerSpec defines the central-worker configuration.
+type CentralWorkerSpec struct {
+	// If set to true, pruning and reporting jobs run in a separate Deployment.
+	// The default is: false.
+	//+operator-sdk:csv:customresourcedefinitions:type=spec,order=1,displayName="Enabled"
+	Enabled *bool `json:"enabled,omitempty"`
+
+	// If you want this component to only run on specific nodes, you can configure
+	// tolerations and affinity settings here.
+	//+operator-sdk:csv:customresourcedefinitions:type=spec,order=2,displayName="Affinity"
+	Affinity *corev1.Affinity `json:"affinity,omitempty"`
+
+	// Configures the priority class name for the central-worker deployment.
+	//+operator-sdk:csv:customresourcedefinitions:type=spec,order=3,displayName="Priority Class Name"
+	PriorityClassName *string `json:"priorityClassName,omitempty"`
+
+	//+operator-sdk:csv:customresourcedefinitions:type=spec,order=99
+	DeploymentSpec `json:",inline"`
+}
+
 type ConfigAsCodeSpec struct {
 	// If you want to deploy the Config as Code component, set this to "Enabled"
-	//+kubebuilder:default=Enabled
+	// The default is: Enabled.
 	//+operator-sdk:csv:customresourcedefinitions:type=spec,order=1,displayName="Config as Code component"
 	ComponentPolicy *ConfigAsCodeComponentPolicy `json:"configAsCodeComponent,omitempty"`
+
+	//+operator-sdk:csv:customresourcedefinitions:type=spec,order=99
+	DeploymentSpec `json:",inline"`
 }
 
 // ConfigAsCodeComponentPolicy is a type for values of spec.configAsCode.configAsCodeComponent
@@ -629,7 +688,7 @@ const (
 
 // CentralStatus defines the observed state of Central.
 type CentralStatus struct {
-	Conditions      []StackRoxCondition `json:"conditions"`
+	Conditions      []StackRoxCondition `json:"conditions,omitempty"`
 	DeployedRelease *StackRoxRelease    `json:"deployedRelease,omitempty"`
 
 	// The deployed version of the product.
@@ -637,6 +696,10 @@ type CentralStatus struct {
 	ProductVersion string `json:"productVersion,omitempty"`
 	//+operator-sdk:csv:customresourcedefinitions:type=status,order=2
 	Central *CentralComponentStatus `json:"central,omitempty"`
+
+	// ObservedGeneration is the generation most recently observed by the controller.
+	//+operator-sdk:csv:customresourcedefinitions:type=status,order=4
+	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
 }
 
 // AdminPasswordStatus shows status related to the admin password.
@@ -659,6 +722,11 @@ type CentralComponentStatus struct {
 //+kubebuilder:object:root=true
 //+kubebuilder:subresource:status
 //+operator-sdk:csv:customresourcedefinitions:resources={{Deployment,v1,""},{Secret,v1,""},{Service,v1,""},{Route,v1,""}}
+//+kubebuilder:printcolumn:name="Version",type=string,JSONPath=`.status.productVersion`
+//+kubebuilder:printcolumn:name="AdminPassword",type=string,JSONPath=`.status.central.adminPassword.adminPasswordSecretReference`
+//+kubebuilder:printcolumn:name="Message",type=string,JSONPath=`.status.conditions[?(@.type=="Deployed")].message`
+//+kubebuilder:printcolumn:name="Progressing",type=string,JSONPath=`.status.conditions[?(@.type=="Progressing")].status`
+//+kubebuilder:printcolumn:name="Available",type=string,JSONPath=`.status.conditions[?(@.type=="Available")].status`
 //+genclient
 
 // Central is the configuration template for the central services. This includes the API server, persistent storage,
@@ -669,6 +737,31 @@ type Central struct {
 
 	Spec   CentralSpec   `json:"spec,omitempty"`
 	Status CentralStatus `json:"status,omitempty"`
+
+	// This field will never be serialized, it is used for attaching defaulting decisions to a Central struct during reconciliation.
+	Defaults CentralSpec `json:"-"`
+}
+
+// GetCondition returns a specific condition by type, or nil if not found.
+func (c *Central) GetCondition(condType ConditionType) *StackRoxCondition {
+	return getCondition(c.Status.Conditions, condType)
+}
+
+// SetCondition updates or adds a condition. Returns true if the condition changed.
+func (c *Central) SetCondition(updatedCond StackRoxCondition) bool {
+	var updated bool
+	c.Status.Conditions, updated = updateCondition(c.Status.Conditions, updatedCond)
+	return updated
+}
+
+// GetGeneration returns the metadata.generation of the Central resource.
+func (c *Central) GetGeneration() int64 {
+	return c.ObjectMeta.GetGeneration()
+}
+
+// GetObservedGeneration returns the observedGeneration of the Central status sub-resource.
+func (c *Central) GetObservedGeneration() int64 {
+	return c.Status.ObservedGeneration
 }
 
 //+kubebuilder:object:root=true
@@ -687,6 +780,10 @@ func init() {
 var (
 	// CentralGVK is the GVK for the Central type.
 	CentralGVK = GroupVersion.WithKind("Central")
+
+	ScannerV4Default  = ScannerV4ComponentDefault
+	ScannerV4Enabled  = ScannerV4ComponentEnabled
+	ScannerV4Disabled = ScannerV4ComponentDisabled
 )
 
 // IsScannerEnabled returns true if scanner is enabled.

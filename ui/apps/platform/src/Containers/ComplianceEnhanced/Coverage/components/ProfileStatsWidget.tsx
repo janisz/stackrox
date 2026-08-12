@@ -1,12 +1,18 @@
-import React, { useState } from 'react';
-import { Chart, ChartAxis, ChartBar, ChartContainer, ChartLabel } from '@patternfly/react-charts';
+import { useState } from 'react';
+import {
+    Chart,
+    ChartAxis,
+    ChartBar,
+    ChartContainer,
+    ChartLabel,
+} from '@patternfly/react-charts/victory';
 import { Bullseye, Spinner } from '@patternfly/react-core';
 import { ExclamationCircleIcon } from '@patternfly/react-icons';
 
 import EmptyStateTemplate from 'Components/EmptyStateTemplate';
 import useResizeObserver from 'hooks/useResizeObserver';
-import { ComplianceProfileScanStats } from 'services/ComplianceResultsStatsService';
-import { defaultChartHeight, defaultChartBarWidth } from 'utils/chartUtils';
+import type { ComplianceProfileScanStats } from 'services/ComplianceResultsStatsService';
+import { defaultChartBarWidth, defaultChartHeight } from 'utils/chartUtils';
 import { getAxiosErrorMessage } from 'utils/responseErrorUtils';
 
 import {
@@ -52,7 +58,7 @@ function ProfileStatsWidget({ error, isLoading, profileScanStats }: ProfileStats
                     title="Error loading profile stats"
                     headingLevel="h3"
                     icon={ExclamationCircleIcon}
-                    iconClassName="pf-v5-u-danger-color-100"
+                    status="danger"
                 >
                     {getAxiosErrorMessage(error.message)}
                 </EmptyStateTemplate>

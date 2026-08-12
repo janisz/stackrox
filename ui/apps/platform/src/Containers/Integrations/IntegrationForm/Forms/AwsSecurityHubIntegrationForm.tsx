@@ -1,21 +1,23 @@
-import React, { ReactElement } from 'react';
-import { TextInput, PageSection, Form, FormSelect, Checkbox } from '@patternfly/react-core';
+import type { ReactElement } from 'react';
+import { Checkbox, Form, PageSection, SelectOption, TextInput } from '@patternfly/react-core';
 import * as yup from 'yup';
 import merge from 'lodash/merge';
 
-import { NotifierIntegrationBase } from 'services/NotifierIntegrationsService';
+import type { NotifierIntegrationBase } from 'services/NotifierIntegrationsService';
 
-import usePageState from 'Containers/Integrations/hooks/usePageState';
 import FormMessage from 'Components/PatternFly/FormMessage';
 import FormTestButton from 'Components/PatternFly/FormTestButton';
 import FormSaveButton from 'Components/PatternFly/FormSaveButton';
 import FormCancelButton from 'Components/PatternFly/FormCancelButton';
+import SelectSingle from 'Components/SelectSingle';
+
+import usePageState from '../../hooks/usePageState';
 import useIntegrationForm from '../useIntegrationForm';
-import { IntegrationFormProps } from '../integrationFormTypes';
+import type { IntegrationFormProps } from '../integrationFormTypes';
 
 import IntegrationFormActions from '../IntegrationFormActions';
 import FormLabelGroup from '../FormLabelGroup';
-import AwsRegionOptions from '../AwsRegionOptions';
+import { regionOptions } from '../awsRegionOptions';
 
 export type AwsSecurityHubIntegration = {
     awsSecurityHub: {
@@ -165,7 +167,7 @@ function AwsSecurityHubIntegrationForm({
 
     return (
         <>
-            <PageSection variant="light" isFilled hasOverflowScroll>
+            <PageSection isFilled hasOverflowScroll>
                 <FormMessage message={message} />
                 <Form isWidthLimited>
                     <FormLabelGroup
@@ -207,15 +209,19 @@ function AwsSecurityHubIntegrationForm({
                         touched={touched}
                         errors={errors}
                     >
-                        <FormSelect
+                        <SelectSingle
                             id="notifier.awsSecurityHub.region"
                             value={values.notifier.awsSecurityHub.region}
-                            onChange={(event, value) => onChange(value, event)}
-                            onBlur={handleBlur}
+                            handleSelect={setFieldValue}
                             isDisabled={!isEditable}
+                            placeholderText="Choose one..."
                         >
-                            <AwsRegionOptions />
-                        </FormSelect>
+                            {regionOptions.map((option) => (
+                                <SelectOption key={option.value} value={option.value}>
+                                    {option.label}
+                                </SelectOption>
+                            ))}
+                        </SelectSingle>
                     </FormLabelGroup>
                     {!isCreating && isEditable && (
                         <FormLabelGroup

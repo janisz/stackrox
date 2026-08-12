@@ -12,6 +12,23 @@ source "$ROOT/tests/e2e/lib.sh"
 
 set -euo pipefail
 
+if [[ "$#" -lt 1 ]]; then
+    die "usage: dispatch <ci-job> [<...other parameters...>]"
+fi
+
+ci_job="$1"
+shift
+
+# Skip non-UI jobs early when the PR only touches files under ui/.
+case "$ci_job" in
+    *nongroovy*|*upgrade*)
+        if changes_limited_to "ui/"; then
+            info "Skipping $ci_job: all changes are under ui/"
+            exit 0
+        fi
+        ;;
+esac
+
 if [[ -f "${SHARED_DIR:-}/shared_env" ]]; then
     # shellcheck disable=SC1091
     source "${SHARED_DIR:-}/shared_env"
@@ -21,17 +38,19 @@ openshift_ci_mods
 openshift_ci_import_creds
 create_exit_trap
 
-if [[ "$#" -lt 1 ]]; then
-    die "usage: dispatch <ci-job> [<...other parameters...>]"
-fi
+# Enable Scanner V4 by default for all e2e jobs. openshift/release currently
+# hardcodes ROX_SCANNER_V4=false; this override can be removed once that is
+# dropped. Individual job scripts can opt out via os.environ["ROX_SCANNER_V4"].
+#
+# TODO(ROX-35345): remove this
+export ROX_SCANNER_V4=true
 
-ci_job="$1"
-shift
 ci_export CI_JOB_NAME "$ci_job"
 
 case "$ci_job" in
     gke*qa-e2e-tests|gke*nongroovy-e2e-tests|gke*upgrade-tests|gke-ui-e2e-tests|\
-    eks-qa-e2e-tests|osd*qa-e2e-tests|gke*sensor-integration-tests)
+    eks-qa-e2e-tests|osd*qa-e2e-tests|\
+    *vm-scanning-e2e-tests)
         openshift_ci_e2e_mods
         ;;
     *-operator-e2e-tests)
@@ -40,7 +59,8 @@ case "$ci_job" in
 esac
 
 case "$ci_job" in
-    eks-qa-e2e-tests|osd*qa-e2e-tests)
+    eks-qa-e2e-tests|osd*qa-e2e-tests|ocp*ui-e2e-tests|\
+    *vm-scanning-e2e-tests)
         setup_automation_flavor_e2e_cluster "$ci_job"
         ;;
 esac

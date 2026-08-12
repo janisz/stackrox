@@ -4,15 +4,17 @@ import (
 	"context"
 	"io"
 
+	"github.com/pkg/errors"
 	"github.com/stackrox/rox/pkg/concurrency"
+	"github.com/stackrox/rox/pkg/features"
 	"github.com/stackrox/rox/pkg/logging"
 	"github.com/stackrox/rox/sensor/common/awscredentials"
 	"github.com/stackrox/rox/sensor/common/config"
 	"github.com/stackrox/rox/sensor/common/internalmessage"
+	pubsubDispatcher "github.com/stackrox/rox/sensor/common/pubsub"
 	"github.com/stackrox/rox/sensor/kubernetes/client"
 	"github.com/stackrox/rox/sensor/kubernetes/eventpipeline/component"
 	"github.com/stackrox/rox/sensor/kubernetes/listener/resources"
-	"github.com/stackrox/rox/sensor/kubernetes/listener/watcher"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -20,8 +22,25 @@ var (
 	log = logging.LoggerForModule()
 )
 
+//go:generate mockgen-wrapper
+type pubSubPublisher interface {
+	Publish(pubsubDispatcher.Event) error
+}
+
 // New returns a new kubernetes listener.
-func New(client client.Interface, configHandler config.Handler, nodeName string, traceWriter io.Writer, queue component.Resolver, storeProvider *resources.StoreProvider, pubSub *internalmessage.MessageSubscriber) component.ContextListener {
+func New(clusterID clusterIDWaiter,
+	client client.Interface,
+	configHandler config.Handler,
+	nodeName string,
+	traceWriter io.Writer,
+	queue component.Resolver,
+	storeProvider *resources.StoreProvider,
+	pubSub *internalmessage.MessageSubscriber,
+	pubSubDispatcher pubSubPublisher,
+) (component.ContextListener, error) {
+	if features.SensorInternalPubSub.Enabled() && pubSubDispatcher == nil {
+		return nil, errors.Errorf("unable to initialize the listener. %q is enabled but the PubSubDispatcher is `nil`", features.SensorInternalPubSub.EnvVar())
+	}
 	k := &listenerImpl{
 		client:             client,
 		stopSig:            concurrency.NewSignal(),
@@ -31,11 +50,12 @@ func New(client client.Interface, configHandler config.Handler, nodeName string,
 		outputQueue:        queue,
 		storeProvider:      storeProvider,
 		mayCreateHandlers:  concurrency.NewSignal(),
-		crdWatcherStatusC:  make(chan *watcher.Status),
 		pubSub:             pubSub,
+		pubSubDispatcher:   pubSubDispatcher,
+		clusterID:          clusterID,
 	}
 	k.mayCreateHandlers.Signal()
-	return k
+	return k, nil
 }
 
 // createCredentialsManager retrieves Sensor's node provider ID and creates an AWS credentials manager.

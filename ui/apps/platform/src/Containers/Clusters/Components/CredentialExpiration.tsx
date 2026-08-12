@@ -1,15 +1,15 @@
-import React, { ReactElement } from 'react';
+import type { ReactElement } from 'react';
 import { differenceInDays } from 'date-fns';
 import { Tooltip } from '@patternfly/react-core';
 
-import { getTime, getDate, getDayOfWeek, getDistanceStrictAsPhrase } from 'utils/dateUtils';
+import { getDate, getDayOfWeek, getDistanceStrictAsPhrase, getTime } from 'utils/dateUtils';
 import ExternalLink from 'Components/PatternFly/IconText/ExternalLink';
 import useMetadata from 'hooks/useMetadata';
 import { getVersionedDocs } from 'utils/versioning';
 import HealthStatus from './HealthStatus';
 import HealthStatusNotApplicable from './HealthStatusNotApplicable';
-import { getCredentialExpirationStatus, healthStatusStyles } from '../cluster.helpers';
-import { CertExpiryStatus } from '../clusterTypes';
+import { getCredentialExpirationStatus, healthStatusStylesLegacy } from '../cluster.helpers';
+import type { CertExpiryStatus } from '../clusterTypes';
 
 const testId = 'credentialExpiration';
 
@@ -35,7 +35,7 @@ function CredentialExpiration({
 
     // Adapt health status categories to certificate expiration.
     const healthStatus = getCredentialExpirationStatus(certExpiryStatus, currentDatetime);
-    const { Icon, fgColor } = healthStatusStyles[healthStatus];
+    const { Icon, fgColor } = healthStatusStylesLegacy[healthStatus];
     const icon = <Icon className="h-4 w-4" />;
 
     // Order arguments according to date-fns@2 convention:
@@ -93,7 +93,7 @@ function CredentialExpiration({
                                 <a
                                     href={getVersionedDocs(
                                         version,
-                                        'configuring/reissue-internal-certificates#reissue-internal-certificates-secured-clusters'
+                                        'configuring/reissue-internal-certificates#reissue-internal-certificates-secured-clusters_reissue-internal-certificates'
                                     )}
                                     target="_blank"
                                     rel="noopener noreferrer"

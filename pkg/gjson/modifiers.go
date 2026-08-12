@@ -2,13 +2,13 @@ package gjson
 
 import (
 	"encoding/json"
+	"maps"
 	"regexp"
 	"slices"
 	"strings"
 
 	"github.com/stackrox/rox/pkg/utils"
 	"github.com/tidwall/gjson"
-	"golang.org/x/exp/maps"
 )
 
 // CustomModifier is a type alias for a gjson.Modifier function used within gjson.AddModifier
@@ -148,9 +148,12 @@ func TextModifier() CustomModifier {
 			return true
 		})
 		// Ensure we keep the same order for the texts we generated.
-		keys := maps.Keys(texts)
-		slices.Sort(keys)
+		keys := slices.Sorted(maps.Keys(texts))
+		// An empty slice and nil are marshaled differently. Therefore if keys is empty we want to keep result equal to nil.
 		var result []string
+		if len(keys) > 0 {
+			result = make([]string, 0, len(keys))
+		}
 		for _, key := range keys {
 			result = append(result, modifier.trimSeparator(texts[key]))
 		}

@@ -1,10 +1,9 @@
-import React from 'react';
-import { Flex, FlexItem, Title, Button } from '@patternfly/react-core';
+import { Link } from 'react-router-dom-v5-compat';
+import { Flex, FlexItem, Title } from '@patternfly/react-core';
 
-import LinkShim from 'Components/PatternFly/LinkShim';
 import WidgetCard from 'Components/PatternFly/WidgetCard';
 import useURLSearch from 'hooks/useURLSearch';
-import { riskBasePath } from 'routePaths';
+import { riskWorkloadsBasePath } from 'routePaths';
 import { getUrlQueryStringForSearchFilter } from 'utils/searchUtils';
 import DeploymentsAtMostRiskTable from './DeploymentsAtMostRiskTable';
 import useDeploymentsAtRisk from '../hooks/useDeploymentsAtRisk';
@@ -19,18 +18,16 @@ function DeploymentsAtMostRisk() {
             isLoading={isLoading}
             error={error}
             header={
-                <Flex direction={{ default: 'row' }}>
-                    <FlexItem grow={{ default: 'grow' }}>
+                <Flex
+                    direction={{ default: 'row' }}
+                    alignItems={{ default: 'alignItemsCenter' }}
+                    justifyContent={{ default: 'justifyContentSpaceBetween' }}
+                >
+                    <FlexItem>
                         <Title headingLevel="h2">Deployments at most risk</Title>
                     </FlexItem>
                     <FlexItem>
-                        <Button
-                            variant="secondary"
-                            component={LinkShim}
-                            href={`${riskBasePath}?${urlQueryString}`}
-                        >
-                            View all
-                        </Button>
+                        <Link to={`${riskWorkloadsBasePath}?${urlQueryString}`}>View all</Link>
                     </FlexItem>
                 </Flex>
             }

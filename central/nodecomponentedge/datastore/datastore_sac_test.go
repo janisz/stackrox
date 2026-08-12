@@ -45,15 +45,10 @@ func (s *nodeComponentEdgeDatastoreSACTestSuite) SetupSuite() {
 	s.testGraphDatastore, err = graphDBTestUtils.NewTestGraphDataStore(s.T())
 	s.Require().NoError(err)
 	pool := s.testGraphDatastore.GetPostgresPool()
-	s.datastore, err = GetTestPostgresDataStore(s.T(), pool)
-	s.Require().NoError(err)
+	s.datastore = GetTestPostgresDataStore(s.T(), pool)
 	s.testContexts = sacTestUtils.GetNamespaceScopedTestContexts(context.Background(), s.T(), resources.Node)
 	err = s.testGraphDatastore.PushNodeToVulnerabilitiesGraph()
 	s.Require().NoError(err)
-}
-
-func (s *nodeComponentEdgeDatastoreSACTestSuite) TearDownSuite() {
-	s.testGraphDatastore.Cleanup(s.T())
 }
 
 func getComponentID(component *storage.EmbeddedNodeScanComponent, os string) string {
@@ -337,13 +332,17 @@ func (s *nodeComponentEdgeDatastoreSACTestSuite) TestSearchEdges() {
 			}
 		}
 		fetchedIDs := make([]string, 0, len(c.expectedEdgeFound))
+		fetchedNames := make([]string, 0, len(c.expectedEdgeFound))
 		res, err := s.datastore.SearchEdges(ctx, search.EmptyQuery())
 		s.NoError(err)
 		for _, r := range res {
 			fetchedIDs = append(fetchedIDs, r.GetId())
+			fetchedNames = append(fetchedNames, r.GetName())
 			s.True(c.expectedEdgeFound[r.GetId()])
 		}
 		s.ElementsMatch(expectedIDs, fetchedIDs)
+		// for nodecomponentedge name is set to id
+		s.ElementsMatch(expectedIDs, fetchedNames)
 	})
 }
 

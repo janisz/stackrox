@@ -1,12 +1,14 @@
 package eventpipeline
 
 import (
+	"fmt"
 	"sync/atomic"
 	"testing"
 
 	"github.com/stackrox/rox/generated/internalapi/central"
 	"github.com/stackrox/rox/generated/storage"
 	"github.com/stackrox/rox/pkg/concurrency"
+	"github.com/stackrox/rox/pkg/features"
 	"github.com/stackrox/rox/pkg/protoassert"
 	"github.com/stackrox/rox/pkg/sync"
 	"github.com/stackrox/rox/sensor/common"
@@ -29,6 +31,7 @@ type eventPipelineSuite struct {
 	reprocessor *mockReprocessor.MockHandler
 	listener    *mockComponent.MockContextListener
 	outputQueue *mockComponent.MockOutputQueue
+	pubsub      *mockComponent.MockPubSubDispatcher
 	pipeline    *eventPipeline
 
 	outputC chan *message.ExpiringMessage
@@ -53,19 +56,21 @@ func (s *eventPipelineSuite) SetupTest() {
 	s.reprocessor = mockReprocessor.NewMockHandler(s.mockCtrl)
 	s.listener = mockComponent.NewMockContextListener(s.mockCtrl)
 	s.outputQueue = mockComponent.NewMockOutputQueue(s.mockCtrl)
+	s.pubsub = mockComponent.NewMockPubSubDispatcher(s.mockCtrl)
 
 	offlineMode := atomic.Bool{}
 	offlineMode.Store(true)
 
 	s.pipeline = &eventPipeline{
-		eventsC:     make(chan *message.ExpiringMessage),
-		stopper:     concurrency.NewStopper(),
-		output:      s.outputQueue,
-		resolver:    s.resolver,
-		detector:    s.detector,
-		reprocessor: s.reprocessor,
-		listener:    s.listener,
-		offlineMode: &offlineMode,
+		eventsC:          make(chan *message.ExpiringMessage),
+		stopper:          concurrency.NewStopper(),
+		output:           s.outputQueue,
+		resolver:         s.resolver,
+		detector:         s.detector,
+		reprocessor:      s.reprocessor,
+		listener:         s.listener,
+		offlineMode:      &offlineMode,
+		pubsubDispatcher: s.pubsub,
 	}
 }
 
@@ -102,7 +107,7 @@ func (s *eventPipelineSuite) Test_OfflineModeCases() {
 	s.outputQueue.EXPECT().Start().Times(1)
 	s.resolver.EXPECT().Start().Times(1)
 	s.listener.EXPECT().StartWithContext(gomock.Any()).AnyTimes()
-	s.listener.EXPECT().Stop(gomock.Any()).AnyTimes()
+	s.listener.EXPECT().Stop().AnyTimes()
 
 	s.Require().NoError(s.pipeline.Start())
 	s.pipeline.Notify(common.SensorComponentEventCentralReachable)
@@ -136,7 +141,7 @@ func (s *eventPipelineSuite) Test_OfflineMode() {
 
 	// Expect listener to be reset (i.e. started twice and stopped once)
 	s.listener.EXPECT().StartWithContext(gomock.Any()).Times(2)
-	s.listener.EXPECT().Stop(gomock.Any()).Times(2)
+	s.listener.EXPECT().Stop().Times(2)
 
 	s.Require().NoError(s.pipeline.Start())
 	s.pipeline.Notify(common.SensorComponentEventCentralReachable)
@@ -159,34 +164,45 @@ func (s *eventPipelineSuite) Test_OfflineMode() {
 }
 
 func (s *eventPipelineSuite) Test_ReprocessDeployments() {
-	messageReceived := sync.WaitGroup{}
-	messageReceived.Add(2)
+	for _, pubSubEnabled := range []bool{true, false} {
+		s.Run(fmt.Sprintf("with %s %t", features.SensorInternalPubSub.EnvVar(), pubSubEnabled), func() {
+			s.T().Setenv(features.SensorInternalPubSub.EnvVar(), fmt.Sprintf("%t", pubSubEnabled))
+			messageReceived := sync.WaitGroup{}
+			messageReceived.Add(2)
 
-	msgFromCentral := &central.MsgToSensor{
-		Msg: &central.MsgToSensor_ReprocessDeployments{
-			ReprocessDeployments: &central.ReprocessDeployments{},
-		},
+			msgFromCentral := &central.MsgToSensor{
+				Msg: &central.MsgToSensor_ReprocessDeployments{
+					ReprocessDeployments: &central.ReprocessDeployments{},
+				},
+			}
+			s.detector.EXPECT().ProcessReprocessDeployments(gomock.Any()).Times(1).Do(func(_ *central.ReprocessDeployments) {
+				defer messageReceived.Done()
+			})
+
+			expectFn := func(msg interface{}) {
+				defer messageReceived.Done()
+				resourceEvent, ok := msg.(*component.ResourceEvent)
+				assert.True(s.T(), ok)
+				assert.NotNil(s.T(), resourceEvent.DeploymentReferences)
+				assert.Equal(s.T(), 1, len(resourceEvent.DeploymentReferences))
+				assert.NotNil(s.T(), resourceEvent.DeploymentReferences[0].Reference)
+				assert.Equal(s.T(), central.ResourceAction_UPDATE_RESOURCE, resourceEvent.DeploymentReferences[0].ParentResourceAction)
+				assert.False(s.T(), resourceEvent.DeploymentReferences[0].SkipResolving)
+				assert.True(s.T(), resourceEvent.DeploymentReferences[0].ForceDetection)
+			}
+
+			if pubSubEnabled {
+				s.pubsub.EXPECT().Publish(gomock.Any()).Times(1).Do(expectFn)
+			} else {
+				s.resolver.EXPECT().Send(gomock.Any()).Times(1).Do(expectFn)
+			}
+
+			err := s.pipeline.ProcessMessage(s.T().Context(), msgFromCentral)
+			s.NoError(err)
+
+			messageReceived.Wait()
+		})
 	}
-	s.detector.EXPECT().ProcessReprocessDeployments().Times(1).Do(func() {
-		defer messageReceived.Done()
-	})
-
-	s.resolver.EXPECT().Send(gomock.Any()).Times(1).Do(func(msg interface{}) {
-		defer messageReceived.Done()
-		resourceEvent, ok := msg.(*component.ResourceEvent)
-		assert.True(s.T(), ok)
-		assert.NotNil(s.T(), resourceEvent.DeploymentReferences)
-		assert.Equal(s.T(), 1, len(resourceEvent.DeploymentReferences))
-		assert.NotNil(s.T(), resourceEvent.DeploymentReferences[0].Reference)
-		assert.Equal(s.T(), central.ResourceAction_UPDATE_RESOURCE, resourceEvent.DeploymentReferences[0].ParentResourceAction)
-		assert.False(s.T(), resourceEvent.DeploymentReferences[0].SkipResolving)
-		assert.True(s.T(), resourceEvent.DeploymentReferences[0].ForceDetection)
-	})
-
-	err := s.pipeline.ProcessMessage(msgFromCentral)
-	s.NoError(err)
-
-	messageReceived.Wait()
 }
 
 func (s *eventPipelineSuite) Test_PolicySync() {
@@ -204,128 +220,151 @@ func (s *eventPipelineSuite) Test_PolicySync() {
 		defer messageReceived.Done()
 	})
 
-	err := s.pipeline.ProcessMessage(msgFromCentral)
-	s.NoError(err)
-
-	messageReceived.Wait()
-}
-
-func (s *eventPipelineSuite) Test_ReassessPolicies() {
-	messageReceived := sync.WaitGroup{}
-	messageReceived.Add(2)
-
-	msgFromCentral := &central.MsgToSensor{
-		Msg: &central.MsgToSensor_ReassessPolicies{
-			ReassessPolicies: &central.ReassessPolicies{},
-		},
-	}
-	s.detector.EXPECT().ProcessReassessPolicies().Times(1).Do(func() {
-		defer messageReceived.Done()
-	})
-
-	s.resolver.EXPECT().Send(gomock.Any()).Times(1).Do(func(msg interface{}) {
-		defer messageReceived.Done()
-		resourceEvent, ok := msg.(*component.ResourceEvent)
-		assert.True(s.T(), ok)
-		assert.NotNil(s.T(), resourceEvent.DeploymentReferences)
-		assert.Equal(s.T(), 1, len(resourceEvent.DeploymentReferences))
-		assert.NotNil(s.T(), resourceEvent.DeploymentReferences[0].Reference)
-		assert.Equal(s.T(), central.ResourceAction_UPDATE_RESOURCE, resourceEvent.DeploymentReferences[0].ParentResourceAction)
-		assert.False(s.T(), resourceEvent.DeploymentReferences[0].SkipResolving)
-		assert.True(s.T(), resourceEvent.DeploymentReferences[0].ForceDetection)
-	})
-
-	err := s.pipeline.ProcessMessage(msgFromCentral)
+	err := s.pipeline.ProcessMessage(s.T().Context(), msgFromCentral)
 	s.NoError(err)
 
 	messageReceived.Wait()
 }
 
 func (s *eventPipelineSuite) Test_UpdatedImage() {
-	messageReceived := sync.WaitGroup{}
-	messageReceived.Add(2)
+	for _, pubSubEnabled := range []bool{true, false} {
+		s.Run(fmt.Sprintf("with %s %t", features.SensorInternalPubSub.EnvVar(), pubSubEnabled), func() {
+			s.T().Setenv(features.SensorInternalPubSub.EnvVar(), fmt.Sprintf("%t", pubSubEnabled))
+			messageReceived := sync.WaitGroup{}
+			messageReceived.Add(2)
 
-	msgFromCentral := &central.MsgToSensor{
-		Msg: &central.MsgToSensor_UpdatedImage{
-			UpdatedImage: &storage.Image{},
-		},
+			msgFromCentral := &central.MsgToSensor{
+				Msg: &central.MsgToSensor_UpdatedImage{
+					UpdatedImage: &storage.Image{},
+				},
+			}
+			s.detector.EXPECT().ProcessUpdatedImage(gomock.Any()).Times(1).Do(func(msg interface{}) {
+				defer messageReceived.Done()
+				image, ok := msg.(*storage.Image)
+				assert.True(s.T(), ok)
+				protoassert.Equal(s.T(), msgFromCentral.GetUpdatedImage(), image)
+			})
+
+			expectFn := func(msg interface{}) {
+				defer messageReceived.Done()
+				resourceEvent, ok := msg.(*component.ResourceEvent)
+				assert.True(s.T(), ok)
+				assertResourceEvent(s.T(), resourceEvent)
+			}
+
+			if pubSubEnabled {
+				s.pubsub.EXPECT().Publish(gomock.Any()).Times(1).Do(expectFn)
+			} else {
+				s.resolver.EXPECT().Send(gomock.Any()).Times(1).Do(expectFn)
+			}
+
+			err := s.pipeline.ProcessMessage(s.T().Context(), msgFromCentral)
+			s.NoError(err)
+
+			messageReceived.Wait()
+		})
 	}
-	s.detector.EXPECT().ProcessUpdatedImage(gomock.Any()).Times(1).Do(func(msg interface{}) {
-		defer messageReceived.Done()
-		image, ok := msg.(*storage.Image)
-		assert.True(s.T(), ok)
-		protoassert.Equal(s.T(), msgFromCentral.GetUpdatedImage(), image)
-	})
-
-	s.resolver.EXPECT().Send(gomock.Any()).Times(1).Do(func(msg interface{}) {
-		defer messageReceived.Done()
-		resourceEvent, ok := msg.(*component.ResourceEvent)
-		assert.True(s.T(), ok)
-		assertResourceEvent(s.T(), resourceEvent)
-	})
-
-	err := s.pipeline.ProcessMessage(msgFromCentral)
-	s.NoError(err)
-
-	messageReceived.Wait()
 }
 
 func (s *eventPipelineSuite) Test_ReprocessDeployment() {
-	messageReceived := sync.WaitGroup{}
-	messageReceived.Add(2)
+	for _, pubSubEnabled := range []bool{true, false} {
+		s.Run(fmt.Sprintf("with %s %t", features.SensorInternalPubSub.EnvVar(), pubSubEnabled), func() {
+			s.T().Setenv(features.SensorInternalPubSub.EnvVar(), fmt.Sprintf("%t", pubSubEnabled))
+			messageReceived := sync.WaitGroup{}
+			messageReceived.Add(2)
 
-	msgFromCentral := &central.MsgToSensor{
-		Msg: &central.MsgToSensor_ReprocessDeployment{
-			ReprocessDeployment: &central.ReprocessDeployment{},
-		},
+			msgFromCentral := &central.MsgToSensor{
+				Msg: &central.MsgToSensor_ReprocessDeployment{
+					ReprocessDeployment: &central.ReprocessDeployment{},
+				},
+			}
+			s.reprocessor.EXPECT().ProcessReprocessDeployments(gomock.Any()).Times(1).Do(func(msg interface{}) {
+				defer messageReceived.Done()
+				reprocessDeployment, ok := msg.(*central.ReprocessDeployment)
+				assert.True(s.T(), ok)
+				protoassert.Equal(s.T(), msgFromCentral.GetReprocessDeployment(), reprocessDeployment)
+			})
+
+			expectFn := func(msg interface{}) {
+				defer messageReceived.Done()
+				resourceEvent, ok := msg.(*component.ResourceEvent)
+				assert.True(s.T(), ok)
+				assertResourceEvent(s.T(), resourceEvent)
+			}
+
+			if pubSubEnabled {
+				s.pubsub.EXPECT().Publish(gomock.Any()).Times(1).Do(expectFn)
+			} else {
+				s.resolver.EXPECT().Send(gomock.Any()).Times(1).Do(expectFn)
+			}
+
+			err := s.pipeline.ProcessMessage(s.T().Context(), msgFromCentral)
+			s.NoError(err)
+
+			messageReceived.Wait()
+		})
 	}
-	s.reprocessor.EXPECT().ProcessReprocessDeployments(gomock.Any()).Times(1).Do(func(msg interface{}) {
-		defer messageReceived.Done()
-		reprocessDeployment, ok := msg.(*central.ReprocessDeployment)
-		assert.True(s.T(), ok)
-		protoassert.Equal(s.T(), msgFromCentral.GetReprocessDeployment(), reprocessDeployment)
-	})
-
-	s.resolver.EXPECT().Send(gomock.Any()).Times(1).Do(func(msg interface{}) {
-		defer messageReceived.Done()
-		resourceEvent, ok := msg.(*component.ResourceEvent)
-		assert.True(s.T(), ok)
-		assertResourceEvent(s.T(), resourceEvent)
-	})
-
-	err := s.pipeline.ProcessMessage(msgFromCentral)
-	s.NoError(err)
-
-	messageReceived.Wait()
 }
 
 func (s *eventPipelineSuite) Test_InvalidateImageCache() {
-	messageReceived := sync.WaitGroup{}
-	messageReceived.Add(2)
+	for _, pubSubEnabled := range []bool{true, false} {
+		s.Run(fmt.Sprintf("with %s %t", features.SensorInternalPubSub.EnvVar(), pubSubEnabled), func() {
+			s.T().Setenv(features.SensorInternalPubSub.EnvVar(), fmt.Sprintf("%t", pubSubEnabled))
+			messageReceived := sync.WaitGroup{}
+			messageReceived.Add(2)
 
+			msgFromCentral := &central.MsgToSensor{
+				Msg: &central.MsgToSensor_InvalidateImageCache{
+					InvalidateImageCache: &central.InvalidateImageCache{},
+				},
+			}
+			s.reprocessor.EXPECT().ProcessInvalidateImageCache(gomock.Any()).Times(1).Do(func(msg interface{}) {
+				defer messageReceived.Done()
+				invalidateCache, ok := msg.(*central.InvalidateImageCache)
+				assert.True(s.T(), ok)
+				protoassert.Equal(s.T(), msgFromCentral.GetInvalidateImageCache(), invalidateCache)
+			})
+
+			expectFn := func(msg interface{}) {
+				defer messageReceived.Done()
+				resourceEvent, ok := msg.(*component.ResourceEvent)
+				assert.True(s.T(), ok)
+				assertResourceEvent(s.T(), resourceEvent)
+			}
+
+			if pubSubEnabled {
+				s.pubsub.EXPECT().Publish(gomock.Any()).Times(1).Do(expectFn)
+			} else {
+				s.resolver.EXPECT().Send(gomock.Any()).Times(1).Do(expectFn)
+			}
+
+			err := s.pipeline.ProcessMessage(s.T().Context(), msgFromCentral)
+			s.NoError(err)
+
+			messageReceived.Wait()
+		})
+	}
+}
+
+func (s *eventPipelineSuite) Test_RefreshImageCacheTTL() {
 	msgFromCentral := &central.MsgToSensor{
-		Msg: &central.MsgToSensor_InvalidateImageCache{
-			InvalidateImageCache: &central.InvalidateImageCache{},
+		Msg: &central.MsgToSensor_RefreshImageCacheTtl{
+			RefreshImageCacheTtl: &central.RefreshImageCacheTTL{
+				ImageKeys: []*central.ImageKey{
+					{ImageId: "sha256:abc123"},
+				},
+			},
 		},
 	}
-	s.reprocessor.EXPECT().ProcessInvalidateImageCache(gomock.Any()).Times(1).Do(func(msg interface{}) {
-		defer messageReceived.Done()
-		invalidateCache, ok := msg.(*central.InvalidateImageCache)
-		assert.True(s.T(), ok)
-		protoassert.Equal(s.T(), msgFromCentral.GetInvalidateImageCache(), invalidateCache)
-	})
+	s.reprocessor.EXPECT().ProcessRefreshImageCacheTTL(gomock.Any()).Times(1).DoAndReturn(
+		func(req *central.RefreshImageCacheTTL) error {
+			protoassert.Equal(s.T(), msgFromCentral.GetRefreshImageCacheTtl(), req)
+			return nil
+		},
+	)
 
-	s.resolver.EXPECT().Send(gomock.Any()).Times(1).Do(func(msg interface{}) {
-		defer messageReceived.Done()
-		resourceEvent, ok := msg.(*component.ResourceEvent)
-		assert.True(s.T(), ok)
-		assertResourceEvent(s.T(), resourceEvent)
-	})
-
-	err := s.pipeline.ProcessMessage(msgFromCentral)
+	err := s.pipeline.ProcessMessage(s.T().Context(), msgFromCentral)
 	s.NoError(err)
-
-	messageReceived.Wait()
 }
 
 func assertResourceEvent(t *testing.T, msg *component.ResourceEvent) {

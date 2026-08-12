@@ -1,7 +1,7 @@
 import qs from 'qs';
 import pageTypes from 'constants/pageTypes';
 import useCases from 'constants/useCaseTypes';
-import { generatePath } from 'react-router-dom';
+import { generatePath } from 'react-router-dom-v5-compat';
 import { entityParamNames, listParamNames } from 'constants/url';
 import entityTypes from 'constants/entityTypes';
 import merge from 'deepmerge';
@@ -9,12 +9,15 @@ import configMgmtEntityRelationship from 'Containers/ConfigManagement/entityTabR
 import Raven from 'raven-js';
 
 import {
-    workflowPaths,
-    riskPath,
+    configManagementPath,
+    policiesPath,
+    policyManagementBasePath,
+    riskWorkloadPath,
+    riskWorkloadsBasePath,
     secretsPath,
     urlEntityListTypes,
     urlEntityTypes,
-    policiesPath,
+    workflowPaths,
 } from '../routePaths';
 
 export function getTypeKeyFromParamValue(value, listOnly) {
@@ -90,19 +93,19 @@ function getPath(urlParams) {
 
     const legacyPathMap = {
         [useCases.RISK]: {
-            [pageTypes.ENTITY]: riskPath,
-            [pageTypes.LIST]: '/main/risk',
-            [pageTypes.DASHBOARD]: '/main/risk',
+            [pageTypes.ENTITY]: riskWorkloadPath,
+            [pageTypes.LIST]: riskWorkloadsBasePath,
+            [pageTypes.DASHBOARD]: riskWorkloadsBasePath,
         },
         [useCases.SECRET]: {
             [pageTypes.ENTITY]: secretsPath,
-            [pageTypes.LIST]: '/main/configmanagement/secrets',
-            [pageTypes.DASHBOARD]: '/main/configmanagement/secrets',
+            [pageTypes.LIST]: `${configManagementPath}/secrets`,
+            [pageTypes.DASHBOARD]: `${configManagementPath}/secrets`,
         },
         [useCases.POLICY]: {
             [pageTypes.ENTITY]: policiesPath,
-            [pageTypes.LIST]: '/main/policies',
-            [pageTypes.DASHBOARD]: '/main/policies',
+            [pageTypes.LIST]: policyManagementBasePath,
+            [pageTypes.DASHBOARD]: policyManagementBasePath,
         },
     };
 

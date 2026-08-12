@@ -1,0 +1,973 @@
+package virtualmachineindex
+
+import (
+	"context"
+	"testing"
+
+	"github.com/pkg/errors"
+	"github.com/stackrox/rox/central/sensor/service/pipeline/reconciliation"
+	virtualMachineDSMocks "github.com/stackrox/rox/central/virtualmachine/datastore/mocks"
+	virtualMachineV2DSMocks "github.com/stackrox/rox/central/virtualmachine/v2/datastore/mocks"
+	"github.com/stackrox/rox/central/virtualmachine/v2/datastore/store/common"
+	"github.com/stackrox/rox/generated/internalapi/central"
+	v4 "github.com/stackrox/rox/generated/internalapi/scanner/v4"
+	v1 "github.com/stackrox/rox/generated/internalapi/virtualmachine/v1"
+	"github.com/stackrox/rox/generated/storage"
+	"github.com/stackrox/rox/pkg/centralsensor"
+	"github.com/stackrox/rox/pkg/concurrency"
+	"github.com/stackrox/rox/pkg/features"
+	pkgVM "github.com/stackrox/rox/pkg/virtualmachine"
+	vmEnricherMocks "github.com/stackrox/rox/pkg/virtualmachine/enricher/mocks"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/suite"
+	"go.uber.org/mock/gomock"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+)
+
+const (
+	testClusterID = "test-cluster-id"
+)
+
+var ctx = context.Background()
+
+func TestPipeline(t *testing.T) {
+	suite.Run(t, new(PipelineTestSuite))
+}
+
+type PipelineTestSuite struct {
+	suite.Suite
+
+	virtualMachineStore *virtualMachineDSMocks.MockDataStore
+	enricher            *vmEnricherMocks.MockVirtualMachineEnricher
+	pipeline            *pipelineImpl
+
+	mockCtrl *gomock.Controller
+}
+
+func (suite *PipelineTestSuite) SetupTest() {
+	suite.mockCtrl = gomock.NewController(suite.T())
+	suite.virtualMachineStore = virtualMachineDSMocks.NewMockDataStore(suite.mockCtrl)
+	suite.enricher = vmEnricherMocks.NewMockVirtualMachineEnricher(suite.mockCtrl)
+	suite.pipeline = &pipelineImpl{
+		virtualMachineStore: suite.virtualMachineStore,
+		enricher:            suite.enricher,
+	}
+}
+
+func (suite *PipelineTestSuite) TearDownTest() {
+	suite.mockCtrl.Finish()
+}
+
+// Helper function to create a virtual machine message
+func createVMIndexMessage(vmID string, action central.ResourceAction) *central.MsgFromSensor {
+	return &central.MsgFromSensor{
+		Msg: &central.MsgFromSensor_Event{
+			Event: &central.SensorEvent{
+				Id:     vmID,
+				Action: action,
+				Resource: &central.SensorEvent_VirtualMachineIndexReport{
+					VirtualMachineIndexReport: &v1.IndexReportEvent{
+						Id: vmID,
+						Index: &v1.IndexReport{
+							IndexV4: &v4.IndexReport{
+								Contents: &v4.Contents{
+									Packages: map[string]*v4.Package{
+										"pkg-1": {
+											Id:      "pkg-1",
+											Name:    "test-package",
+											Version: "1.0.0",
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+}
+
+// Helper function to create a non-VM message
+func createNonVMMessage() *central.MsgFromSensor {
+	return &central.MsgFromSensor{
+		Msg: &central.MsgFromSensor_Event{
+			Event: &central.SensorEvent{
+				Id:     "test-id",
+				Action: central.ResourceAction_CREATE_RESOURCE,
+				Resource: &central.SensorEvent_Node{
+					Node: &storage.Node{
+						Id:   "node-id",
+						Name: "node-name",
+					},
+				},
+			},
+		},
+	}
+}
+
+func (suite *PipelineTestSuite) TestMatch_VirtualMachineMessage() {
+	msg := createVMIndexMessage("vm-1", central.ResourceAction_SYNC_RESOURCE)
+	result := suite.pipeline.Match(msg)
+	suite.True(result, "Should match virtual machine messages")
+}
+
+func (suite *PipelineTestSuite) TestRun_NilVirtualMachine() {
+	suite.T().Setenv(features.VirtualMachines.EnvVar(), "true")
+	suite.T().Setenv(features.VirtualMachinesEnhancedDataModel.EnvVar(), "false")
+	msg := &central.MsgFromSensor{
+		Msg: &central.MsgFromSensor_Event{
+			Event: &central.SensorEvent{
+				Id:     "test-id",
+				Action: central.ResourceAction_SYNC_RESOURCE,
+				Resource: &central.SensorEvent_VirtualMachine{
+					VirtualMachine: nil,
+				},
+			},
+		},
+	}
+
+	err := suite.pipeline.Run(ctx, testClusterID, msg, nil)
+	suite.Error(err)
+	suite.Contains(err.Error(), "unexpected resource type")
+}
+
+func (suite *PipelineTestSuite) TestRun_UpdateScanError() {
+	suite.T().Setenv(features.VirtualMachines.EnvVar(), "true")
+	suite.T().Setenv(features.VirtualMachinesEnhancedDataModel.EnvVar(), "false")
+	vmID := "vm-1"
+	msg := createVMIndexMessage(vmID, central.ResourceAction_SYNC_RESOURCE)
+
+	gomock.InOrder(
+		suite.enricher.EXPECT().
+			EnrichVirtualMachineWithVulnerabilities(gomock.Any(), gomock.Any()).
+			Return(nil),
+		suite.virtualMachineStore.EXPECT().
+			GetVirtualMachine(gomock.Any(), vmID).
+			Return(nil, false, nil),
+		suite.virtualMachineStore.EXPECT().
+			UpdateVirtualMachineScan(ctx, vmID, gomock.Any()).
+			Return(errors.New("datastore error")),
+	)
+
+	err := suite.pipeline.Run(ctx, testClusterID, msg, nil)
+	suite.Error(err)
+	suite.Contains(err.Error(), "failed to upsert VM vm-1 to datastore: datastore error")
+	suite.Contains(err.Error(), "datastore error")
+}
+
+func (suite *PipelineTestSuite) TestCapabilities() {
+	capabilities := suite.pipeline.Capabilities()
+	suite.Contains(capabilities, centralsensor.CentralCapability(centralsensor.VirtualMachinesSupported))
+}
+
+func (suite *PipelineTestSuite) TestOnFinish() {
+	// OnFinish should not panic and should be a no-op
+	suite.NotPanics(func() {
+		suite.pipeline.OnFinish(testClusterID)
+	})
+}
+
+func (suite *PipelineTestSuite) TestReconcile() {
+	// Reconcile should be a no-op and return nil
+	storeMap := reconciliation.NewStoreMap()
+	err := suite.pipeline.Reconcile(ctx, testClusterID, storeMap)
+	suite.NoError(err)
+}
+
+// Test the factory functions
+func (suite *PipelineTestSuite) TestGetPipeline() {
+	pipeline := GetPipeline()
+	suite.NotNil(pipeline)
+	suite.IsType(&pipelineImpl{}, pipeline)
+}
+
+func (suite *PipelineTestSuite) TestNewPipeline() {
+	mockDatastore := virtualMachineDSMocks.NewMockDataStore(suite.mockCtrl)
+	mockEnricher := vmEnricherMocks.NewMockVirtualMachineEnricher(suite.mockCtrl)
+	pipeline := newPipeline(mockDatastore, mockEnricher, nil)
+	suite.NotNil(pipeline)
+
+	impl, ok := pipeline.(*pipelineImpl)
+	suite.True(ok, "Should return pipelineImpl instance")
+	suite.Equal(mockDatastore, impl.virtualMachineStore)
+	suite.Equal(mockEnricher, impl.enricher)
+	suite.Nil(impl.virtualMachineV2Store)
+}
+
+// Test table-driven approach for different actions
+func TestPipelineRun_DifferentActions(t *testing.T) {
+	t.Setenv(features.VirtualMachinesEnhancedDataModel.EnvVar(), "false")
+	tests := []struct {
+		name          string
+		action        central.ResourceAction
+		expectUpdate  bool
+		expectError   bool
+		errorContains string
+	}{
+		{
+			name:         "CREATE_RESOURCE",
+			action:       central.ResourceAction_CREATE_RESOURCE,
+			expectUpdate: false,
+		},
+		{
+			name:         "UPDATE_RESOURCE",
+			action:       central.ResourceAction_UPDATE_RESOURCE,
+			expectUpdate: false,
+		},
+		{
+			name:         "UNSET_ACTION_RESOURCE",
+			action:       central.ResourceAction_UNSET_ACTION_RESOURCE,
+			expectUpdate: false,
+		},
+		{
+			name:         "REMOVE_RESOURCE",
+			action:       central.ResourceAction_REMOVE_RESOURCE,
+			expectUpdate: false,
+		},
+		{
+			name:         "SYNC_RESOURCE",
+			action:       central.ResourceAction_SYNC_RESOURCE,
+			expectUpdate: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv(features.VirtualMachines.EnvVar(), "true")
+			ctrl := gomock.NewController(t)
+			defer ctrl.Finish()
+
+			virtualMachineStore := virtualMachineDSMocks.NewMockDataStore(ctrl)
+			enricher := vmEnricherMocks.NewMockVirtualMachineEnricher(ctrl)
+			pipeline := &pipelineImpl{
+				virtualMachineStore: virtualMachineStore,
+				enricher:            enricher,
+			}
+
+			vmID := "vm-1"
+			msg := createVMIndexMessage(vmID, tt.action)
+
+			if tt.expectUpdate {
+				enricher.EXPECT().
+					EnrichVirtualMachineWithVulnerabilities(gomock.Any(), gomock.Any()).
+					Return(nil)
+				virtualMachineStore.EXPECT().
+					GetVirtualMachine(gomock.Any(), vmID).
+					Return(nil, false, nil)
+				virtualMachineStore.EXPECT().
+					UpdateVirtualMachineScan(ctx, vmID, gomock.Any()).
+					Do(func(ctx context.Context, virtualMachineID string, _ *storage.VirtualMachineScan) {
+						assert.Equal(t, vmID, virtualMachineID)
+					}).
+					Return(nil)
+			}
+
+			err := pipeline.Run(ctx, testClusterID, msg, nil)
+
+			if tt.expectError {
+				assert.Error(t, err)
+				if tt.errorContains != "" {
+					assert.Contains(t, err.Error(), tt.errorContains)
+				}
+			} else {
+				assert.NoError(t, err)
+			}
+		})
+	}
+}
+
+// Test edge cases with malformed messages
+func TestPipelineEdgeCases(t *testing.T) {
+	t.Setenv(features.VirtualMachines.EnvVar(), "true")
+	t.Setenv(features.VirtualMachinesEnhancedDataModel.EnvVar(), "false")
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	virtualMachineStore := virtualMachineDSMocks.NewMockDataStore(ctrl)
+	pipeline := &pipelineImpl{
+		virtualMachineStore: virtualMachineStore,
+	}
+
+	t.Run("nil message", func(t *testing.T) {
+		result := pipeline.Match(nil)
+		assert.False(t, result)
+	})
+
+	t.Run("message with nil event", func(t *testing.T) {
+		msg := &central.MsgFromSensor{
+			Msg: &central.MsgFromSensor_Event{
+				Event: nil,
+			},
+		}
+		result := pipeline.Match(msg)
+		assert.False(t, result)
+	})
+
+	t.Run("message with wrong event type", func(t *testing.T) {
+		msg := createNonVMMessage()
+		result := pipeline.Match(msg)
+		assert.False(t, result, "Should not match non-virtual machine messages")
+	})
+
+	t.Run("message with sensorHello", func(t *testing.T) {
+		msg := &central.MsgFromSensor{
+			Msg: &central.MsgFromSensor_Hello{
+				Hello: &central.SensorHello{},
+			},
+		}
+		result := pipeline.Match(msg)
+		assert.False(t, result, "Should not match messages without events")
+	})
+
+	t.Run("event with wrong resource type", func(t *testing.T) {
+		msg := &central.MsgFromSensor{
+			Msg: &central.MsgFromSensor_Event{
+				Event: &central.SensorEvent{
+					Resource: &central.SensorEvent_Node{
+						Node: &storage.Node{},
+					},
+				},
+			},
+		}
+		err := pipeline.Run(ctx, testClusterID, msg, nil)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "unexpected resource type")
+	})
+}
+
+// mockInjector records InjectMessage calls.
+type mockInjector struct {
+	messages     []*central.MsgToSensor
+	injectErr    error
+	capabilities map[centralsensor.SensorCapability]bool
+}
+
+func (m *mockInjector) InjectMessage(_ concurrency.Waitable, msg *central.MsgToSensor) error {
+	m.messages = append(m.messages, msg)
+	return m.injectErr
+}
+
+func (m *mockInjector) InjectMessageIntoQueue(_ *central.MsgFromSensor) {}
+
+func (m *mockInjector) HasCapability(cap centralsensor.SensorCapability) bool {
+	return m.capabilities[cap]
+}
+
+func (suite *PipelineTestSuite) TestRun_SendsACKOnSuccess() {
+	suite.T().Setenv(features.VirtualMachines.EnvVar(), "true")
+	suite.T().Setenv(features.VirtualMachinesEnhancedDataModel.EnvVar(), "false")
+	vmID := "vm-ack-test"
+	msg := createVMIndexMessage(vmID, central.ResourceAction_SYNC_RESOURCE)
+
+	suite.enricher.EXPECT().
+		EnrichVirtualMachineWithVulnerabilities(gomock.Any(), gomock.Any()).
+		Return(nil)
+	suite.virtualMachineStore.EXPECT().
+		GetVirtualMachine(gomock.Any(), vmID).
+		Return(nil, false, nil)
+	suite.virtualMachineStore.EXPECT().
+		UpdateVirtualMachineScan(ctx, vmID, gomock.Any()).
+		Return(nil)
+
+	injector := &mockInjector{
+		capabilities: map[centralsensor.SensorCapability]bool{
+			centralsensor.SensorACKSupport: true,
+		},
+	}
+
+	err := suite.pipeline.Run(ctx, testClusterID, msg, injector)
+	suite.NoError(err)
+
+	suite.Require().Len(injector.messages, 1)
+	ack := injector.messages[0].GetSensorAck()
+	suite.Require().NotNil(ack)
+	suite.Equal(central.SensorACK_ACK, ack.GetAction())
+	suite.Equal(central.SensorACK_VM_INDEX_REPORT, ack.GetMessageType())
+	suite.Equal(vmID+":", ack.GetResourceId())
+	suite.Empty(ack.GetReason())
+}
+
+func (suite *PipelineTestSuite) TestRun_SendsACKWithVMIDAndVsockCIDResourceID() {
+	suite.T().Setenv(features.VirtualMachines.EnvVar(), "true")
+	suite.T().Setenv(features.VirtualMachinesEnhancedDataModel.EnvVar(), "false")
+	vmID := "vm-ack-vsock-correlation"
+	vsockCID := "1337"
+	msg := createVMIndexMessage(vmID, central.ResourceAction_SYNC_RESOURCE)
+	msg.GetEvent().GetVirtualMachineIndexReport().GetIndex().VsockCid = vsockCID
+
+	suite.enricher.EXPECT().
+		EnrichVirtualMachineWithVulnerabilities(gomock.Any(), gomock.Any()).
+		Return(nil)
+	suite.virtualMachineStore.EXPECT().
+		GetVirtualMachine(gomock.Any(), vmID).
+		Return(nil, false, nil)
+	suite.virtualMachineStore.EXPECT().
+		UpdateVirtualMachineScan(ctx, vmID, gomock.Any()).
+		Return(nil)
+
+	injector := &mockInjector{
+		capabilities: map[centralsensor.SensorCapability]bool{
+			centralsensor.SensorACKSupport: true,
+		},
+	}
+
+	err := suite.pipeline.Run(ctx, testClusterID, msg, injector)
+	suite.NoError(err)
+
+	suite.Require().Len(injector.messages, 1)
+	ack := injector.messages[0].GetSensorAck()
+	suite.Require().NotNil(ack)
+	suite.Equal(central.SensorACK_ACK, ack.GetAction())
+	suite.Equal(central.SensorACK_VM_INDEX_REPORT, ack.GetMessageType())
+	suite.Equal(vmID+":"+vsockCID, ack.GetResourceId(), "expected ACK resource_id to match VMID:CID pair for relay correlation")
+	suite.Empty(ack.GetReason())
+}
+
+func (suite *PipelineTestSuite) TestRun_NoACKWhenCapabilityMissing() {
+	suite.T().Setenv(features.VirtualMachines.EnvVar(), "true")
+	suite.T().Setenv(features.VirtualMachinesEnhancedDataModel.EnvVar(), "false")
+	vmID := "vm-no-cap"
+	msg := createVMIndexMessage(vmID, central.ResourceAction_SYNC_RESOURCE)
+
+	suite.enricher.EXPECT().
+		EnrichVirtualMachineWithVulnerabilities(gomock.Any(), gomock.Any()).
+		Return(nil)
+	suite.virtualMachineStore.EXPECT().
+		GetVirtualMachine(gomock.Any(), vmID).
+		Return(nil, false, nil)
+	suite.virtualMachineStore.EXPECT().
+		UpdateVirtualMachineScan(ctx, vmID, gomock.Any()).
+		Return(nil)
+
+	injector := &mockInjector{
+		capabilities: map[centralsensor.SensorCapability]bool{},
+	}
+
+	err := suite.pipeline.Run(ctx, testClusterID, msg, injector)
+	suite.NoError(err)
+	suite.Empty(injector.messages, "should not send ACK when SensorACKSupport is missing")
+}
+
+func (suite *PipelineTestSuite) TestRun_NACKOnDBError() {
+	suite.T().Setenv(features.VirtualMachines.EnvVar(), "true")
+	suite.T().Setenv(features.VirtualMachinesEnhancedDataModel.EnvVar(), "false")
+	vmID := "vm-error"
+	msg := createVMIndexMessage(vmID, central.ResourceAction_SYNC_RESOURCE)
+
+	suite.enricher.EXPECT().
+		EnrichVirtualMachineWithVulnerabilities(gomock.Any(), gomock.Any()).
+		Return(nil)
+	suite.virtualMachineStore.EXPECT().
+		GetVirtualMachine(gomock.Any(), vmID).
+		Return(nil, false, nil)
+	suite.virtualMachineStore.EXPECT().
+		UpdateVirtualMachineScan(ctx, vmID, gomock.Any()).
+		Return(errors.New("db error"))
+
+	injector := &mockInjector{
+		capabilities: map[centralsensor.SensorCapability]bool{
+			centralsensor.SensorACKSupport: true,
+		},
+	}
+
+	err := suite.pipeline.Run(ctx, testClusterID, msg, injector)
+	suite.Error(err)
+
+	suite.Require().Len(injector.messages, 1)
+	ack := injector.messages[0].GetSensorAck()
+	suite.Require().NotNil(ack)
+	suite.Equal(central.SensorACK_NACK, ack.GetAction())
+	suite.Equal(central.SensorACK_VM_INDEX_REPORT, ack.GetMessageType())
+	suite.Equal(vmID+":", ack.GetResourceId())
+	suite.Equal(centralsensor.SensorACKReasonStorageFailed, ack.GetReason())
+}
+
+func (suite *PipelineTestSuite) TestRun_NACKOnEnrichmentError() {
+	suite.T().Setenv(features.VirtualMachines.EnvVar(), "true")
+	suite.T().Setenv(features.VirtualMachinesEnhancedDataModel.EnvVar(), "false")
+	vmID := "vm-enrich-fail"
+	msg := createVMIndexMessage(vmID, central.ResourceAction_SYNC_RESOURCE)
+
+	suite.enricher.EXPECT().
+		EnrichVirtualMachineWithVulnerabilities(gomock.Any(), gomock.Any()).
+		Return(errors.New("scanner unavailable"))
+
+	injector := &mockInjector{
+		capabilities: map[centralsensor.SensorCapability]bool{
+			centralsensor.SensorACKSupport: true,
+		},
+	}
+
+	err := suite.pipeline.Run(ctx, testClusterID, msg, injector)
+	suite.Error(err)
+
+	suite.Require().Len(injector.messages, 1)
+	ack := injector.messages[0].GetSensorAck()
+	suite.Require().NotNil(ack)
+	suite.Equal(central.SensorACK_NACK, ack.GetAction())
+	suite.Equal(central.SensorACK_VM_INDEX_REPORT, ack.GetMessageType())
+	suite.Equal(vmID+":", ack.GetResourceId())
+	suite.Equal(centralsensor.SensorACKReasonEnrichmentFailed, ack.GetReason())
+}
+
+func (suite *PipelineTestSuite) TestRun_NACKOnMatcherNotInitializedError() {
+	suite.T().Setenv(features.VirtualMachines.EnvVar(), "true")
+	suite.T().Setenv(features.VirtualMachinesEnhancedDataModel.EnvVar(), "false")
+	vmID := "vm-matcher-not-initialized"
+	msg := createVMIndexMessage(vmID, central.ResourceAction_SYNC_RESOURCE)
+
+	suite.enricher.EXPECT().
+		EnrichVirtualMachineWithVulnerabilities(gomock.Any(), gomock.Any()).
+		Return(errors.Wrap(
+			status.Error(codes.FailedPrecondition, "the matcher is not initialized: initial load for the vulnerability store is in progress"),
+			"getting scan for VM",
+		))
+
+	injector := &mockInjector{
+		capabilities: map[centralsensor.SensorCapability]bool{
+			centralsensor.SensorACKSupport: true,
+		},
+	}
+
+	err := suite.pipeline.Run(ctx, testClusterID, msg, injector)
+	suite.Error(err)
+
+	suite.Require().Len(injector.messages, 1)
+	ack := injector.messages[0].GetSensorAck()
+	suite.Require().NotNil(ack)
+	suite.Equal(central.SensorACK_NACK, ack.GetAction())
+	suite.Equal(central.SensorACK_VM_INDEX_REPORT, ack.GetMessageType())
+	suite.Equal(vmID+":", ack.GetResourceId())
+	suite.Equal(centralsensor.SensorACKReasonMatcherNotReady, ack.GetReason())
+}
+
+func (suite *PipelineTestSuite) TestRun_NACKOnMissingClusterID() {
+	suite.T().Setenv(features.VirtualMachines.EnvVar(), "true")
+	suite.T().Setenv(features.VirtualMachinesEnhancedDataModel.EnvVar(), "false")
+	vmID := "vm-no-cluster"
+	msg := createVMIndexMessage(vmID, central.ResourceAction_SYNC_RESOURCE)
+
+	injector := &mockInjector{
+		capabilities: map[centralsensor.SensorCapability]bool{
+			centralsensor.SensorACKSupport: true,
+		},
+	}
+
+	err := suite.pipeline.Run(ctx, "", msg, injector)
+	suite.ErrorContains(err, "missing cluster ID")
+
+	suite.Require().Len(injector.messages, 1)
+	ack := injector.messages[0].GetSensorAck()
+	suite.Require().NotNil(ack)
+	suite.Equal(central.SensorACK_NACK, ack.GetAction())
+	suite.Equal(central.SensorACK_VM_INDEX_REPORT, ack.GetMessageType())
+	suite.Equal(vmID+":", ack.GetResourceId())
+	suite.Equal(centralsensor.SensorACKReasonMissingClusterID, ack.GetReason())
+}
+
+func (suite *PipelineTestSuite) TestRun_NACKOnMissingScannerIndexPayload() {
+	suite.T().Setenv(features.VirtualMachines.EnvVar(), "true")
+	suite.T().Setenv(features.VirtualMachinesEnhancedDataModel.EnvVar(), "false")
+	tests := []struct {
+		name  string
+		index *v1.IndexReport
+	}{
+		{
+			name:  "nil Index",
+			index: nil,
+		},
+		{
+			name:  "Index without Scanner V4 payload",
+			index: &v1.IndexReport{},
+		},
+	}
+
+	for _, tt := range tests {
+		suite.Run(tt.name, func() {
+			vmID := "vm-missing-payload-" + tt.name
+			msg := &central.MsgFromSensor{
+				Msg: &central.MsgFromSensor_Event{
+					Event: &central.SensorEvent{
+						Id:     vmID,
+						Action: central.ResourceAction_SYNC_RESOURCE,
+						Resource: &central.SensorEvent_VirtualMachineIndexReport{
+							VirtualMachineIndexReport: &v1.IndexReportEvent{
+								Id:    vmID,
+								Index: tt.index,
+							},
+						},
+					},
+				},
+			}
+
+			injector := &mockInjector{
+				capabilities: map[centralsensor.SensorCapability]bool{
+					centralsensor.SensorACKSupport: true,
+				},
+			}
+
+			err := suite.pipeline.Run(ctx, testClusterID, msg, injector)
+			suite.ErrorContains(err, "missing Scanner V4 index data")
+
+			suite.Require().Len(injector.messages, 1)
+			ack := injector.messages[0].GetSensorAck()
+			suite.Require().NotNil(ack)
+			suite.Equal(central.SensorACK_NACK, ack.GetAction())
+			suite.Equal(central.SensorACK_VM_INDEX_REPORT, ack.GetMessageType())
+			suite.Equal(vmID+":", ack.GetResourceId())
+			suite.Equal(centralsensor.SensorACKReasonMissingScanData, ack.GetReason())
+		})
+	}
+}
+
+func TestPipelineRun_DisabledFeature(t *testing.T) {
+	t.Setenv(features.VirtualMachines.EnvVar(), "false")
+	t.Setenv(features.VirtualMachinesEnhancedDataModel.EnvVar(), "false")
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	virtualMachineStore := virtualMachineDSMocks.NewMockDataStore(ctrl)
+	enricher := vmEnricherMocks.NewMockVirtualMachineEnricher(ctrl)
+	pipeline := &pipelineImpl{
+		virtualMachineStore: virtualMachineStore,
+		enricher:            enricher,
+	}
+
+	vmID := "vm-1"
+	msg := createVMIndexMessage(vmID, central.ResourceAction_CREATE_RESOURCE)
+
+	injector := &mockInjector{
+		capabilities: map[centralsensor.SensorCapability]bool{
+			centralsensor.SensorACKSupport: true,
+		},
+	}
+
+	err := pipeline.Run(ctx, testClusterID, msg, injector)
+
+	assert.NoError(t, err)
+	assert.Len(t, injector.messages, 1, "should ACK to prevent retries when feature is disabled")
+	ack := injector.messages[0].GetSensorAck()
+	assert.NotNil(t, ack)
+	assert.Equal(t, central.SensorACK_ACK, ack.GetAction())
+	assert.Equal(t, central.SensorACK_VM_INDEX_REPORT, ack.GetMessageType())
+	assert.Equal(t, vmID+":", ack.GetResourceId())
+	assert.Equal(t, centralsensor.SensorACKReasonFeatureDisabled, ack.GetReason())
+}
+
+func TestPipelineRunV2_StoresScanViaV2Datastore(t *testing.T) {
+	t.Setenv(features.VirtualMachines.EnvVar(), "true")
+	t.Setenv(features.VirtualMachinesEnhancedDataModel.EnvVar(), "true")
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	enricher := vmEnricherMocks.NewMockVirtualMachineEnricher(ctrl)
+	virtualMachineV2Store := virtualMachineV2DSMocks.NewMockDataStore(ctrl)
+
+	pipeline := &pipelineImpl{
+		enricher:              enricher,
+		virtualMachineV2Store: virtualMachineV2Store,
+	}
+
+	vmID := "vm-v2-scan"
+	msg := createVMIndexMessage(vmID, central.ResourceAction_SYNC_RESOURCE)
+
+	enricher.EXPECT().
+		EnrichVirtualMachineWithVulnerabilities(gomock.Any(), gomock.Any()).
+		DoAndReturn(func(vm *storage.VirtualMachine, _ interface{}) error {
+			vm.Scan = &storage.VirtualMachineScan{
+				Components: []*storage.EmbeddedVirtualMachineScanComponent{
+					{Name: "test-pkg", Version: "1.0"},
+				},
+			}
+			return nil
+		})
+	virtualMachineV2Store.EXPECT().
+		GetVirtualMachine(gomock.Any(), vmID).
+		Return(nil, false, nil)
+	virtualMachineV2Store.EXPECT().
+		EnsureVirtualMachineExists(gomock.Any(), vmID, testClusterID).
+		Return(nil)
+	virtualMachineV2Store.EXPECT().
+		UpsertScan(gomock.Any(), vmID, gomock.Any()).
+		DoAndReturn(func(_ context.Context, id string, parts common.VMScanParts) error {
+			assert.Equal(t, vmID, id)
+			assert.NotNil(t, parts.Scan)
+			assert.Equal(t, vmID, parts.Scan.GetVmV2Id())
+			return nil
+		})
+
+	injector := &mockInjector{
+		capabilities: map[centralsensor.SensorCapability]bool{
+			centralsensor.SensorACKSupport: true,
+		},
+	}
+
+	err := pipeline.Run(ctx, testClusterID, msg, injector)
+	assert.NoError(t, err)
+
+	assert.Len(t, injector.messages, 1)
+	ack := injector.messages[0].GetSensorAck()
+	assert.NotNil(t, ack)
+	assert.Equal(t, central.SensorACK_ACK, ack.GetAction())
+}
+
+func TestPipelineRunV2_NACKOnEnsureError(t *testing.T) {
+	t.Setenv(features.VirtualMachines.EnvVar(), "true")
+	t.Setenv(features.VirtualMachinesEnhancedDataModel.EnvVar(), "true")
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	enricher := vmEnricherMocks.NewMockVirtualMachineEnricher(ctrl)
+	virtualMachineV2Store := virtualMachineV2DSMocks.NewMockDataStore(ctrl)
+
+	pipeline := &pipelineImpl{
+		enricher:              enricher,
+		virtualMachineV2Store: virtualMachineV2Store,
+	}
+
+	vmID := "vm-v2-ensure-fail"
+	msg := createVMIndexMessage(vmID, central.ResourceAction_SYNC_RESOURCE)
+
+	enricher.EXPECT().
+		EnrichVirtualMachineWithVulnerabilities(gomock.Any(), gomock.Any()).
+		Return(nil)
+	virtualMachineV2Store.EXPECT().
+		GetVirtualMachine(gomock.Any(), vmID).
+		Return(nil, false, nil)
+	virtualMachineV2Store.EXPECT().
+		EnsureVirtualMachineExists(gomock.Any(), vmID, testClusterID).
+		Return(errors.New("ensure failed"))
+
+	injector := &mockInjector{
+		capabilities: map[centralsensor.SensorCapability]bool{
+			centralsensor.SensorACKSupport: true,
+		},
+	}
+
+	err := pipeline.Run(ctx, testClusterID, msg, injector)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "ensure failed")
+
+	assert.Len(t, injector.messages, 1)
+	ack := injector.messages[0].GetSensorAck()
+	assert.NotNil(t, ack)
+	assert.Equal(t, central.SensorACK_NACK, ack.GetAction())
+	assert.Equal(t, centralsensor.SensorACKReasonStorageFailed, ack.GetReason())
+}
+
+func TestPipelineRunV2_NilScanNoUpsert(t *testing.T) {
+	t.Setenv(features.VirtualMachines.EnvVar(), "true")
+	t.Setenv(features.VirtualMachinesEnhancedDataModel.EnvVar(), "true")
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	enricher := vmEnricherMocks.NewMockVirtualMachineEnricher(ctrl)
+	virtualMachineV2Store := virtualMachineV2DSMocks.NewMockDataStore(ctrl)
+
+	pipeline := &pipelineImpl{
+		enricher:              enricher,
+		virtualMachineV2Store: virtualMachineV2Store,
+	}
+
+	vmID := "vm-v2-nil-scan"
+	msg := createVMIndexMessage(vmID, central.ResourceAction_SYNC_RESOURCE)
+
+	enricher.EXPECT().
+		EnrichVirtualMachineWithVulnerabilities(gomock.Any(), gomock.Any()).
+		Return(nil)
+	virtualMachineV2Store.EXPECT().
+		GetVirtualMachine(gomock.Any(), vmID).
+		Return(nil, false, nil)
+	virtualMachineV2Store.EXPECT().
+		EnsureVirtualMachineExists(gomock.Any(), vmID, testClusterID).
+		Return(nil)
+
+	injector := &mockInjector{
+		capabilities: map[centralsensor.SensorCapability]bool{
+			centralsensor.SensorACKSupport: true,
+		},
+	}
+
+	err := pipeline.Run(ctx, testClusterID, msg, injector)
+	assert.NoError(t, err)
+
+	assert.Len(t, injector.messages, 1)
+	ack := injector.messages[0].GetSensorAck()
+	assert.NotNil(t, ack)
+	assert.Equal(t, central.SensorACK_ACK, ack.GetAction())
+}
+
+func TestPipelineRunV2_NACKOnUpsertScanError(t *testing.T) {
+	t.Setenv(features.VirtualMachines.EnvVar(), "true")
+	t.Setenv(features.VirtualMachinesEnhancedDataModel.EnvVar(), "true")
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	enricher := vmEnricherMocks.NewMockVirtualMachineEnricher(ctrl)
+	virtualMachineV2Store := virtualMachineV2DSMocks.NewMockDataStore(ctrl)
+
+	pipeline := &pipelineImpl{
+		enricher:              enricher,
+		virtualMachineV2Store: virtualMachineV2Store,
+	}
+
+	vmID := "vm-v2-upsert-fail"
+	msg := createVMIndexMessage(vmID, central.ResourceAction_SYNC_RESOURCE)
+
+	enricher.EXPECT().
+		EnrichVirtualMachineWithVulnerabilities(gomock.Any(), gomock.Any()).
+		DoAndReturn(func(vm *storage.VirtualMachine, _ interface{}) error {
+			vm.Scan = &storage.VirtualMachineScan{
+				Components: []*storage.EmbeddedVirtualMachineScanComponent{
+					{Name: "test-pkg", Version: "1.0"},
+				},
+			}
+			return nil
+		})
+	virtualMachineV2Store.EXPECT().
+		GetVirtualMachine(gomock.Any(), vmID).
+		Return(nil, false, nil)
+	virtualMachineV2Store.EXPECT().
+		EnsureVirtualMachineExists(gomock.Any(), vmID, testClusterID).
+		Return(nil)
+	virtualMachineV2Store.EXPECT().
+		UpsertScan(gomock.Any(), vmID, gomock.Any()).
+		Return(errors.New("upsert scan failed"))
+
+	injector := &mockInjector{
+		capabilities: map[centralsensor.SensorCapability]bool{
+			centralsensor.SensorACKSupport: true,
+		},
+	}
+
+	err := pipeline.Run(ctx, testClusterID, msg, injector)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "upsert scan failed")
+
+	assert.Len(t, injector.messages, 1)
+	ack := injector.messages[0].GetSensorAck()
+	assert.NotNil(t, ack)
+	assert.Equal(t, central.SensorACK_NACK, ack.GetAction())
+	assert.Equal(t, centralsensor.SensorACKReasonStorageFailed, ack.GetReason())
+}
+
+func TestLookupGuestOS(t *testing.T) {
+	tests := map[string]struct {
+		v2Enabled bool
+		v1VM      *storage.VirtualMachine
+		v1Found   bool
+		v1Err     error
+		v2VM      *storage.VirtualMachineV2
+		v2Found   bool
+		v2Err     error
+		wantOS    string
+	}{
+		"v1 guest OS populates scan": {
+			v1VM: &storage.VirtualMachine{
+				Facts: map[string]string{pkgVM.GuestOSKey: "Red Hat Enterprise Linux 9"},
+			},
+			v1Found: true,
+			wantOS:  "Red Hat Enterprise Linux 9",
+		},
+		"v2 guest OS populates scan": {
+			v2Enabled: true,
+			v2VM:      &storage.VirtualMachineV2{GuestOs: "Red Hat Enterprise Linux 9"},
+			v2Found:   true,
+			wantOS:    "Red Hat Enterprise Linux 9",
+		},
+		"v1 VM not found leaves scan OS empty": {
+			v1Found: false,
+			wantOS:  "",
+		},
+		"v2 VM not found leaves scan OS empty": {
+			v2Enabled: true,
+			v2Found:   false,
+			wantOS:    "",
+		},
+		"v1 unknown guest OS leaves scan OS empty": {
+			v1VM: &storage.VirtualMachine{
+				Facts: map[string]string{pkgVM.GuestOSKey: pkgVM.UnknownGuestOS},
+			},
+			v1Found: true,
+			wantOS:  "",
+		},
+		"v2 unknown guest OS leaves scan OS empty": {
+			v2Enabled: true,
+			v2VM:      &storage.VirtualMachineV2{GuestOs: pkgVM.UnknownGuestOS},
+			v2Found:   true,
+			wantOS:    "",
+		},
+		"v1 store error leaves scan OS empty": {
+			v1Err:  errors.New("db error"),
+			wantOS: "",
+		},
+		"v2 store error leaves scan OS empty": {
+			v2Enabled: true,
+			v2Err:     errors.New("db error"),
+			wantOS:    "",
+		},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Setenv(features.VirtualMachines.EnvVar(), "true")
+			if tt.v2Enabled {
+				t.Setenv(features.VirtualMachinesEnhancedDataModel.EnvVar(), "true")
+			} else {
+				t.Setenv(features.VirtualMachinesEnhancedDataModel.EnvVar(), "false")
+			}
+
+			ctrl := gomock.NewController(t)
+
+			vmID := "vm-guest-os"
+			msg := createVMIndexMessage(vmID, central.ResourceAction_SYNC_RESOURCE)
+
+			v1Store := virtualMachineDSMocks.NewMockDataStore(ctrl)
+			v2Store := virtualMachineV2DSMocks.NewMockDataStore(ctrl)
+			enricher := vmEnricherMocks.NewMockVirtualMachineEnricher(ctrl)
+
+			enricher.EXPECT().
+				EnrichVirtualMachineWithVulnerabilities(gomock.Any(), gomock.Any()).
+				DoAndReturn(func(vm *storage.VirtualMachine, _ interface{}) error {
+					vm.Scan = &storage.VirtualMachineScan{}
+					return nil
+				})
+
+			if tt.v2Enabled {
+				v2Store.EXPECT().
+					GetVirtualMachine(gomock.Any(), vmID).
+					Return(tt.v2VM, tt.v2Found, tt.v2Err)
+				v2Store.EXPECT().
+					EnsureVirtualMachineExists(gomock.Any(), vmID, testClusterID).
+					Return(nil)
+				v2Store.EXPECT().
+					UpsertScan(gomock.Any(), vmID, gomock.Any()).
+					DoAndReturn(func(_ context.Context, _ string, parts common.VMScanParts) error {
+						assert.Equal(t, tt.wantOS, parts.Scan.GetScanOs())
+						return nil
+					})
+			} else {
+				v1Store.EXPECT().
+					GetVirtualMachine(gomock.Any(), vmID).
+					Return(tt.v1VM, tt.v1Found, tt.v1Err)
+				v1Store.EXPECT().
+					UpdateVirtualMachineScan(gomock.Any(), vmID, gomock.Any()).
+					DoAndReturn(func(_ context.Context, _ string, scan *storage.VirtualMachineScan) error {
+						assert.Equal(t, tt.wantOS, scan.GetOperatingSystem())
+						return nil
+					})
+			}
+
+			p := &pipelineImpl{
+				virtualMachineStore:   v1Store,
+				virtualMachineV2Store: v2Store,
+				enricher:              enricher,
+			}
+
+			err := p.Run(ctx, testClusterID, msg, nil)
+			assert.NoError(t, err)
+		})
+	}
+}

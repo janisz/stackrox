@@ -45,6 +45,8 @@ var (
 		eventPkg.FormatKey("ComplianceOperatorRule", stubID):                stubHash,
 		eventPkg.FormatKey("ComplianceOperatorScanSettingBinding", stubID):  stubHash,
 		eventPkg.FormatKey("ComplianceOperatorScan", stubID):                stubHash,
+		eventPkg.FormatKey("ComplianceOperatorScanV2", stubID):              stubHash,
+		eventPkg.FormatKey("ComplianceOperatorSuiteV2", stubID):             stubHash,
 		eventPkg.FormatKey("AlertResults", stubID):                          stubHash,
 	}
 	expectedStateWithAll = map[Key]uint64{
@@ -67,6 +69,8 @@ var (
 		withKey(&central.SensorEvent_ComplianceOperatorRule{}, stubID):                stubHash,
 		withKey(&central.SensorEvent_ComplianceOperatorScanSettingBinding{}, stubID):  stubHash,
 		withKey(&central.SensorEvent_ComplianceOperatorScan{}, stubID):                stubHash,
+		withKey(&central.SensorEvent_ComplianceOperatorScanV2{}, stubID):              stubHash,
+		withKey(&central.SensorEvent_ComplianceOperatorSuiteV2{}, stubID):             stubHash,
 		withKey(&central.SensorEvent_AlertResults{}, stubID):                          stubHash,
 	}
 )
@@ -125,6 +129,22 @@ func withKey(resource any, id string) Key {
 		ID:           id,
 		ResourceType: reflect.TypeOf(resource),
 	}
+}
+
+func TestParseKeySliceSkipsMalformedEntries(t *testing.T) {
+	t.Parallel()
+
+	keys, err := ParseKeySlice([]string{
+		eventPkg.FormatKey("Deployment", fixtureconsts.Deployment1),
+		"definitely-not-a-deduper-key",
+		eventPkg.FormatKey("AlertResults", stubID),
+	})
+
+	require.Error(t, err)
+	assert.Equal(t, []Key{
+		withKey(&central.SensorEvent_Deployment{}, fixtureconsts.Deployment1),
+		withKey(&central.SensorEvent_AlertResults{}, stubID),
+	}, keys)
 }
 
 var allSensorEventTypes []string

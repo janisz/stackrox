@@ -1,23 +1,23 @@
-import React from 'react';
+import { Fragment } from 'react';
 import {
     Alert,
+    Button,
     Card,
+    CardBody,
     CardHeader,
     CardTitle,
-    CardBody,
+    Checkbox,
     Divider,
     Flex,
     FlexItem,
-    Button,
-    Checkbox,
     Stack,
     StackItem,
 } from '@patternfly/react-core';
-import { TrashIcon, PlusIcon } from '@patternfly/react-icons';
+import { PlusIcon, TrashIcon } from '@patternfly/react-icons';
 import { useFormikContext } from 'formik';
 
-import { Policy } from 'types/policy.proto';
-import { Descriptor } from './policyCriteriaDescriptors';
+import type { Policy } from 'types/policy.proto';
+import type { Descriptor } from './policyCriteriaDescriptors';
 import PolicyCriteriaFieldValue from './PolicyCriteriaFieldValue';
 import AndOrOperatorField from './AndOrOperatorField';
 import './PolicyGroupCard.css';
@@ -73,9 +73,13 @@ function PolicyGroupCard({
     const headerLongText =
         group.negate && 'negatedName' in descriptor ? descriptor.negatedName : descriptor.longName;
 
+    const fieldOptions = 'options' in descriptor ? descriptor.options : [];
+    const isAddValueDisabled =
+        descriptor.type === 'select' && group.values.length >= fieldOptions.length;
+
     return (
         <>
-            <Card isFlat isCompact data-testid="policy-criteria-group-card">
+            <Card isCompact data-testid="policy-criteria-group-card">
                 <CardHeader
                     actions={{
                         actions: (
@@ -103,13 +107,12 @@ function PolicyGroupCard({
                                             component="div"
                                         />
                                         <Button
+                                            icon={<TrashIcon />}
                                             variant="plain"
-                                            className="pf-v5-u-mr-xs pf-v5-u-px-sm pf-v5-u-py-md"
+                                            className="pf-v6-u-mr-md"
                                             onClick={onDeleteGroup}
                                             title="Delete policy field"
-                                        >
-                                            <TrashIcon />
-                                        </Button>
+                                        />
                                     </>
                                 )}
                             </>
@@ -117,17 +120,17 @@ function PolicyGroupCard({
                         hasNoOffset: true,
                         className: 'policy-group-card',
                     }}
-                    className="pf-v5-u-p-0"
+                    className="pf-v6-u-p-0"
                 >
-                    <CardTitle className="pf-v5-u-pl-md">
+                    <CardTitle className="pf-v6-u-pl-md">
                         <Flex
                             alignItems={{ default: 'alignItemsCenter' }}
-                            className="pf-v5-u-py-sm pf-v5-u-text-wrap-on-sm"
+                            className="pf-v6-u-py-sm pf-v6-u-text-wrap-on-sm"
                         >
                             <Stack>
                                 <StackItem>{descriptor.shortName}</StackItem>
                                 {headerLongText && headerLongText !== descriptor.shortName && (
-                                    <StackItem className="pf-v5-u-font-size-sm pf-v5-u-font-weight-normal">
+                                    <StackItem className="pf-v6-u-font-size-sm pf-v6-u-font-weight-normal">
                                         {headerLongText}:
                                     </StackItem>
                                 )}
@@ -143,14 +146,14 @@ function PolicyGroupCard({
                             isInline
                             title={descriptor.infoText}
                             component="p"
-                            className="pf-v5-u-mb-md"
+                            className="pf-v6-u-mb-md"
                         />
                     )}
                     {group.values.map((_, valueIndex) => {
                         const name = `policySections[${sectionIndex}].policyGroups[${groupIndex}].values[${valueIndex}]`;
                         const groupName = `policySections[${sectionIndex}].policyGroups[${groupIndex}]`;
                         return (
-                            <React.Fragment key={name}>
+                            <Fragment key={name}>
                                 <Flex
                                     direction={{ default: 'column' }}
                                     spaceItems={{ default: 'spaceItemsNone' }}
@@ -172,7 +175,7 @@ function PolicyGroupCard({
                                         </FlexItem>
                                     )}
                                 </Flex>
-                            </React.Fragment>
+                            </Fragment>
                         );
                     })}
                     {/* this is because there can't be multiple boolean values */}
@@ -183,15 +186,19 @@ function PolicyGroupCard({
                             <Flex
                                 direction={{ default: 'column' }}
                                 alignItems={{ default: 'alignItemsCenter' }}
-                                className="pf-v5-u-pt-sm"
+                                className="pf-v6-u-pt-sm"
                             >
                                 <Button
+                                    icon={<PlusIcon />}
                                     onClick={handleAddValue}
                                     variant="plain"
-                                    title="Add value of policy field"
-                                >
-                                    <PlusIcon />
-                                </Button>
+                                    isDisabled={isAddValueDisabled}
+                                    title={
+                                        isAddValueDisabled
+                                            ? 'All options for this field have been selected'
+                                            : 'Add value of policy field'
+                                    }
+                                />
                             </Flex>
                         )}
                 </CardBody>
@@ -199,7 +206,7 @@ function PolicyGroupCard({
             {(policyGroups.length - 1 !== groupIndex || !readOnly) && (
                 <Flex
                     direction={{ default: 'row' }}
-                    className="pf-v5-u-my-sm"
+                    className="pf-v6-u-my-sm"
                     justifyContent={{ default: 'justifyContentCenter' }}
                 >
                     — and —

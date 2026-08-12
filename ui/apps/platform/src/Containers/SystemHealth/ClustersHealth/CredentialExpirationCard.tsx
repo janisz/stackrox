@@ -1,8 +1,8 @@
-import React, { ReactElement } from 'react';
+import type { ReactElement } from 'react';
 import { Alert, Card, CardBody } from '@patternfly/react-core';
 import { Table, Tbody, Th, Tr } from '@patternfly/react-table';
 
-import { Cluster } from 'types/cluster.proto';
+import type { Cluster } from 'types/cluster.proto';
 
 import { getCertificateExpirationCounts } from './ClustersHealth.utils';
 import ClustersHealthCardHeader from './ClustersHealthCardHeader';
@@ -11,8 +11,8 @@ import {
     TdHealthy,
     TdTotal,
     TdUnavailable,
-    TdUninitialized,
     TdUnhealthy,
+    TdUninitialized,
     TheadClustersHealth,
 } from './ClustersHealthTable';
 
@@ -47,7 +47,6 @@ function CredentialExpirationCard({
      * for table of counts if not healthy: HEALTHY === 0 || UNHEALTHY !== 0 || DEGRADED !== 0
      */
 
-    /* eslint-disable no-nested-ternary */
     return (
         <Card isCompact>
             <ClustersHealthCardHeader
@@ -87,7 +86,6 @@ function CredentialExpirationCard({
             ) : null}
         </Card>
     );
-    /* eslint-enable no-nested-ternary */
 }
 
 export default CredentialExpirationCard;

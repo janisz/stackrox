@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"net"
 
+	"github.com/stackrox/rox/pkg/net/internal/ipcheck"
 	"github.com/stackrox/rox/pkg/netutil"
 )
 
@@ -65,13 +66,7 @@ func (d ipv4data) isLoopback() bool {
 }
 
 func (d ipv4data) isPublic() bool {
-	netIP := net.IP(d.bytes())
-	for _, privateIPNet := range netutil.IPv4PrivateNetworks {
-		if privateIPNet.Contains(netIP) {
-			return false
-		}
-	}
-	return true
+	return ipcheck.IsIPv4Public(d)
 }
 
 func (d ipv4data) canonicalize() ipAddrData {
@@ -94,7 +89,7 @@ func (d ipv6data) isLoopback() bool {
 	if d[15] != 1 {
 		return false
 	}
-	for i := 0; i < 15; i++ {
+	for i := range 15 {
 		if d[i] != 0 {
 			return false
 		}
@@ -103,13 +98,7 @@ func (d ipv6data) isLoopback() bool {
 }
 
 func (d ipv6data) isPublic() bool {
-	netIP := net.IP(d.bytes())
-	for _, privateIPNet := range netutil.IPv6PrivateNetworks {
-		if privateIPNet.Contains(netIP) {
-			return false
-		}
-	}
-	return true
+	return ipcheck.IsIPv6Public(d)
 }
 
 var (
@@ -130,19 +119,25 @@ type IPAddress struct {
 	data ipAddrData
 }
 
-// IPAddressLess checks if the IP address a is less than the IP address b according to some defined ordering.
+// IPAddressLess checks if the IP address `a` is less than the IP address `b` according to arbitrary ordering.
+// Used for sort.Slice.
 func IPAddressLess(a, b IPAddress) bool {
+	return IPAddressCompare(a, b) < 0
+}
+
+// IPAddressCompare returns -1;0;1 for a<b; a==b; a>b comparison. Used for slices.SortFunc.
+func IPAddressCompare(a, b IPAddress) int {
 	aBytes, bBytes := a.data.bytes(), b.data.bytes()
 
 	if len(aBytes) != len(bBytes) {
-		return len(aBytes) < len(bBytes)
+		return len(aBytes) - len(bBytes)
 	}
 
 	if a.data.family() != b.data.family() {
-		return a.data.family() < b.data.family()
+		return int(a.data.family()) - int(b.data.family())
 	}
 
-	return bytes.Compare(aBytes, bBytes) < 0
+	return bytes.Compare(aBytes, bBytes)
 }
 
 // Family returns the address family of this IP address.
@@ -300,7 +295,7 @@ func IPNetworkFromCIDR(cidr string) IPNetwork {
 
 	return IPNetwork{
 		ip:        IPFromBytes(ipNet.IP),
-		prefixLen: byte(uint8(ones)),
+		prefixLen: uint8(ones),
 	}
 }
 
@@ -314,7 +309,7 @@ func IPNetworkFromIPNet(ipNet net.IPNet) IPNetwork {
 
 	return IPNetwork{
 		ip:        addr,
-		prefixLen: byte(uint8(ones)),
+		prefixLen: uint8(ones),
 	}
 }
 

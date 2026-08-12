@@ -1,4 +1,3 @@
-import tableSelectors from '../../selectors/table';
 import selectSelectors from '../../selectors/select';
 import tooltipSelectors from '../../selectors/tooltip';
 import navigationSelectors from '../../selectors/navigation';
@@ -44,7 +43,6 @@ const eventTimelineSelectors = scopeSelectors('[data-testid="event-timeline"]', 
 
 export const selectors = {
     risk: `${navigationSelectors.navLinks}:contains("Risk")`,
-    panel: '[data-testid="panel"]',
     search: {
         valueContainer: '.react-select__value-container',
         searchLabels: '.react-select__multi-value__label',
@@ -53,17 +51,18 @@ export const selectors = {
         searchWord: '.react-select__multi-value__label:eq(1)',
     },
     createPolicyButton: 'button:contains("Create policy")',
-    imageLink: 'div:contains("Image Name") + a',
-    table: scopeSelectors('[data-testid="panel"]:first', tableSelectors),
+    table: {
+        dataRows: 'table tbody tr',
+    },
     eventTimeline: eventTimelineSelectors,
     tooltip: {
         ...tooltipSelectors,
-        legendContents: `${tooltipSelectors.overlay} .pf-v5-c-tooltip__content`,
+        legendContents: `${tooltipSelectors.overlay} .pf-v6-c-tooltip__content`,
         legendContent: {
             event: eventSelectors,
         },
         getUidFieldIconSelector: (type) =>
-            `.pf-v5-c-tooltip__content svg[color="var(--pf-v5-global--${type}-color--100)"]`,
+            `.pf-v6-c-tooltip__content svg[color="var(--pf-v6-global--${type}-color--100)"]`,
         bodyContent: scopeSelectors(tooltipSelectors.body, {
             eventDetails: 'ul > li',
         }),

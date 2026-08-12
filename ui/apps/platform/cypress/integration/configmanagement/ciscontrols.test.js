@@ -1,5 +1,5 @@
 import withAuth from '../../helpers/basicAuth';
-import { hasOrchestratorFlavor } from '../../helpers/features';
+import { hasFeatureFlag, hasOrchestratorFlavor } from '../../helpers/features';
 import { triggerScan } from '../compliance/Compliance.helpers';
 
 import {
@@ -11,14 +11,21 @@ import {
     verifyWidgetLinkToTableFromSidePanel,
     verifyWidgetLinkToTableFromSinglePage,
     visitConfigurationManagementDashboard,
-    visitConfigurationManagementEntityInSidePanel,
     visitConfigurationManagementEntitiesWithSearch,
+    visitConfigurationManagementEntityInSidePanel,
 } from './ConfigurationManagement.helpers';
 
 const entitiesKey = 'controls';
 
 describe('Configuration Management Controls', () => {
     withAuth();
+
+    // Skip although Controls and CIS Kubernetes v1.5 are visible, because these tests assume compliance tests ran and triggered a scan (pardon rhyme).
+    before(function () {
+        if (!hasFeatureFlag('ROX_DEPRECATED_COMPLIANCE_DASHBOARD')) {
+            this.skip();
+        }
+    });
 
     before(function beforeHook() {
         if (hasOrchestratorFlavor('openshift')) {

@@ -6,7 +6,7 @@ import (
 	"time"
 
 	"github.com/pkg/errors"
-	"github.com/stackrox/rox/central/activecomponent/updater/aggregator"
+	clusterDatastore "github.com/stackrox/rox/central/cluster/datastore"
 	"github.com/stackrox/rox/central/deployment/cache"
 	deploymentDatastore "github.com/stackrox/rox/central/deployment/datastore"
 	"github.com/stackrox/rox/central/deployment/queue"
@@ -20,9 +20,13 @@ import (
 	baselineDataStore "github.com/stackrox/rox/central/processbaseline/datastore"
 	processIndicatorDatastore "github.com/stackrox/rox/central/processindicator/datastore"
 	"github.com/stackrox/rox/central/reprocessor"
+	"github.com/stackrox/rox/central/sensor/service/connection"
+	"github.com/stackrox/rox/generated/internalapi/central"
 	"github.com/stackrox/rox/generated/storage"
+	clusterPkg "github.com/stackrox/rox/pkg/cluster"
 	"github.com/stackrox/rox/pkg/concurrency"
 	"github.com/stackrox/rox/pkg/env"
+	"github.com/stackrox/rox/pkg/features"
 	"github.com/stackrox/rox/pkg/policies"
 	"github.com/stackrox/rox/pkg/postgres/pgutils"
 	"github.com/stackrox/rox/pkg/process/filter"
@@ -40,7 +44,7 @@ import (
 var (
 	lifecycleMgrCtx = sac.WithGlobalAccessScopeChecker(context.Background(),
 		sac.AllowFixedScopes(sac.AccessModeScopeKeys(storage.Access_READ_ACCESS, storage.Access_READ_WRITE_ACCESS),
-			sac.ResourceScopeKeys(resources.Alert, resources.Deployment, resources.Image,
+			sac.ResourceScopeKeys(resources.Alert, resources.Deployment, resources.Image, resources.Cluster,
 				resources.DeploymentExtension, resources.WorkflowAdministration, resources.Namespace)))
 
 	genDuration = env.BaselineGenerationDuration.DurationSetting()
@@ -62,6 +66,7 @@ type managerImpl struct {
 
 	alertManager alertmanager.AlertManager
 
+	clusterDataStore        clusterDatastore.DataStore
 	deploymentDataStore     deploymentDatastore.DataStore
 	processesDataStore      processIndicatorDatastore.DataStore
 	baselines               baselineDataStore.DataStore
@@ -80,7 +85,7 @@ type managerImpl struct {
 	policyAlertsLock          sync.RWMutex
 	removedOrDisabledPolicies set.StringSet
 
-	processAggregator aggregator.ProcessAggregator
+	connectionManager connection.Manager
 }
 
 func (m *managerImpl) copyAndResetIndicatorQueue() map[string]*storage.ProcessIndicator {
@@ -103,28 +108,27 @@ func (m *managerImpl) buildIndicatorFilter() {
 		return
 	}
 
-	var processesToRemove []string
+	processesToRemove := make([]string, 0, len(deploymentIDs))
 	walkFn := func() error {
-		deploymentIDSet := set.NewStringSet(deploymentIDs...)
 		processesToRemove = processesToRemove[:0]
-		return m.processesDataStore.WalkAll(ctx, func(pi *storage.ProcessIndicator) error {
-			if !deploymentIDSet.Contains(pi.GetDeploymentId()) {
-				// Don't remove as these processes will be removed by GC
-				// but don't add to the filter
-				return nil
-			}
+
+		// Only process indicators for existing deployments
+		fn := func(pi *storage.ProcessIndicator) error {
 			if !m.processFilter.Add(pi) {
 				processesToRemove = append(processesToRemove, pi.GetId())
 			}
 			return nil
-		})
+		}
+
+		query := search.NewQueryBuilder().AddExactMatches(search.DeploymentID, deploymentIDs...).ProtoQuery()
+		return m.processesDataStore.WalkByQuery(ctx, query, fn)
 	}
 	if err := pgutils.RetryIfPostgres(ctx, walkFn); err != nil {
 		utils.Should(errors.Wrap(err, "error building indicator filter"))
 	}
 
 	log.Infof("Cleaning up %d processes as a part of building process filter", len(processesToRemove))
-	if err := m.processesDataStore.RemoveProcessIndicators(ctx, processesToRemove); err != nil {
+	if err := m.processesDataStore.RemoveProcessIndicators(ctx, processesToRemove, processIndicatorDatastore.RemovalReasonProcessFilter); err != nil {
 		utils.Should(errors.Wrap(err, "error removing process indicators"))
 	}
 	log.Infof("Successfully cleaned up those %d processes", len(processesToRemove))
@@ -164,9 +168,67 @@ func (m *managerImpl) flushBaselineQueue() {
 		// Grab the first deployment to baseline.
 		// NOTE:  This is the only place from which Pull is called.
 		deployment := m.deploymentObservationQueue.Pull()
+		deploymentId := deployment.DeploymentID
 
-		m.addBaseline(deployment.DeploymentID)
+		baselines := m.addBaseline(deploymentId)
+
+		fullDeployment, found, err := m.deploymentDataStore.GetDeployment(lifecycleMgrCtx, deploymentId)
+
+		if !found {
+			log.Errorf("Error: Cluster not found for deployment %s", deploymentId)
+			continue
+		}
+
+		if err != nil {
+			log.Errorf("Error getting cluster for deployment %s: %+v", deploymentId, err)
+			continue
+		}
+
+		if m.isAutoLockEnabledForCluster(fullDeployment.GetClusterId()) {
+			m.autoLockProcessBaselines(baselines)
+		}
 	}
+}
+
+func (m *managerImpl) autoLockProcessBaselines(baselines []*storage.ProcessBaseline) {
+	for _, baseline := range baselines {
+		if baseline == nil || baseline.GetUserLockedTimestamp() != nil {
+			continue
+		}
+
+		baseline.UserLockedTimestamp = protocompat.TimestampNow()
+		_, err := m.baselines.UserLockProcessBaseline(lifecycleMgrCtx, baseline.GetKey(), true)
+		if err != nil {
+			log.Errorf("Error setting user lock for %+v: %v", baseline.GetKey(), err)
+			continue
+		}
+		err = m.SendBaselineToSensor(baseline)
+		if err != nil {
+			log.Errorf("Error sending process baseline %+v: %v", baseline, err)
+		}
+	}
+}
+
+// Lifecycle manager uses cachedStorage for cluster datastore,
+// thus repeated calls are memoized
+func (m *managerImpl) isAutoLockEnabledForCluster(clusterId string) bool {
+	if !features.AutoLockProcessBaselines.Enabled() {
+		return false
+	}
+
+	cluster, found, err := m.clusterDataStore.GetCluster(lifecycleMgrCtx, clusterId)
+
+	if err != nil {
+		log.Errorf("Error getting cluster config %s: %v", clusterId, err)
+		return false
+	}
+
+	if !found {
+		log.Errorf("Error: Unable to find cluster %s", clusterId)
+		return false
+	}
+
+	return clusterPkg.GetAutoLockProcessBaselinesEnabled(cluster)
 }
 
 func (m *managerImpl) flushIndicatorQueue() {
@@ -191,17 +253,29 @@ func (m *managerImpl) flushIndicatorQueue() {
 		if m.deletedDeploymentsCache.Contains(indicator.GetDeploymentId()) {
 			continue
 		}
-		indicatorSlice = append(indicatorSlice, indicator)
+
+		match, err := m.clusterDataStore.MatchProcessIndicator(lifecycleMgrCtx, indicator)
+
+		if err != nil || !match {
+			// Add the indicator if not matching, or in the presence of an error
+			// (we consider any errors from MatchProcessIndicator as non-blocking).
+			//
+			// The only scenario when the indicator is not persisted is when it
+			// matches and we got no errors.
+			if err != nil {
+				log.Errorf("Cannot match indicator %s: %v", indicator.GetId(), err)
+			}
+
+			indicatorSlice = append(indicatorSlice, indicator)
+		} else {
+			processIndicatorDatastore.RecordProcessIndicatorNotPersisted(indicator)
+		}
 	}
 
 	// Index the process indicators in batch
 	if err := m.processesDataStore.AddProcessIndicators(lifecycleMgrCtx, indicatorSlice...); err != nil {
 		log.Errorf("Error adding process indicators: %v", err)
 	}
-
-	now := time.Now()
-	m.processAggregator.Add(indicatorSlice)
-	centralMetrics.SetFunctionSegmentDuration(now, "AddProcessToAggregator")
 
 	defer centralMetrics.SetFunctionSegmentDuration(time.Now(), "CheckAndUpdateBaseline")
 
@@ -219,21 +293,27 @@ func (m *managerImpl) addToIndicatorQueue(indicator *storage.ProcessIndicator) {
 	}
 }
 
-func (m *managerImpl) addBaseline(deploymentID string) {
+func (m *managerImpl) addBaseline(deploymentID string) []*storage.ProcessBaseline {
 	defer centralMetrics.SetFunctionSegmentDuration(time.Now(), "AddBaseline")
 
-	// Simply use search to find the process indicators for the deployment
-	indicatorSlice, _ := m.processesDataStore.SearchRawProcessIndicators(
-		lifecycleMgrCtx,
-		search.NewQueryBuilder().
-			AddExactMatches(search.DeploymentID, deploymentID).
-			ProtoQuery(),
-	)
+	// Group the processes into particular baseline segments
+	baselineMap := make(map[processBaselineKey][]*storage.ProcessIndicator)
 
-	m.buildMapAndCheckBaseline(indicatorSlice)
+	fn := func(indicator *storage.ProcessIndicator) error {
+		key := indicatorToBaselineKey(indicator)
+		baselineMap[key] = append(baselineMap[key], indicator)
+		return nil
+	}
+
+	query := search.NewQueryBuilder().
+		AddExactMatches(search.DeploymentID, deploymentID).
+		ProtoQuery()
+	utils.Should(m.processesDataStore.GetByQueryFn(lifecycleMgrCtx, query, fn))
+
+	return m.processBaselineMap(baselineMap)
 }
 
-func (m *managerImpl) buildMapAndCheckBaseline(indicatorSlice []*storage.ProcessIndicator) {
+func (m *managerImpl) buildMapAndCheckBaseline(indicatorSlice []*storage.ProcessIndicator) []*storage.ProcessBaseline {
 	// Group the processes into particular baseline segments
 	baselineMap := make(map[processBaselineKey][]*storage.ProcessIndicator)
 	for _, indicator := range indicatorSlice {
@@ -241,14 +321,41 @@ func (m *managerImpl) buildMapAndCheckBaseline(indicatorSlice []*storage.Process
 		baselineMap[key] = append(baselineMap[key], indicator)
 	}
 
-	for key, indicators := range baselineMap {
-		if _, err := m.checkAndUpdateBaseline(key, indicators); err != nil {
-			log.Errorf("error checking and updating baseline for %+v: %v", key, err)
-		}
-	}
+	return m.processBaselineMap(baselineMap)
 }
 
-func (m *managerImpl) checkAndUpdateBaseline(baselineKey processBaselineKey, indicators []*storage.ProcessIndicator) (bool, error) {
+func (m *managerImpl) processBaselineMap(baselineMap map[processBaselineKey][]*storage.ProcessIndicator) []*storage.ProcessBaseline {
+	baselines := make([]*storage.ProcessBaseline, 0, len(baselineMap))
+
+	for key, indicators := range baselineMap {
+		if baseline, _, err := m.checkAndUpdateBaseline(key, indicators); err != nil {
+			log.Errorf("error checking and updating baseline for %+v: %v", key, err)
+		} else if baseline != nil {
+			baselines = append(baselines, baseline)
+		}
+	}
+
+	return baselines
+}
+
+func (m *managerImpl) SendBaselineToSensor(baseline *storage.ProcessBaseline) error {
+	clusterId := baseline.GetKey().GetClusterId()
+	err := m.connectionManager.SendMessage(clusterId, &central.MsgToSensor{
+		Msg: &central.MsgToSensor_BaselineSync{
+			BaselineSync: &central.BaselineSync{
+				Baselines: []*storage.ProcessBaseline{baseline},
+			}},
+	})
+	if err != nil {
+		log.Errorf("Error sending process baseline to cluster %q: %v", clusterId, err)
+		return err
+	}
+	log.Debugf("Successfully sent process baseline to cluster %q: %s", clusterId, baseline.GetId())
+
+	return nil
+}
+
+func (m *managerImpl) checkAndUpdateBaseline(baselineKey processBaselineKey, indicators []*storage.ProcessIndicator) (*storage.ProcessBaseline, bool, error) {
 	key := &storage.ProcessBaselineKey{
 		DeploymentId:  baselineKey.deploymentID,
 		ContainerName: baselineKey.containerName,
@@ -258,14 +365,15 @@ func (m *managerImpl) checkAndUpdateBaseline(baselineKey processBaselineKey, ind
 
 	// TODO joseph what to do if exclusions ("baseline" in the old non-inclusive language) doesn't exist?  Always create for now?
 	baseline, exists, err := m.baselines.GetProcessBaseline(lifecycleMgrCtx, key)
+
 	if err != nil {
-		return false, err
+		return baseline, false, err
 	}
 
 	// If the baseline does not exist AND this deployment is in the observation period, we
 	// need not process further at this time.
 	if !exists && m.deploymentObservationQueue.InObservation(key.GetDeploymentId()) {
-		return false, nil
+		return baseline, false, nil
 	}
 
 	existingProcess := set.NewStringSet()
@@ -287,11 +395,11 @@ func (m *managerImpl) checkAndUpdateBaseline(baselineKey processBaselineKey, ind
 		elements = append(elements, insertableElement)
 	}
 	if len(elements) == 0 {
-		return false, nil
+		return baseline, false, nil
 	}
 	if !exists {
-		_, err = m.baselines.UpsertProcessBaseline(lifecycleMgrCtx, key, elements, true, true)
-		return false, err
+		baseline, err = m.baselines.UpsertProcessBaseline(lifecycleMgrCtx, key, elements, true, true)
+		return baseline, false, err
 	}
 
 	userBaseline := processbaseline.IsUserLocked(baseline)
@@ -301,10 +409,10 @@ func (m *managerImpl) checkAndUpdateBaseline(baselineKey processBaselineKey, ind
 		m.reprocessor.ReprocessRiskForDeployments(baselineKey.deploymentID)
 	} else {
 		// So we have a baseline, but not locked.  Now we need to add these elements to the unlocked baseline
-		_, err = m.baselines.UpdateProcessBaselineElements(lifecycleMgrCtx, key, elements, nil, true)
+		baseline, err = m.baselines.UpdateProcessBaselineElements(lifecycleMgrCtx, key, elements, nil, true)
 	}
 
-	return userBaseline, err
+	return baseline, userBaseline, err
 }
 
 func (m *managerImpl) IndicatorAdded(indicator *storage.ProcessIndicator) error {
@@ -403,14 +511,28 @@ func (m *managerImpl) HandleResourceAlerts(clusterID string, alerts []*storage.A
 	return nil
 }
 
-func (m *managerImpl) UpsertPolicy(policy *storage.Policy) error {
+func (m *managerImpl) HandleNodeAlerts(clusterID string, alerts []*storage.Alert, stage storage.LifecycleStage) error {
+	m.filterOutDisabledPolicies(&alerts)
+	if len(alerts) == 0 && stage == storage.LifecycleStage_RUNTIME {
+		return nil
+	}
+
+	if _, err := m.alertManager.AlertAndNotify(lifecycleMgrCtx, alerts,
+		alertmanager.WithClusterID(clusterID), alertmanager.WithLifecycleStage(stage)); err != nil {
+		return err
+	}
+	return nil
+}
+
+// registerPolicy updates detector policy sets and the disabled policy tracker under the lock.
+// Returns true if the policy applies at runtime and alert reconciliation is needed.
+func (m *managerImpl) registerPolicy(policy *storage.Policy) (needsAlertReconcile bool, err error) {
 	m.policyAlertsLock.Lock()
 	defer m.policyAlertsLock.Unlock()
 
-	// Add policy to set.
 	if policies.AppliesAtBuildTime(policy) {
 		if err := m.buildTimeDetector.PolicySet().UpsertPolicy(policy); err != nil {
-			return errors.Wrapf(err, "adding policy %s to build time detector", policy.GetName())
+			return false, errors.Wrapf(err, "adding policy %s to build time detector", policy.GetName())
 		}
 	} else {
 		m.buildTimeDetector.PolicySet().RemovePolicy(policy.GetId())
@@ -418,7 +540,7 @@ func (m *managerImpl) UpsertPolicy(policy *storage.Policy) error {
 
 	if policies.AppliesAtDeployTime(policy) {
 		if err := m.deployTimeDetector.PolicySet().UpsertPolicy(policy); err != nil {
-			return errors.Wrapf(err, "adding policy %s to deploy time detector", policy.GetName())
+			return false, errors.Wrapf(err, "adding policy %s to deploy time detector", policy.GetName())
 		}
 	} else {
 		m.deployTimeDetector.PolicySet().RemovePolicy(policy.GetId())
@@ -426,18 +548,9 @@ func (m *managerImpl) UpsertPolicy(policy *storage.Policy) error {
 
 	if policies.AppliesAtRunTime(policy) {
 		if err := m.runtimeDetector.PolicySet().UpsertPolicy(policy); err != nil {
-			return errors.Wrapf(err, "adding policy %s to runtime detector", policy.GetName())
+			return false, errors.Wrapf(err, "adding policy %s to runtime detector", policy.GetName())
 		}
-		// Perform notifications and update DB.
-		modifiedDeployments, err := m.alertManager.AlertAndNotify(lifecycleMgrCtx, nil,
-			alertmanager.WithPolicyID(policy.GetId()))
-		if err != nil {
-			return err
-		}
-		if modifiedDeployments.Cardinality() > 0 {
-			defer m.reprocessor.ReprocessRiskForDeployments(modifiedDeployments.AsSlice()...)
-		}
-
+		needsAlertReconcile = true
 	} else {
 		m.runtimeDetector.PolicySet().RemovePolicy(policy.GetId())
 	}
@@ -446,6 +559,30 @@ func (m *managerImpl) UpsertPolicy(policy *storage.Policy) error {
 		m.removedOrDisabledPolicies.Add(policy.GetId())
 	} else {
 		m.removedOrDisabledPolicies.Remove(policy.GetId())
+	}
+	return needsAlertReconcile, nil
+}
+
+// reconcileAlertsForPolicy reconciles alerts and reprocesses risk for a policy outside of any lock.
+func (m *managerImpl) reconcileAlertsForPolicy(policyID string) error {
+	modifiedDeployments, err := m.alertManager.AlertAndNotify(lifecycleMgrCtx, nil,
+		alertmanager.WithPolicyID(policyID))
+	if err != nil {
+		return err
+	}
+	if modifiedDeployments.Cardinality() > 0 {
+		m.reprocessor.ReprocessRiskForDeployments(modifiedDeployments.AsSlice()...)
+	}
+	return nil
+}
+
+func (m *managerImpl) UpsertPolicy(policy *storage.Policy) error {
+	needsReconcile, err := m.registerPolicy(policy)
+	if err != nil {
+		return err
+	}
+	if needsReconcile {
+		return m.reconcileAlertsForPolicy(policy.GetId())
 	}
 	return nil
 }
@@ -462,12 +599,13 @@ func (m *managerImpl) RemoveDeploymentFromObservation(deploymentID string) {
 	m.deploymentObservationQueue.RemoveFromObservation(deploymentID)
 }
 
-func (m *managerImpl) RemovePolicy(policyID string) error {
+// deregisterPolicy removes a policy from all detectors under the lock.
+// Returns true if a runtime policy was removed and alert reconciliation is needed.
+func (m *managerImpl) deregisterPolicy(policyID string) bool {
 	m.policyAlertsLock.Lock()
 	defer m.policyAlertsLock.Unlock()
 
 	m.buildTimeDetector.PolicySet().RemovePolicy(policyID)
-
 	m.deployTimeDetector.PolicySet().RemovePolicy(policyID)
 
 	numRuntimePolicies := len(m.runtimeDetector.PolicySet().GetCompiledPolicies())
@@ -475,16 +613,13 @@ func (m *managerImpl) RemovePolicy(policyID string) error {
 	runtimePolicyRemoved := numRuntimePolicies-len(m.runtimeDetector.PolicySet().GetCompiledPolicies()) > 0
 
 	m.removedOrDisabledPolicies.Add(policyID)
+	return runtimePolicyRemoved
+}
 
-	// Runtime alerts need to be explicitly marked resolved as their updates are not synced from sensors
+func (m *managerImpl) RemovePolicy(policyID string) error {
+	runtimePolicyRemoved := m.deregisterPolicy(policyID)
 	if runtimePolicyRemoved {
-		modifiedDeployments, err := m.alertManager.AlertAndNotify(lifecycleMgrCtx, nil, alertmanager.WithPolicyID(policyID))
-		if err != nil {
-			return err
-		}
-		if modifiedDeployments.Cardinality() > 0 {
-			m.reprocessor.ReprocessRiskForDeployments(modifiedDeployments.AsSlice()...)
-		}
+		return m.reconcileAlertsForPolicy(policyID)
 	}
 	return nil
 }

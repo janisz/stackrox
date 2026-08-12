@@ -5,11 +5,12 @@ import (
 	"reflect"
 	"sort"
 
-	"github.com/mitchellh/hashstructure/v2"
 	openshiftAppsV1 "github.com/openshift/api/apps/v1"
 	"github.com/pkg/errors"
+	"github.com/stackrox/hashstructure"
 	"github.com/stackrox/rox/generated/internalapi/central"
 	"github.com/stackrox/rox/generated/storage"
+	"github.com/stackrox/rox/pkg/centralsensor"
 	"github.com/stackrox/rox/pkg/containers"
 	"github.com/stackrox/rox/pkg/features"
 	imageUtils "github.com/stackrox/rox/pkg/images/utils"
@@ -20,6 +21,7 @@ import (
 	"github.com/stackrox/rox/pkg/sync"
 	"github.com/stackrox/rox/pkg/utils"
 	"github.com/stackrox/rox/pkg/uuid"
+	"github.com/stackrox/rox/sensor/common/centralcaps"
 	"github.com/stackrox/rox/sensor/common/service"
 	"github.com/stackrox/rox/sensor/kubernetes/listener/resources/references"
 	"github.com/stackrox/rox/sensor/kubernetes/orchestratornamespaces"
@@ -27,6 +29,7 @@ import (
 	"k8s.io/api/batch/v1beta1"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	v1listers "k8s.io/client-go/listers/core/v1"
 )
@@ -289,7 +292,19 @@ func (w *deploymentWrap) getPods(hierarchy references.ParentHierarchy, labelSele
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to list pods")
 	}
-	return filterOnOwners(hierarchy, w.Id, pods), nil
+	owned := filterOnOwners(hierarchy, w.Id, pods)
+	if len(owned) > 0 {
+		return owned, nil
+	}
+	// Fallback: the label selector didn't match any owned pods. This can happen
+	// when the selector diverges from actual pod labels (e.g., OpenShift overrides
+	// the deploymentconfig label on pods to match the DC name). List all pods in
+	// the namespace and filter by ownership only.
+	allPods, err := lister.Pods(w.Namespace).List(labels.Everything())
+	if err != nil {
+		return nil, errors.Wrap(err, "failed to list pods for ownership fallback")
+	}
+	return filterOnOwners(hierarchy, w.Id, allPods), nil
 }
 
 func (w *deploymentWrap) populateDataFromPods(localImages set.StringSet, pods ...*v1.Pod) {
@@ -310,11 +325,13 @@ func (w *deploymentWrap) populateImageMetadata(localImages set.StringSet, pods .
 	// The downside to this is that if different pods have different versions then we will miss that fact that pods are running
 	// different versions and clobber it. I've added a log to illustrate the clobbering so we can see how often it happens
 
-	// Sort the w.Deployment.Containers by name and p.Status.ContainerStatuses by name
-	// This is because the order is not guaranteed
-	sort.SliceStable(w.Deployment.Containers, func(i, j int) bool {
-		return w.Deployment.GetContainers()[i].Name < w.Deployment.GetContainers()[j].Name
-	})
+	// Build a map from container name to deployment container for name-based matching.
+	// This avoids index-based alignment which breaks when other container types are
+	// present in deployment.Containers but not in pod container statuses.
+	containersByName := make(map[string]*storage.Container, len(w.GetDeployment().GetContainers()))
+	for _, c := range w.GetDeployment().GetContainers() {
+		containersByName[c.GetName()] = c
+	}
 
 	// Sort the pods by time created as that pod will be most likely to have the most updated spec
 	sort.SliceStable(pods, func(i, j int) bool {
@@ -323,60 +340,100 @@ func (w *deploymentWrap) populateImageMetadata(localImages set.StringSet, pods .
 
 	// Determine each image's ID, if not already populated, as well as if the image is pullable and/or cluster-local.
 	for _, p := range pods {
-		sort.SliceStable(p.Status.ContainerStatuses, func(i, j int) bool {
-			return p.Status.ContainerStatuses[i].Name < p.Status.ContainerStatuses[j].Name
-		})
-		sort.SliceStable(p.Spec.Containers, func(i, j int) bool {
-			return p.Spec.Containers[i].Name < p.Spec.Containers[j].Name
-		})
-		for i, c := range p.Status.ContainerStatuses {
-			if i >= len(w.Deployment.Containers) || i >= len(p.Spec.Containers) {
-				// This should not happen, but could happen if w.Deployment.Containers and container status are out of sync
-				break
+		// Process regular and init container statuses separately to avoid building a combined status slice.
+		w.processContainerStatuses(p.Status.ContainerStatuses, p.Spec.Containers, containersByName, localImages, p.GetName())
+		if features.InitContainerSupport.Enabled() {
+			w.processContainerStatuses(p.Status.InitContainerStatuses, p.Spec.InitContainers, containersByName, localImages, p.GetName())
+		}
+	}
+}
+
+// processContainerStatuses iterates over container statuses and populates image
+// metadata by matching against the deployment containers via containersByName.
+func (w *deploymentWrap) processContainerStatuses(
+	statuses []v1.ContainerStatus,
+	specContainers []v1.Container,
+	containersByName map[string]*storage.Container,
+	localImages set.StringSet,
+	podName string,
+) {
+	for i := range statuses {
+		c := &statuses[i]
+		deployContainer, found := containersByName[c.Name]
+		if !found {
+			log.Debugf("Skipping container status %q with no matching deployment container for deploy %q, pod %q", c.Name, w.GetDeployment().GetName(), podName)
+			continue
+		}
+
+		image := deployContainer.GetImage()
+
+		var runtimeImageName *storage.ImageName
+		if features.UnqualifiedSearchRegistries.Enabled() && c.ImageID != "" {
+			var err error
+			if runtimeImageName, _, err = imageUtils.GenerateImageNameFromString(imageUtils.RemoveScheme(c.ImageID)); err != nil {
+				log.Warnf("Error parsing image ID %q, will not sync image names with runtime for deploy %q, pod %q: %v", c.ImageID, w.GetDeployment().GetName(), podName, err)
 			}
+		}
 
-			image := w.Deployment.Containers[i].Image
-
-			var runtimeImageName *storage.ImageName
-			if features.UnqualifiedSearchRegistries.Enabled() && c.ImageID != "" {
-				var err error
-				if runtimeImageName, _, err = imageUtils.GenerateImageNameFromString(imageUtils.RemoveScheme(c.ImageID)); err != nil {
-					log.Warnf("Error parsing image ID %q, will not sync image names with runtime for deploy %q, pod %q: %v", c.ImageID, w.Deployment.GetName(), p.GetName(), err)
-				}
-			}
-
-			// If there already is an image ID for the image then that implies that the name of the image
-			// had a digest. e.g. quay.io/stackrox-io/main@sha256:xyz or main@sha256:xyz
-			// If the ID already exists populate NotPullable, IsClusterLocal, and sync the registry
-			// and remote with the container runtime.
-			if image.GetId() != "" {
-				// Use the image ID from the pod's ContainerStatus.
+		// If there already is an image ID for the image then that implies that the name of the image
+		// had a digest. e.g. quay.io/stackrox-io/main@sha256:xyz or main@sha256:xyz
+		// If the ID already exists populate NotPullable, IsClusterLocal, and sync the registry
+		// and remote with the container runtime.
+		if image.GetId() != "" {
+			// If the image ID is populated then determine if the image is pullable,
+			// otherwise assume the image is pullable. An Image ID may be empty when a
+			// container is not ready yet per the container runtime.
+			if c.ImageID != "" {
 				image.NotPullable = !imageUtils.IsPullable(c.ImageID)
-				image.IsClusterLocal = localImages.Contains(image.GetName().GetFullName())
-				updateImageWithNewerImageName(image, runtimeImageName, true)
-				continue
 			}
 
-			parsedName, err := imageUtils.GenerateImageFromStringWithOverride(p.Spec.Containers[i].Image, w.registryOverride)
-			if err != nil {
-				// This error will only happen if we could not parse the image, this is possible if the image in kubernetes is malformed
-				// e.g. us.gcr.io/$PROJECT/xyz:latest is an example that we have seen
-				continue
+			image.IsClusterLocal = localImages.Contains(image.GetName().GetFullName())
+			updateImageWithNewerImageName(image, runtimeImageName, true)
+			if features.FlattenImageData.Enabled() {
+				image.IdV2 = imageUtils.NewImageV2ID(image.GetName(), image.GetId())
 			}
+			continue
+		}
 
-			// If the pod spec image doesn't match the top level image, then it is an old spec, so we should ignore its digest
-			if parsedName.GetName().GetFullName() != image.GetName().GetFullName() {
-				continue
-			}
+		specImage := findSpecContainerImage(specContainers, c.Name)
+		if specImage == "" {
+			continue
+		}
 
-			if digest := imageUtils.ExtractImageDigest(c.ImageID); digest != "" {
-				image.Id = digest
-				image.NotPullable = !imageUtils.IsPullable(c.ImageID)
-				image.IsClusterLocal = localImages.Contains(image.GetName().GetFullName())
-				updateImageWithNewerImageName(image, runtimeImageName, false)
+		parsedName, err := imageUtils.GenerateImageFromStringWithOverride(specImage, w.registryOverride)
+		if err != nil {
+			// This error will only happen if we could not parse the image, this is possible if the image in kubernetes is malformed
+			// e.g. us.gcr.io/$PROJECT/xyz:latest is an example that we have seen
+			continue
+		}
+
+		// If the pod spec image doesn't match the top level image, then it is an old spec, so we should ignore its digest
+		if parsedName.GetName().GetFullName() != image.GetName().GetFullName() {
+			continue
+		}
+
+		if digest := imageUtils.ExtractImageDigest(c.ImageID); digest != "" {
+			image.Id = digest
+			image.NotPullable = !imageUtils.IsPullable(c.ImageID)
+			image.IsClusterLocal = localImages.Contains(image.GetName().GetFullName())
+			updateImageWithNewerImageName(image, runtimeImageName, false)
+			if features.FlattenImageData.Enabled() {
+				image.IdV2 = imageUtils.NewImageV2ID(image.GetName(), digest)
 			}
 		}
 	}
+}
+
+// findSpecContainerImage returns the image string for the spec container with
+// the given name. Returns empty string if not found. Uses linear scan since pod
+// spec container lists are typically small (1-10 entries).
+func findSpecContainerImage(specContainers []v1.Container, name string) string {
+	for i := range specContainers {
+		if specContainers[i].Name == name {
+			return specContainers[i].Image
+		}
+	}
+	return ""
 }
 
 // updateImageWithNewerImageName will update the registry, remote, and full name
@@ -450,9 +507,9 @@ func (w *deploymentWrap) populatePorts() {
 	w.portConfigs = make(map[service.PortRef]*storage.PortConfig)
 	for _, c := range w.GetContainers() {
 		for _, p := range c.GetPorts() {
-			w.portConfigs[service.PortRef{Port: intstr.FromInt(int(p.ContainerPort)), Protocol: v1.Protocol(p.Protocol)}] = p
-			if p.Name != "" {
-				w.portConfigs[service.PortRef{Port: intstr.FromString(p.Name), Protocol: v1.Protocol(p.Protocol)}] = p
+			w.portConfigs[service.PortRef{Port: intstr.FromInt(int(p.GetContainerPort())), Protocol: v1.Protocol(p.GetProtocol())}] = p
+			if p.GetName() != "" {
+				w.portConfigs[service.PortRef{Port: intstr.FromString(p.GetName()), Protocol: v1.Protocol(p.GetProtocol())}] = p
 			}
 		}
 	}
@@ -462,11 +519,16 @@ func (w *deploymentWrap) toEvent(action central.ResourceAction) *central.SensorE
 	w.mutex.RLock()
 	defer w.mutex.RUnlock()
 
+	dep := w.GetDeployment().CloneVT()
+	if !centralcaps.Has(centralsensor.InitContainerSupport) {
+		dep.Containers = containers.FilterRegularContainers(dep.GetContainers())
+	}
+
 	return &central.SensorEvent{
 		Id:     w.GetId(),
 		Action: action,
 		Resource: &central.SensorEvent_Deployment{
-			Deployment: w.Deployment.CloneVT(),
+			Deployment: dep,
 		},
 	}
 }
@@ -478,7 +540,7 @@ func (w *deploymentWrap) anyNonHostPort() bool {
 	defer w.mutex.RUnlock()
 
 	for _, portCfg := range w.portConfigs {
-		for _, exposureInfo := range portCfg.ExposureInfos {
+		for _, exposureInfo := range portCfg.GetExposureInfos() {
 			if exposureInfo.GetLevel() != storage.PortConfig_HOST {
 				return true
 			}
@@ -503,7 +565,7 @@ func filterHostExposure(exposureInfos []*storage.PortConfig_ExposureInfo) (
 
 func (w *deploymentWrap) resetPortExposureNoLock() {
 	for _, portCfg := range w.portConfigs {
-		portCfg.ExposureInfos, portCfg.Exposure = filterHostExposure(portCfg.ExposureInfos)
+		portCfg.ExposureInfos, portCfg.Exposure = filterHostExposure(portCfg.GetExposureInfos())
 	}
 }
 
@@ -548,19 +610,19 @@ func (w *deploymentWrap) updatePortExposureUncheckedNoLock(portExposure map[serv
 		portCfg.ExposureInfos = append(portCfg.ExposureInfos, exposureInfos...)
 
 		for _, exposureInfo := range exposureInfos {
-			if containers.CompareExposureLevel(portCfg.Exposure, exposureInfo.GetLevel()) < 0 {
+			if containers.CompareExposureLevel(portCfg.GetExposure(), exposureInfo.GetLevel()) < 0 {
 				portCfg.Exposure = exposureInfo.GetLevel()
 			}
 		}
 	}
 	for _, portCfg := range w.portConfigs {
-		sort.Slice(portCfg.ExposureInfos, func(i, j int) bool {
-			return portCfg.ExposureInfos[i].ServiceName < portCfg.ExposureInfos[j].ServiceName
+		sort.Slice(portCfg.GetExposureInfos(), func(i, j int) bool {
+			return portCfg.GetExposureInfos()[i].GetServiceName() < portCfg.GetExposureInfos()[j].GetServiceName()
 		})
 	}
 
 	sort.Slice(w.Ports, func(i, j int) bool {
-		return w.Ports[i].ContainerPort < w.Ports[j].ContainerPort
+		return w.Ports[i].GetContainerPort() < w.Ports[j].GetContainerPort()
 	})
 	return false
 }
@@ -606,7 +668,7 @@ func (w *deploymentWrap) updateHash() error {
 	w.mutex.Lock()
 	defer w.mutex.Unlock()
 
-	hashValue, err := hashstructure.Hash(w.GetDeployment(), hashstructure.FormatV2, &hashstructure.HashOptions{})
+	hashValue, err := hashstructure.Hash(w.GetDeployment(), &hashstructure.HashOptions{})
 	if err != nil {
 		return errors.Wrap(err, "calculating deployment hash")
 	}

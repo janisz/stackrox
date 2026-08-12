@@ -83,6 +83,7 @@ func (e *podIPsStore) RecordTick() bool {
 			removedPublic = removedPublic || removed && ip.IsPublic()
 		}
 	}
+	e.updateMetricsNoLock()
 	return removedPublic
 }
 
@@ -121,21 +122,25 @@ func (e *podIPsStore) purgeDeploymentNoLock(deploymentID string) {
 func (e *podIPsStore) LookupByNetAddr(ip net.IPAddress, port uint16) (results, historical []LookupResult) {
 	e.mutex.RLock()
 	defer e.mutex.RUnlock()
-	for deploymentID := range e.ipMap[ip] {
-		result := LookupResult{
-			Entity:         networkgraph.EntityForDeployment(deploymentID),
-			ContainerPorts: []uint16{port},
+	if currentSet := e.ipMap[ip]; len(currentSet) > 0 {
+		results = make([]LookupResult, 0, len(currentSet))
+		for deploymentID := range currentSet {
+			results = append(results, LookupResult{
+				Entity:         networkgraph.EntityForDeployment(deploymentID),
+				ContainerPorts: []uint16{port},
+			})
 		}
-		results = append(results, result)
 	}
 	// if there is a match in the map, then there is no need to search in history,
 	// as it may contain data about different past deployment using this address
-	for histDeploymentID := range e.historicalIPs[ip] {
-		result := LookupResult{
-			Entity:         networkgraph.EntityForDeployment(histDeploymentID),
-			ContainerPorts: []uint16{port},
+	if histSet := e.historicalIPs[ip]; len(histSet) > 0 {
+		historical = make([]LookupResult, 0, len(histSet))
+		for histDeploymentID := range histSet {
+			historical = append(historical, LookupResult{
+				Entity:         networkgraph.EntityForDeployment(histDeploymentID),
+				ContainerPorts: []uint16{port},
+			})
 		}
-		historical = append(historical, result)
 	}
 	return results, historical
 }
@@ -152,7 +157,7 @@ func (e *podIPsStore) applySingleNoLock(deploymentID string, data EntityData) {
 		deplSet.Add(deploymentID)
 		// This IP has more than one deployment! Interesting, let's record it.
 		if deplSet.Cardinality() > 1 {
-			metrics.ObserveManyDeploymentsSharingSingleIP(ip.AsNetIP().String(), deplSet.AsSlice())
+			metrics.ObserveManyDeploymentsSharingSingleIP(ip.AsNetIP().String())
 		}
 		e.ipMap[ip] = deplSet
 		// If the IP being currently added was already in history,
@@ -170,7 +175,7 @@ func (e *podIPsStore) moveDeploymentToHistory(deploymentID string) {
 
 func (e *podIPsStore) addToHistory(deploymentID string) {
 	ipSet := e.reverseIPMap[deploymentID]
-	for _, ip := range ipSet.AsSlice() {
+	for ip := range ipSet.All() {
 		if _, ok := e.historicalIPs[ip]; !ok {
 			e.historicalIPs[ip] = make(map[string]*entityStatus)
 		}
@@ -181,12 +186,11 @@ func (e *podIPsStore) addToHistory(deploymentID string) {
 // deleteDeploymentFromCurrent deletes all data for given deployment from the current map
 func (e *podIPsStore) deleteDeploymentFromCurrent(deploymentID string) {
 	ips := e.reverseIPMap[deploymentID]
-	for _, address := range ips.AsSlice() {
+	for address := range ips.All() {
 		deploymentsHavingIP := e.ipMap[address]
-		if deploymentsHavingIP.Cardinality() < 2 {
+		deploymentsHavingIP.Remove(deploymentID)
+		if deploymentsHavingIP.Cardinality() == 0 {
 			delete(e.ipMap, address)
-		} else {
-			log.Warnf("The same pod IP %s belongs to 2 or more deployments:%v !", address, deploymentsHavingIP.AsSlice())
 		}
 	}
 	delete(e.reverseIPMap, deploymentID)

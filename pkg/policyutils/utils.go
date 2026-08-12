@@ -10,12 +10,12 @@ import (
 // FillSortHelperFields fills multi word sort fields such as Name, Lifecycle Stages etc.
 func FillSortHelperFields(policies ...*storage.Policy) {
 	for _, policy := range policies {
-		policy.SORTName = policy.Name
+		policy.SORTName = policy.GetName()
 
 		sort.Slice(policy.GetLifecycleStages(), func(i, j int) bool {
 			return policy.GetLifecycleStages()[i].String() < policy.GetLifecycleStages()[j].String()
 		})
-		var stages []string
+		stages := make([]string, 0, len(policy.GetLifecycleStages()))
 		for _, lifecycleStage := range policy.GetLifecycleStages() {
 			stages = append(stages, lifecycleStage.String())
 		}

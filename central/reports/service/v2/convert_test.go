@@ -7,6 +7,7 @@ import (
 	collectionDSMocks "github.com/stackrox/rox/central/resourcecollection/datastore/mocks"
 	apiV2 "github.com/stackrox/rox/generated/api/v2"
 	"github.com/stackrox/rox/generated/storage"
+	"github.com/stackrox/rox/pkg/features"
 	"github.com/stackrox/rox/pkg/fixtures"
 	"github.com/stackrox/rox/pkg/protoassert"
 	"github.com/stretchr/testify/assert"
@@ -197,7 +198,7 @@ func setAllNotifierNamesToFixedValue(reportConfig *apiV2.ReportConfiguration, na
 }
 
 func setCollectionName(reportConfig *apiV2.ReportConfiguration, name string) {
-	if reportConfig.ResourceScope != nil && reportConfig.ResourceScope.GetCollectionScope() != nil {
+	if reportConfig.GetResourceScope() != nil && reportConfig.GetResourceScope().GetCollectionScope() != nil {
 		reportConfig.ResourceScope.GetCollectionScope().CollectionName = name
 	}
 }
@@ -356,6 +357,89 @@ func (s *typeConversionTestSuite) TestConvertProtoReportConfigurationToV2() {
 	}
 }
 
+func (s *typeConversionTestSuite) TestConvertEntityScope() {
+	s.T().Setenv(features.VulnerabilityReportsEnhancedFiltering.EnvVar(), "true")
+	apiScope := &apiV2.EntityScope{
+		Rules: []*apiV2.EntityScopeRule{
+			{
+				Entity: apiV2.ScopeEntity_SCOPE_ENTITY_DEPLOYMENT,
+				Field:  apiV2.ScopeField_FIELD_NAME,
+				Values: []*apiV2.RuleValue{
+					{Value: "frontend", MatchType: apiV2.MatchType_EXACT},
+					{Value: "back.*", MatchType: apiV2.MatchType_REGEX},
+				},
+			},
+			{
+				Entity: apiV2.ScopeEntity_SCOPE_ENTITY_NAMESPACE,
+				Field:  apiV2.ScopeField_FIELD_LABEL,
+				Values: []*apiV2.RuleValue{
+					{Value: "env=prod", MatchType: apiV2.MatchType_EXACT},
+				},
+			},
+		},
+	}
+	storageScope := &storage.EntityScope{
+		Rules: []*storage.EntityScopeRule{
+			{
+				Entity: storage.EntityType_ENTITY_TYPE_DEPLOYMENT,
+				Field:  storage.EntityField_FIELD_NAME,
+				Values: []*storage.RuleValue{
+					{Value: "frontend", MatchType: storage.MatchType_EXACT},
+					{Value: "back.*", MatchType: storage.MatchType_REGEX},
+				},
+			},
+			{
+				Entity: storage.EntityType_ENTITY_TYPE_NAMESPACE,
+				Field:  storage.EntityField_FIELD_LABEL,
+				Values: []*storage.RuleValue{
+					{Value: "env=prod", MatchType: storage.MatchType_EXACT},
+				},
+			},
+		},
+	}
+
+	s.T().Run("API to storage entity scope", func(t *testing.T) {
+		got := convertV2EntityScopeToStorage(apiScope)
+		protoassert.Equal(t, storageScope, got)
+	})
+
+	s.T().Run("Storage to API entity scope", func(t *testing.T) {
+		got := convertStorageEntityScopeToV2(storageScope)
+		protoassert.Equal(t, apiScope, got)
+	})
+
+	s.T().Run("convertProtoResourceScopeToV2 with entity scope does not call collection datastore", func(t *testing.T) {
+		// collection datastore must NOT be called — no EXPECT set up
+		scope := &storage.ResourceScope{
+			ScopeReference: &storage.ResourceScope_EntityScope{EntityScope: storageScope},
+		}
+		got, err := s.service.convertProtoResourceScopeToV2(scope)
+		assert.NoError(t, err)
+		protoassert.Equal(t, &apiV2.ResourceScope{
+			ScopeReference: &apiV2.ResourceScope_EntityScope{EntityScope: apiScope},
+		}, got)
+	})
+
+	s.T().Run("convertV2ResourceScopeToProto with entity scope", func(t *testing.T) {
+		scope := &apiV2.ResourceScope{
+			ScopeReference: &apiV2.ResourceScope_EntityScope{EntityScope: apiScope},
+		}
+		got := s.service.convertV2ResourceScopeToProto(scope)
+		protoassert.Equal(t, &storage.ResourceScope{
+			ScopeReference: &storage.ResourceScope_EntityScope{EntityScope: storageScope},
+		}, got)
+	})
+
+	s.T().Run("Query field round-trips through vuln filters", func(t *testing.T) {
+		apiFilters := &apiV2.VulnerabilityReportFilters{Query: "CVE:CVE-2024-1234"}
+		storageFilters := s.service.convertV2VulnReportFiltersToProto(apiFilters, nil)
+		assert.Equal(t, "CVE:CVE-2024-1234", storageFilters.GetQuery())
+
+		backToAPI := s.service.convertProtoVulnReportFiltersToV2(storageFilters)
+		assert.Equal(t, "CVE:CVE-2024-1234", backToAPI.GetQuery())
+	})
+}
+
 func (s *typeConversionTestSuite) TestConvertProtoScheduleToV2() {
 	var cases = []struct {
 		testname string
@@ -401,6 +485,71 @@ func (s *typeConversionTestSuite) TestConvertProtoScheduleToV2() {
 	}
 }
 
+func (s *typeConversionTestSuite) TestConvertSchedulePreservesTime() {
+	var cases = []struct {
+		testname string
+		hour     int32
+		minute   int32
+	}{
+		{
+			testname: "Midnight",
+			hour:     0,
+			minute:   0,
+		},
+		{
+			testname: "Afternoon with non-zero minute",
+			hour:     14,
+			minute:   30,
+		},
+		{
+			testname: "End of day",
+			hour:     23,
+			minute:   59,
+		},
+	}
+
+	for _, c := range cases {
+		s.T().Run(c.testname+" v2 to storage", func(t *testing.T) {
+			v2Schedule := &apiV2.ReportSchedule{
+				IntervalType: apiV2.ReportSchedule_DAILY,
+				Hour:         c.hour,
+				Minute:       c.minute,
+			}
+			converted := s.service.convertV2ScheduleToProto(v2Schedule)
+			assert.Equal(t, c.hour, converted.GetHour())
+			assert.Equal(t, c.minute, converted.GetMinute())
+			assert.Equal(t, storage.Schedule_DAILY, converted.GetIntervalType())
+		})
+
+		s.T().Run(c.testname+" storage to v2", func(t *testing.T) {
+			storageSchedule := &storage.Schedule{
+				IntervalType: storage.Schedule_DAILY,
+				Hour:         c.hour,
+				Minute:       c.minute,
+			}
+			converted := s.service.convertProtoScheduleToV2(storageSchedule)
+			assert.Equal(t, c.hour, converted.GetHour())
+			assert.Equal(t, c.minute, converted.GetMinute())
+			assert.Equal(t, apiV2.ReportSchedule_DAILY, converted.GetIntervalType())
+		})
+
+		s.T().Run(c.testname+" weekly roundtrip", func(t *testing.T) {
+			v2Schedule := &apiV2.ReportSchedule{
+				IntervalType: apiV2.ReportSchedule_WEEKLY,
+				Hour:         c.hour,
+				Minute:       c.minute,
+				Interval: &apiV2.ReportSchedule_DaysOfWeek_{
+					DaysOfWeek: &apiV2.ReportSchedule_DaysOfWeek{Days: []int32{1}},
+				},
+			}
+			storage := s.service.convertV2ScheduleToProto(v2Schedule)
+			roundTripped := s.service.convertProtoScheduleToV2(storage)
+			assert.Equal(t, c.hour, roundTripped.GetHour())
+			assert.Equal(t, c.minute, roundTripped.GetMinute())
+		})
+	}
+}
+
 func (s *typeConversionTestSuite) TestConvertV2ScheduleToProto() {
 	var cases = []struct {
 		testname string
@@ -421,6 +570,11 @@ func (s *typeConversionTestSuite) TestConvertV2ScheduleToProto() {
 			testname: "Report Schedule with Monthly interval",
 			schedule: newScheduleV2(34, 12, []int32{}, []int32{1}),
 			result:   newSchedule(34, 12, []int32{}, false, []int32{1}),
+		},
+		{
+			testname: "Report Schedule with Daily interval",
+			schedule: newScheduleV2(12, 12, []int32{}, []int32{}),
+			result:   newSchedule(12, 12, []int32{}, false, []int32{}),
 		},
 	}
 
@@ -482,7 +636,7 @@ func newScheduleV2(minute int32, hour int32, weekdays []int32, daysOfMonth []int
 		return &sched
 	}
 	if len(weekdays) == 0 {
-		sched.IntervalType = apiV2.ReportSchedule_UNSET
+		sched.IntervalType = apiV2.ReportSchedule_DAILY
 	} else {
 		sched.IntervalType = apiV2.ReportSchedule_WEEKLY
 		sched.Interval = &apiV2.ReportSchedule_DaysOfWeek_{

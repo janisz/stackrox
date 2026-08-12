@@ -8,6 +8,7 @@ import (
 	"github.com/stackrox/rox/pkg/protoconv"
 	"github.com/stackrox/rox/pkg/uuid"
 	"github.com/stretchr/testify/assert"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 const (
@@ -17,6 +18,7 @@ const (
 var (
 	emailNotifierID = uuid.NewV4().String()
 	jiraNotifierID  = uuid.NewV4().String()
+	clusterID       = uuid.NewV4().String()
 )
 
 func TestToProtobuf(t *testing.T) {
@@ -37,7 +39,19 @@ func TestToProtobuf(t *testing.T) {
 					Name: "collector",
 					Scope: Scope{
 						Namespace: "stackrox",
-						Cluster:   "test",
+						Cluster:   "test-cluster",
+						Label: Label{
+							Key:   "app",
+							Value: "collector",
+						},
+						ClusterLabel: Label{
+							Key:   "env",
+							Value: "dev",
+						},
+						NamespaceLabel: Label{
+							Key:   "team",
+							Value: "platform",
+						},
 					},
 				},
 				Expiration: expirationTS,
@@ -59,9 +73,23 @@ func TestToProtobuf(t *testing.T) {
 				},
 			},
 		},
-		CriteriaLocked:     true,
-		MitreVectorsLocked: true,
-		IsDefault:          false,
+		Scope: []Scope{
+			{
+				Cluster: "test-cluster",
+				Label: Label{
+					Key:   "component",
+					Value: "backend",
+				},
+				ClusterLabel: Label{
+					Key:   "region",
+					Value: "us-east",
+				},
+				NamespaceLabel: Label{
+					Key:   "tier",
+					Value: "production",
+				},
+			},
+		},
 	}
 
 	expectedProto := &storage.Policy{
@@ -82,7 +110,19 @@ func TestToProtobuf(t *testing.T) {
 					Name: "collector",
 					Scope: &storage.Scope{
 						Namespace: "stackrox",
-						Cluster:   "test",
+						Cluster:   clusterID,
+						Label: &storage.Scope_Label{
+							Key:   "app",
+							Value: "collector",
+						},
+						ClusterLabel: &storage.Scope_Label{
+							Key:   "env",
+							Value: "dev",
+						},
+						NamespaceLabel: &storage.Scope_Label{
+							Key:   "team",
+							Value: "platform",
+						},
 					},
 				},
 				Expiration: protoconv.ConvertTimeString(expirationTS),
@@ -106,18 +146,136 @@ func TestToProtobuf(t *testing.T) {
 				},
 			},
 		},
-		CriteriaLocked:     true,
-		MitreVectorsLocked: true,
-		IsDefault:          false,
+		Scope: []*storage.Scope{
+			{
+				Cluster: clusterID,
+				Label: &storage.Scope_Label{
+					Key:   "component",
+					Value: "backend",
+				},
+				ClusterLabel: &storage.Scope_Label{
+					Key:   "region",
+					Value: "us-east",
+				},
+				NamespaceLabel: &storage.Scope_Label{
+					Key:   "tier",
+					Value: "production",
+				},
+			},
+		},
 	}
 
 	notifiers := map[string]string{
 		"email-notifier": emailNotifierID,
 		"jira-notifier":  jiraNotifierID,
 	}
-	protoPolicy, err := policyCRSpec.ToProtobuf(notifiers)
+	clusters := map[string]string{
+		"test-cluster": clusterID,
+	}
+	protoPolicy, err := policyCRSpec.ToProtobuf(map[CacheType]map[string]string{
+		Notifier: notifiers,
+		Cluster:  clusters,
+	})
 	assert.NoError(t, err, "unexpected error in converting to policy proto")
 	// Hack: Reset the source field for us to be able to compare
 	protoPolicy.Source = storage.PolicySource_IMPERATIVE
 	protoassert.Equal(t, expectedProto, protoPolicy, "proto message derived from custom resource not as expected")
+}
+
+func TestConditionUpdates(t *testing.T) {
+	startTime := metav1.Now()
+	policy := &SecurityPolicy{}
+	policy.Status = SecurityPolicyStatus{
+		Conditions: SecurityPolicyConditions{
+			SecurityPolicyCondition{
+				Type:               CentralDataFresh,
+				Status:             "False",
+				Message:            "",
+				LastTransitionTime: startTime,
+			},
+			SecurityPolicyCondition{
+				Type:               PolicyValidated,
+				Status:             "False",
+				Message:            "",
+				LastTransitionTime: startTime,
+			},
+			SecurityPolicyCondition{
+				Type:               AcceptedByCentral,
+				Status:             "False",
+				Message:            "",
+				LastTransitionTime: startTime,
+			},
+		},
+	}
+	assert.Equal(t, "False", policy.Status.Conditions.GetCondition(CentralDataFresh).Status)
+	assert.Equal(t, false, policy.Status.Conditions.IsCentralDataFresh())
+	policy.Status.Conditions.UpdateCondition(SecurityPolicyCondition{
+		Type:    CentralDataFresh,
+		Status:  "True",
+		Message: "Central data updated",
+	})
+	// Check that the condition was properly updated
+	assert.Equal(t, true, policy.Status.Conditions.IsCentralDataFresh())
+	newCentralDataFreshCondition := policy.Status.Conditions.GetCondition(CentralDataFresh)
+	assert.Equal(t, "Central data updated", newCentralDataFreshCondition.Message)
+	assert.Equal(t, "True", newCentralDataFreshCondition.Status)
+	assert.NotEqual(t, startTime, newCentralDataFreshCondition.LastTransitionTime)
+	// Ensure no other fields were changed
+	assert.Equal(t, "False", policy.Status.Conditions.GetCondition(PolicyValidated).Status)
+	assert.Equal(t, false, policy.Status.Conditions.IsPolicyValidated())
+	assert.Equal(t, "False", policy.Status.Conditions.GetCondition(AcceptedByCentral).Status)
+	assert.Equal(t, false, policy.Status.Conditions.IsAcceptedByCentral())
+	// Ensure the length of the conditions array is still 3
+	assert.Equal(t, 3, len(policy.Status.Conditions))
+}
+
+func TestToProtobufEvaluationFilter(t *testing.T) {
+	tests := map[string]struct {
+		filter         *EvaluationFilter
+		expectedTypes  []storage.ContainerType
+		expectNilProto bool
+	}{
+		"skip init containers": {
+			filter:        &EvaluationFilter{SkipContainerTypes: []ContainerType{"INIT"}},
+			expectedTypes: []storage.ContainerType{storage.ContainerType_INIT},
+		},
+		"nil filter": {
+			filter:         nil,
+			expectNilProto: true,
+		},
+		"empty filter": {
+			filter:         &EvaluationFilter{},
+			expectNilProto: true,
+		},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			spec := SecurityPolicySpec{
+				PolicyName:      "test-policy",
+				Severity:        "HIGH_SEVERITY",
+				Categories:      []string{"Test"},
+				LifecycleStages: []LifecycleStage{"DEPLOY"},
+				PolicySections: []PolicySection{{
+					PolicyGroups: []PolicyGroup{{
+						FieldName: "Image Tag",
+						Values:    []PolicyValue{{Value: "latest"}},
+					}},
+				}},
+				EvaluationFilter: tc.filter,
+			}
+
+			proto, err := spec.ToProtobuf(map[CacheType]map[string]string{
+				Notifier: {},
+				Cluster:  {},
+			})
+			assert.NoError(t, err)
+
+			if tc.expectNilProto {
+				assert.Nil(t, proto.GetEvaluationFilter())
+			} else {
+				assert.Equal(t, tc.expectedTypes, proto.GetEvaluationFilter().GetSkipContainerTypes())
+			}
+		})
+	}
 }

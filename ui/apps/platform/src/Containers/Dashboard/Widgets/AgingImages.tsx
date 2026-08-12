@@ -1,36 +1,31 @@
-import React from 'react';
-import { useLocation } from 'react-router-dom';
+import { Link, useLocation } from 'react-router-dom-v5-compat';
 import {
+    Checkbox,
     Flex,
     FlexItem,
-    Title,
-    Button,
     Form,
     FormGroup,
-    Checkbox,
     TextInput,
+    Title,
     ValidatedOptions,
 } from '@patternfly/react-core';
-import { useQuery, gql } from '@apollo/client';
+import { gql, useQuery } from '@apollo/client';
 import cloneDeep from 'lodash/cloneDeep';
 import isEqual from 'lodash/isEqual';
 import pluralize from 'pluralize';
 
-import LinkShim from 'Components/PatternFly/LinkShim';
+import useAnalytics, { AGING_IMAGES_WIDGET_CLICKED } from 'hooks/useAnalytics';
 import useURLSearch from 'hooks/useURLSearch';
 import useWidgetConfig from 'hooks/useWidgetConfig';
 import { getRequestQueryStringForSearchFilter } from 'utils/searchUtils';
-import { SearchFilter } from 'types/search';
-import { vulnManagementImagesPath } from 'routePaths';
-import { getQueryString } from 'utils/queryStringUtils';
+import type { SearchFilter } from 'types/search';
 import WidgetCard from 'Components/PatternFly/WidgetCard';
 import AgingImagesChart, {
-    TimeRangeCounts,
-    TimeRangeTupleIndex,
-    TimeRangeTuple,
-    timeRangeTupleIndices,
+    getAgingImagesListLink,
     getTimeFilterOption,
+    timeRangeTupleIndices,
 } from './AgingImagesChart';
+import type { TimeRangeCounts, TimeRangeTuple, TimeRangeTupleIndex } from './AgingImagesChart';
 import isResourceScoped from '../utils';
 import NoDataEmptyState from './NoDataEmptyState';
 import WidgetOptionsMenu from './WidgetOptionsMenu';
@@ -155,17 +150,10 @@ function isNumberInRange(timeRanges: TimeRangeTuple, index: TimeRangeTupleIndex)
 
 const fieldIdPrefix = 'aging-images';
 
-function getViewAllLink(searchFilter: SearchFilter) {
-    const queryString = getQueryString({
-        s: searchFilter,
-        sort: [{ id: 'Image Created Time', desc: 'false' }],
-    });
-    return `${vulnManagementImagesPath}${queryString}`;
-}
-
 function AgingImages() {
     const { searchFilter } = useURLSearch();
     const { pathname } = useLocation();
+    const { analyticsTrack } = useAnalytics();
 
     const [{ timeRanges }, dispatch] = useWidgetConfig<Config, TimeRangeAction>(
         'AgingImages',
@@ -207,72 +195,92 @@ function AgingImages() {
             errorTitle={errorTitle}
             errorMessage={errorMessage}
             header={
-                <Flex direction={{ default: 'row' }}>
-                    <FlexItem grow={{ default: 'grow' }}>
+                <Flex
+                    direction={{ default: 'row' }}
+                    alignItems={{ default: 'alignItemsCenter' }}
+                    justifyContent={{ default: 'justifyContentSpaceBetween' }}
+                >
+                    <FlexItem>
                         <Title headingLevel="h2">
                             {getWidgetTitle(searchFilter, timeRanges, timeRangeCounts)}
                         </Title>
                     </FlexItem>
-                    <FlexItem>
-                        {isOptionsChanged && (
-                            <WidgetOptionsResetButton onClick={() => dispatch({ type: 'reset' })} />
-                        )}
-                        <WidgetOptionsMenu
-                            bodyContent={
-                                <Form>
-                                    <FormGroup
-                                        fieldId={`${fieldIdPrefix}-time-range-0`}
-                                        label="Image age values"
-                                    >
-                                        {timeRangeTupleIndices.map((index) => (
-                                            <div key={index}>
-                                                <Checkbox
-                                                    aria-label="Toggle image time range"
-                                                    id={`${fieldIdPrefix}-time-range-${index}`}
-                                                    name={`${fieldIdPrefix}-time-range-${index}`}
-                                                    className="pf-v5-u-mb-sm pf-v5-u-display-flex pf-v5-u-align-items-center"
-                                                    isChecked={timeRanges[index].enabled}
-                                                    onChange={() =>
-                                                        dispatch({ type: 'toggle', index })
-                                                    }
-                                                    label={
-                                                        <TextInput
-                                                            aria-label="Image age in days"
-                                                            onChange={async (_event, val) => {
-                                                                const value = parseInt(val, 10);
-                                                                if (!(value >= maxTimeRange)) {
-                                                                    await dispatch({
-                                                                        type: 'update',
-                                                                        index,
-                                                                        value,
-                                                                    });
+                    <Flex
+                        direction={{ default: 'row' }}
+                        alignItems={{ default: 'alignItemsCenter' }}
+                    >
+                        <FlexItem>
+                            <Link
+                                to={getAgingImagesListLink(searchFilter)}
+                                onClick={() => {
+                                    analyticsTrack({
+                                        event: AGING_IMAGES_WIDGET_CLICKED,
+                                        properties: { clickType: 'view-all' },
+                                    });
+                                }}
+                            >
+                                View all
+                            </Link>
+                        </FlexItem>
+                        <FlexItem>
+                            {isOptionsChanged && (
+                                <WidgetOptionsResetButton
+                                    onClick={() => dispatch({ type: 'reset' })}
+                                />
+                            )}
+                            <WidgetOptionsMenu
+                                bodyContent={
+                                    <Form>
+                                        <FormGroup
+                                            fieldId={`${fieldIdPrefix}-time-range-0`}
+                                            label="Image age values"
+                                        >
+                                            {timeRangeTupleIndices.map((index) => (
+                                                <div key={index}>
+                                                    <Checkbox
+                                                        aria-label="Toggle image time range"
+                                                        id={`${fieldIdPrefix}-time-range-${index}`}
+                                                        name={`${fieldIdPrefix}-time-range-${index}`}
+                                                        className="pf-v6-u-mb-sm pf-v6-u-display-flex pf-v6-u-align-items-center"
+                                                        isChecked={timeRanges[index].enabled}
+                                                        onChange={() =>
+                                                            dispatch({ type: 'toggle', index })
+                                                        }
+                                                        label={
+                                                            <TextInput
+                                                                aria-label="Image age in days"
+                                                                onChange={async (_event, val) => {
+                                                                    const value = parseInt(val, 10);
+                                                                    if (!(value >= maxTimeRange)) {
+                                                                        await dispatch({
+                                                                            type: 'update',
+                                                                            index,
+                                                                            value,
+                                                                        });
+                                                                    }
+                                                                }}
+                                                                validated={
+                                                                    isNumberInRange(
+                                                                        timeRanges,
+                                                                        index
+                                                                    )
+                                                                        ? ValidatedOptions.default
+                                                                        : ValidatedOptions.error
                                                                 }
-                                                            }}
-                                                            validated={
-                                                                isNumberInRange(timeRanges, index)
-                                                                    ? ValidatedOptions.default
-                                                                    : ValidatedOptions.error
-                                                            }
-                                                            max={maxTimeRange}
-                                                            type="number"
-                                                            value={timeRanges[index].value}
-                                                        />
-                                                    }
-                                                />
-                                            </div>
-                                        ))}
-                                    </FormGroup>
-                                </Form>
-                            }
-                        />
-                        <Button
-                            variant="secondary"
-                            component={LinkShim}
-                            href={getViewAllLink(searchFilter)}
-                        >
-                            View all
-                        </Button>
-                    </FlexItem>
+                                                                max={maxTimeRange}
+                                                                type="number"
+                                                                value={timeRanges[index].value}
+                                                            />
+                                                        }
+                                                    />
+                                                </div>
+                                            ))}
+                                        </FormGroup>
+                                    </Form>
+                                }
+                            />
+                        </FlexItem>
+                    </Flex>
                 </Flex>
             }
         >
@@ -281,6 +289,12 @@ function AgingImages() {
                     searchFilter={searchFilter}
                     timeRanges={timeRanges}
                     timeRangeCounts={timeRangeCounts}
+                    onBucketClick={(bucket) => {
+                        analyticsTrack({
+                            event: AGING_IMAGES_WIDGET_CLICKED,
+                            properties: { clickType: 'bucket', bucket },
+                        });
+                    }}
                 />
             ) : (
                 <NoDataEmptyState />

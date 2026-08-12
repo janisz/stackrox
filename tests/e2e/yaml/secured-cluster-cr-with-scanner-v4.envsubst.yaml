@@ -16,12 +16,13 @@ spec:
         memory: "100Mi"
         cpu: "300m"
   perNode:
+    fileActivityMonitoring:
+      mode: $fam_mode_setting
     collector:
       resources:
         requests:
           memory: "100Mi"
           cpu: "100m"
-      collection: $collection_method
     compliance:
       resources:
         requests:
@@ -32,6 +33,8 @@ spec:
         requests:
           memory: "100Mi"
           cpu: "100m"
+  processIndicators:
+    excludeNamespaceRegex: namespace-without-persistence
   scanner:
     scannerComponent: $scanner_component_setting
     analyzer:
@@ -67,6 +70,7 @@ spec:
           cpu: "2000m"
           memory: "2Gi"
     db:
+$scannerV4DbPersistenceYaml
       resources:
         requests:
           cpu: "200m"
@@ -74,3 +78,5 @@ spec:
         limits:
           cpu: "1000m"
           memory: "2500Mi"
+  customize:
+    envVars:$customize_envVars

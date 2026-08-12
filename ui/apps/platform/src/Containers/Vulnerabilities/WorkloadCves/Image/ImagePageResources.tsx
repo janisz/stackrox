@@ -1,31 +1,40 @@
-import React, { CSSProperties } from 'react';
 import {
     Bullseye,
+    Content,
     Divider,
     ExpandableSection,
     PageSection,
     Pagination,
     Spinner,
-    Text,
 } from '@patternfly/react-core';
 import { gql, useQuery } from '@apollo/client';
-import { Pagination as PaginationParam } from 'services/types';
+import type { DocumentNode } from '@apollo/client';
+import type { Pagination as PaginationParam } from 'services/types';
 
 import TableErrorComponent from 'Components/PatternFly/TableErrorComponent';
-import { UseURLPaginationResult } from 'hooks/useURLPagination';
+import { overrideManagedColumns, useManagedColumns } from 'hooks/useManagedColumns';
+import type { ColumnConfigOverrides } from 'hooks/useManagedColumns';
+import type { UseURLPaginationResult } from 'hooks/useURLPagination';
 import useURLSort from 'hooks/useURLSort';
 import useSelectToggle from 'hooks/patternfly/useSelectToggle';
+import useFeatureFlags from 'hooks/useFeatureFlags';
 
 import { getPaginationParams, getRequestQueryStringForSearchFilter } from 'utils/searchUtils';
 import DeploymentResourceTable, {
-    DeploymentResources,
     deploymentResourcesFragment,
+    deploymentResourcesV2Fragment,
+    deploymentResourcesTableId,
+    defaultColumns as deploymentResourcesDefaultColumns,
 } from './DeploymentResourceTable';
+import type { DeploymentResources } from './DeploymentResourceTable';
 import useWorkloadCveViewContext from '../hooks/useWorkloadCveViewContext';
 
 export type ImagePageResourcesProps = {
     imageId: string;
     pagination: UseURLPaginationResult;
+    deploymentResourceColumnOverrides: ColumnConfigOverrides<
+        keyof typeof deploymentResourcesDefaultColumns
+    >;
 };
 
 const imageResourcesQuery = gql`
@@ -38,7 +47,27 @@ const imageResourcesQuery = gql`
     }
 `;
 
-function ImagePageResources({ imageId, pagination }: ImagePageResourcesProps) {
+const imageV2ResourcesQuery = gql`
+    ${deploymentResourcesV2Fragment}
+    query getImageResources($id: ID!, $query: String, $pagination: Pagination) {
+        imageV2(id: $id) {
+            id
+            digest
+            ...DeploymentResourcesV2
+        }
+    }
+`;
+
+export const getImageResourcesQuery = (isNewImageDataModelEnabled: boolean): DocumentNode =>
+    isNewImageDataModelEnabled ? imageV2ResourcesQuery : imageResourcesQuery;
+
+function ImagePageResources({
+    imageId,
+    pagination,
+    deploymentResourceColumnOverrides,
+}: ImagePageResourcesProps) {
+    const { isFeatureFlagEnabled } = useFeatureFlags();
+    const isNewImageDataModelEnabled = isFeatureFlagEnabled('ROX_FLATTEN_IMAGE_DATA');
     const { baseSearchFilter } = useWorkloadCveViewContext();
     const { page, perPage, setPage, setPerPage } = pagination;
     const { sortOption, getSortParams } = useURLSort({
@@ -50,9 +79,12 @@ function ImagePageResources({ imageId, pagination }: ImagePageResourcesProps) {
     const deploymentTableToggle = useSelectToggle(true);
 
     const { data, previousData, loading, error } = useQuery<
-        { image: DeploymentResources | null },
+        {
+            image: DeploymentResources | null; // Legacy image data model, will be null when ROX_FLATTEN_IMAGE_DATA is enabled
+            imageV2: DeploymentResources | null; // New image data model, will be null when ROX_FLATTEN_IMAGE_DATA is disabled
+        },
         { id: string; query: string; pagination: PaginationParam }
-    >(imageResourcesQuery, {
+    >(getImageResourcesQuery(isNewImageDataModelEnabled), {
         variables: {
             id: imageId,
             query: getRequestQueryStringForSearchFilter(baseSearchFilter),
@@ -60,19 +92,28 @@ function ImagePageResources({ imageId, pagination }: ImagePageResourcesProps) {
         },
     });
 
-    const imageResourcesData = data?.image ?? previousData?.image;
+    const imageResourcesData =
+        (data && (isNewImageDataModelEnabled ? data.imageV2 : data.image)) ??
+        (previousData && (isNewImageDataModelEnabled ? previousData.imageV2 : previousData.image));
     const deploymentCount = imageResourcesData?.deploymentCount ?? 0;
+
+    const deploymentResourceColumnState = useManagedColumns(
+        deploymentResourcesTableId,
+        deploymentResourcesDefaultColumns
+    );
+
+    const deploymentResourceColumnConfig = overrideManagedColumns(
+        deploymentResourceColumnState.columns,
+        deploymentResourceColumnOverrides
+    );
 
     return (
         <>
-            <PageSection component="div" variant="light" className="pf-v5-u-py-md pf-v5-u-px-xl">
-                <Text>Navigate to resources associated with this image</Text>
+            <PageSection component="div">
+                <Content component="p">Navigate to resources associated with this image</Content>
             </PageSection>
             <Divider component="div" />
-            <PageSection
-                className="pf-v5-u-display-flex pf-v5-u-flex-direction-column pf-v5-u-flex-grow-1"
-                component="div"
-            >
+            <PageSection component="div">
                 {error && (
                     <TableErrorComponent
                         error={error}
@@ -91,28 +132,21 @@ function ImagePageResources({ imageId, pagination }: ImagePageResourcesProps) {
                             deploymentTableToggle.onToggle(!deploymentTableToggle.isOpen)
                         }
                         isExpanded={deploymentTableToggle.isOpen}
-                        style={
-                            {
-                                '--pf-v5-c-expandable-section__content--MarginTop':
-                                    'var(--pf-v5-global--spacer--xs)',
-                            } as CSSProperties
-                        }
                     >
-                        <div className="pf-v5-u-background-color-100 pf-v5-u-pt-sm">
-                            <Pagination
-                                itemCount={deploymentCount}
-                                page={page}
-                                perPage={perPage}
-                                onSetPage={(_, newPage) => setPage(newPage)}
-                                onPerPageSelect={(_, newPerPage) => {
-                                    setPerPage(newPerPage);
-                                }}
-                            />
-                            <DeploymentResourceTable
-                                data={imageResourcesData}
-                                getSortParams={getSortParams}
-                            />
-                        </div>
+                        <Pagination
+                            itemCount={deploymentCount}
+                            page={page}
+                            perPage={perPage}
+                            onSetPage={(_, newPage) => setPage(newPage)}
+                            onPerPageSelect={(_, newPerPage) => {
+                                setPerPage(newPerPage);
+                            }}
+                        />
+                        <DeploymentResourceTable
+                            data={imageResourcesData}
+                            getSortParams={getSortParams}
+                            columnVisibilityState={deploymentResourceColumnConfig}
+                        />
                     </ExpandableSection>
                 )}
             </PageSection>

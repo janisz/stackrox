@@ -1,7 +1,8 @@
-import navSelectors from '../selectors/navigation';
+import pf6 from '../selectors/pf6';
 
-import { getRouteMatcherMapForGraphQL, interactAndWaitForResponses } from './request';
-import { visit, visitWithStaticResponseForPermissions } from './visit';
+import { hasFeatureFlag } from './features';
+import { getRouteMatcherMapForGraphQL } from './request';
+import { visit, visitConsole, visitWithStaticResponseForPermissions } from './visit';
 
 /*
  * Import relevant alias constants in test files that call visitMainDashboard function
@@ -45,15 +46,38 @@ const routeMatcherMapForComplianceLevelsByStandard = getRouteMatcherMapForGraphQ
     getAggregatedResultsOpname,
 ]);
 
-const routeMatcherMap = {
-    ...routeMatcherMapForSummaryCounts,
-    ...routeMatcherMapForSearchFilter,
-    ...routeMatcherMapForViolationsByPolicySeverity,
-    ...routeMatcherMapForImagesAtMostRisk,
-    ...routeMatcherMapForDeploymentsAtMostRisk,
-    ...routeMatcherMapForAgingImages,
-    ...routeMatcherMapForViolationsByPolicyCategory,
-    ...routeMatcherMapForComplianceLevelsByStandard,
+function getRouteMatcherMap() {
+    return {
+        ...routeMatcherMapForSummaryCounts,
+        ...routeMatcherMapForSearchFilter,
+        ...routeMatcherMapForViolationsByPolicySeverity,
+        ...routeMatcherMapForImagesAtMostRisk,
+        ...routeMatcherMapForDeploymentsAtMostRisk,
+        ...routeMatcherMapForAgingImages,
+        ...routeMatcherMapForViolationsByPolicyCategory,
+        ...(hasFeatureFlag('ROX_DEPRECATED_COMPLIANCE_DASHBOARD')
+            ? routeMatcherMapForComplianceLevelsByStandard
+            : {}),
+    };
+}
+
+const routeMatcherMapForConsole = {
+    mypermissions: {
+        method: 'GET',
+        url: '**/api-service/**/v1/mypermissions',
+    },
+    featureflags: {
+        method: 'GET',
+        url: '**/api-service/**/v1/featureflags',
+    },
+    metadata: {
+        method: 'GET',
+        url: '**/api-service/**/v1/metadata',
+    },
+    'config/public': {
+        method: 'GET',
+        url: '**/api-service/**/v1/config/public',
+    },
 };
 
 const basePath = '/main/dashboard';
@@ -62,23 +86,24 @@ const title = 'Dashboard';
 
 // visit helpers
 
-export function visitMainDashboardFromLeftNav() {
-    interactAndWaitForResponses(() => {
-        cy.get(`${navSelectors.navLinks}:contains("${title}")`).click();
-    }, routeMatcherMap);
+/**
+ * @param {Record<string, { body: unknown } | { fixture: string }>} [staticResponseMap]
+ */
+export function visitMainDashboard(staticResponseMap) {
+    visit(basePath, getRouteMatcherMap(), staticResponseMap);
 
-    cy.location('pathname').should('eq', basePath);
+    cy.get(`.pf-v6-c-nav__link.pf-m-current:contains("${title}")`);
     cy.get(`h1:contains("${title}")`);
 }
 
 /**
  * @param {Record<string, { body: unknown } | { fixture: string }>} [staticResponseMap]
  */
-export function visitMainDashboard(staticResponseMap) {
-    visit(basePath, routeMatcherMap, staticResponseMap);
-
-    cy.get(`.pf-v5-c-nav__link.pf-m-current:contains("${title}")`);
-    cy.get(`h1:contains("${title}")`);
+export function visitConsoleMainDashboard(staticResponseMap) {
+    visitConsole('/dashboards', routeMatcherMapForConsole, staticResponseMap);
+    cy.get(`${pf6.navExpandable} button:contains("Home")`).click();
+    cy.get(`${pf6.navExpandable} ${pf6.navItem} a.pf-m-current:contains("Overview")`);
+    cy.get(`h1:contains("Overview")`);
 }
 
 /**

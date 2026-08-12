@@ -5,7 +5,7 @@ import (
 	"net/http"
 	"slices"
 
-	joseJwt "github.com/go-jose/go-jose/v3/jwt"
+	joseJwt "github.com/go-jose/go-jose/v4/jwt"
 	"github.com/pkg/errors"
 	"github.com/stackrox/rox/pkg/auth/authproviders"
 	"github.com/stackrox/rox/pkg/auth/tokens"
@@ -46,7 +46,7 @@ type googleClaims struct {
 type extraClaims struct {
 	Email  string       `json:"email,omitempty"`
 	Hd     string       `json:"hd,omitempty"`
-	Google googleClaims `json:"google,omitempty"`
+	Google googleClaims `json:"google,omitzero"`
 }
 
 type backendImpl struct {

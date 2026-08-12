@@ -1,14 +1,14 @@
-import React, { Dispatch, SetStateAction } from 'react';
-import { Link } from 'react-router-dom';
-import { Card, Text } from '@patternfly/react-core';
-import { Tbody, Tr, Td, Table, Th, Thead } from '@patternfly/react-table';
+import type { Dispatch, SetStateAction } from 'react';
+import { Link } from 'react-router-dom-v5-compat';
+import { Card, Content } from '@patternfly/react-core';
+import { Table, Tbody, Td, Th, Thead, Tr } from '@patternfly/react-table';
 
-import { riskBasePath } from 'routePaths';
-import { ProcessListeningOnPort } from 'services/ProcessListeningOnPortsService';
+import { riskWorkloadsBasePath } from 'routePaths';
+import type { ProcessListeningOnPort } from 'services/ProcessListeningOnPortsService';
 import { l4ProtocolLabels } from 'constants/networkFlow';
-import { ListDeployment } from 'types/deployment.proto';
+import type { ListDeployment } from 'types/deployment.proto';
 import useSet from 'hooks/useSet';
-import { GetSortParams } from 'hooks/useURLSort';
+import type { GetSortParams } from 'hooks/useURLSort';
 
 function EmbeddedTable({
     deploymentId,
@@ -73,7 +73,7 @@ function ListeningEndpointsTable({
                             // TODO Awkward type assertion here is fixed in PF 5 https://github.com/patternfly/patternfly-react/issues/8330
                             collapseAllAriaLabel: 'Expand or collapse all rows' as '',
                             onToggle: () => {
-                                setAllRowsExpanded(!areAllRowsExpanded);
+                                setAllRowsExpanded((prev) => !prev);
                                 invertedExpansionRowSet.clear();
                             },
                         }}
@@ -110,7 +110,7 @@ function ListeningEndpointsTable({
                                 }}
                             />
                             <Td dataLabel="Deployment">
-                                <Link to={`${riskBasePath}/${id}`}>{name}</Link>
+                                <Link to={`${riskWorkloadsBasePath}/${id}`}>{name}</Link>
                             </Td>
                             <Td dataLabel="Cluster">{cluster}</Td>
                             <Td dataLabel="Namespace">{namespace}</Td>
@@ -118,17 +118,17 @@ function ListeningEndpointsTable({
                         </Tr>
                         <Tr isExpanded={isExpanded}>
                             <Td colSpan={5}>
-                                <Card className="pf-v5-u-m-md" isFlat>
+                                <Card className="pf-v6-u-m-md">
                                     {count > 0 ? (
                                         <EmbeddedTable
                                             deploymentId={id}
                                             listeningEndpoints={listeningEndpoints}
                                         />
                                     ) : (
-                                        <Text className="pf-v5-u-p-md">
+                                        <Content component="p" className="pf-v6-u-p-md">
                                             This deployment does not have any reported listening
                                             endpoints
-                                        </Text>
+                                        </Content>
                                     )}
                                 </Card>
                             </Td>

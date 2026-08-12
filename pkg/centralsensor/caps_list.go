@@ -28,9 +28,6 @@ const (
 	// AuditLogEventsCap identifies the capability to handle audit log event detection.
 	AuditLogEventsCap SensorCapability = "AuditLogEvents"
 
-	// LocalScannerCredentialsRefresh identifies the capability to maintain the Local scanner TLS credentials refreshed.
-	LocalScannerCredentialsRefresh SensorCapability = "LocalScannerCredentialsRefresh"
-
 	// ScopedImageIntegrations identifies the capability to have image integrations with sources from image pull secrets
 	ScopedImageIntegrations SensorCapability = "ScopedImageIntegrations"
 
@@ -67,7 +64,45 @@ const (
 	// SecuredClusterCertificatesRefresh identifies the capability to maintain the Secured Cluster TLS certificates refreshed
 	SecuredClusterCertificatesRefresh SensorCapability = "SecuredClusterCertificatesRefresh"
 
+	// SensorCARotationSupported identifies the capability of Sensor to connect to a Central that presents a TLS certificate signed
+	// by a different CA than the one that signed Sensor's certificate.
+	SensorCARotationSupported SensorCapability = "SensorCARotationSupported"
+
 	// ClusterRegistrationSecretSupported identifies the capability of Central to register new secured clusters
 	// using a Cluster Registration Secret (CRS).
 	ClusterRegistrationSecretSupported = "ClusterRegistrationSecretSupported"
+
+	// VirtualMachinesSupported identifies the capability of Central to receive virtual machine requests.
+	VirtualMachinesSupported = "VirtualMachinesSupported"
+
+	// FlattenImageData identifies the capability to use the flattened image data model (ImageV2).
+	FlattenImageData = "FlattenImageData"
+
+	// SensorACKSupport identifies the capability of Sensor to handle the new generic SensorACK message
+	// instead of the deprecated NodeInventoryACK message. This enables proper ACK/NACK handling for
+	// VM index reports and future compliance-related messages.
+	SensorACKSupport SensorCapability = "SensorACKSupport"
+
+	// InternalTokenAPISupported identifies the capability of Central to issue internal tokens
+	// for authenticated proxy requests.
+	InternalTokenAPISupported CentralCapability = "InternalTokenAPISupported"
+
+	// CentralProxyPathFiltering identifies the capability of Central to provide
+	// an allow-list of proxy paths for Sensor's Central proxy.
+	// Paths that end with a slash must be a prefix match.
+	// Paths that do not end with a slash must be an exact match.
+	CentralProxyPathFiltering CentralCapability = "CentralProxyPathFiltering"
+
+	// ComplianceV2TailoredProfiles identifies the capability of Central to handle
+	// tailored profile tracking and scan configurations referencing tailored profiles.
+	ComplianceV2TailoredProfiles = "ComplianceV2TailoredProfiles"
+
+	// TargetedImageCacheInvalidation identifies the capability to forward
+	// per-image cache invalidation keys to the admission controller instead of
+	// flushing the entire image cache.
+	TargetedImageCacheInvalidation SensorCapability = "TargetedImageCacheInvalidation"
+
+	// InitContainerSupport identifies the capability of Sensor to extract init containers from pod specs
+	// and of Central to handle init container data in deployments.
+	InitContainerSupport = "InitContainerSupport"
 )

@@ -13,12 +13,14 @@ import (
 //go:generate mockgen-wrapper
 type DataStore interface {
 	GetRole(ctx context.Context, name string) (*storage.Role, bool, error)
+	GetManyRoles(ctx context.Context, names []string) ([]*storage.Role, []string, error)
 	GetAllRoles(ctx context.Context) ([]*storage.Role, error)
 	GetRolesFiltered(ctx context.Context, filter func(role *storage.Role) bool) ([]*storage.Role, error)
 	CountRoles(ctx context.Context) (int, error)
 	AddRole(ctx context.Context, role *storage.Role) error
 	UpdateRole(ctx context.Context, role *storage.Role) error
 	RemoveRole(ctx context.Context, name string) error
+	RemoveFilteredRoles(ctx context.Context, filter func(*storage.Role) bool) (int, error)
 
 	GetPermissionSet(ctx context.Context, id string) (*storage.PermissionSet, bool, error)
 	GetAllPermissionSets(ctx context.Context) ([]*storage.PermissionSet, error)
@@ -28,6 +30,7 @@ type DataStore interface {
 	UpdatePermissionSet(ctx context.Context, permissionSet *storage.PermissionSet) error
 	UpsertPermissionSet(ctx context.Context, permissionSet *storage.PermissionSet) error
 	RemovePermissionSet(ctx context.Context, id string) error
+	RemoveFilteredPermissionSets(ctx context.Context, filter func(*storage.PermissionSet) bool) (int, error)
 
 	GetAccessScope(ctx context.Context, id string) (*storage.SimpleAccessScope, bool, error)
 	GetAllAccessScopes(ctx context.Context) ([]*storage.SimpleAccessScope, error)
@@ -38,6 +41,7 @@ type DataStore interface {
 	UpdateAccessScope(ctx context.Context, scope *storage.SimpleAccessScope) error
 	UpsertAccessScope(ctx context.Context, scope *storage.SimpleAccessScope) error
 	RemoveAccessScope(ctx context.Context, id string) error
+	RemoveFilteredAccessScopes(ctx context.Context, filter func(*storage.SimpleAccessScope) bool) (int, error)
 
 	GetAllResolvedRoles(ctx context.Context) ([]permissions.ResolvedRole, error)
 	GetAndResolveRole(ctx context.Context, name string) (permissions.ResolvedRole, error)

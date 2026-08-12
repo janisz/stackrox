@@ -47,7 +47,8 @@ func qeWithSelectFieldIfNeeded(ctx *queryAndFieldContext, whereClause *WhereClau
 				}
 				return "derived." + ctx.derivedMetadata.DerivationType.String() + ctx.field.FieldPath
 			}(),
-			PostTransform: postTransformFunc,
+			PostTransform:    postTransformFunc,
+			IncludeInMatches: true, // Fields from query constraints should be in Matches
 		}}
 	}
 	return qe
@@ -60,6 +61,7 @@ var datatypeToQueryFunc = map[postgres.DataType]queryFunction{
 	postgres.Bool:        newBoolQuery,
 	postgres.StringArray: queryOnArray(newStringQuery, getStringArrayPostTransformFunc),
 	postgres.DateTime:    newTimeQuery,
+	postgres.DateTimeTZ:  newTimeQuery,
 	postgres.Enum:        newEnumQuery,
 	postgres.Integer:     newNumericQuery,
 	postgres.BigInteger:  newNumericQuery,

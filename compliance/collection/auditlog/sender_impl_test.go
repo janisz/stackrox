@@ -61,7 +61,7 @@ func (s *ComplianceAuditLogSenderTestSuite) TestSendCorrectlySendsEvents() {
 func (s *ComplianceAuditLogSenderTestSuite) TestSendSendsInOrder() {
 	client, sender := s.getMocks()
 
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		mockEvent := s.fakeAuditEvent("get", "configmaps", fmt.Sprintf("map-%d", i), "stackrox")
 		err := sender.Send(context.Background(), &mockEvent)
 		s.NoError(err)
@@ -115,7 +115,7 @@ func (s *ComplianceAuditLogSenderTestSuite) TestSendCorrectSendsEventWithoutReas
 	msg := client.sendList[0]
 	s.validateSentMessage(msg, event)
 
-	s.Empty(msg.GetAuditEvents().Events[0].ResponseStatus.Reason)
+	s.Empty(msg.GetAuditEvents().GetEvents()[0].GetResponseStatus().GetReason())
 }
 
 func (s *ComplianceAuditLogSenderTestSuite) TestSendUsesReceivedTimeIfStageTimeIsInvalid() {
@@ -145,7 +145,7 @@ func (s *ComplianceAuditLogSenderTestSuite) getMocks() (*mockClient, *auditLogSe
 }
 
 func (s *ComplianceAuditLogSenderTestSuite) validateSentMessage(msg *sensor.MsgFromCompliance, mockEvent auditEvent) {
-	s.Equal("fakeNodeName", msg.Node)
+	s.Equal("fakeNodeName", msg.GetNode())
 
 	auditEventsMsg := msg.GetAuditEvents()
 	s.NotNil(auditEventsMsg)

@@ -1,4 +1,4 @@
-import React, { forwardRef } from 'react';
+import { forwardRef } from 'react';
 
 import { getNumEventsBackgroundWidth, getNumEventsText } from './clusteredEventMarkerUtils';
 
@@ -42,7 +42,7 @@ const ClusteredProcessActivityEvent = forwardRef<SVGSVGElement, ClusteredProcess
                             rx="2"
                         />
                         <text
-                            fontFamily="var(--pf-v5-global--FontFamily--sans-serif)"
+                            fontFamily="var(--pf-t--global--font--family--mono)"
                             fontSize="9"
                             fontWeight="bold"
                             letterSpacing="-.18"
@@ -84,7 +84,7 @@ const ClusteredProcessActivityEvent = forwardRef<SVGSVGElement, ClusteredProcess
                             rx="2"
                         />
                         <text
-                            fontFamily="var(--pf-v5-global--FontFamily--sans-serif)"
+                            fontFamily="var(--pf-t--global--font--family--mono)"
                             fontSize="9"
                             fontWeight="bold"
                             letterSpacing="-.18"

@@ -77,9 +77,9 @@ func getProcessFromCmdLineBytes(cmdlineBytes []byte) string {
 		return ""
 	}
 	processBytes := cmdlineBytes
-	index := bytes.Index(cmdlineBytes, []byte("\x00"))
-	if index != -1 {
-		processBytes = cmdlineBytes[:index]
+	before, _, ok := bytes.Cut(cmdlineBytes, []byte("\x00"))
+	if ok {
+		processBytes = before
 	}
 	return filepath.Base(string(processBytes))
 }
@@ -173,8 +173,8 @@ func parseArgs(args []string) []*compliance.CommandLine_Args {
 		arg := newArg(key, values...)
 
 		// Try to see if key or value is a file path and if so then try to read it and add it to the arg
-		if flagsWithFiles.Contains(arg.Key) && len(arg.Values) > 0 {
-			f, exists, err := file.EvaluatePath(arg.Values[0], false, true)
+		if flagsWithFiles.Contains(arg.GetKey()) && len(arg.GetValues()) > 0 {
+			f, exists, err := file.EvaluatePath(arg.GetValues()[0], false, true)
 			if exists && err == nil {
 				arg.File = f
 			}

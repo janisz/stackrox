@@ -8,9 +8,11 @@ import "storage/vulnerability.proto";
 option go_package = "./storage;storage";
 option java_package = "io.stackrox.proto.storage";
 
+// This proto is deprecated and replaced by ImageV2.
 // Next Tag: 19
 message Image {
-  string id = 4; // @gotags: search:"Image Sha,store,hidden" sql:"pk"
+  option deprecated = true;
+  string id = 4; // @gotags: search:"Image Sha,hidden" sql:"pk"
   ImageName name = 1;
   // This should deprecate the ImageName field long-term, allowing images with the same digest to be associated with
   // different locations.
@@ -25,13 +27,13 @@ message Image {
   ImageSignature signature = 16;
 
   oneof set_components {
-    int32 components = 7; // @gotags: search:"Component Count,store,hidden"
+    int32 components = 7; // @gotags: search:"Component Count,hidden"
   }
   oneof set_cves {
-    int32 cves = 8; // @gotags: search:"Image CVE Count,store"
+    int32 cves = 8; // @gotags: search:"Image CVE Count"
   }
   oneof set_fixable {
-    int32 fixable_cves = 9; // @gotags: search:"Fixable CVE Count,store,hidden"
+    int32 fixable_cves = 9; // @gotags: search:"Fixable CVE Count,hidden"
   }
 
   google.protobuf.Timestamp last_updated = 5; // @gotags: search:"Last Updated,hidden"
@@ -43,7 +45,7 @@ message Image {
   int64 priority = 11; // @gotags: search:"Image Risk Priority,hidden"
   float risk_score = 12; // @gotags: search:"Image Risk Score,hidden"
   oneof set_top_cvss {
-    float top_cvss = 13; // @gotags: search:"Image Top CVSS,store"
+    float top_cvss = 13; // @gotags: search:"Image Top CVSS"
   }
 
   enum Note {
@@ -53,6 +55,7 @@ message Image {
     MISSING_SIGNATURE_VERIFICATION_DATA = 3;
   }
   repeated Note notes = 14;
+  repeated BaseImageInfo base_image_info = 19; // @gotags: search:"-" sql:"-"
 }
 
 message DataSource {
@@ -64,9 +67,9 @@ message DataSource {
 // Next tag: 8
 message ImageScan {
   string scanner_version = 6;
-  google.protobuf.Timestamp scan_time = 1; // @gotags: search:"Image Scan Time,store"
+  google.protobuf.Timestamp scan_time = 1; // @gotags: search:"Image Scan Time"
   repeated EmbeddedImageScanComponent components = 2; // @gotags: sql:"-"
-  string operating_system = 4; // @gotags: search:"Image OS,store"
+  string operating_system = 4; // @gotags: search:"Image OS"
   // DataSource contains information about which integration was used to scan the image
   DataSource data_source = 3;
   enum Note {
@@ -88,7 +91,7 @@ message ImageSignatureVerificationData {
   repeated ImageSignatureVerificationResult results = 1;
 }
 
-// Next Tag: 6
+// Next Tag: 7
 message ImageSignatureVerificationResult {
   google.protobuf.Timestamp verification_time = 1;
   // verifier_id correlates to the ID of the signature integration used to verify the signature.
@@ -113,12 +116,14 @@ message ImageSignatureVerificationResult {
   string description = 4;
   // The full image names that are verified by this specific signature integration ID.
   repeated string verified_image_references = 5;
+  // verifier_name is the name of the signature integration associated with `verifier_id`.
+  string verifier_name = 6;
 }
 
-// Next Tag: 13
+// Next Tag: 14
 message EmbeddedImageScanComponent {
-  string name = 1; // @gotags: search:"Component,store"
-  string version = 2; // @gotags: search:"Component Version,store"
+  string name = 1; // @gotags: search:"Component"
+  string version = 2; // @gotags: search:"Component Version"
   License license = 3;
   repeated EmbeddedVulnerability vulns = 4; // @gotags: hash:"set"
   oneof has_layer_index {
@@ -130,7 +135,7 @@ message EmbeddedImageScanComponent {
   oneof set_top_cvss {
     float top_cvss = 9;
   }
-  float risk_score = 10; // @gotags: search:"Component Risk Score,hidden"
+  float risk_score = 10; // @gotags: search:"Component Risk Score,hidden" hash:"ignore"
   // Component version that fixes all the fixable vulnerabilities in this component.
   string fixed_by = 11;
   message Executable {
@@ -139,6 +144,7 @@ message EmbeddedImageScanComponent {
   }
   // Values are cleared after moving to cache, remove them from the grpc return as well
   repeated Executable executables = 12; // @gotags: json:"-"
+  string architecture = 13;
 }
 
 enum SourceType {
@@ -193,6 +199,23 @@ message CosignSignature {
   bytes signature_payload = 2;
   bytes cert_pem = 3;
   bytes cert_chain_pem = 4;
+  bytes rekor_bundle = 5;
+
+  // Signature format used in this message.
+  enum SignatureFormat {
+    SIGNATURE_FORMAT_UNSPECIFIED = 0;
+    // SimpleSigning: signature is stored across raw_signature, signature_payload,
+    // cert_pem, cert_chain_pem, and rekor_bundle.
+    SIMPLE_SIGNING = 1;
+    // DSSE (Dead Simple Signing Envelope): signature is a complete sigstore bundle
+    // stored in sigstore_bundle. The decomposed simple signing fields are not used.
+    DEAD_SIMPLE_SIGNING_ENVELOPE = 2;
+  }
+  SignatureFormat signature_format = 6;
+
+  // Complete sigstore bundle as raw JSON. When populated, it supersedes the
+  // decomposed simple signing fields.
+  bytes sigstore_bundle = 7;
 }
 
 message V2Metadata {
@@ -201,19 +224,19 @@ message V2Metadata {
 
 message V1Metadata {
   string digest = 1;
-  google.protobuf.Timestamp created = 2; // @gotags: search:"Image Created Time,store"
+  google.protobuf.Timestamp created = 2; // @gotags: search:"Image Created Time"
   string author = 3;
   repeated ImageLayer layers = 4;
   string user = 5; // @gotags: search:"Image User"
   repeated string command = 6; // @gotags: search:"Image Command"
   repeated string entrypoint = 7; // @gotags: search:"Image Entrypoint"
   repeated string volumes = 8; // @gotags: search:"Image Volumes"
-  map<string, string> labels = 9; // @gotags: search:"Image Label,store"
+  map<string, string> labels = 9; // @gotags: search:"Image Label"
 }
 
 message ImageLayer {
-  string instruction = 1; // @gotags: search:"Dockerfile Instruction Keyword,store"
-  string value = 2; // @gotags: search:"Dockerfile Instruction Value,store"
+  string instruction = 1; // @gotags: search:"Dockerfile Instruction Keyword"
+  string value = 2; // @gotags: search:"Dockerfile Instruction Value"
   google.protobuf.Timestamp created = 3;
   string author = 4;
   reserved 5; // formerly embedded components
@@ -221,10 +244,10 @@ message ImageLayer {
 }
 
 message ImageName {
-  string registry = 1; // @gotags: search:"Image Registry,store"
-  string remote = 2; // @gotags: search:"Image Remote,store"
-  string tag = 3; // @gotags: search:"Image Tag,store"
-  string full_name = 4; // @gotags: search:"Image,store,analyzer=standard"
+  string registry = 1; // @gotags: search:"Image Registry"
+  string remote = 2; // @gotags: search:"Image Remote"
+  string tag = 3; // @gotags: search:"Image Tag"
+  string full_name = 4; // @gotags: search:"Image,analyzer=standard"
 }
 
 message ListImage {
@@ -248,4 +271,14 @@ message ListImage {
 
 message WatchedImage {
   string name = 1; // @gotags: sql:"pk"
+}
+
+message BaseImageInfo {
+  string base_image_id = 1;
+  string base_image_full_name = 2;
+  string base_image_digest = 3;
+  google.protobuf.Timestamp created = 4;
+  // Index of the last base image layer, taking into account
+  // "empty layers" (aka. metadata history without SHA).
+  int32 max_layer_index = 5;
 }

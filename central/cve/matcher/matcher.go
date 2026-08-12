@@ -12,9 +12,11 @@ import (
 	clusterDataStore "github.com/stackrox/rox/central/cluster/datastore"
 	"github.com/stackrox/rox/central/cve/converter/utils"
 	imageDataStore "github.com/stackrox/rox/central/image/datastore"
+	imageV2DataStore "github.com/stackrox/rox/central/imagev2/datastore"
 	nsDataStore "github.com/stackrox/rox/central/namespace/datastore"
 	"github.com/stackrox/rox/generated/storage"
 	"github.com/stackrox/rox/pkg/errorhelpers"
+	"github.com/stackrox/rox/pkg/features"
 	"github.com/stackrox/rox/pkg/logging"
 	"github.com/stackrox/rox/pkg/search"
 	"github.com/stackrox/rox/pkg/set"
@@ -33,14 +35,16 @@ type CVEMatcher struct {
 	clusters   clusterDataStore.DataStore
 	namespaces nsDataStore.DataStore
 	images     imageDataStore.DataStore
+	imagesV2   imageV2DataStore.DataStore
 }
 
 // NewCVEMatcher returns new instance of CVEMatcher
-func NewCVEMatcher(clusters clusterDataStore.DataStore, namespaces nsDataStore.DataStore, images imageDataStore.DataStore) (*CVEMatcher, error) {
+func NewCVEMatcher(clusters clusterDataStore.DataStore, namespaces nsDataStore.DataStore, images imageDataStore.DataStore, imagesV2 imageV2DataStore.DataStore) (*CVEMatcher, error) {
 	return &CVEMatcher{
 		clusters:   clusters,
 		namespaces: namespaces,
 		images:     images,
+		imagesV2:   imagesV2,
 	}, nil
 }
 
@@ -135,7 +139,7 @@ func (m *CVEMatcher) IsClusterAffectedByIstioCVE(ctx context.Context, cluster *s
 		return false, nil
 	}
 	for _, node := range cve.Configurations.Nodes {
-		for _, version := range versions.AsSlice() {
+		for version := range versions {
 			matched, err := m.MatchVersions(node, version, utils.Istio)
 			// If we could determine CVE impact from one of cpe string, we skip logging error
 			if matched {
@@ -183,12 +187,22 @@ func (m *CVEMatcher) getAllIstioComponentsVersionsInCluster(ctx context.Context,
 		AddExactMatches(search.ImageRegistry, "docker.io").
 		AddStrings(search.ImageRemote, "istio").
 		ProtoQuery()
-	images, err := m.images.SearchRawImages(ctx, q)
-	if err != nil {
-		return set, err
-	}
-	for _, image := range images {
-		set.Add(image.GetName().GetTag())
+	if features.FlattenImageData.Enabled() {
+		images, err := m.imagesV2.SearchRawImages(ctx, q)
+		if err != nil {
+			return set, err
+		}
+		for _, image := range images {
+			set.Add(image.GetName().GetTag())
+		}
+	} else {
+		images, err := m.images.SearchRawImages(ctx, q)
+		if err != nil {
+			return set, err
+		}
+		for _, image := range images {
+			set.Add(image.GetName().GetTag())
+		}
 	}
 	return set, nil
 }
@@ -232,8 +246,8 @@ func (m *CVEMatcher) MatchVersions(node *schema.NVDCVEFeedJSON10DefNode, version
 		// Note that cpeVersionAndUpdate can't be "*:*" in this case, since there is no info about start and end versions
 		if stringutils.AllEmpty(cpeMatch.VersionStartIncluding, cpeMatch.VersionEndIncluding, cpeMatch.VersionEndExcluding) {
 			// This means this version and all prelease, build versions of this version. For example 1.6.4:*
-			if strings.HasSuffix(cpeVersionAndUpdate, ":*") {
-				if match, err := matchBaseVersion(strings.TrimSuffix(cpeVersionAndUpdate, ":*"), versionToMatch); err != nil {
+			if before, ok := strings.CutSuffix(cpeVersionAndUpdate, ":*"); ok {
+				if match, err := matchBaseVersion(before, versionToMatch); err != nil {
 					errList.AddError(errors.Wrapf(err, "could not compare base version %q with cluster version: %q", strings.TrimSuffix(cpeVersionAndUpdate, ":*"), versionToMatch))
 				} else if match {
 					return true, errList.ToError()

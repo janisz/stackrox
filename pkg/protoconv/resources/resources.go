@@ -1,13 +1,14 @@
 package resources
 
 import (
-	"encoding/json"
 	"fmt"
 	"reflect"
+	"slices"
 
 	openshiftAppsV1 "github.com/openshift/api/apps/v1"
 	"github.com/pkg/errors"
 	"github.com/stackrox/rox/generated/storage"
+	"github.com/stackrox/rox/pkg/features"
 	imageUtils "github.com/stackrox/rox/pkg/images/utils"
 	"github.com/stackrox/rox/pkg/kubernetes"
 	"github.com/stackrox/rox/pkg/logging"
@@ -25,8 +26,7 @@ import (
 )
 
 const (
-	openshiftEncodedDeploymentConfigAnnotation = `openshift.io/encoded-deployment-config`
-	appArmorAnnotationTemplate                 = `container.apparmor.security.beta.kubernetes.io/%s`
+	appArmorAnnotationTemplate = `container.apparmor.security.beta.kubernetes.io/%s`
 )
 
 var (
@@ -66,37 +66,14 @@ func NewDeploymentFromStaticResource(obj interface{}, deploymentType, clusterID,
 	kind := deploymentType
 
 	// Ignore resources that are owned by another tracked resource.
-	for _, ref := range objMeta.GetOwnerReferences() {
-		if IsTrackedOwnerReference(ref) {
-			return nil, nil
-		}
-	}
-
-	// This only applies to OpenShift
-	if encDeploymentConfig, ok := objMeta.GetLabels()[openshiftEncodedDeploymentConfigAnnotation]; ok {
-		newMeta, newKind, err := extractDeploymentConfig(encDeploymentConfig)
-		if err != nil {
-			log.Error(err)
-		} else {
-			objMeta, kind = newMeta, newKind
-		}
+	if slices.ContainsFunc(objMeta.GetOwnerReferences(), IsTrackedOwnerReference) {
+		return nil, nil
 	}
 
 	wrap := newWrap(objMeta, kind, clusterID, registryOverride)
 	wrap.populateFields(obj)
 	return wrap.Deployment, nil
 
-}
-
-func extractDeploymentConfig(encodedDeploymentConfig string) (metav1.Object, string, error) {
-	// Anonymous struct that only contains the fields we are interested in (note: json.Unmarshal silently ignores
-	// fields that are not in the destination object).
-	dc := struct {
-		metav1.TypeMeta
-		MetaData metav1.ObjectMeta `json:"metadata"`
-	}{}
-	err := json.Unmarshal([]byte(encodedDeploymentConfig), &dc)
-	return &dc.MetaData, dc.Kind, err
 }
 
 func newWrap(meta metav1.Object, kind, clusterID, registryOverride string) *DeploymentWrap {
@@ -126,7 +103,7 @@ func SpecToPodTemplateSpec(spec reflect.Value) (v1.PodTemplateSpec, error) {
 	if !doesFieldExist(templateInterface) {
 		return v1.PodTemplateSpec{}, errors.Errorf("obj %+v does not have a Template field", spec)
 	}
-	if templateInterface.Type().Kind() == reflect.Ptr && !templateInterface.IsNil() {
+	if templateInterface.Type().Kind() == reflect.Pointer && !templateInterface.IsNil() {
 		templateInterface = templateInterface.Elem()
 	}
 	podTemplate, ok := templateInterface.Interface().(v1.PodTemplateSpec)
@@ -293,21 +270,43 @@ func (w *DeploymentWrap) populateTolerations(podSpec v1.PodSpec) {
 }
 
 func (w *DeploymentWrap) populateContainers(podSpec v1.PodSpec) {
-	w.Deployment.Containers = make([]*storage.Container, 0, len(podSpec.Containers))
-	for _, c := range podSpec.Containers {
-		w.Deployment.Containers = append(w.Deployment.Containers, &storage.Container{
-			Id:   fmt.Sprintf("%s:%s", w.Deployment.Id, c.Name),
-			Name: c.Name,
-		})
+	containerCount := len(podSpec.Containers)
+	if features.InitContainerSupport.Enabled() {
+		containerCount += len(podSpec.InitContainers)
+	}
+	allK8sContainers := make([]v1.Container, 0, containerCount)
+	w.Deployment.Containers = make([]*storage.Container, 0, containerCount)
+
+	if features.InitContainerSupport.Enabled() {
+		for _, c := range podSpec.InitContainers {
+			w.Deployment.Containers = append(w.Deployment.Containers, &storage.Container{
+				Id:   fmt.Sprintf("%s:%s", w.Deployment.GetId(), c.Name),
+				Name: c.Name,
+				Type: storage.ContainerType_INIT,
+			})
+			allK8sContainers = append(allK8sContainers, c)
+		}
 	}
 
-	w.populateContainerConfigs(podSpec)
-	w.populateImages(podSpec)
-	w.populateSecurityContext(podSpec)
-	w.populateVolumesAndSecrets(podSpec)
-	w.populatePorts(podSpec)
-	w.populateResources(podSpec)
-	w.populateProbes(podSpec)
+	for _, c := range podSpec.Containers {
+		w.Deployment.Containers = append(w.Deployment.Containers, &storage.Container{
+			Id:   fmt.Sprintf("%s:%s", w.Deployment.GetId(), c.Name),
+			Name: c.Name,
+			Type: storage.ContainerType_REGULAR,
+		})
+		allK8sContainers = append(allK8sContainers, c)
+	}
+
+	// combinedSpec aligns podSpec.Containers with w.Deployment.Containers for the index-based helpers.
+	combinedSpec := podSpec
+	combinedSpec.Containers = allK8sContainers
+	w.populateContainerConfigs(combinedSpec)
+	w.populateImages(combinedSpec)
+	w.populateSecurityContext(combinedSpec)
+	w.populateVolumesAndSecrets(combinedSpec)
+	w.populatePorts(combinedSpec)
+	w.populateResources(combinedSpec)
+	w.populateProbes(combinedSpec)
 }
 
 func (w *DeploymentWrap) populateServiceAccount(podSpec v1.PodSpec) {
@@ -332,7 +331,7 @@ func (w *DeploymentWrap) populateImagePullSecrets(podSpec v1.PodSpec) {
 
 func (w *DeploymentWrap) populateDaemonSetReplicaSet(obj interface{}) {
 	ds := reflect.ValueOf(obj)
-	if ds.Kind() == reflect.Ptr {
+	if ds.Kind() == reflect.Pointer {
 		ds = ds.Elem()
 	}
 	status := ds.FieldByName("Status")
@@ -454,7 +453,11 @@ func (w *DeploymentWrap) populateImages(podSpec v1.PodSpec) {
 
 func (w *DeploymentWrap) populateSecurityContext(podSpec v1.PodSpec) {
 	for i, c := range podSpec.Containers {
-		sc := &storage.SecurityContext{}
+		sc := &storage.SecurityContext{
+			// allowPrivilegeEscalation default value is true.
+			// See: https://github.com/kubernetes/website/pull/51909
+			AllowPrivilegeEscalation: true,
+		}
 		s := c.SecurityContext
 		if s != nil {
 			if p := s.Privileged; p != nil {
@@ -465,6 +468,10 @@ func (w *DeploymentWrap) populateSecurityContext(podSpec v1.PodSpec) {
 				sc.ReadOnlyRootFilesystem = *p
 			}
 
+			if ape := s.AllowPrivilegeEscalation; ape != nil {
+				sc.AllowPrivilegeEscalation = *ape
+			}
+
 			if capabilities := s.Capabilities; capabilities != nil {
 				for _, add := range capabilities.Add {
 					sc.AddCapabilities = append(sc.AddCapabilities, string(add))
@@ -473,10 +480,6 @@ func (w *DeploymentWrap) populateSecurityContext(podSpec v1.PodSpec) {
 				for _, drop := range capabilities.Drop {
 					sc.DropCapabilities = append(sc.DropCapabilities, string(drop))
 				}
-			}
-
-			if ape := s.AllowPrivilegeEscalation; ape != nil {
-				sc.AllowPrivilegeEscalation = *ape
 			}
 		}
 		sc.Selinux = makeSELinuxWithDefaults(s, podSpec.SecurityContext)

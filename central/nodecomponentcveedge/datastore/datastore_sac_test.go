@@ -52,10 +52,6 @@ func (s *nodeComponentCVEEdgeDatastoreSACTestSuite) SetupSuite() {
 	s.Require().NoError(err)
 }
 
-func (s *nodeComponentCVEEdgeDatastoreSACTestSuite) TearDownSuite() {
-	s.testGraphDatastore.Cleanup(s.T())
-}
-
 func getComponentID(component *storage.EmbeddedNodeScanComponent, os string) string {
 	return scancomponent.ComponentID(component.GetName(), component.GetVersion(), os)
 }
@@ -324,6 +320,8 @@ func (s *nodeComponentCVEEdgeDatastoreSACTestSuite) TestSearchEdges() {
 		s.Len(results, expectedCount)
 		for _, r := range results {
 			s.True(c.expectedEdgeFound[r.GetId()])
+			// for nodecomponentcveedge name is set to id
+			s.Equal(r.GetName(), r.GetId())
 		}
 	})
 }

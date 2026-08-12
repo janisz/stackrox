@@ -1,10 +1,9 @@
-import React, { useState } from 'react';
-import { Alert, Button, Flex, Modal, Text } from '@patternfly/react-core';
+import { useState } from 'react';
+import { Alert, Button, Content, Flex } from '@patternfly/react-core';
+import { Modal } from '@patternfly/react-core/deprecated';
 
-import {
-    VulnerabilityException,
-    cancelVulnerabilityException,
-} from 'services/VulnerabilityExceptionService';
+import { cancelVulnerabilityException } from 'services/VulnerabilityExceptionService';
+import type { VulnerabilityException } from 'services/VulnerabilityExceptionService';
 import { getAxiosErrorMessage } from 'utils/responseErrorUtils';
 import useModal from 'hooks/useModal';
 import useRestMutation from 'hooks/useRestMutation';
@@ -61,7 +60,7 @@ function RequestCancelButtonModal({ exception, onSuccess }: RequestCancelButtonM
                 ]}
                 showClose={false}
             >
-                <Flex className="pf-v5-u-py-md">
+                <Flex className="pf-v6-u-py-md">
                     {errorMessage && (
                         <Alert isInline variant="danger" title={errorMessage} component="p" />
                     )}
@@ -71,7 +70,7 @@ function RequestCancelButtonModal({ exception, onSuccess }: RequestCancelButtonM
                         title="Cancelling the request will return the CVEs to the 'Observed' status."
                         component="p"
                     >
-                        <Text>CVE count: {exception.cves.length}</Text>
+                        <Content component="p">CVE count: {exception.cves.length}</Content>
                     </Alert>
                 </Flex>
             </Modal>

@@ -154,7 +154,7 @@ If no browser window opens, please click on the following URL:
 		l.env.Logger().ErrfLn(`Waited %s for the authorization flow to succeed, but did not finish.
 In case you want to increase the timeout, use the --timeout flag.`, l.timeout.String())
 		if err := server.Close(); err != nil {
-			return err
+			return errors.Wrap(err, "closing login HTTP server")
 		}
 		return errors.New("ran into timeout during authorization flow")
 
@@ -163,7 +163,7 @@ In case you want to increase the timeout, use the --timeout flag.`, l.timeout.St
 			return errors.Wrap(err, "error within authorization flow")
 		}
 		time.Sleep(time.Second) // Wait until the page is served successfully, then close the server.
-		return server.Close()
+		return errors.Wrap(server.Close(), "closing login HTTP server")
 	}
 }
 
@@ -275,7 +275,12 @@ In case the access token is expired and cannot be refreshed, you have to run "ro
 func (l *loginCommand) verifyLoginAuthProviders() error {
 	// Use the HTTP client with the anonymous auth method to force anonymous access.
 	// Note that this may still be done via HTTP/2 instead of HTTP/1, unless HTTP/1 is forced.
-	httpClient, err := l.env.HTTPClient(30*time.Second, common.WithAuthMethod(auth.Anonymous()))
+	// When using the default endpoint, disable retries to fail fast on connection errors.
+	clientOpts := []common.HttpClientOption{common.WithAuthMethod(auth.Anonymous())}
+	if !flags.EndpointWasExplicitlyProvided() {
+		clientOpts = append(clientOpts, common.WithRetryCount(0))
+	}
+	httpClient, err := l.env.HTTPClient(l.timeout, clientOpts...)
 
 	if err != nil {
 		return errors.Wrap(err, "creating HTTP client")

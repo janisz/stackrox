@@ -37,11 +37,8 @@ var (
 		schema = walker.Walk(reflect.TypeOf((*storage.Image)(nil)), "images")
 		schema.SetOptionsMap(search.Walk(v1.SearchCategory_IMAGES, "image", (*storage.Image)(nil)))
 		schema.SetSearchScope([]v1.SearchCategory{
-			v1.SearchCategory_IMAGE_VULNERABILITIES,
-			v1.SearchCategory_COMPONENT_VULN_EDGE,
-			v1.SearchCategory_IMAGE_COMPONENTS,
-			v1.SearchCategory_IMAGE_COMPONENT_EDGE,
-			v1.SearchCategory_IMAGE_VULN_EDGE,
+			v1.SearchCategory_IMAGE_VULNERABILITIES_V2,
+			v1.SearchCategory_IMAGE_COMPONENTS_V2,
 			v1.SearchCategory_IMAGES,
 			v1.SearchCategory_DEPLOYMENTS,
 			v1.SearchCategory_NAMESPACES,
@@ -90,7 +87,7 @@ type Images struct {
 // ImagesLayers holds the Gorm model for Postgres table `images_layers`.
 type ImagesLayers struct {
 	ImagesID    string `gorm:"column:images_id;type:varchar;primaryKey"`
-	Idx         int    `gorm:"column:idx;type:integer;primaryKey;index:imageslayers_idx,type:btree"`
+	Idx         int    `gorm:"column:idx;type:integer;primaryKey"`
 	Instruction string `gorm:"column:instruction;type:varchar"`
 	Value       string `gorm:"column:value;type:varchar"`
 	ImagesRef   Images `gorm:"foreignKey:images_id;references:id;belongsTo;constraint:OnDelete:CASCADE"`

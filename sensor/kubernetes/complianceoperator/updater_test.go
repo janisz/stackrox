@@ -3,6 +3,7 @@ package complianceoperator
 import (
 	"context"
 	"fmt"
+	"maps"
 	"testing"
 	"time"
 
@@ -61,7 +62,7 @@ func (s *UpdaterTestSuite) SetupSuite() {
 
 func (s *UpdaterTestSuite) SetupTest() {
 	centralcaps.Set([]centralsensor.CentralCapability{centralsensor.ComplianceV2Integrations})
-	s.client = fake.NewSimpleClientset()
+	s.client = fake.NewClientset()
 	_, err := s.client.CoreV1().Namespaces().Create(context.Background(), buildComplianceOperatorNamespace(defaultNS), metaV1.CreateOptions{})
 	s.Require().NoError(err)
 
@@ -86,7 +87,7 @@ func (s *UpdaterTestSuite) TestDefaultNamespace() {
 	// Compliance operator found, CRDs not found.
 	s.assertEqual(expectedInfo{
 		"v1.0.0", defaultNS, 1, 1,
-		"the server could not find the requested resource, GroupVersion \"compliance.openshift.io/v1alpha1\" not found", true,
+		"discovering resources for \"compliance.openshift.io/v1alpha1\": the server could not find the requested resource, GroupVersion \"compliance.openshift.io/v1alpha1\" not found", true,
 	}, actual)
 }
 
@@ -101,13 +102,13 @@ func (s *UpdaterTestSuite) TestMultipleTries() {
 	// Compliance operator found, CRDs not found.
 	s.assertEqual(expectedInfo{
 		"v1.0.0", defaultNS, 1, 1,
-		"the server could not find the requested resource, GroupVersion \"compliance.openshift.io/v1alpha1\" not found", true,
+		"discovering resources for \"compliance.openshift.io/v1alpha1\": the server could not find the requested resource, GroupVersion \"compliance.openshift.io/v1alpha1\" not found", true,
 	}, actual)
 }
 
 func (s *UpdaterTestSuite) TestNotFound() {
 	actual := s.getInfo(1, 1*time.Millisecond)
-	s.assertEqual(expectedInfo{error: "deployment compliance-operator not found in any namespace"}, actual)
+	s.assertEqual(expectedInfo{error: "The \"compliance-operator\" deployment was not found in any namespace."}, actual)
 }
 
 func (s *UpdaterTestSuite) TestDelayedTicker() {
@@ -122,7 +123,7 @@ func (s *UpdaterTestSuite) TestDelayedTicker() {
 	// Compliance operator found, CRDs not found.
 	s.assertEqual(expectedInfo{
 		"v1.0.0", defaultNS, 1, 1,
-		"the server could not find the requested resource, GroupVersion \"compliance.openshift.io/v1alpha1\" not found", true,
+		"discovering resources for \"compliance.openshift.io/v1alpha1\": the server could not find the requested resource, GroupVersion \"compliance.openshift.io/v1alpha1\" not found", true,
 	}, actual)
 }
 
@@ -240,9 +241,7 @@ func (s *UpdaterTestSuite) TestCheckRequiredComplianceCRDsExist() {
 	for _, tc := range testCases {
 		s.Run(tc.name, func() {
 			modifiedDetectedKinds := make(map[string]bool)
-			for kind, value := range detectedKinds {
-				modifiedDetectedKinds[kind] = value
-			}
+			maps.Copy(modifiedDetectedKinds, detectedKinds)
 
 			tc.modifyDetectedKinds(modifiedDetectedKinds)
 
@@ -275,11 +274,11 @@ func (s *UpdaterTestSuite) getInfo(times int, updateInterval time.Duration) *cen
 	updater.Notify(common.SensorComponentEventSyncFinished)
 	err := updater.Start()
 	s.Require().NoError(err)
-	defer updater.Stop(nil)
+	defer updater.Stop()
 
 	var info *central.ComplianceOperatorInfo
 
-	for i := 0; i < times; i++ {
+	for range times {
 		select {
 		case response := <-updater.ResponsesC():
 			info = response.Msg.(*central.MsgFromSensor_ComplianceOperatorInfo).ComplianceOperatorInfo
@@ -341,7 +340,7 @@ func (s *UpdaterTestSuite) assertEqual(expected expectedInfo, actual *central.Co
 		Version:     expected.version,
 		Namespace:   expected.namespace,
 		StatusError: expected.error,
-		IsInstalled: actual.IsInstalled,
+		IsInstalled: actual.GetIsInstalled(),
 	}
 
 	if expected.desired > 0 {

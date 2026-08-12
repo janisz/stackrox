@@ -1,28 +1,18 @@
 import static util.Helpers.withRetry
 
-import io.stackrox.proto.api.v1.Common
-import io.stackrox.proto.storage.ClusterOuterClass.AdmissionControllerConfig
+import io.stackrox.proto.storage.Cve.VulnerabilitySeverity
 import io.stackrox.proto.storage.ImageOuterClass
 import io.stackrox.proto.storage.PolicyOuterClass
-import io.stackrox.proto.storage.PolicyOuterClass.PolicyGroup
-import io.stackrox.proto.storage.PolicyOuterClass.PolicySection
-import io.stackrox.proto.storage.PolicyOuterClass.PolicyValue
 import io.stackrox.proto.storage.ScopeOuterClass
 
 import objects.Deployment
-import services.CVEService
 import services.ClusterService
 import services.ImageService
 import services.PolicyService
-import util.ApplicationHealth
-import util.ChaosMonkey
-import util.Env
 import util.Timer
 
-import spock.lang.IgnoreIf
 import spock.lang.Shared
 import spock.lang.Tag
-import spock.lang.Timeout
 import spock.lang.Unroll
 
 @Tag("PZ")
@@ -31,8 +21,6 @@ class AdmissionControllerTest extends BaseSpecification {
     private String clusterId
     @Shared
     private List<String> createdPolicyIds
-
-    private ChaosMonkey chaosMonkey
 
     static final private String TEST_NAMESPACE = "qa-admission-controller-test"
 
@@ -43,52 +31,44 @@ class AdmissionControllerTest extends BaseSpecification {
     static final private String SCAN_INLINE_IMAGE_NAME_WITH_SHA = TEST_IMAGE_NAME_WITH_SHA
     static final private String SCAN_INLINE_IMAGE_SHA = TEST_IMAGE_SHA
 
-    static final private String NGINX_IMAGE          = "quay.io/rhacs-eng/qa-multi-arch:nginx-1.21.1"
-    static final private String NGINX_IMAGE_WITH_SHA = "quay.io/rhacs-eng/qa-multi-arch:nginx-1.21.1"+
-                                    "@sha256:6bf47794f923462389f5a2cda49cf5777f736db8563edc3ff78fb9d87e6e22ec"
-    static final private String NGINX_CVE            = "CVE-2017-16932"
-
     static final private String BUSYBOX_NO_BYPASS        = "busybox-no-bypass"
     static final private String BUSYBOX_BYPASS           = "busybox-bypass"
     static final private String BUSYBOX_LATEST_TAG_IMAGE = "quay.io/rhacs-eng/qa-multi-arch-busybox:latest"
+    static final private String BUSYBOX_TAGGED_IMAGE     = "quay.io/rhacs-eng/qa-multi-arch:busybox-1-28"
 
     private final static String CLONED_POLICY_SUFFIX = "(${TEST_NAMESPACE})"
     private final static String LATEST_TAG = "Latest tag"
     private final static String LATEST_TAG_FOR_TEST = "Latest tag ${CLONED_POLICY_SUFFIX}"
     private final static String SEVERITY = "Fixable Severity at least Important"
-    private final static String SEVERITY_FOR_TEST = "Fixable Severity at least Important ${CLONED_POLICY_SUFFIX}"
 
     static final private Deployment SCAN_INLINE_DEPLOYMENT = new Deployment()
             .setName(SCAN_INLINE_DEPLOYMENT_NAME)
             .setNamespace(TEST_NAMESPACE)
+            .setImagePrefetcherAffinity()
             .setImage(SCAN_INLINE_IMAGE_NAME_WITH_SHA)
             .addLabel("app", "test")
 
     static final private Deployment BUSYBOX_NO_BYPASS_DEPLOYMENT = new Deployment()
             .setName(BUSYBOX_NO_BYPASS)
             .setNamespace(TEST_NAMESPACE)
+            .setImagePrefetcherAffinity()
             .setImage(BUSYBOX_LATEST_TAG_IMAGE)
             .addLabel("app", "test")
 
     static final private Deployment BUSYBOX_BYPASS_DEPLOYMENT = new Deployment()
             .setName(BUSYBOX_BYPASS)
             .setNamespace(TEST_NAMESPACE)
+            .setImagePrefetcherAffinity()
             .setImage(BUSYBOX_LATEST_TAG_IMAGE)
             .addLabel("app", "test")
             .addAnnotation("admission.stackrox.io/break-glass", "yay")
 
-    static final private Deployment MISC_DEPLOYMENT = new Deployment()
-            .setName("random-busybox")
-            .setNamespace(TEST_NAMESPACE)
-            .setImage("quay.io/rhacs-eng/qa-multi-arch:busybox-1-30")
-            .addLabel("app", "random-busybox")
-
     def setupSpec() {
+        ImageService.waitForScannerIntegration()
+
         clusterId = ClusterService.getClusterId()
         assert clusterId
 
-        // Create namespace scoped policies for test based on "Latest Tag" and
-        // "Fixable Severity at least Important"
         createdPolicyIds = []
         for (policy : [Services.getPolicyByName(LATEST_TAG), Services.getPolicyByName(SEVERITY)]) {
             def scopedPolicyForTest = policy.toBuilder()
@@ -103,25 +83,49 @@ class AdmissionControllerTest extends BaseSpecification {
             assert policyID
             createdPolicyIds.add(policyID)
         }
-        // Wait for propagation to sensor
-        sleep(10000 * (ClusterService.isOpenShift4() ? 4 : 1))
 
-        // Pre run scan to avoid registry timeouts with inline scans in the
-        // tests below.
+        // Pre-scan the image so Central has cached scan results for CVE-based policy evaluation.
         ImageService.scanImage(SCAN_INLINE_IMAGE_NAME_WITH_SHA)
 
-        // Ensure that scanImage() provides the required metadata for test.
-        ImageOuterClass.Image image = ImageService.getImage(SCAN_INLINE_IMAGE_SHA, false)
+        def imageId = flattenImageDataEnabled ? TEST_IMAGE_V2_ID : SCAN_INLINE_IMAGE_SHA
+        ImageOuterClass.Image image = ImageService.getImage(imageId, false)
         assert image
         assert !image.getNotesList().contains(ImageOuterClass.Image.Note.MISSING_METADATA)
+        assert !image.getNotesList().contains(ImageOuterClass.Image.Note.MISSING_SCAN_DATA)
+        assert image.getScan() != null : "Image scan data is null after scanning"
+        assert image.getScan().getComponentsList().size() > 0 : "Image has no scan components"
+
+        def hasFixableImportantVuln = image.getScan().getComponentsList().any { component ->
+            component.getVulnsList().any { vuln ->
+                vuln.getSeverity().getNumber() >=
+                    VulnerabilitySeverity.IMPORTANT_VULNERABILITY_SEVERITY.getNumber() &&
+                vuln.getFixedBy() != ""
+            }
+        }
+        assert hasFixableImportantVuln :
+            "Image ${SCAN_INLINE_IMAGE_NAME_WITH_SHA} has no fixable vulnerabilities with severity >= Important. " +
+            "The severity policy test will fail without matching vulnerabilities."
 
         orchestrator.ensureNamespaceExists(TEST_NAMESPACE)
-    }
 
-    def cleanup() {
-        if (chaosMonkey) {
-            chaosMonkey.stop()
-            chaosMonkey.waitForReady()
+        // Wait for policy propagation to sensor and admission controller
+        // Verify by attempting to create a deployment that should be blocked
+        def testDeployment = new Deployment()
+                .setName("setup-verification")
+                .setNamespace(TEST_NAMESPACE)
+                .setImage(BUSYBOX_LATEST_TAG_IMAGE)
+                .addLabel("app", "test")
+
+        withRetry(ClusterService.isOpenShift4() ? 40 : 20, 1) {
+            def created = orchestrator.createDeploymentNoWait(testDeployment)
+            assert !created // Should be blocked by latest tag policy
+        }
+
+        // Clean up if somehow it was created
+        try {
+            orchestrator.deleteDeployment(testDeployment)
+        } catch (Exception ignored) {
+            // Expected - deployment should not exist
         }
     }
 
@@ -131,267 +135,79 @@ class AdmissionControllerTest extends BaseSpecification {
         for (policyID in createdPolicyIds) {
             PolicyService.deletePolicy(policyID)
         }
-
-        AdmissionControllerConfig ac = AdmissionControllerConfig.newBuilder()
-                .setEnabled(false)
-                .build()
-
-        assert ClusterService.updateAdmissionController(ac)
-    }
-
-    def prepareChaosMonkey() {
-        // We cannot do this in setup() because we need to make sure chaos monkey
-        // is back up on retries after being stopped in "cleanup:".
-        if (chaosMonkey) {
-            chaosMonkey.start()
-            chaosMonkey.waitForEffect()
-        }
     }
 
     @Unroll
     @Tag("BAT")
     @Tag("Parallel")
-    @IgnoreIf({ Env.getTestTarget() == "bat-test" && data.flaky })
-    @SuppressWarnings('LineLength')
-    def "Verify Admission Controller Config: #desc"() {
+    def "Verify admission controller enforcement on create: #desc"() {
         when:
-        prepareChaosMonkey()
-
-        AdmissionControllerConfig ac = AdmissionControllerConfig.newBuilder()
-                                .setEnabled(true)
-                                .setDisableBypass(!bypassable)
-                                .setScanInline(scan)
-                                .setTimeoutSeconds(timeout)
-                            .build()
-
-        assert ClusterService.updateAdmissionController(ac)
-        // Maximum time to wait for propagation to sensor
-        sleep(5000)
+        "Create a deployment that violates an enforced policy"
+        // Retry to allow time for the admission controller to fetch scan data from
+        // Central. Policies that require image enrichment (e.g. severity) may not
+        // evaluate on the first attempt if the AC pod handling this request hasn't
+        // cached the scan results yet. The retry is harmless for fast-path policies
+        // (latest tag, bypass) since they pass on the first attempt.
+        def created
+        withRetry(ClusterService.isOpenShift4() ? 40 : 20, 1) {
+            created = orchestrator.createDeploymentNoWait(deployment)
+            if (created != launched) {
+                if (created) {
+                    deleteDeploymentWithCaution(deployment)
+                }
+                assert created == launched
+            }
+        }
 
         then:
-        "Run deployment request"
-        def created = orchestrator.createDeploymentNoWait(deployment)
+        "Verify the admission controller allows or blocks based on policy and bypass annotation"
         assert created == launched
 
         cleanup:
-        "Stop ChaosMonkey ASAP to not lose logs"
-        if (chaosMonkey) {
-            chaosMonkey.stop()
-        }
-
-        and:
-        "Revert Cluster"
         if (created) {
             deleteDeploymentWithCaution(deployment)
         }
 
         where:
-        "Data inputs are: "
-
-        timeout | scan  | bypassable | deployment                   | launched | desc                                    | flaky
-        3       | false | false      | BUSYBOX_NO_BYPASS_DEPLOYMENT | false    | "no bypass annotation, non-bypassable"  | false
-        3       | false | false      | BUSYBOX_BYPASS_DEPLOYMENT    | false    | "bypass annotation, non-bypassable"     | false
-        3       | false | true       | BUSYBOX_BYPASS_DEPLOYMENT    | true     | "bypass annotation, bypassable"         | false
-        30      | true  | false      | SCAN_INLINE_DEPLOYMENT       | false    | "nginx w/ inline scan"                  | true
+        deployment                   | launched | desc
+        BUSYBOX_NO_BYPASS_DEPLOYMENT | false    | "blocked by enforced latest tag policy"
+        BUSYBOX_BYPASS_DEPLOYMENT    | true     | "allowed with bypass annotation"
+        SCAN_INLINE_DEPLOYMENT       | false    | "blocked by enforced severity policy (cached scan)"
     }
 
     @Unroll
     @Tag("BAT")
     @Tag("Parallel")
-    @IgnoreIf({ Env.ROX_VULN_MGMT_UNIFIED_CVE_DEFERRAL == "true" })
-    def "Verify CVE snoozing applies to images scanned by admission controller #image"() {
-        given:
-        "Chaos monkey is prepared"
-        prepareChaosMonkey()
-
-        and:
-        "Scan image"
-        ImageService.scanImage(image)
-
-        "Create policy looking for a specific CVE"
-        // We don't want to block on SEVERITY
-        Services.updatePolicyEnforcement(
-                SEVERITY_FOR_TEST,
-                []
-        )
-
-        AdmissionControllerConfig ac = AdmissionControllerConfig.newBuilder()
-                .setEnabled(true)
-                .setEnforceOnUpdates(false)
-                .setDisableBypass(false)
-                .setScanInline(true)
-                .setTimeoutSeconds(5)
-                .build()
-        assert ClusterService.updateAdmissionController(ac)
-
-        log.info("Admission control configuration updated")
-
-        def policyGroup = PolicyGroup.newBuilder()
-                .setFieldName("CVE")
-                .setBooleanOperator(PolicyOuterClass.BooleanOperator.AND)
-        policyGroup.addAllValues([PolicyValue.newBuilder().setValue(NGINX_CVE).build(),])
-
-        String policyName = "Matching CVE (${NGINX_CVE})"
-        PolicyOuterClass.Policy policy = PolicyOuterClass.Policy.newBuilder()
-                .setName(policyName)
-                .addLifecycleStages(PolicyOuterClass.LifecycleStage.DEPLOY)
-                .addCategories("DevOps Best Practices")
-                .setSeverity(PolicyOuterClass.Severity.HIGH_SEVERITY)
-                .addEnforcementActions(PolicyOuterClass.EnforcementAction.SCALE_TO_ZERO_ENFORCEMENT)
-                .addScope(ScopeOuterClass.Scope.newBuilder().setNamespace(TEST_NAMESPACE))
-                .addPolicySections(
-                        PolicySection.newBuilder().addPolicyGroups(policyGroup.build()).build())
-                .build()
-
-        String policyID = PolicyService.createNewPolicy(policy)
-        assert policyID
-
-        log.info("Policy created to scale-to-zero deployments with ${NGINX_CVE}")
-        // Maximum time to wait for propagation to sensor
-        sleep(15000 * (ClusterService.isOpenShift4() ? 4 : 1))
-        log.info("Sensor and admission-controller _should_ have the policy update")
-
-        def deployment = new Deployment()
-                .setName("admission-suppress-cve")
-                .setNamespace(TEST_NAMESPACE)
-                .setImage(image)
-
-        def created = orchestrator.createDeploymentNoWait(deployment)
-        assert !created
-
-        // CVE needs to be saved into the DB
-        sleep(1000)
-
+    def "Verify admission controller enforcement on update: #desc"() {
         when:
-        "Suppress CVE and check that the deployment can now launch"
-
-        def cve = NGINX_CVE
-        CVEService.suppressImageCVE(cve)
-
-        log.info("Suppressed "+cve)
-        // Allow propagation of CVE suppression and invalidation of cache
-        sleep(5000 * (ClusterService.isOpenShift4() ? 4 : 1))
-        log.info("Expect that the suppression has propagated")
-
-        created = orchestrator.createDeploymentNoWait(deployment)
-        assert created
-
-        deleteDeploymentWithCaution(deployment)
-
-        and:
-        "Unsuppress CVE"
-        CVEService.unsuppressImageCVE(cve)
-
-        log.info("Unsuppressed "+cve)
-        // Allow propagation of CVE suppression and invalidation of cache
-        sleep(15000 * (ClusterService.isOpenShift4() ? 4 : 1))
-        log.info("Expect that the unsuppression has propagated")
-
-        and:
-        "Verify unsuppressing lets the deployment be blocked again"
-        created = orchestrator.createDeploymentNoWait(deployment)
-
-        then:
-        assert !created
-
-        cleanup:
-        "Stop ChaosMonkey ASAP to not lose logs"
-        if (chaosMonkey) {
-            chaosMonkey.stop()
-        }
-
-        and:
-        "Delete policy"
-        PolicyService.policyClient.deletePolicy(Common.ResourceByID.newBuilder().setId(policyID).build())
-
-        if (created) {
-            deleteDeploymentWithCaution(deployment)
-        }
-
-        // Add back enforcement
-        Services.updatePolicyEnforcement(SEVERITY_FOR_TEST,
-                [PolicyOuterClass.EnforcementAction.SCALE_TO_ZERO_ENFORCEMENT,]
-        )
-
-        where:
-        "Data inputs are: "
-
-        image | _
-        NGINX_IMAGE_WITH_SHA | _
-        NGINX_IMAGE | _
-    }
-
-    @Unroll
-    @Tag("BAT")
-    @Tag("Parallel")
-    @IgnoreIf({ Env.getTestTarget() == "bat-test" && data.desc == "nginx w/ inline scan" })
-    def "Verify Admission Controller Enforcement on Updates: #desc"() {
-        when:
-        prepareChaosMonkey()
-
-        AdmissionControllerConfig ac = AdmissionControllerConfig.newBuilder()
-                .setEnabled(true)
-                .setEnforceOnUpdates(true)
-                .setDisableBypass(!bypassable)
-                .setScanInline(scan)
-                .setTimeoutSeconds(timeout)
-                .build()
-
-        assert ClusterService.updateAdmissionController(ac)
-        // Maximum time to wait for propagation to sensor
-        sleep(5000)
-
-        and:
-        "Create the deployment with a harmless image"
+        "Create a deployment with a non-violating image"
         def modDeployment = deployment.clone()
-        modDeployment.image = "quay.io/rhacs-eng/qa-multi-arch:busybox-1-28"
+        modDeployment.image = BUSYBOX_TAGGED_IMAGE
         def created = orchestrator.createDeploymentNoWait(modDeployment)
         assert created
 
         then:
-        "Verify that the admission controller reacts to an update"
+        "Update to a violating image and verify enforcement"
         def updated = orchestrator.updateDeploymentNoWait(deployment)
         assert updated == success
 
         cleanup:
-        "Stop ChaosMonkey ASAP to not lose logs"
-        if (chaosMonkey) {
-            chaosMonkey.stop()
-        }
-
-        and:
-        "Revert Cluster"
         if (created) {
             deleteDeploymentWithCaution(deployment)
         }
 
         where:
-        "Data inputs are: "
-
-        timeout | scan  | bypassable | deployment                   | success  | desc
-        3       | false | false      | BUSYBOX_NO_BYPASS_DEPLOYMENT | false    | "no bypass annotation, non-bypassable"
-        3       | false | false      | BUSYBOX_BYPASS_DEPLOYMENT    | false    | "bypass annotation, non-bypassable"
-        3       | false | true       | BUSYBOX_BYPASS_DEPLOYMENT    | true     | "bypass annotation, bypassable"
-        30      | true  | false      | SCAN_INLINE_DEPLOYMENT       | false    | "nginx w/ inline scan"
+        deployment                   | success | desc
+        BUSYBOX_NO_BYPASS_DEPLOYMENT | false   | "blocked by enforced latest tag policy"
+        BUSYBOX_BYPASS_DEPLOYMENT    | true    | "allowed with bypass annotation"
     }
 
     @Unroll
     @Tag("BAT")
     @Tag("Parallel")
-    def "Verify Admission Controller Enforcement respects Cluster/Namespace scopes: match: #clusterMatch/#nsMatch"() {
+    def "Verify admission controller enforcement respects Cluster/Namespace scopes: match: #clusterMatch/#nsMatch"() {
         when:
-        prepareChaosMonkey()
-
-        AdmissionControllerConfig ac = AdmissionControllerConfig.newBuilder()
-                .setEnabled(true)
-                .setScanInline(false)
-                .setTimeoutSeconds(10)
-                .build()
-
-        assert ClusterService.updateAdmissionController(ac)
-
-        and:
-        "Update latest tag policy to respect scope"
+        "Update latest tag policy scope"
         def latestTagPolicy = Services.getPolicyByName(LATEST_TAG_FOR_TEST)
         def scopedLatestTagPolicy = latestTagPolicy.toBuilder()
             .clearScope()
@@ -403,9 +219,6 @@ class AdmissionControllerTest extends BaseSpecification {
             .build()
         Services.updatePolicy(scopedLatestTagPolicy)
 
-        // Maximum time to wait for propagation to sensor
-        sleep(5000)
-
         then:
         "Create a deployment with a latest tag"
         def deployment = new Deployment()
@@ -413,92 +226,30 @@ class AdmissionControllerTest extends BaseSpecification {
                 .setNamespace(TEST_NAMESPACE)
                 .setImage(BUSYBOX_LATEST_TAG_IMAGE)
                 .addLabel("app", "test")
-        def created = orchestrator.createDeploymentNoWait(deployment)
+
+        // Wait for policy propagation to sensor and admission controller
+        def created = null
+        withRetry(10, 1) {
+            created = orchestrator.createDeploymentNoWait(deployment)
+            assert created == !(clusterMatch && nsMatch)
+        }
 
         and:
         "Verify that creation was only blocked if all scopes match"
         assert !created == (clusterMatch && nsMatch)
 
         cleanup:
-        "Stop ChaosMonkey ASAP to not lose logs"
-        if (chaosMonkey) {
-            chaosMonkey.stop()
-        }
-
-        and:
-        "Revert Cluster"
         if (created) {
             deleteDeploymentWithCaution(deployment)
         }
         Services.updatePolicy(latestTagPolicy)
 
         where:
-        "Data inputs are: "
-
         clusterMatch | nsMatch
         false        | false
         false        | true
         true         | false
         true         | true
-    }
-
-    @Tag("Parallel")
-    @Timeout(300)
-    def "Verify admission controller does not impair cluster operations when unstable"() {
-        when:
-        "Check if test is applicable"
-        and:
-        "Stop the regular chaos monkey"
-        if (chaosMonkey) {
-            chaosMonkey.stop()
-        }
-        chaosMonkey = null
-
-        and:
-        "Configure admission controller"
-        AdmissionControllerConfig ac = AdmissionControllerConfig.newBuilder()
-                .setEnabled(false)
-                .setScanInline(false)
-                .setTimeoutSeconds(10)
-                .build()
-
-        assert ClusterService.updateAdmissionController(ac)
-        // Maximum time to wait for propagation to sensor
-        sleep(5000)
-
-        and:
-        "Start a chaos monkey thread that kills _all_ ready admission control replicas with a short grace period"
-        def killAllChaosMonkey = new ChaosMonkey(orchestrator, 0, 1L)
-        killAllChaosMonkey.start()
-        killAllChaosMonkey.waitForEffect()
-
-        then:
-        "Verify deployment can be created"
-        def deployment = MISC_DEPLOYMENT.clone()
-        def created = orchestrator.createDeploymentNoWait(deployment, 10)
-        assert created
-
-        and:
-        "Verify deployment can be modified reliably"
-        for (int i = 0; i < 45; i++) {
-            sleep(1000)
-            deployment.addAnnotation("qa.stackrox.io/iteration", "${i}")
-            assert orchestrator.updateDeploymentNoWait(deployment, 10)
-        }
-
-        cleanup:
-        "Stop chaos monkey"
-        killAllChaosMonkey.stop()
-
-        and:
-        "Wait for all admission control replicas to become ready again"
-        killAllChaosMonkey.waitForReady()
-
-        and:
-        "Delete deployment"
-        if (created) {
-            deleteDeploymentWithCaution(deployment)
-        }
     }
 
     def deleteDeploymentWithCaution(Deployment deployment) {
@@ -513,87 +264,190 @@ class AdmissionControllerTest extends BaseSpecification {
         }
     }
 
-    @Tag("SensorBounceNext")
-    def "Verify admission controller performs image scans if Sensor is Unavailable"() {
+    @Unroll
+    @Tag("BAT")
+    def "Verify AC enforcement with label scoping: #desc"() {
         given:
-        "Chaos monkey is prepared"
-        prepareChaosMonkey()
+        "Set up namespace with labels"
+        def testNs = "qa-label-scope-${desc.replaceAll(' ', '-')}"
+        orchestrator.ensureNamespaceWithLabels(testNs, nsKey, nsLabel)
 
         and:
-        "Admission controller is enabled"
-        AdmissionControllerConfig ac = AdmissionControllerConfig.newBuilder()
-                .setEnabled(true)
-                .setScanInline(true)
-                .setTimeoutSeconds(20)
+        "Create policy with namespace label scoping"
+        def basePolicy = Services.getPolicyByName("Latest tag")
+        def policy = basePolicy.toBuilder()
+                .clearId()
+                .setName("Test - AC Label Scoping ${desc}")
+                .clearScope()
+                .addScope(ScopeOuterClass.Scope.newBuilder()
+                        .setNamespaceLabel(ScopeOuterClass.Scope.Label.newBuilder()
+                                .setKey("team")
+                                .setValue(policyNs)))
+                .clearEnforcementActions()
+                .addEnforcementActions(PolicyOuterClass.EnforcementAction.SCALE_TO_ZERO_ENFORCEMENT)
                 .build()
 
-        assert ClusterService.updateAdmissionController(ac)
-        // Maximum time to wait for propagation to sensor
-        sleep(5000)
-
-        and:
-        "Sensor is unavailable"
-        orchestrator.scaleDeployment("stackrox", "sensor", 0)
-        orchestrator.waitForAllPodsToBeRemoved("stackrox", ["app": "sensor"], 30, 1)
-        log.info("Sensor is now scaled to 0")
-
-        and:
-        "Admission controller is started from scratch w/o cached scans"
-        def admCtrlDeploy = orchestrator.getOrchestratorDeployment("stackrox", "admission-control")
-        def originalAdmCtrlReplicas = admCtrlDeploy.spec.replicas
-        orchestrator.scaleDeployment("stackrox", "admission-control", 0)
-        orchestrator.waitForAllPodsToBeRemoved("stackrox", admCtrlDeploy.spec.selector.matchLabels, 30, 1)
-        log.info("Admission controller scaled to 0, was ${originalAdmCtrlReplicas}")
-        orchestrator.scaleDeployment("stackrox", "admission-control", originalAdmCtrlReplicas)
-        orchestrator.waitForPodsReady("stackrox", admCtrlDeploy.spec.selector.matchLabels,
-                originalAdmCtrlReplicas, 30, 1)
-        log.info("Admission controller scaled back to ${originalAdmCtrlReplicas}")
-
-        and:
-        "Admission controller is ready for work"
-        ApplicationHealth ah = new ApplicationHealth(orchestrator, 60)
-        ah.waitForAdmissionControllerHealthiness()
+        def policyId = PolicyService.createNewPolicy(policy)
 
         when:
-        "A deployment with an image violating a policy is created"
-        def created
-        def consecutiveRejectionsCount = 0
-        withRetry(40, 5) {
-            created = orchestrator.createDeploymentNoWait(SCAN_INLINE_DEPLOYMENT)
-            if (created) {
-                consecutiveRejectionsCount = 0
-                deleteDeploymentWithCaution(SCAN_INLINE_DEPLOYMENT)
-            }
-            else {
-                consecutiveRejectionsCount++
-            }
-            assert !created
-            assert consecutiveRejectionsCount == 5
+        "Create a deployment with latest tag"
+        def deployment = new Deployment()
+                .setName("latest-deploy-${desc.replaceAll(' ', '-')}")
+                .setNamespace(testNs)
+                .setImage("quay.io/rhacs-eng/qa-multi-arch-nginx:latest")
+                .addLabel("app", "test")
+
+        // Wait for policy propagation to Sensor and Admission Controller
+        def created = null
+        withRetry(20, 1) {
+            created = orchestrator.createDeploymentNoWait(deployment)
+            assert created == !blocked
         }
 
         then:
-        "Creation should fail"
-        assert !created
-
-        and:
-        "Creation should fail consistently"
-        assert consecutiveRejectionsCount == 5
+        "Verify deployment blocked/allowed based on label matching"
+        assert created == !blocked
 
         cleanup:
-        "Stop ChaosMonkey ASAP to not lose logs"
-        if (chaosMonkey) {
-            chaosMonkey.stop()
-        }
-
-        and:
-        "Restore sensor"
-        orchestrator.scaleDeployment("stackrox", "sensor", 1)
-        orchestrator.waitForPodsReady("stackrox", ["app": "sensor"], 1, 30, 1)
-
-        and:
-        "Delete nginx deployment"
         if (created) {
-            deleteDeploymentWithCaution(SCAN_INLINE_DEPLOYMENT)
+            deleteDeploymentWithCaution(deployment)
         }
+        orchestrator.deleteNamespace(testNs, false)
+        if (policyId) {
+            PolicyService.deletePolicy(policyId)
+        }
+
+        where:
+        desc                | nsKey  | nsLabel    | policyNs   | blocked
+        "namespace match"   | "team" | "backend"  | "backend"  | true
+        "namespace mismatch"| "team" | "frontend" | "backend"  | false
     }
+
+    @Unroll
+    @Tag("BAT")
+    def "Verify AC respects label hot-reload: #desc"() {
+        given:
+        "Set up namespace with initial label"
+        def testNs = "qa-label-hotreload-${desc.replaceAll(' ', '-')}"
+        orchestrator.ensureNamespaceWithLabels(testNs, "team", initialValue)
+
+        and:
+        "Create policy scoped to initial namespace label value"
+        def basePolicy = Services.getPolicyByName("Latest tag")
+        def policy = basePolicy.toBuilder()
+                .clearId()
+                .setName("Test - AC Hot-Reload ${desc}")
+                .clearScope()
+                .addScope(ScopeOuterClass.Scope.newBuilder()
+                        .setNamespaceLabel(ScopeOuterClass.Scope.Label.newBuilder()
+                                .setKey("team")
+                                .setValue(initialValue)))
+                .clearEnforcementActions()
+                .addEnforcementActions(PolicyOuterClass.EnforcementAction.SCALE_TO_ZERO_ENFORCEMENT)
+                .build()
+
+        def policyId = PolicyService.createNewPolicy(policy)
+
+        when:
+        "Create deployment with latest tag and initial labels - should be blocked"
+        def deployment1 = new Deployment()
+                .setName("latest-before-${desc.replaceAll(' ', '-')}")
+                .setNamespace(testNs)
+                .setImage("quay.io/rhacs-eng/qa-multi-arch-nginx:latest")
+                .addLabel("app", "test")
+
+        // Wait for policy propagation to Sensor and Admission Controller
+        def created1 = null
+        withRetry(20, 1) {
+            created1 = orchestrator.createDeploymentNoWait(deployment1)
+            assert !created1
+        }
+
+        then:
+        "Verify initial deployment is blocked"
+        assert !created1
+
+        when:
+        "Change or remove namespace labels"
+        def ns = orchestrator.client.namespaces().withName(testNs).get()
+        if (changedValue == null) {
+            ns.metadata.labels = [:]
+        } else {
+            ns.metadata.labels = ["team": changedValue]
+        }
+        orchestrator.client.namespaces().withName(testNs).replace(ns)
+        // Wait for namespace label change to propagate
+        withRetry(10, 1) {
+            def updatedNs = orchestrator.client.namespaces().withName(testNs).get()
+            if (changedValue == null) {
+                assert updatedNs.metadata.labels == null || !updatedNs.metadata.labels.containsKey("team")
+            } else {
+                assert updatedNs.metadata.labels?.get("team") == changedValue
+            }
+        }
+
+        and:
+        "Create another deployment with latest tag - should be allowed"
+        def deployment2 = new Deployment()
+                .setName("latest-after-${desc.replaceAll(' ', '-')}")
+                .setNamespace(testNs)
+                .setImage("quay.io/rhacs-eng/qa-multi-arch-nginx:latest")
+                .addLabel("app", "test")
+
+        // Wait for label changes to propagate to admission controller
+        def created2 = null
+        withRetry(10, 1) {
+            created2 = orchestrator.createDeploymentNoWait(deployment2)
+            assert created2
+        }
+
+        then:
+        "Verify deployment is allowed after label change"
+        assert created2
+
+        cleanup:
+        if (created2) {
+            deleteDeploymentWithCaution(deployment2)
+        }
+        orchestrator.deleteNamespace(testNs, false)
+        if (policyId) {
+            PolicyService.deletePolicy(policyId)
+        }
+
+        where:
+        desc               | initialValue | changedValue
+        "namespace reload" | "backend"    | "frontend"
+        "namespace removal"| "backend"    | null
+    }
+
+    @Unroll
+    @Tag("BAT")
+    def "Verify AC enforcement on init containers: #desc"() {
+        when:
+        "Create a deployment with init containers"
+        def deployment = new Deployment()
+                .setName("init-ac-${desc.replaceAll(' ', '-')}")
+                .setNamespace(TEST_NAMESPACE)
+                .setImagePrefetcherAffinity()
+                .setImage(BUSYBOX_TAGGED_IMAGE)
+                .addLabel("app", "test")
+                .addInitContainer("init-0", initImage)
+
+        def created = orchestrator.createDeploymentNoWait(deployment)
+
+        then:
+        "Verify admission controller allows or blocks based on init container image"
+        assert created == allowed
+
+        cleanup:
+        if (created) {
+            deleteDeploymentWithCaution(deployment)
+        }
+
+        where:
+        initImage                | allowed | desc
+        BUSYBOX_TAGGED_IMAGE     | true    | "allowed with tagged init container"
+        BUSYBOX_LATEST_TAG_IMAGE | false   | "blocked with latest tag init container"
+    }
+
 }

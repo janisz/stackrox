@@ -1,7 +1,7 @@
 // If you're adding a new attribute, make sure to add it to "imageComponentAttributes" as well
 
-import { sourceTypeLabels, sourceTypes } from 'types/image.proto';
-import { CompoundSearchFilterAttribute } from '../types';
+import { sourceTypeLabels, sourceTypes } from 'Containers/Vulnerabilities/constants';
+import type { CompoundSearchFilterAttribute } from '../types';
 
 export const Name: CompoundSearchFilterAttribute = {
     displayName: 'Name',
@@ -16,9 +16,10 @@ export const Source: CompoundSearchFilterAttribute = {
     searchTerm: 'Component Source',
     inputType: 'select',
     inputProps: {
-        options: sourceTypes.map((sourceType) => {
-            return { label: sourceTypeLabels[sourceType], value: sourceType };
-        }),
+        options: sourceTypes.map((sourceType) => ({
+            label: sourceTypeLabels[sourceType],
+            value: sourceType,
+        })),
     },
 };
 
@@ -29,4 +30,18 @@ export const Version: CompoundSearchFilterAttribute = {
     inputType: 'text',
 };
 
-export const imageComponentAttributes = [Name, Source, Version];
+export const LayerType: CompoundSearchFilterAttribute = {
+    displayName: 'Layer type',
+    filterChipLabel: 'Image component layer type',
+    searchTerm: 'Component Layer Type',
+    inputType: 'select',
+    featureFlagDependency: ['ROX_BASE_IMAGE_DETECTION'],
+    inputProps: {
+        options: [
+            { label: 'Application', value: 'APPLICATION' },
+            { label: 'Base image', value: 'BASE_IMAGE' },
+        ],
+    },
+};
+
+export const imageComponentAttributes = [LayerType, Name, Source, Version];

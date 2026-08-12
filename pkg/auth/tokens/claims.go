@@ -2,9 +2,8 @@ package tokens
 
 import (
 	"encoding/json"
-	"time"
 
-	"github.com/go-jose/go-jose/v3/jwt"
+	"github.com/go-jose/go-jose/v4/jwt"
 )
 
 // ExternalUserClaim represents the claim that this token identifies a user from an external identity provider.
@@ -20,15 +19,19 @@ type ExternalUserClaim struct {
 // RoxClaims are the claims used for authentication by the StackRox Kubernetes security platform.
 type RoxClaims struct {
 	// Role represents the claim that the user identified by the token has the given role.
+	//
 	// Deprecated: Use RoleNames instead.
 	RoleName string `json:"role,omitempty"`
 	// RoleNames represents the claim that the user identified by the token has the given roles.
 	RoleNames []string `json:"roles,omitempty"`
 	// ExternalUser represents the claim that this token identifies a user from an external identity provider.
 	ExternalUser *ExternalUserClaim `json:"external_user,omitempty"`
+	// InternalRoles represents the claim that this token grants the described roles for internal use.
+	InternalRoles []*InternalRole `json:"access,omitempty"`
 	// Name represents the name of the token assigned by the creator.
-	Name     string `json:"name,omitempty"`
-	ExpireAt *time.Time
+	Name string `json:"name,omitempty"`
+	// Requester represents the name of the token requester, assigned by the creator.
+	Requester string `json:"req,omitempty"`
 }
 
 // Claims are the claims contained in a token.

@@ -1,7 +1,9 @@
-import React, { ReactElement, useEffect, useState } from 'react';
-import { FormikContextType } from 'formik';
+import { useEffect, useState } from 'react';
+import type { ReactElement } from 'react';
+import type { FormikContextType } from 'formik';
 import {
     Alert,
+    Button,
     Flex,
     FlexItem,
     Form,
@@ -15,19 +17,18 @@ import {
 import { OutlinedQuestionCircleIcon } from '@patternfly/react-icons';
 
 import {
+    computeEffectiveAccessScopeClusters,
+    getIsUnrestrictedAccessScopeId,
+} from 'services/AccessScopesService';
+import type {
     AccessScope,
     EffectiveAccessScopeCluster,
     LabelSelector,
     LabelSelectorsKey,
-    computeEffectiveAccessScopeClusters,
-    getIsUnrestrictedAccessScopeId,
 } from 'services/AccessScopesService';
 
-import {
-    LabelSelectorsEditingState,
-    getIsValidRules,
-    getTemporarilyValidRules,
-} from './accessScopes.utils';
+import { getIsValidRules, getTemporarilyValidRules } from './accessScopes.utils';
+import type { LabelSelectorsEditingState } from './accessScopes.utils';
 import EffectiveAccessScopeTable from './EffectiveAccessScopeTable';
 import LabelInclusion from './LabelInclusion';
 
@@ -37,9 +38,12 @@ const labelIconEffectiveAccessScope = (
         isContentLeftAligned
         maxWidth="24em"
     >
-        <div className="pf-v5-c-button pf-m-plain pf-m-small">
-            <OutlinedQuestionCircleIcon />
-        </div>
+        <Button
+            variant="plain"
+            size="sm"
+            aria-label="Effective access scope information"
+            icon={<OutlinedQuestionCircleIcon />}
+        />
     </Tooltip>
 );
 
@@ -54,9 +58,12 @@ const labelIconLabelInclusion = (
         isContentLeftAligned
         maxWidth="24em"
     >
-        <div className="pf-v5-c-button pf-m-plain pf-m-small">
-            <OutlinedQuestionCircleIcon />
-        </div>
+        <Button
+            variant="plain"
+            size="sm"
+            aria-label="Label inclusion information"
+            icon={<OutlinedQuestionCircleIcon />}
+        />
     </Tooltip>
 );
 
@@ -67,7 +74,6 @@ export type AccessScopeFormProps = {
 };
 
 function AccessScopeForm({ hasAction, alertSubmit, formik }: AccessScopeFormProps): ReactElement {
-    const [counterComputing, setCounterComputing] = useState(0);
     const [alertCompute, setAlertCompute] = useState<ReactElement | null>(null);
     const [clusters, setClusters] = useState<EffectiveAccessScopeCluster[]>([]);
 
@@ -86,11 +92,11 @@ function AccessScopeForm({ hasAction, alertSubmit, formik }: AccessScopeFormProp
      */
     const isValidRules =
         !getIsUnrestrictedAccessScopeId(values.id) && getIsValidRules(values.rules);
+    /* eslint-disable react-hooks/exhaustive-deps */
     useEffect(() => {
         if (getIsUnrestrictedAccessScopeId(values.id)) {
             return;
         }
-        setCounterComputing((counterPrev) => counterPrev + 1);
         computeEffectiveAccessScopeClusters(
             isValidRules ? values.rules : getTemporarilyValidRules(values.rules)
         )
@@ -109,11 +115,10 @@ function AccessScopeForm({ hasAction, alertSubmit, formik }: AccessScopeFormProp
                         {error.message}
                     </Alert>
                 );
-            })
-            .finally(() => {
-                setCounterComputing((counterPrev) => counterPrev - 1);
             });
     }, [isValidRules, values.rules]);
+    // values.id
+    /* eslint-enable react-hooks/exhaustive-deps */
 
     function onChange(_value, event) {
         handleChange(event);
@@ -201,14 +206,13 @@ function AccessScopeForm({ hasAction, alertSubmit, formik }: AccessScopeFormProp
                     direction={{ default: 'row' }}
                     spaceItems={{ default: 'spaceItemsSm', xl: 'spaceItemsLg' }}
                 >
-                    <FlexItem className="pf-v5-u-flex-basis-0" flex={{ default: 'flex_1' }}>
+                    <FlexItem className="pf-v6-u-flex-basis-0" flex={{ default: 'flex_1' }}>
                         <FormGroup
                             label="Allowed resources"
                             fieldId="effectiveAccessScope"
-                            labelIcon={labelIconEffectiveAccessScope}
+                            labelHelp={labelIconEffectiveAccessScope}
                         >
                             <EffectiveAccessScopeTable
-                                counterComputing={counterComputing}
                                 clusters={clusters}
                                 includedClusters={values.rules.includedClusters}
                                 includedNamespaces={values.rules.includedNamespaces}
@@ -218,11 +222,11 @@ function AccessScopeForm({ hasAction, alertSubmit, formik }: AccessScopeFormProp
                             />
                         </FormGroup>
                     </FlexItem>
-                    <FlexItem className="pf-v5-u-flex-basis-0" flex={{ default: 'flex_1' }}>
+                    <FlexItem className="pf-v6-u-flex-basis-0" flex={{ default: 'flex_1' }}>
                         <FormGroup
                             label="Label selection rules"
                             fieldId="labelInclusion"
-                            labelIcon={labelIconLabelInclusion}
+                            labelHelp={labelIconLabelInclusion}
                         >
                             <LabelInclusion
                                 clusterLabelSelectors={values.rules.clusterLabelSelectors}

@@ -41,10 +41,6 @@ func (s *AuthMachineToMachineConfigsStoreSuite) SetupTest() {
 	s.NoError(err)
 }
 
-func (s *AuthMachineToMachineConfigsStoreSuite) TearDownSuite() {
-	s.testDB.Teardown(s.T())
-}
-
 func (s *AuthMachineToMachineConfigsStoreSuite) TestStore() {
 	ctx := sac.WithAllAccess(context.Background())
 
@@ -96,9 +92,11 @@ func (s *AuthMachineToMachineConfigsStoreSuite) TestStore() {
 	}
 
 	s.NoError(store.UpsertMany(ctx, authMachineToMachineConfigs))
-	allAuthMachineToMachineConfig, err := store.GetAll(ctx)
+
+	foundAuthMachineToMachineConfigs, missing, err := store.GetMany(ctx, authMachineToMachineConfigIDs)
 	s.NoError(err)
-	protoassert.ElementsMatch(s.T(), authMachineToMachineConfigs, allAuthMachineToMachineConfig)
+	s.Empty(missing)
+	protoassert.ElementsMatch(s.T(), authMachineToMachineConfigs, foundAuthMachineToMachineConfigs)
 
 	authMachineToMachineConfigCount, err = store.Count(ctx, search.EmptyQuery())
 	s.NoError(err)

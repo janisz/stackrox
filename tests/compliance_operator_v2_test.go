@@ -4,7 +4,6 @@ package tests
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"testing"
 	"time"
@@ -14,14 +13,17 @@ import (
 	"github.com/stackrox/rox/central/complianceoperator/v2/scanconfigurations/service"
 	v1 "github.com/stackrox/rox/generated/api/v1"
 	v2 "github.com/stackrox/rox/generated/api/v2"
+	"github.com/stackrox/rox/pkg/concurrency"
 	"github.com/stackrox/rox/pkg/protoconv/schedule"
-	"github.com/stackrox/rox/pkg/retry"
+	"github.com/stackrox/rox/pkg/sync"
+	"github.com/stackrox/rox/pkg/testutils"
 	"github.com/stackrox/rox/pkg/testutils/centralgrpc"
 	"github.com/stackrox/rox/pkg/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	appsv1 "k8s.io/api/apps/v1"
 	autoscalingV1 "k8s.io/api/autoscaling/v1"
+	corev1 "k8s.io/api/core/v1"
 	extscheme "k8s.io/apiextensions-apiserver/pkg/client/clientset/clientset/scheme"
 	errors2 "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -30,19 +32,22 @@ import (
 	cached "k8s.io/client-go/discovery/cached"
 	"k8s.io/client-go/kubernetes"
 	cgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/client-go/rest"
 	"k8s.io/client-go/restmapper"
-	dynclient "sigs.k8s.io/controller-runtime/pkg/client"
+	ctrlClient "sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 const (
-	coNamespaceV2     = "openshift-compliance"
-	stackroxNamespace = "stackrox"
+	coNamespaceV2       = "openshift-compliance"
+	stackroxNamespace   = "stackrox"
+	defaultTimeout      = 120 * time.Second
+	defaultInterval     = 5 * time.Second
+	waitForDoneTimeout  = 5 * time.Minute
+	waitForDoneInterval = 30 * time.Second
+	knownRuleName       = "ocp4-api-server-encryption-provider-cipher"
 )
 
 var (
-	scanName        = "sync-test"
-	initialProfiles = []string{"ocp4-cis"}
-	updatedProfiles = []string{"ocp4-cis-1-4", "ocp4-cis-node-1-4"}
 	initialSchedule = &v2.Schedule{
 		Hour:         12,
 		Minute:       0,
@@ -63,18 +68,32 @@ var (
 			},
 		},
 	}
-	scanConfig = v2.ComplianceScanConfiguration{
-		ScanName: scanName,
-		ScanConfig: &v2.BaseComplianceScanConfigurationSettings{
-			Description:  scanName,
-			OneTimeScan:  false,
-			Profiles:     initialProfiles,
-			ScanSchedule: initialSchedule,
-		},
-	}
 )
 
-func scaleToN(ctx context.Context, client kubernetes.Interface, deploymentName string, namespace string, replicas int32) (err error) {
+// profileRef pairs a profile name with its compliance operator kind (Profile/TailoredProfile),
+// used to assert both the name and the Kind field on ScanSettingBinding profile entries.
+type profileRef struct {
+	name         string
+	operatorKind v2.ComplianceProfile_OperatorKind
+}
+
+func (p profileRef) k8sKind() string {
+	if p.operatorKind == v2.ComplianceProfile_TAILORED_PROFILE {
+		return "TailoredProfile"
+	}
+	return "Profile"
+}
+
+// profileNames extracts names for the Central API (which takes repeated string).
+func profileNames(refs []profileRef) []string {
+	names := make([]string, len(refs))
+	for i, r := range refs {
+		names[i] = r.name
+	}
+	return names
+}
+
+func scaleToN(ctx context.Context, t *testing.T, client kubernetes.Interface, deploymentName string, namespace string, replicas int32) {
 	scaleRequest := &autoscalingV1.Scale{
 		Spec: autoscalingV1.ScaleSpec{
 			Replicas: replicas,
@@ -85,15 +104,15 @@ func scaleToN(ctx context.Context, client kubernetes.Interface, deploymentName s
 		},
 	}
 
-	_, err = client.AppsV1().Deployments(namespace).UpdateScale(ctx, deploymentName, scaleRequest, metav1.UpdateOptions{})
-	if err != nil {
-		return retry.MakeRetryable(err)
-	}
-	return nil
+	require.EventuallyWithT(t, func(c *assert.CollectT) {
+		_, err := client.AppsV1().Deployments(namespace).UpdateScale(ctx, deploymentName, scaleRequest, metav1.UpdateOptions{})
+		require.NoErrorf(c, err, "failed to scale %q to %q replicas", deploymentName, replicas)
+	}, defaultTimeout, defaultInterval)
 }
 
-func createDynamicClient(t *testing.T) dynclient.Client {
+func createDynamicClient(t testutils.T) ctrlClient.Client {
 	restCfg := getConfig(t)
+	restCfg.WarningHandler = rest.NoWarnings{}
 	k8sClient := createK8sClient(t)
 
 	k8sScheme := runtime.NewScheme()
@@ -108,12 +127,11 @@ func createDynamicClient(t *testing.T) dynclient.Client {
 	restMapper := restmapper.NewDeferredDiscoveryRESTMapper(cachedClientDiscovery)
 	restMapper.Reset()
 
-	client, err := dynclient.New(
+	client, err := ctrlClient.New(
 		restCfg,
-		dynclient.Options{
-			Scheme:         k8sScheme,
-			Mapper:         restMapper,
-			WarningHandler: dynclient.WarningHandlerOptions{SuppressWarnings: true},
+		ctrlClient.Options{
+			Scheme: k8sScheme,
+			Mapper: restMapper,
 		},
 	)
 	require.NoError(t, err, "failed to create dynamic client")
@@ -125,108 +143,268 @@ func createDynamicClient(t *testing.T) dynclient.Client {
 	return client
 }
 
-func waitForComplianceSuiteToComplete(t *testing.T, suiteName string, interval, timeout time.Duration) {
-	client := createDynamicClient(t)
+func waitForComplianceSuiteToComplete(t *testing.T, client ctrlClient.Client, suiteName string, interval, timeout time.Duration) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
 
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
+	t.Logf("Waiting for ComplianceSuite %s to reach DONE phase", suiteName)
+	require.EventuallyWithT(t, func(c *assert.CollectT) {
+		callCtx, callCancel := context.WithTimeout(ctx, interval)
+		defer callCancel()
 
-	timer := time.NewTimer(timeout)
-	defer timer.Stop()
+		// Assert that ScanSetting and ScanSettingBinding have been created.
+		var scanSetting complianceoperatorv1.ScanSetting
+		err := client.Get(callCtx,
+			types.NamespacedName{Name: suiteName, Namespace: coNamespaceV2},
+			&scanSetting,
+		)
+		assert.NoErrorf(c, err, "failed to get ScanSetting %s", suiteName)
 
-	log.Info("Waiting for ComplianceSuite to reach DONE phase")
-	for {
-		select {
-		case <-ticker.C:
-			var suite complianceoperatorv1.ComplianceSuite
-			err := client.Get(context.TODO(), types.NamespacedName{Name: suiteName, Namespace: "openshift-compliance"}, &suite)
-			require.NoError(t, err, "failed to get ComplianceSuite %s", suiteName)
+		var scanSettingBinding complianceoperatorv1.ScanSettingBinding
+		err = client.Get(callCtx,
+			types.NamespacedName{Name: suiteName, Namespace: coNamespaceV2},
+			&scanSettingBinding,
+		)
+		assert.NoErrorf(c, err, "failed to get ScanSettingBinding %s", suiteName)
 
-			if suite.Status.Phase == "DONE" {
-				log.Infof("ComplianceSuite %s reached DONE phase", suiteName)
+		var suite complianceoperatorv1.ComplianceSuite
+		err = client.Get(callCtx,
+			types.NamespacedName{Name: suiteName, Namespace: coNamespaceV2},
+			&suite,
+		)
+		assert.NoErrorf(c, err, "failed to get ComplianceSuite %s", suiteName)
+		require.Equalf(c, complianceoperatorv1.PhaseDone, suite.Status.Phase,
+			"ComplianceSuite %s not DONE (current phase is %q)", suiteName, suite.Status.Phase)
+	}, timeout, interval)
+	t.Logf("ComplianceSuite %s has reached DONE phase", suiteName)
+}
+
+func deleteResource[T any, PT interface {
+	ctrlClient.Object
+	*T
+}](ctx context.Context, t *testing.T, client ctrlClient.Client, name, namespace string) {
+	key := types.NamespacedName{Name: name, Namespace: namespace}
+
+	assert.EventuallyWithT(t, func(c *assert.CollectT) {
+		var obj T
+		ptr := PT(&obj)
+		ptr.SetName(name)
+		ptr.SetNamespace(namespace)
+		err := client.Delete(ctx, ptr)
+		if err != nil && !errors2.IsNotFound(err) {
+			t.Logf("failed to delete %T %s/%s: %v", ptr, namespace, name, err)
+		}
+		err = client.Get(ctx, key, ptr)
+		require.True(c, errors2.IsNotFound(err), "%T %s/%s still exists", ptr, namespace, name)
+	}, defaultTimeout, defaultInterval)
+}
+
+func cleanUpResources(ctx context.Context, t *testing.T, client ctrlClient.Client, resourceName string, namespace string) {
+	deleteResource[complianceoperatorv1.ScanSettingBinding](ctx, t, client, resourceName, namespace)
+	deleteResource[complianceoperatorv1.ScanSetting](ctx, t, client, resourceName, namespace)
+}
+
+// createCustomRule creates a CEL CustomRule with the given name, waits for it
+// to reach Ready phase, and registers cleanup.
+func createCustomRule(ctx context.Context, t *testing.T, client ctrlClient.Client, name string) {
+	// Create a ConfigMap with a test-specific marker key so the CEL
+	// expression matches only this test's ConfigMap, not other tests'.
+	markerKey := "e2e-marker-" + name
+	cm := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: coNamespaceV2},
+		Data:       map[string]string{markerKey: "true"},
+	}
+	if err := client.Create(ctx, cm); err != nil && !errors2.IsAlreadyExists(err) {
+		require.NoError(t, err, "failed to create ConfigMap")
+	}
+	t.Cleanup(func() {
+		deleteResource[corev1.ConfigMap](ctx, t, client, name, coNamespaceV2)
+	})
+
+	cr := &complianceoperatorv1.CustomRule{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: coNamespaceV2,
+		},
+		Spec: complianceoperatorv1.CustomRuleSpec{
+			RulePayload: complianceoperatorv1.RulePayload{
+				// CO recommendation: set metadata.name and spec.rulePayload.id
+				// to the same DNS-friendly value (lowercase, hyphens, no underscores).
+				ID:          name,
+				Title:       "ConfigMap has e2e marker",
+				Description: "Checks for a ConfigMap with an e2e-marker data key",
+				Rationale:   "E2E test marker must be present",
+				Severity:    "medium",
+				CheckType:   "Platform",
+			},
+			CustomRulePayload: complianceoperatorv1.CustomRulePayload{
+				ScannerType:   complianceoperatorv1.ScannerTypeCEL,
+				Expression:    fmt.Sprintf(`configmaps.items.exists(cm, has(cm.data) && "%s" in cm.data)`, markerKey),
+				FailureReason: fmt.Sprintf("No ConfigMap with '%s' data key found", markerKey),
+				Inputs: []complianceoperatorv1.InputPayload{
+					{
+						Name: "configmaps",
+						KubernetesInputSpec: complianceoperatorv1.KubernetesInputSpec{
+							APIVersion:        "v1",
+							Resource:          "configmaps",
+							ResourceNamespace: coNamespaceV2,
+						},
+					},
+				},
+			},
+		},
+	}
+	if err := client.Create(ctx, cr); err != nil && !errors2.IsAlreadyExists(err) {
+		require.NoError(t, err, "failed to create CustomRule")
+	}
+	t.Cleanup(func() {
+		deleteResource[complianceoperatorv1.CustomRule](ctx, t, client, name, coNamespaceV2)
+	})
+
+	require.EventuallyWithT(t, func(c *assert.CollectT) {
+		var current complianceoperatorv1.CustomRule
+		err := client.Get(ctx, types.NamespacedName{Name: name, Namespace: coNamespaceV2}, &current)
+		require.NoError(c, err)
+		require.Equalf(c, complianceoperatorv1.CustomRulePhaseReady, current.Status.Phase,
+			"CustomRule %s not Ready (phase: %s, error: %s)",
+			name, current.Status.Phase, current.Status.ErrorMessage)
+	}, 10*time.Second, 1*time.Second)
+}
+
+// createTailoredProfile creates an extends-based TailoredProfile (extending
+// ocp4-e8), waits for it to be READY in k8s, and registers cleanup.
+func createTailoredProfile(ctx context.Context, t *testing.T, client ctrlClient.Client, name string) {
+	tp := &complianceoperatorv1.TailoredProfile{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: coNamespaceV2,
+		},
+		Spec: complianceoperatorv1.TailoredProfileSpec{
+			Extends:     "ocp4-e8",
+			Title:       fmt.Sprintf("E2E TailoredProfile %s", name),
+			Description: "Extends ocp4-e8 for e2e testing",
+			DisableRules: []complianceoperatorv1.RuleReferenceSpec{
+				{Name: knownRuleName, Rationale: "e2e test"},
+			},
+		},
+	}
+
+	if err := client.Create(ctx, tp); err != nil && !errors2.IsAlreadyExists(err) {
+		require.NoError(t, err, "failed to create TailoredProfile")
+	}
+
+	t.Cleanup(func() {
+		deleteResource[complianceoperatorv1.TailoredProfile](ctx, t, client, name, coNamespaceV2)
+	})
+
+	require.EventuallyWithT(t, func(c *assert.CollectT) {
+		var current complianceoperatorv1.TailoredProfile
+		err := client.Get(ctx, types.NamespacedName{Name: name, Namespace: coNamespaceV2}, &current)
+		require.NoErrorf(c, err, "failed to get TailoredProfile %s", name)
+		require.Equalf(c, complianceoperatorv1.TailoredProfileStateReady, current.Status.State,
+			"TailoredProfile %s not READY (state: %q, error: %q)",
+			name, current.Status.State, current.Status.ErrorMessage)
+	}, 1*time.Minute, 2*time.Second)
+}
+
+// waitUntilTPInCentralDB waits for a tailored profile to appear in Central's
+// database (via the compliance profile API) and returns it.
+func waitUntilTPInCentralDB(ctx context.Context, t *testing.T,
+	client v2.ComplianceProfileServiceClient, clusterID, name string,
+) *v2.ComplianceProfile {
+	var (
+		mu      sync.Mutex
+		profile *v2.ComplianceProfile
+	)
+	require.EventuallyWithT(t, func(c *assert.CollectT) {
+		profileList, err := client.ListComplianceProfiles(ctx,
+			&v2.ProfilesForClusterRequest{
+				ClusterId: clusterID,
+				Query:     &v2.RawQuery{Query: "Compliance Profile Name:" + name},
+			})
+		require.NoErrorf(c, err, "failed to list profiles")
+		for _, p := range profileList.GetProfiles() {
+			if p.GetName() == name {
+				concurrency.WithLock(&mu, func() {
+					profile = p
+				})
 				return
 			}
-			log.Infof("ComplianceSuite %s is in %s phase", suiteName, suite.Status.Phase)
-		case <-timer.C:
-			t.Fatalf("Timed out waiting for ComplianceSuite to complete")
 		}
-	}
+		require.Failf(c, "TailoredProfile not yet in Central DB", "profile %q not found", name)
+	}, 10*time.Second, 1*time.Second)
+	mu.Lock()
+	defer mu.Unlock()
+	return profile
 }
 
-func cleanUpResources(ctx context.Context, t *testing.T, resourceName string, namespace string) {
-	client := createDynamicClient(t)
+func assertResourceDoesNotExist[T any, PT interface {
+	ctrlClient.Object
+	*T
+}](ctx context.Context, t testutils.T, client ctrlClient.Client, name, namespace string) {
+	require.EventuallyWithT(t, func(c *assert.CollectT) {
+		var obj T
+		err := client.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, PT(&obj))
+		require.True(c, errors2.IsNotFound(err), "%T %s/%s still exists", obj, namespace, name)
+	}, defaultTimeout, defaultInterval)
+}
+
+func assertScanSetting(ctx context.Context, t testutils.T, client ctrlClient.Client, name, namespace string, scanConfig *v2.ComplianceScanConfiguration) {
 	scanSetting := &complianceoperatorv1.ScanSetting{}
-	scanSettingBinding := &complianceoperatorv1.ScanSettingBinding{}
-	err := client.Get(ctx, types.NamespacedName{Name: resourceName, Namespace: namespace}, scanSetting)
-	if err == nil {
-		_ = client.Delete(ctx, scanSetting)
-	}
-	err = client.Get(ctx, types.NamespacedName{Name: resourceName, Namespace: namespace}, scanSettingBinding)
-	if err == nil {
-		_ = client.Delete(ctx, scanSettingBinding)
-	}
-}
+	err := client.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, scanSetting)
+	require.NoErrorf(t, err, "ScanSetting %s/%s does not exist", namespace, name)
 
-func assertResourceDoesExist(ctx context.Context, t *testing.T, resourceName string, namespace string, obj dynclient.Object) dynclient.Object {
-	client := createDynamicClient(t)
-	require.Eventually(t, func() bool {
-		return client.Get(ctx, types.NamespacedName{Name: resourceName, Namespace: namespace}, obj) == nil
-	}, 60*time.Second, 10*time.Millisecond)
-	return obj
-}
-
-func assertResourceWasUpdated(ctx context.Context, t *testing.T, resourceName string, namespace string, obj dynclient.Object) dynclient.Object {
-	client := createDynamicClient(t)
-	oldResourceVersion := obj.GetResourceVersion()
-	require.Eventually(t, func() bool {
-		return client.Get(ctx, types.NamespacedName{Name: resourceName, Namespace: namespace}, obj) == nil && obj.GetResourceVersion() != oldResourceVersion
-	}, 60*time.Second, 10*time.Millisecond)
-	return obj
-}
-
-func assertResourceDoesNotExist(ctx context.Context, t *testing.T, resourceName string, namespace string, obj dynclient.Object) {
-	client := createDynamicClient(t)
-	require.Eventually(t, func() bool {
-		err := client.Get(ctx, types.NamespacedName{Name: resourceName, Namespace: namespace}, obj)
-		return errors2.IsNotFound(err)
-	}, 60*time.Second, 10*time.Millisecond)
-}
-
-func assertScanSetting(t *testing.T, scanConfig v2.ComplianceScanConfiguration, scanSetting *complianceoperatorv1.ScanSetting) {
-	require.NotNil(t, scanSetting)
 	cron, err := schedule.ConvertToCronTab(service.ConvertV2ScheduleToProto(scanConfig.GetScanConfig().GetScanSchedule()))
 	require.NoError(t, err)
 	assert.Equal(t, scanConfig.GetScanName(), scanSetting.GetName())
 	assert.Equal(t, cron, scanSetting.ComplianceSuiteSettings.Schedule)
-	assert.Contains(t, scanSetting.Labels, "app.kubernetes.io/name")
-	assert.Equal(t, scanSetting.Labels["app.kubernetes.io/name"], "stackrox")
-	assert.Contains(t, scanSetting.Annotations, "owner")
-	assert.Equal(t, scanSetting.Annotations["owner"], "stackrox")
+	require.Contains(t, scanSetting.GetLabels(), "app.kubernetes.io/name")
+	assert.Equal(t, scanSetting.GetLabels()["app.kubernetes.io/name"], "stackrox")
+	require.Contains(t, scanSetting.GetAnnotations(), "owner")
+	assert.Equal(t, scanSetting.GetAnnotations()["owner"], "stackrox")
 }
 
-func assertScanSettingBinding(t *testing.T, scanConfig v2.ComplianceScanConfiguration, scanSettingBinding *complianceoperatorv1.ScanSettingBinding) {
-	require.NotNil(t, scanSettingBinding)
-	assert.Equal(t, scanConfig.GetScanName(), scanSettingBinding.GetName())
-	for _, profile := range scanSettingBinding.Profiles {
-		assert.Contains(t, scanConfig.GetScanConfig().GetProfiles(), profile.Name)
+func assertScanSettingBinding(ctx context.Context, t testutils.T, client ctrlClient.Client,
+	name, namespace string, expectedProfiles []profileRef) {
+	ssb := &complianceoperatorv1.ScanSettingBinding{}
+	err := client.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, ssb)
+	require.NoErrorf(t, err, "ScanSettingBinding %s/%s does not exist", namespace, name)
+
+	assert.Equal(t, name, ssb.GetName())
+	require.Len(t, ssb.Profiles, len(expectedProfiles))
+	for _, expected := range expectedProfiles {
+		found := false
+		for _, actual := range ssb.Profiles {
+			if actual.Name == expected.name {
+				found = true
+				assert.Equalf(t, expected.k8sKind(), actual.Kind,
+					"SSB profile %q: expected Kind %q, got %q",
+					expected.name, expected.k8sKind(), actual.Kind)
+				break
+			}
+		}
+		assert.Truef(t, found, "profile %q not found in SSB", expected.name)
 	}
-	assert.Contains(t, scanSettingBinding.Labels, "app.kubernetes.io/name")
-	assert.Equal(t, scanSettingBinding.Labels["app.kubernetes.io/name"], "stackrox")
-	assert.Contains(t, scanSettingBinding.Annotations, "owner")
-	assert.Equal(t, scanSettingBinding.Annotations["owner"], "stackrox")
+	require.Contains(t, ssb.Labels, "app.kubernetes.io/name")
+	assert.Equal(t, "stackrox", ssb.Labels["app.kubernetes.io/name"])
+	require.Contains(t, ssb.Annotations, "owner")
+	assert.Equal(t, "stackrox", ssb.Annotations["owner"])
 }
 
-func waitForDeploymentReady(ctx context.Context, t *testing.T, name string, namespace string, numReplicas int32) {
-	client := createDynamicClient(t)
-	require.Eventually(t, func() bool {
+func waitForDeploymentReady(ctx context.Context, t *testing.T, client ctrlClient.Client, name string, namespace string, numReplicas int32) {
+	require.EventuallyWithT(t, func(c *assert.CollectT) {
 		deployment := &appsv1.Deployment{}
-		return client.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, deployment) == nil && deployment.Status.ReadyReplicas == numReplicas
-	}, 60*time.Second, 10*time.Millisecond)
+		err := client.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, deployment)
+		require.NoErrorf(c, err, "failed to get deployment %q", name)
+		require.Equal(c, numReplicas, deployment.Status.ReadyReplicas)
+	}, defaultTimeout, defaultInterval)
 }
 
+// Run this test outside of other parallel tests because of the Sensor side effects.
 func TestComplianceV2CentralSendsScanConfiguration(t *testing.T) {
 	ctx := context.Background()
 	k8sClient := createK8sClient(t)
+	dynClient := createDynamicClient(t)
 
 	conn := centralgrpc.GRPCConnectionToCentral(t)
 	// Create the ScanConfiguration service
@@ -239,12 +417,35 @@ func TestComplianceV2CentralSendsScanConfiguration(t *testing.T) {
 	require.Greater(t, len(clusters.GetClusters()), 0)
 	clusterID := clusters.GetClusters()[0].GetId()
 
-	// Set the cluster ID
-	scanConfig.Clusters = []string{clusterID}
+	// Create tailored profile and wait until it appears in Central.
+	testID := fmt.Sprintf("sync-%s", uuid.NewV4().String())
+	tpName := testID
+	createTailoredProfile(ctx, t, dynClient, tpName)
+	profileClient := v2.NewComplianceProfileServiceClient(conn)
+	waitUntilTPInCentralDB(ctx, t, profileClient, clusterID, tpName)
+
+	// Use mixed profiles (Profile + TailoredProfile) to validate that the startup
+	// sync path preserves profile_refs with correct kinds.
+	initialProfiles := []profileRef{
+		{name: "ocp4-cis", operatorKind: v2.ComplianceProfile_PROFILE},
+		{name: tpName, operatorKind: v2.ComplianceProfile_TAILORED_PROFILE},
+	}
+
+	// Create local scan config with UUID-based name for test isolation.
+	scanConfig := v2.ComplianceScanConfiguration{
+		ScanName: testID,
+		Clusters: []string{clusterID},
+		ScanConfig: &v2.BaseComplianceScanConfigurationSettings{
+			Description:  testID,
+			OneTimeScan:  false,
+			Profiles:     profileNames(initialProfiles),
+			ScanSchedule: initialSchedule,
+		},
+	}
 
 	// Scale down Sensor
-	assert.NoError(t, scaleToN(ctx, k8sClient, "sensor", stackroxNamespace, 0))
-	waitForDeploymentReady(ctx, t, "sensor", stackroxNamespace, 0)
+	scaleToN(ctx, t, k8sClient, "sensor", stackroxNamespace, 0)
+	waitForDeploymentReady(ctx, t, dynClient, "sensor", stackroxNamespace, 0)
 
 	// Create ScanConfig in Central
 	res, err := scanConfigService.CreateComplianceScanConfiguration(ctx, &scanConfig)
@@ -256,103 +457,142 @@ func TestComplianceV2CentralSendsScanConfiguration(t *testing.T) {
 			Id: res.GetId(),
 		}
 		_, _ = scanConfigService.DeleteComplianceScanConfiguration(ctx, reqDelete)
-		cleanUpResources(ctx, t, scanName, coNamespaceV2)
+		cleanUpResources(ctx, t, dynClient, testID, coNamespaceV2)
 	})
 
 	// Scale up Sensor
-	assert.NoError(t, scaleToN(ctx, k8sClient, "sensor", stackroxNamespace, 1))
-	waitForDeploymentReady(ctx, t, "sensor", stackroxNamespace, 1)
+	scaleToN(ctx, t, k8sClient, "sensor", stackroxNamespace, 1)
+	waitForDeploymentReady(ctx, t, dynClient, "sensor", stackroxNamespace, 1)
 
-	// Assert the ScanSetting and the ScanSettingBinding are created
-	scanSetting := &complianceoperatorv1.ScanSetting{}
-	scanSettingBinding := &complianceoperatorv1.ScanSettingBinding{}
-	assertResourceDoesExist(ctx, t, scanName, coNamespaceV2, scanSetting)
-	assertResourceDoesExist(ctx, t, scanName, coNamespaceV2, scanSettingBinding)
-	assertScanSetting(t, scanConfig, scanSetting)
-	assertScanSettingBinding(t, scanConfig, scanSettingBinding)
+	// Assert the ScanSetting and the ScanSettingBinding are created with correct profile kinds.
+	assert.EventuallyWithT(t, func(c *assert.CollectT) {
+		assertScanSetting(ctx, wrapCollectT(t, c), dynClient, testID, coNamespaceV2, &scanConfig)
+		assertScanSettingBinding(ctx, wrapCollectT(t, c), dynClient, testID, coNamespaceV2, initialProfiles)
+	}, defaultTimeout, defaultInterval)
 
 	// Scale down Sensor
-	assert.NoError(t, scaleToN(ctx, k8sClient, "sensor", stackroxNamespace, 0))
-	waitForDeploymentReady(ctx, t, "sensor", stackroxNamespace, 0)
+	scaleToN(ctx, t, k8sClient, "sensor", stackroxNamespace, 0)
+	waitForDeploymentReady(ctx, t, dynClient, "sensor", stackroxNamespace, 0)
 
-	// Update the ScanConfig in Central
+	// Update the ScanConfig in Central with a different set of mixed profiles.
+	updatedProfiles := []profileRef{
+		{name: "ocp4-pci-dss", operatorKind: v2.ComplianceProfile_PROFILE},
+		{name: tpName, operatorKind: v2.ComplianceProfile_TAILORED_PROFILE},
+	}
 	scanConfig.Id = res.GetId()
-	scanConfig.ScanConfig.Profiles = updatedProfiles
+	scanConfig.ScanConfig.Profiles = profileNames(updatedProfiles)
 	scanConfig.ScanConfig.ScanSchedule = updatedSchedule
 	_, err = scanConfigService.UpdateComplianceScanConfiguration(ctx, &scanConfig)
 	assert.NoError(t, err)
 
 	// Scale up Sensor
-	assert.NoError(t, scaleToN(ctx, k8sClient, "sensor", stackroxNamespace, 1))
-	waitForDeploymentReady(ctx, t, "sensor", stackroxNamespace, 1)
+	scaleToN(ctx, t, k8sClient, "sensor", stackroxNamespace, 1)
+	waitForDeploymentReady(ctx, t, dynClient, "sensor", stackroxNamespace, 1)
 
-	// Assert the ScanSetting and the ScanSettingBinding are updated
-	assertResourceWasUpdated(ctx, t, scanName, coNamespaceV2, scanSetting)
-	assertResourceWasUpdated(ctx, t, scanName, coNamespaceV2, scanSettingBinding)
-	assertScanSetting(t, scanConfig, scanSetting)
-	assertScanSettingBinding(t, scanConfig, scanSettingBinding)
+	// Assert the ScanSetting and the ScanSettingBinding are updated with correct profile kinds.
+	assert.EventuallyWithT(t, func(c *assert.CollectT) {
+		assertScanSetting(ctx, wrapCollectT(t, c), dynClient, testID, coNamespaceV2, &scanConfig)
+		assertScanSettingBinding(ctx, wrapCollectT(t, c), dynClient, testID, coNamespaceV2, updatedProfiles)
+	}, defaultTimeout, defaultInterval)
 
 	// Scale down Sensor
-	assert.NoError(t, scaleToN(ctx, k8sClient, "sensor", stackroxNamespace, 0))
-	waitForDeploymentReady(ctx, t, "sensor", stackroxNamespace, 0)
+	scaleToN(ctx, t, k8sClient, "sensor", stackroxNamespace, 0)
+	waitForDeploymentReady(ctx, t, dynClient, "sensor", stackroxNamespace, 0)
 
 	// Delete the ScanConfig in Central
 	reqDelete := &v2.ResourceByID{
 		Id: res.GetId(),
 	}
-	_, err = scanConfigService.DeleteComplianceScanConfiguration(ctx, reqDelete)
+	_, _ = scanConfigService.DeleteComplianceScanConfiguration(ctx, reqDelete)
 
 	// Scale up Sensor
-	assert.NoError(t, scaleToN(ctx, k8sClient, "sensor", stackroxNamespace, 1))
-	waitForDeploymentReady(ctx, t, "sensor", stackroxNamespace, 1)
+	scaleToN(ctx, t, k8sClient, "sensor", stackroxNamespace, 1)
+	waitForDeploymentReady(ctx, t, dynClient, "sensor", stackroxNamespace, 1)
 
 	// Assert the ScanSetting and the ScanSettingBinding are deleted
-	assertResourceDoesNotExist(ctx, t, scanName, coNamespaceV2, scanSetting)
-	assertResourceDoesNotExist(ctx, t, scanName, coNamespaceV2, scanSettingBinding)
+	assertResourceDoesNotExist[complianceoperatorv1.ScanSetting](ctx, t, dynClient, testID, coNamespaceV2)
+	assertResourceDoesNotExist[complianceoperatorv1.ScanSettingBinding](ctx, t, dynClient, testID, coNamespaceV2)
 }
 
 // ACS API test suite for integration testing for the Compliance Operator.
 func TestComplianceV2Integration(t *testing.T) {
+	t.Parallel()
 	resp := getIntegrations(t)
-	assert.Len(t, resp.Integrations, 1, "failed to assert there is only a single compliance integration")
-	assert.Equal(t, resp.Integrations[0].ClusterName, "remote", "failed to find integration for cluster called \"remote\"")
-	assert.Equal(t, resp.Integrations[0].Namespace, "openshift-compliance", "failed to find integration for \"openshift-compliance\" namespace")
+	assert.Equal(t, resp.GetIntegrations()[0].GetClusterName(), "remote", "failed to find integration for cluster called \"remote\"")
+	assert.Equal(t, resp.GetIntegrations()[0].GetNamespace(), "openshift-compliance", "failed to find integration for \"openshift-compliance\" namespace")
 }
 
 func TestComplianceV2ProfileGet(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	dynClient := createDynamicClient(t)
 	conn := centralgrpc.GRPCConnectionToCentral(t)
 	client := v2.NewComplianceProfileServiceClient(conn)
+	clusterID := getIntegrations(t).GetIntegrations()[0].GetClusterId()
 
-	// Get the clusters
-	resp := getIntegrations(t)
-	assert.Len(t, resp.Integrations, 1, "failed to assert there is only a single compliance integration")
+	// Create tailored profile and wait until it appears in Central.
+	tpName := fmt.Sprintf("profile-get-%s", uuid.NewV4().String())
+	createTailoredProfile(ctx, t, dynClient, tpName)
+	tailoredProfile := waitUntilTPInCentralDB(ctx, t, client, clusterID, tpName)
 
-	// Get the profiles for the cluster
-	clusterID := resp.Integrations[0].ClusterId
-	profileList, err := client.ListComplianceProfiles(context.TODO(), &v2.ProfilesForClusterRequest{ClusterId: clusterID})
-	assert.Greater(t, len(profileList.Profiles), 0, "failed to assert the cluster has profiles")
+	assert.Equal(t, v2.ComplianceProfile_TAILORED_PROFILE, tailoredProfile.GetOperatorKind(),
+		"e2e tailored profile should have operator_kind TAILORED_PROFILE")
 
-	// Now take the ID from one of the cluster profiles to get the specific profile.
-	profile, err := client.GetComplianceProfile(context.TODO(), &v2.ResourceByID{Id: profileList.Profiles[0].Id})
-	if err != nil {
-		t.Fatal(err)
+	// Find a regular Profile to contrast.
+	profileList, err := client.ListComplianceProfiles(ctx, &v2.ProfilesForClusterRequest{ClusterId: clusterID})
+	assert.NoError(t, err)
+	var regularProfile *v2.ComplianceProfile
+	for _, p := range profileList.GetProfiles() {
+		if p.GetOperatorKind() == v2.ComplianceProfile_PROFILE {
+			regularProfile = p
+			break
+		}
 	}
-	assert.Greater(t, len(profile.Rules), 0, "failed to verify the selected profile contains any rules")
+	require.NotNil(t, regularProfile, "no regular profile found in profile list")
+	assert.Equal(t, v2.ComplianceProfile_PROFILE, regularProfile.GetOperatorKind(),
+		"regular profile should have operator_kind PROFILE")
+
+	// Get the TailoredProfile by ID and verify rules.
+	tp, err := client.GetComplianceProfile(ctx, &v2.ResourceByID{Id: tailoredProfile.GetId()})
+	require.NoError(t, err)
+	assert.Greater(t, len(tp.GetRules()), 0, "tailored profile should have rules")
+
+	// Verify a regular profile also has rules via GetComplianceProfile.
+	regProfile, err := client.GetComplianceProfile(ctx, &v2.ResourceByID{Id: regularProfile.GetId()})
+	require.NoError(t, err)
+	assert.Greater(t, len(regProfile.GetRules()), 0, "regular profile should have rules")
 }
 
 func TestComplianceV2ProfileGetSummaries(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	dynClient := createDynamicClient(t)
 	conn := centralgrpc.GRPCConnectionToCentral(t)
 	client := v2.NewComplianceProfileServiceClient(conn)
+	clusterID := getIntegrations(t).GetIntegrations()[0].GetClusterId()
 
-	// Get the clusters
-	resp := getIntegrations(t)
-	assert.Len(t, resp.Integrations, 1, "failed to assert there is only a single compliance integration")
+	// Create tailored profile and wait until it appears in Central.
+	tpName := fmt.Sprintf("summaries-%s", uuid.NewV4().String())
+	createTailoredProfile(ctx, t, dynClient, tpName)
+	waitUntilTPInCentralDB(ctx, t, client, clusterID, tpName)
 
-	// Get the profiles for the cluster
-	clusterID := resp.Integrations[0].ClusterId
-	profileSummaries, err := client.ListProfileSummaries(context.TODO(), &v2.ClustersProfileSummaryRequest{ClusterIds: []string{clusterID}})
+	profileSummaries, err := client.ListProfileSummaries(ctx, &v2.ClustersProfileSummaryRequest{ClusterIds: []string{clusterID}})
 	assert.NoError(t, err)
-	assert.Greater(t, len(profileSummaries.Profiles), 0, "failed to assert the cluster has profiles")
+	assert.Greater(t, len(profileSummaries.GetProfiles()), 0, "failed to assert the cluster has profiles")
+
+	var foundTP bool
+	var foundRegular bool
+	for _, p := range profileSummaries.GetProfiles() {
+		if p.GetName() == tpName {
+			assert.Equal(t, v2.ComplianceProfileSummary_TAILORED_PROFILE, p.GetOperatorKind(),
+				"e2e tailored profile summary should have operator_kind TAILORED_PROFILE")
+			foundTP = true
+		} else if p.GetOperatorKind() == v2.ComplianceProfileSummary_PROFILE {
+			foundRegular = true
+		}
+	}
+	assert.True(t, foundTP, "e2e tailored profile %q not found in profile summaries", tpName)
+	assert.True(t, foundRegular, "no regular profile found in profile summaries")
 }
 
 // Helper to get the integrations as the cluster id is needed in many API calls
@@ -365,176 +605,44 @@ func getIntegrations(t *testing.T) *v2.ListComplianceIntegrationsResponse {
 	if err != nil {
 		t.Fatal(err)
 	}
-	assert.Len(t, resp.Integrations, 1, "failed to assert there is only a single compliance integration")
+	require.Len(t, resp.GetIntegrations(), 1, "failed to assert there is only a single compliance integration")
 
 	return resp
 }
 
 func TestComplianceV2CreateGetScanConfigurations(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
+	dynClient := createDynamicClient(t)
 	conn := centralgrpc.GRPCConnectionToCentral(t)
 	scanConfigService := v2.NewComplianceScanConfigurationServiceClient(conn)
 	serviceCluster := v1.NewClustersServiceClient(conn)
 	clusters, err := serviceCluster.GetClusters(ctx, &v1.GetClustersRequest{})
 	assert.NoError(t, err)
 	clusterID := clusters.GetClusters()[0].GetId()
-	testName := fmt.Sprintf("test-%s", uuid.NewV4().String())
+
+	// Create tailored profile and wait until it appears in Central.
+	testID := fmt.Sprintf("create-get-%s", uuid.NewV4().String())
+	tpName := testID
+	createTailoredProfile(ctx, t, dynClient, tpName)
+	profileClient := v2.NewComplianceProfileServiceClient(conn)
+	waitUntilTPInCentralDB(ctx, t, profileClient, clusterID, tpName)
+
+	// Use mixed profiles: a regular Profile and a TailoredProfile.
+	initialProfiles := []profileRef{
+		{name: "rhcos4-e8", operatorKind: v2.ComplianceProfile_PROFILE},
+		{name: tpName, operatorKind: v2.ComplianceProfile_TAILORED_PROFILE},
+	}
+
 	req := &v2.ComplianceScanConfiguration{
-		ScanName: testName,
+		ScanName: testID,
 		Id:       "",
 		Clusters: []string{clusterID},
 		ScanConfig: &v2.BaseComplianceScanConfigurationSettings{
-			OneTimeScan: false,
-			Profiles:    []string{"rhcos4-e8"},
-			Description: "test config",
-			ScanSchedule: &v2.Schedule{
-				IntervalType: 1,
-				Hour:         15,
-				Minute:       0,
-				Interval: &v2.Schedule_DaysOfWeek_{
-					DaysOfWeek: &v2.Schedule_DaysOfWeek{
-						Days: []int32{1, 2, 3, 4, 5, 6},
-					},
-				},
-			},
-		},
-	}
-
-	resp, err := scanConfigService.CreateComplianceScanConfiguration(ctx, req)
-	assert.NoError(t, err)
-	assert.Equal(t, req.GetScanName(), resp.GetScanName())
-
-	query := &v2.RawQuery{Query: ""}
-	scanConfigs, err := scanConfigService.ListComplianceScanConfigurations(ctx, query)
-	assert.NoError(t, err)
-	assert.GreaterOrEqual(t, len(scanConfigs.GetConfigurations()), 1)
-	assert.GreaterOrEqual(t, scanConfigs.TotalCount, int32(1))
-
-	configs := scanConfigs.GetConfigurations()
-	scanconfigID := getscanConfigID(testName, configs)
-	defer deleteScanConfig(ctx, scanconfigID, scanConfigService)
-
-	serviceResult := v2.NewComplianceResultsServiceClient(conn)
-	query = &v2.RawQuery{Query: ""}
-	err = retry.WithRetry(func() error {
-		results, err := serviceResult.GetComplianceScanResults(ctx, query)
-		if err != nil {
-			return err
-		}
-
-		resultsList := results.GetScanResults()
-		for i := 0; i < len(resultsList); i++ {
-			if resultsList[i].GetScanName() == testName {
-				return nil
-			}
-		}
-		return errors.New("scan result not found")
-	}, retry.BetweenAttempts(func(previousAttemptNumber int) {
-		time.Sleep(60 * time.Second)
-	}), retry.Tries(10))
-	assert.NoError(t, err)
-
-	// Create a different scan configuration with the same profile
-	duplicateTestName := fmt.Sprintf("test-%s", uuid.NewV4().String())
-	duplicateProfileReq := &v2.ComplianceScanConfiguration{
-		ScanName: duplicateTestName,
-		Id:       "",
-		Clusters: []string{clusterID},
-		ScanConfig: &v2.BaseComplianceScanConfigurationSettings{
-			OneTimeScan: false,
-			Profiles:    []string{"rhcos4-e8"},
-			Description: "test config with duplicate profile",
-			ScanSchedule: &v2.Schedule{
-				IntervalType: 1,
-				Hour:         15,
-				Minute:       0,
-				Interval: &v2.Schedule_DaysOfWeek_{
-					DaysOfWeek: &v2.Schedule_DaysOfWeek{
-						Days: []int32{1, 2, 3, 4, 5, 6},
-					},
-				},
-			},
-		},
-	}
-
-	// Verify that the duplicate profile was not created and the error message is correct
-	_, err = scanConfigService.CreateComplianceScanConfiguration(ctx, duplicateProfileReq)
-	assert.Contains(t, err.Error(), "already uses profile")
-
-	query = &v2.RawQuery{Query: ""}
-	scanConfigs, err = scanConfigService.ListComplianceScanConfigurations(ctx, query)
-	assert.NoError(t, err)
-	assert.Equal(t, len(scanConfigs.GetConfigurations()), 1)
-
-	// Create a scan configuration with invalid profiles configuration
-	// contains both rhcos4-high and ocp4-e8 profiles. This is going
-	// to fail validation, so we don't need to worry about running a larger
-	// profile (e.g., rhcos4-high), since it won't increase test times.
-	invalidProfileTestName := fmt.Sprintf("test-%s", uuid.NewV4().String())
-	invalidProfileReq := &v2.ComplianceScanConfiguration{
-		ScanName: invalidProfileTestName,
-		Id:       "",
-		Clusters: []string{clusterID},
-		ScanConfig: &v2.BaseComplianceScanConfigurationSettings{
-			OneTimeScan: false,
-			Profiles:    []string{"rhcos4-high", "ocp4-cis-node"},
-			Description: "test config with invalid profiles",
-			ScanSchedule: &v2.Schedule{
-				IntervalType: 1,
-				Hour:         15,
-				Minute:       0,
-				Interval: &v2.Schedule_DaysOfWeek_{
-					DaysOfWeek: &v2.Schedule_DaysOfWeek{
-						Days: []int32{1, 2, 3, 4, 5, 6},
-					},
-				},
-			},
-		},
-	}
-
-	// Verify that the invalid scan configuration was not created and the error message is correct
-	_, err = scanConfigService.CreateComplianceScanConfiguration(ctx, invalidProfileReq)
-	if err == nil {
-		t.Fatal("expected error creating scan configuration with invalid profiles")
-	}
-	assert.Contains(t, err.Error(), "profiles must have the same product")
-
-	query = &v2.RawQuery{Query: ""}
-	scanConfigs, err = scanConfigService.ListComplianceScanConfigurations(ctx, query)
-	assert.NoError(t, err)
-	assert.Equal(t, len(scanConfigs.GetConfigurations()), 1)
-}
-
-func TestComplianceV2UpdateScanConfigurations(t *testing.T) {
-	ctx := context.Background()
-	conn := centralgrpc.GRPCConnectionToCentral(t)
-	scanConfigService := v2.NewComplianceScanConfigurationServiceClient(conn)
-	serviceCluster := v1.NewClustersServiceClient(conn)
-	clusters, err := serviceCluster.GetClusters(ctx, &v1.GetClustersRequest{})
-	assert.NoError(t, err)
-	require.Greater(t, len(clusters.GetClusters()), 0)
-	clusterID := clusters.GetClusters()[0].GetId()
-
-	// Create a scan configuration
-	scanName := fmt.Sprintf("test-%s", uuid.NewV4().String())
-	req := &v2.ComplianceScanConfiguration{
-		ScanName: scanName,
-		Id:       "",
-		Clusters: []string{clusterID},
-		ScanConfig: &v2.BaseComplianceScanConfigurationSettings{
-			OneTimeScan: false,
-			Profiles:    []string{"ocp4-cis"},
-			Description: "test config",
-			ScanSchedule: &v2.Schedule{
-				IntervalType: 1,
-				Hour:         15,
-				Minute:       0,
-				Interval: &v2.Schedule_DaysOfWeek_{
-					DaysOfWeek: &v2.Schedule_DaysOfWeek{
-						Days: []int32{1, 2, 3, 4, 5, 6},
-					},
-				},
-			},
+			OneTimeScan:  false,
+			Profiles:     profileNames(initialProfiles),
+			Description:  "test config",
+			ScanSchedule: initialSchedule,
 		},
 	}
 
@@ -543,24 +651,165 @@ func TestComplianceV2UpdateScanConfigurations(t *testing.T) {
 	assert.Equal(t, req.GetScanName(), resp.GetScanName())
 	t.Cleanup(func() {
 		_ = deleteScanConfig(ctx, resp.GetId(), scanConfigService)
-		cleanUpResources(ctx, t, req.GetScanName(), coNamespaceV2)
+		cleanUpResources(ctx, t, dynClient, testID, coNamespaceV2)
+	})
+
+	query := &v2.RawQuery{Query: ""}
+	scanConfigs, err := scanConfigService.ListComplianceScanConfigurations(ctx, query)
+	assert.NoError(t, err)
+	assert.GreaterOrEqual(t, len(scanConfigs.GetConfigurations()), 1)
+	assert.GreaterOrEqual(t, scanConfigs.GetTotalCount(), int32(1))
+
+	serviceResult := v2.NewComplianceResultsServiceClient(conn)
+	query = &v2.RawQuery{Query: ""}
+	require.EventuallyWithT(t, func(c *assert.CollectT) {
+		results, err := serviceResult.GetComplianceScanResults(ctx, query)
+		require.NoError(c, err)
+
+		resultsList := results.GetScanResults()
+		var found bool
+		for _, result := range resultsList {
+			if result.GetScanName() == testID {
+				found = true
+				break
+			}
+		}
+		require.True(c, found, "scan result not found for %s", testID)
+	}, 10*time.Minute, 30*time.Second)
+
+	// Create a different scan configuration with the same profile (duplicate rejection).
+	duplicateTestName := fmt.Sprintf("create-get-dup-%s", uuid.NewV4().String())
+	duplicateProfileReq := &v2.ComplianceScanConfiguration{
+		ScanName: duplicateTestName,
+		Id:       "",
+		Clusters: []string{clusterID},
+		ScanConfig: &v2.BaseComplianceScanConfigurationSettings{
+			OneTimeScan:  false,
+			Profiles:     []string{"rhcos4-e8"},
+			Description:  "test config with duplicate profile",
+			ScanSchedule: initialSchedule,
+		},
+	}
+
+	// Verify that the duplicate profile was not created and the error message is correct.
+	_, err = scanConfigService.CreateComplianceScanConfiguration(ctx, duplicateProfileReq)
+	require.Error(t, err, "expected duplicate profile scan config to be rejected")
+	assert.Contains(t, err.Error(), "already uses profile")
+
+	// Also verify that creating with the TP name is rejected (duplicate TP).
+	duplicateTPReq := &v2.ComplianceScanConfiguration{
+		ScanName: fmt.Sprintf("create-get-dup-tp-%s", uuid.NewV4().String()),
+		Id:       "",
+		Clusters: []string{clusterID},
+		ScanConfig: &v2.BaseComplianceScanConfigurationSettings{
+			OneTimeScan:  false,
+			Profiles:     []string{tpName},
+			Description:  "test config with duplicate tailored profile",
+			ScanSchedule: initialSchedule,
+		},
+	}
+	_, err = scanConfigService.CreateComplianceScanConfiguration(ctx, duplicateTPReq)
+	require.Error(t, err, "expected duplicate TP scan config to be rejected")
+	assert.Contains(t, err.Error(), "already uses profile")
+
+	query = &v2.RawQuery{Query: ""}
+	scanConfigs, err = scanConfigService.ListComplianceScanConfigurations(ctx, query)
+	assert.NoError(t, err)
+	// Verify the original config exists but duplicates were not created.
+	assert.NotEmpty(t, getscanConfigID(testID, scanConfigs.GetConfigurations()), "expected original scan config %s to exist", testID)
+	assert.Empty(t, getscanConfigID(duplicateTestName, scanConfigs.GetConfigurations()), "expected duplicate scan config %s to not exist", duplicateTestName)
+
+	// Create a scan configuration with profiles with different products (rhcos, cis-node).
+	// This should be valid in version >= 4.9
+	differentProductProfileTestName := fmt.Sprintf("create-get-diffprod-%s", uuid.NewV4().String())
+	differentProductProfileReq := &v2.ComplianceScanConfiguration{
+		ScanName: differentProductProfileTestName,
+		Id:       "",
+		Clusters: []string{clusterID},
+		ScanConfig: &v2.BaseComplianceScanConfigurationSettings{
+			OneTimeScan:  false,
+			Profiles:     []string{"rhcos4-stig", "ocp4-cis-node"},
+			Description:  "test config with invalid profiles",
+			ScanSchedule: initialSchedule,
+		},
+	}
+
+	res, err := scanConfigService.CreateComplianceScanConfiguration(ctx, differentProductProfileReq)
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		_ = deleteScanConfig(ctx, res.GetId(), scanConfigService)
+		cleanUpResources(ctx, t, dynClient, differentProductProfileTestName, coNamespaceV2)
+	})
+
+	query = &v2.RawQuery{Query: ""}
+	scanConfigs, err = scanConfigService.ListComplianceScanConfigurations(ctx, query)
+	assert.NoError(t, err)
+	// Verify both scan configs exist
+	assert.NotEmpty(t, getscanConfigID(testID, scanConfigs.GetConfigurations()), "expected original scan config %s to exist", testID)
+	assert.NotEmpty(t, getscanConfigID(differentProductProfileTestName, scanConfigs.GetConfigurations()), "expected different product scan config %s to exist", differentProductProfileTestName)
+}
+
+func TestComplianceV2UpdateScanConfigurations(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	dynClient := createDynamicClient(t)
+	conn := centralgrpc.GRPCConnectionToCentral(t)
+	scanConfigService := v2.NewComplianceScanConfigurationServiceClient(conn)
+	serviceCluster := v1.NewClustersServiceClient(conn)
+	clusters, err := serviceCluster.GetClusters(ctx, &v1.GetClustersRequest{})
+	assert.NoError(t, err)
+	require.Greater(t, len(clusters.GetClusters()), 0)
+	clusterID := clusters.GetClusters()[0].GetId()
+
+	testID := fmt.Sprintf("update-%s", uuid.NewV4().String())
+
+	// Create a scan configuration with a single regular profile.
+	initialProfiles := []profileRef{
+		{name: "ocp4-moderate", operatorKind: v2.ComplianceProfile_PROFILE},
+	}
+	req := &v2.ComplianceScanConfiguration{
+		ScanName: testID,
+		Id:       "",
+		Clusters: []string{clusterID},
+		ScanConfig: &v2.BaseComplianceScanConfigurationSettings{
+			OneTimeScan:  false,
+			Profiles:     profileNames(initialProfiles),
+			Description:  "test config",
+			ScanSchedule: initialSchedule,
+		},
+	}
+
+	resp, err := scanConfigService.CreateComplianceScanConfiguration(ctx, req)
+	assert.NoError(t, err)
+	assert.Equal(t, req.GetScanName(), resp.GetScanName())
+	t.Cleanup(func() {
+		_ = deleteScanConfig(ctx, resp.GetId(), scanConfigService)
+		cleanUpResources(ctx, t, dynClient, req.GetScanName(), coNamespaceV2)
 	})
 
 	query := &v2.RawQuery{Query: ""}
 	scanConfigs, err := scanConfigService.ListComplianceScanConfigurations(ctx, query)
 	assert.NoError(t, err)
 	require.GreaterOrEqual(t, len(scanConfigs.GetConfigurations()), 1)
-	assert.GreaterOrEqual(t, scanConfigs.TotalCount, int32(1))
+	assert.GreaterOrEqual(t, scanConfigs.GetTotalCount(), int32(1))
 
-	// Assert the ScanSetting and the ScanSettingBinding are created
-	scanSetting := &complianceoperatorv1.ScanSetting{}
-	scanSettingBinding := &complianceoperatorv1.ScanSettingBinding{}
-	assertResourceDoesExist(ctx, t, scanName, coNamespaceV2, scanSetting)
-	assertResourceDoesExist(ctx, t, scanName, coNamespaceV2, scanSettingBinding)
-	assertScanSetting(t, *req, scanSetting)
-	assertScanSettingBinding(t, *req, scanSettingBinding)
+	// Assert the ScanSetting and the ScanSettingBinding are created with Kind: Profile.
+	assert.EventuallyWithT(t, func(c *assert.CollectT) {
+		assertScanSetting(ctx, wrapCollectT(t, c), dynClient, testID, coNamespaceV2, req)
+		assertScanSettingBinding(ctx, wrapCollectT(t, c), dynClient, testID, coNamespaceV2, initialProfiles)
+	}, defaultTimeout, defaultInterval)
 
-	// Update the scan configuration
+	// Create tailored profile and wait until it appears in Central.
+	tpName := testID
+	createTailoredProfile(ctx, t, dynClient, tpName)
+	profileClient := v2.NewComplianceProfileServiceClient(conn)
+	waitUntilTPInCentralDB(ctx, t, profileClient, clusterID, tpName)
+
+	// Update to mixed profiles: a regular profile + the TailoredProfile.
+	updatedProfiles := []profileRef{
+		{name: "ocp4-moderate-node", operatorKind: v2.ComplianceProfile_PROFILE},
+		{name: tpName, operatorKind: v2.ComplianceProfile_TAILORED_PROFILE},
+	}
 	updateReq := req.CloneVT()
 	updateReq.Id = resp.GetId()
 	updateReq.ScanConfig.ScanSchedule = &v2.Schedule{
@@ -573,7 +822,7 @@ func TestComplianceV2UpdateScanConfigurations(t *testing.T) {
 			},
 		},
 	}
-	updateReq.ScanConfig.Profiles = []string{"ocp4-high", "ocp4-high-node"}
+	updateReq.ScanConfig.Profiles = profileNames(updatedProfiles)
 	_, err = scanConfigService.UpdateComplianceScanConfiguration(ctx, updateReq)
 	assert.NoError(t, err)
 
@@ -581,17 +830,19 @@ func TestComplianceV2UpdateScanConfigurations(t *testing.T) {
 	scanConfigs, err = scanConfigService.ListComplianceScanConfigurations(ctx, query)
 	assert.NoError(t, err)
 	assert.GreaterOrEqual(t, len(scanConfigs.GetConfigurations()), 1)
-	assert.GreaterOrEqual(t, scanConfigs.TotalCount, int32(1))
+	assert.GreaterOrEqual(t, scanConfigs.GetTotalCount(), int32(1))
 
-	// Assert the ScanSetting and the ScanSettingBinding are updated
-	assertResourceWasUpdated(ctx, t, scanName, coNamespaceV2, scanSetting)
-	assertResourceWasUpdated(ctx, t, scanName, coNamespaceV2, scanSettingBinding)
-	assertScanSetting(t, *updateReq, scanSetting)
-	assertScanSettingBinding(t, *updateReq, scanSettingBinding)
+	// Assert the ScanSetting and the ScanSettingBinding are updated with correct profile kinds.
+	assert.EventuallyWithT(t, func(c *assert.CollectT) {
+		assertScanSetting(ctx, wrapCollectT(t, c), dynClient, testID, coNamespaceV2, updateReq)
+		assertScanSettingBinding(ctx, wrapCollectT(t, c), dynClient, testID, coNamespaceV2, updatedProfiles)
+	}, defaultTimeout, defaultInterval)
 }
 
 func TestComplianceV2DeleteComplianceScanConfigurations(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
+	dynClient := createDynamicClient(t)
 	conn := centralgrpc.GRPCConnectionToCentral(t)
 	scanConfigService := v2.NewComplianceScanConfigurationServiceClient(conn)
 	// Retrieve the results from the scan configuration once the scan is complete
@@ -600,36 +851,39 @@ func TestComplianceV2DeleteComplianceScanConfigurations(t *testing.T) {
 	assert.NoError(t, err)
 
 	clusterID := clusters.GetClusters()[0].GetId()
-	testName := fmt.Sprintf("test-%s", uuid.NewV4().String())
+
+	// Create tailored profile and wait until it appears in Central.
+	testID := fmt.Sprintf("delete-%s", uuid.NewV4().String())
+	tpName := testID
+	createTailoredProfile(ctx, t, dynClient, tpName)
+	profileClient := v2.NewComplianceProfileServiceClient(conn)
+	waitUntilTPInCentralDB(ctx, t, profileClient, clusterID, tpName)
+
 	req := &v2.ComplianceScanConfiguration{
-		ScanName: testName,
+		ScanName: testID,
 		Id:       "",
 		Clusters: []string{clusterID},
 		ScanConfig: &v2.BaseComplianceScanConfigurationSettings{
-			OneTimeScan: false,
-			Profiles:    []string{"rhcos4-e8"},
-			Description: "test config",
-			ScanSchedule: &v2.Schedule{
-				IntervalType: 1,
-				Hour:         15,
-				Minute:       0,
-				Interval: &v2.Schedule_DaysOfWeek_{
-					DaysOfWeek: &v2.Schedule_DaysOfWeek{
-						Days: []int32{1, 2, 3, 4, 5, 6},
-					},
-				},
-			},
+			OneTimeScan:  false,
+			Profiles:     []string{"rhcos4-high", tpName},
+			Description:  "test config",
+			ScanSchedule: initialSchedule,
 		},
 	}
 
 	resp, err := scanConfigService.CreateComplianceScanConfiguration(ctx, req)
 	assert.NoError(t, err)
 	assert.Equal(t, req.GetScanName(), resp.GetScanName())
+	t.Cleanup(func() {
+		_ = deleteScanConfig(ctx, resp.GetId(), scanConfigService)
+		cleanUpResources(ctx, t, dynClient, testID, coNamespaceV2)
+	})
 
 	query := &v2.RawQuery{Query: ""}
 	scanConfigs, err := scanConfigService.ListComplianceScanConfigurations(ctx, query)
+	require.NoError(t, err)
 	configs := scanConfigs.GetConfigurations()
-	scanconfigID := getscanConfigID(testName, configs)
+	scanconfigID := getscanConfigID(testID, configs)
 	reqDelete := &v2.ResourceByID{
 		Id: scanconfigID,
 	}
@@ -638,56 +892,61 @@ func TestComplianceV2DeleteComplianceScanConfigurations(t *testing.T) {
 
 	// Verify scan configuration no longer exists
 	scanConfigs, err = scanConfigService.ListComplianceScanConfigurations(ctx, query)
+	require.NoError(t, err)
 	configs = scanConfigs.GetConfigurations()
-	scanconfigID = getscanConfigID(testName, configs)
+	scanconfigID = getscanConfigID(testID, configs)
 	assert.Empty(t, scanconfigID)
 }
 
 func TestComplianceV2ComplianceObjectMetadata(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
+	dynClient := createDynamicClient(t)
 	conn := centralgrpc.GRPCConnectionToCentral(t)
 	scanConfigService := v2.NewComplianceScanConfigurationServiceClient(conn)
 	serviceCluster := v1.NewClustersServiceClient(conn)
 	clusters, err := serviceCluster.GetClusters(ctx, &v1.GetClustersRequest{})
 	assert.NoError(t, err)
 	clusterID := clusters.GetClusters()[0].GetId()
-	testName := fmt.Sprintf("test-%s", uuid.NewV4().String())
+	testName := fmt.Sprintf("metadata-%s", uuid.NewV4().String())
 	req := &v2.ComplianceScanConfiguration{
 		ScanName: testName,
 		Id:       "",
 		Clusters: []string{clusterID},
 		ScanConfig: &v2.BaseComplianceScanConfigurationSettings{
-			OneTimeScan: false,
-			Profiles:    []string{"rhcos4-e8"},
-			Description: "test config",
-			ScanSchedule: &v2.Schedule{
-				IntervalType: 1,
-				Hour:         15,
-				Minute:       0,
-				Interval: &v2.Schedule_DaysOfWeek_{
-					DaysOfWeek: &v2.Schedule_DaysOfWeek{
-						Days: []int32{1, 2, 3, 4, 5, 6},
-					},
-				},
-			},
+			OneTimeScan:  false,
+			Profiles:     []string{"rhcos4-nerc-cip"},
+			Description:  "test config",
+			ScanSchedule: initialSchedule,
 		},
 	}
 
 	resp, err := scanConfigService.CreateComplianceScanConfiguration(ctx, req)
 	assert.NoError(t, err)
 	assert.Equal(t, req.GetScanName(), resp.GetScanName())
+	t.Cleanup(func() {
+		_ = deleteScanConfig(ctx, resp.GetId(), scanConfigService)
+		cleanUpResources(ctx, t, dynClient, testName, coNamespaceV2)
+	})
 
 	query := &v2.RawQuery{Query: ""}
 	scanConfigs, err := scanConfigService.ListComplianceScanConfigurations(ctx, query)
+	require.NoError(t, err)
 	configs := scanConfigs.GetConfigurations()
-	scanconfigID := getscanConfigID(testName, configs)
-	defer deleteScanConfig(ctx, scanconfigID, scanConfigService)
+	_ = getscanConfigID(testName, configs) // verify config exists
 
 	// Ensure the ScanSetting and ScanSettingBinding have ACS metadata
-	client := createDynamicClient(t)
 	var scanSetting complianceoperatorv1.ScanSetting
-	err = client.Get(context.TODO(), types.NamespacedName{Name: testName, Namespace: "openshift-compliance"}, &scanSetting)
-	require.NoError(t, err, "failed to get ScanSetting %s", testName)
+	require.EventuallyWithT(t, func(c *assert.CollectT) {
+		callCtx, callCancel := context.WithTimeout(ctx, 10*time.Second)
+		defer callCancel()
+
+		err := dynClient.Get(callCtx,
+			types.NamespacedName{Name: testName, Namespace: "openshift-compliance"},
+			&scanSetting,
+		)
+		require.NoErrorf(c, err, "failed to get ScanSetting %s", testName)
+	}, defaultTimeout, defaultInterval)
 
 	assert.Contains(t, scanSetting.Labels, "app.kubernetes.io/name")
 	assert.Equal(t, scanSetting.Labels["app.kubernetes.io/name"], "stackrox")
@@ -695,8 +954,8 @@ func TestComplianceV2ComplianceObjectMetadata(t *testing.T) {
 	assert.Equal(t, scanSetting.Annotations["owner"], "stackrox")
 
 	var scanSettingBinding complianceoperatorv1.ScanSetting
-	err = client.Get(context.TODO(), types.NamespacedName{Name: testName, Namespace: "openshift-compliance"}, &scanSettingBinding)
-	require.NoError(t, err, "failed to get ScanSettingBinding %s", testName)
+	err = dynClient.Get(context.TODO(), types.NamespacedName{Name: testName, Namespace: "openshift-compliance"}, &scanSettingBinding)
+	require.NoErrorf(t, err, "failed to get ScanSettingBinding %s", testName)
 	assert.Contains(t, scanSettingBinding.Labels, "app.kubernetes.io/name")
 	assert.Equal(t, scanSettingBinding.Labels["app.kubernetes.io/name"], "stackrox")
 	assert.Contains(t, scanSettingBinding.Annotations, "owner")
@@ -717,33 +976,36 @@ func getscanConfigID(configName string, scanConfigs []*v2.ComplianceScanConfigur
 		if scanConfigs[i].GetScanName() == configName {
 			configID = scanConfigs[i].GetId()
 		}
-
 	}
 	return configID
 }
 
 func TestComplianceV2ScheduleRescan(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	dynClient := createDynamicClient(t)
 	conn := centralgrpc.GRPCConnectionToCentral(t)
 	client := v2.NewComplianceScanConfigurationServiceClient(conn)
-	integrationClient := v2.NewComplianceIntegrationServiceClient(conn)
-	resp, err := integrationClient.ListComplianceIntegrations(context.TODO(), &v2.RawQuery{Query: ""})
-	if err != nil {
-		t.Fatal(err)
-	}
-	clusterId := resp.Integrations[0].ClusterId
+	clusterId := getIntegrations(t).GetIntegrations()[0].GetClusterId()
 
-	scanConfigName := "e8-scan-schedule"
+	// Create tailored profile and wait until it appears in Central.
+	testID := fmt.Sprintf("rescan-%s", uuid.NewV4().String())
+	tpName := testID
+	createTailoredProfile(ctx, t, dynClient, tpName)
+	profileClient := v2.NewComplianceProfileServiceClient(conn)
+	waitUntilTPInCentralDB(ctx, t, profileClient, clusterId, tpName)
+
 	sc := v2.ComplianceScanConfiguration{
-		ScanName: scanConfigName,
+		ScanName: testID,
 		ScanConfig: &v2.BaseComplianceScanConfigurationSettings{
 			OneTimeScan: false,
-			Profiles:    []string{"ocp4-e8"},
+			Profiles:    []string{"ocp4-e8", tpName},
 			ScanSchedule: &v2.Schedule{
 				IntervalType: 3,
 				Hour:         0,
 				Minute:       0,
 			},
-			Description: "Scan schedule for the Austrailian Essential Eight profile to run daily.",
+			Description: "Scan schedule for the Australian Essential Eight profile to run daily.",
 		},
 		Clusters: []string{clusterId},
 	}
@@ -751,15 +1013,169 @@ func TestComplianceV2ScheduleRescan(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() {
+		_, _ = client.DeleteComplianceScanConfiguration(context.TODO(), &v2.ResourceByID{Id: scanConfig.GetId()})
+		cleanUpResources(context.Background(), t, dynClient, testID, coNamespaceV2)
+	})
 
-	defer client.DeleteComplianceScanConfiguration(context.TODO(), &v2.ResourceByID{Id: scanConfig.GetId()})
-
-	waitForComplianceSuiteToComplete(t, scanConfig.ScanName, 2*time.Second, 5*time.Minute)
+	waitForComplianceSuiteToComplete(t, dynClient, scanConfig.GetScanName(), waitForDoneInterval, waitForDoneTimeout)
 
 	// Invoke a rescan
 	_, err = client.RunComplianceScanConfiguration(context.TODO(), &v2.ResourceByID{Id: scanConfig.GetId()})
-	require.NoError(t, err, "failed to rerun scan schedule %s", scanConfigName)
+	require.NoErrorf(t, err, "failed to rerun scan schedule %s", testID)
 
 	// Assert the scan is rerunning on the cluster using the Compliance Operator CRDs
-	waitForComplianceSuiteToComplete(t, scanConfig.ScanName, 2*time.Second, 5*time.Minute)
+	waitForComplianceSuiteToComplete(t, dynClient, scanConfig.GetScanName(), waitForDoneInterval, waitForDoneTimeout)
+}
+
+// TestComplianceV2TailoredProfileVariants verifies that ACS correctly tracks
+// different TailoredProfile variants: extends-base (with enabled and disabled
+// rules), from-scratch with custom rules, and from-scratch with regular rules.
+func TestComplianceV2TailoredProfileVariants(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	dynClient := createDynamicClient(t)
+	conn := centralgrpc.GRPCConnectionToCentral(t)
+	profileClient := v2.NewComplianceProfileServiceClient(conn)
+	clusterID := getIntegrations(t).GetIntegrations()[0].GetClusterId()
+	testID := fmt.Sprintf("variants-%s", uuid.NewV4().String())
+
+	// Create custom rule needed by the "custom-rules" variant.
+	crName := testID
+	createCustomRule(ctx, t, dynClient, crName)
+
+	variants := map[string]complianceoperatorv1.TailoredProfileSpec{
+		"extends": {
+			Extends:     "ocp4-cis",
+			Title:       "E2E Extends Base",
+			Description: "TP extending ocp4-cis for e2e testing",
+			EnableRules: []complianceoperatorv1.RuleReferenceSpec{
+				{Name: "ocp4-api-server-admission-control-plugin-alwaysadmit", Rationale: "e2e test"},
+			},
+			DisableRules: []complianceoperatorv1.RuleReferenceSpec{
+				{Name: knownRuleName, Rationale: "e2e test"},
+			},
+		},
+		"custom-rules": {
+			Title:       "E2E Custom Rules",
+			Description: "From-scratch TP with a custom rule",
+			EnableRules: []complianceoperatorv1.RuleReferenceSpec{
+				{Name: crName, Kind: complianceoperatorv1.CustomRuleKind, Rationale: "e2e test"},
+			},
+		},
+		"from-scratch": {
+			Title:       "E2E From-Scratch",
+			Description: "From-scratch TP with regular rules",
+			EnableRules: []complianceoperatorv1.RuleReferenceSpec{
+				{Name: "ocp4-api-server-audit-log-maxbackup", Kind: complianceoperatorv1.RuleKind, Rationale: "e2e test"},
+			},
+		},
+	}
+
+	for name, spec := range variants {
+		t.Run(name, func(t *testing.T) {
+			tpName := testID + "-" + name
+
+			tp := &complianceoperatorv1.TailoredProfile{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      tpName,
+					Namespace: coNamespaceV2,
+				},
+				Spec: spec,
+			}
+			require.NoErrorf(t, dynClient.Create(ctx, tp), "failed to create TP %s", tpName)
+			t.Cleanup(func() {
+				deleteResource[complianceoperatorv1.TailoredProfile](ctx, t, dynClient, tpName, coNamespaceV2)
+			})
+
+			require.EventuallyWithT(t, func(c *assert.CollectT) {
+				var current complianceoperatorv1.TailoredProfile
+				err := dynClient.Get(ctx, types.NamespacedName{Name: tpName, Namespace: coNamespaceV2}, &current)
+				require.NoErrorf(c, err, "failed to get TailoredProfile %s", tpName)
+				require.Equalf(c, complianceoperatorv1.TailoredProfileStateReady, current.Status.State,
+					"TailoredProfile %s not READY (state: %q, error: %q)",
+					tpName, current.Status.State, current.Status.ErrorMessage)
+			}, 10*time.Second, 1*time.Second)
+
+			storedTP := waitUntilTPInCentralDB(ctx, t, profileClient, clusterID, tpName)
+			assert.Equal(t, v2.ComplianceProfile_TAILORED_PROFILE, storedTP.GetOperatorKind(),
+				"TP should have operator_kind TAILORED_PROFILE")
+
+			detail, err := profileClient.GetComplianceProfile(ctx, &v2.ResourceByID{Id: storedTP.GetId()})
+			require.NoError(t, err)
+			assert.Greater(t, len(detail.GetRules()), 0, "TP should have at least one rule")
+
+			ruleNames := make([]string, 0, len(detail.GetRules()))
+			for _, r := range detail.GetRules() {
+				ruleNames = append(ruleNames, r.GetName())
+			}
+
+			for _, r := range spec.EnableRules {
+				assert.Contains(t, ruleNames, r.Name, "expected rule not found")
+			}
+			for _, r := range spec.DisableRules {
+				assert.NotContains(t, ruleNames, r.Name, "found unexpected rule")
+			}
+		})
+	}
+}
+
+func TestComplianceV2GetComplianceRule(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	conn := centralgrpc.GRPCConnectionToCentral(t)
+	ruleClient := v2.NewComplianceRuleServiceClient(conn)
+	serviceCluster := v1.NewClustersServiceClient(conn)
+	clusters, err := serviceCluster.GetClusters(ctx, &v1.GetClustersRequest{})
+	require.NoError(t, err)
+	require.Greater(t, len(clusters.GetClusters()), 0)
+	clusterID := clusters.GetClusters()[0].GetId()
+
+	t.Run("regular", func(t *testing.T) {
+		t.Parallel()
+		ruleName := knownRuleName
+		resp, err := ruleClient.GetComplianceRule(ctx, &v2.RuleRequest{
+			RuleName: ruleName,
+			Query:    &v2.RawQuery{Query: "Cluster ID:" + clusterID},
+		})
+		require.NoError(t, err)
+		require.NotNil(t, resp)
+		assert.Equal(t, ruleName, resp.GetName())
+		assert.NotEmpty(t, resp.GetRuleId(), "RuleId (XCCDF ID) should be non-empty")
+		assert.NotEmpty(t, resp.GetTitle(), "Title should be non-empty")
+		assert.NotEmpty(t, resp.GetRuleType(), "RuleType should be non-empty")
+		assert.NotEmpty(t, resp.GetSeverity(), "Severity should be non-empty")
+		assert.Equal(t, v2.ComplianceRule_RULE, resp.GetOperatorKind(), "OperatorKind should be RULE for built-in rules")
+	})
+
+	t.Run("custom", func(t *testing.T) {
+		t.Parallel()
+		dynClient := createDynamicClient(t)
+		crName := fmt.Sprintf("rule-get-%s", uuid.NewV4().String())
+		createCustomRule(ctx, t, dynClient, crName)
+
+		require.EventuallyWithT(t, func(c *assert.CollectT) {
+			resp, err := ruleClient.GetComplianceRule(ctx, &v2.RuleRequest{
+				RuleName: crName,
+			})
+			require.NoError(c, err)
+			require.NotNil(c, resp)
+			assert.Equal(c, crName, resp.GetName())
+			assert.NotEmpty(c, resp.GetTitle(), "Title should be non-empty")
+			assert.Equal(c, v2.ComplianceRule_CUSTOM_RULE, resp.GetOperatorKind(), "OperatorKind should be CUSTOM_RULE")
+		}, 10*time.Second, 1*time.Second)
+	})
+
+	t.Run("not-found", func(t *testing.T) {
+		t.Parallel()
+		// Server returns (nil, nil) for no matches; gRPC serializes nil as
+		// an empty message, so the client gets a zero-value ComplianceRule.
+		resp, err := ruleClient.GetComplianceRule(ctx, &v2.RuleRequest{
+			RuleName: "nonexistent-rule-that-does-not-exist",
+			Query:    &v2.RawQuery{Query: "Cluster ID:" + clusterID},
+		})
+		require.NoError(t, err)
+		assert.Empty(t, resp.GetName())
+		assert.Equal(t, v2.ComplianceRule_OPERATOR_KIND_UNSPECIFIED, resp.GetOperatorKind())
+	})
 }

@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/pkg/errors"
-	"github.com/stackrox/rox/generated/storage"
 	"github.com/stackrox/rox/pkg/csv"
 	"github.com/stackrox/rox/pkg/stringutils"
 )
@@ -21,36 +20,52 @@ var (
 		"Deployment",
 		"Image",
 		"Component",
+		"Component Version",
 		"CVE",
 		"Fixable",
 		"CVE Fixed In",
 		"Severity",
 		"CVSS",
+		"NVDCVSS",
+		"EPSS Probability Percentage",
 		"Discovered At",
 		"Reference",
+		"Advisory Name",
+		"Advisory Link",
 	}
 )
 
 // GenerateCSV takes in the results of vuln report query, converts to CSV and returns zipped data
-func GenerateCSV(cveResponses []*ImageCVEQueryResponse, configName string, reportFilters *storage.VulnerabilityReportFilters) (*bytes.Buffer, error) {
-	csvHeaderClone := addOptionalColumnstoHeader(reportFilters)
-	csvWriter := csv.NewGenericWriter(csvHeaderClone, true)
+func GenerateCSV(cveResponses []*ImageCVEQueryResponse, configName string) (*bytes.Buffer, error) {
+	// add header for component version
+	csvWriter := csv.NewGenericWriter(csvHeader, true)
+
 	for _, r := range cveResponses {
+		var epssScore string
+		if r.GetEPSSProbability() != nil {
+			epssScore = strconv.FormatFloat(*r.GetEPSSProbability()*100, 'f', 3, 64)
+		} else {
+			epssScore = "Not Available"
+		}
 		row := csv.Value{
 			r.GetCluster(),
 			r.GetNamespace(),
 			r.GetDeployment(),
 			r.GetImage(),
 			r.GetComponent(),
+			r.GetComponentVersion(),
 			r.GetCVE(),
 			strconv.FormatBool(r.GetFixable()),
 			r.GetFixedByVersion(),
 			strings.ToTitle(stringutils.GetUpTo(r.GetSeverity().String(), "_")),
 			strconv.FormatFloat(r.GetCVSS(), 'f', 2, 64),
+			strconv.FormatFloat(r.GetNVDCVSS(), 'f', 2, 64),
+			epssScore,
 			r.GetDiscoveredAtImage(),
 			r.Link,
+			r.GetAdvisoryName(),
+			r.GetAdvisoryLink(),
 		}
-		addOptionalColumnstoRow(reportFilters, &row, csvWriter, r)
 		csvWriter.AddValue(row)
 	}
 
@@ -67,8 +82,14 @@ func GenerateCSV(cveResponses []*ImageCVEQueryResponse, configName string, repor
 		truncatedName = configName[0:80] + "..."
 	}
 
-	reportName := fmt.Sprintf("RHACS_Vulnerability_Report_%s_%s.csv", truncatedName, time.Now().Format("02_January_2006"))
-	zipFile, err := zipWriter.Create(reportName)
+	now := time.Now()
+	reportName := fmt.Sprintf("RHACS_Vulnerability_Report_%s_%s.csv", truncatedName, now.Format("02_January_2006"))
+	header := &zip.FileHeader{
+		Name:     reportName,
+		Method:   zip.Deflate,
+		Modified: now,
+	}
+	zipFile, err := zipWriter.CreateHeader(header)
 	if err != nil {
 		return nil, errors.Wrapf(err, "unable to create the zip file for report config '%s'", configName)
 	}
@@ -81,30 +102,4 @@ func GenerateCSV(cveResponses []*ImageCVEQueryResponse, configName string, repor
 		return nil, errors.Wrapf(err, "unable to close the zip file for report config %s", configName)
 	}
 	return &zipBuf, nil
-}
-
-func addOptionalColumnstoHeader(optionalColumns *storage.VulnerabilityReportFilters) []string {
-	csvHeaderClone := make([]string, len(csvHeader))
-	copy(csvHeaderClone, csvHeader)
-	if optionalColumns.GetIncludeNvdCvss() {
-		csvHeaderClone = append(csvHeaderClone, "NVDCVSS")
-	}
-	if optionalColumns.GetIncludeEpssProbability() {
-		csvHeaderClone = append(csvHeaderClone, "EPSS Probability Percentage")
-	}
-	return csvHeaderClone
-}
-
-func addOptionalColumnstoRow(optionalColumns *storage.VulnerabilityReportFilters, row *csv.Value, csvWriter *csv.GenericWriter, resp *ImageCVEQueryResponse) {
-	if optionalColumns.GetIncludeNvdCvss() {
-		csvWriter.AppendToValue(row, strconv.FormatFloat(resp.GetNVDCVSS(), 'f', 2, 64))
-	}
-	if optionalColumns.GetIncludeEpssProbability() {
-		epssScore := resp.GetEPSSProbability()
-		if epssScore != nil {
-			csvWriter.AppendToValue(row, strconv.FormatFloat(*resp.GetEPSSProbability()*100, 'f', 3, 64))
-		} else {
-			csvWriter.AppendToValue(row, "Not Available")
-		}
-	}
 }

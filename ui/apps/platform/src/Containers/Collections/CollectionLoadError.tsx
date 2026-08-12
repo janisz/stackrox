@@ -1,7 +1,6 @@
-import React from 'react';
 import { Bullseye, Title } from '@patternfly/react-core';
 import { ExclamationCircleIcon } from '@patternfly/react-icons';
-import { SVGIconProps } from '@patternfly/react-icons/dist/esm/createIcon';
+import type { SVGIconProps } from '@patternfly/react-icons/dist/esm/createIcon';
 
 import EmptyStateTemplate from 'Components/EmptyStateTemplate';
 import { getAxiosErrorMessage } from 'utils/responseErrorUtils';
@@ -15,7 +14,9 @@ function ErrorIcon(props: SVGIconProps) {
     return (
         <ExclamationCircleIcon
             {...props}
-            style={{ color: 'var(--pf-v5-global--danger-color--200)' }}
+            style={{
+                color: 'var(--pf-t--global--icon--color--status--danger--default)',
+            }}
         />
     );
 }

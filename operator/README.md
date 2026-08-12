@@ -113,6 +113,8 @@ The recommended approach is the following.
    ```bash
    $ docker save stackrox/stackrox-operator:$(make tag) | ssh -o StrictHostKeyChecking=no -i $(minikube ssh-key) docker@$(minikube ip) docker load
    ```
+   _Alternatively you can also set `DOCKER_BUILD_LOAD=1` in the make environment in the previous build step. This will load images into the local Docker daemon instead of leaving them just in BuildKit cache._
+   
 3. Install CRDs and deploy operator resources
    ```bash
    $ make deploy
@@ -133,7 +135,17 @@ The recommended approach is the following.
    $ make undeploy uninstall
    ```
 
-### Bundling
+### Building and using the operator bundle
+
+*Note:* currently creating a bundle is only supported using the RH ACS branding (ROX-11744).
+You need to have the following set before running most targets mentioned in this section.
+```bash
+$ export ROX_PRODUCT_BRANDING=RHACS_BRANDING
+```
+
+Also, as of early 2026, upstream OLM does not work on GKE out of the box due to network policy issues
+[(Slack thread)](https://kubernetes.slack.com/archives/CAW0GV7A5/p1763021938129309).
+Use an OpenShift cluster, which comes with OLM pre-installed.
 
 ```bash
 # Refresh bundle metadata. Make sure to check the diff and commit it.
@@ -159,19 +171,17 @@ $ make bundle-test
 $ make bundle-test-image
 ```
 
-### Launch the operator on the cluster with OLM and the bundle
+#### Launching the operator on the cluster with OLM and the bundle
 
 ```bash
 # 0. Get the operator-sdk program.
 $ make operator-sdk
 
-# 1. Install OLM.
-$ make olm-install
-
-# 2. Create a namespace for testing bundle.
+# 1. Create a namespace for testing bundle.
 $ kubectl create ns bundle-test
 
 # 2. Create image pull secrets.
+# You can skip this and the next patch step when using cluster from infra.rox.systems.
 # If the inner magic does not work, just provide --docker-username and --docker-password with your DockerHub creds.
 $ kubectl -n bundle-test create secret docker-registry my-opm-image-pull-secrets \
   --docker-server=https://quay.io/v2/ \
@@ -181,17 +191,17 @@ $ kubectl -n bundle-test create secret docker-registry my-opm-image-pull-secrets
 # 3. Configure default service account to use these pull secrets.
 $ kubectl -n bundle-test patch serviceaccount default -p '{"imagePullSecrets": [{"name": "my-opm-image-pull-secrets"}]}'
 
-# 3. Build and push operator and bundle images.
+# 4. Build and push operator and bundle images.
 # Use one-liner above.
 
-# 4. Run bundle.
+# 5. Run bundle.
 $ `make which-operator-sdk` run bundle \
   quay.io/rhacs-eng/stackrox-operator-bundle:v$(make --quiet --no-print-directory tag) \
   --pull-secret-name my-opm-image-pull-secrets \
   --service-account default \
   --namespace bundle-test
 
-# 5. Add image pull secrets to operator's ServiceAccount.
+# 6. Add image pull secrets to operator's ServiceAccount.
 # Run it while the previous command executes otherwise it will fail.
 # Note that serviceaccount might not exist for a few moments.
 # Rerun this command until it succeeds.
@@ -200,7 +210,7 @@ $ kubectl -n bundle-test patch serviceaccount rhacs-operator-controller-manager 
 # You may need to bounce operator pods after this if they can't pull images for a while.
 $ kubectl -n bundle-test delete pod -l app=rhacs-operator
 
-# 6. The above operator-sdk run bundle command should complete successfully.
+# 7. The above operator-sdk run bundle command should complete successfully.
 # If it does not, watch pod statuses and check pod logs.
 $ kubectl -n bundle-test get pods
 # ... and dive deep from there into the ones that are not healthy.
@@ -219,9 +229,13 @@ kubectl -n bundle-test delete catalogsources.operators.coreos.com rhacs-operator
 Also, you can tear everything down with
 
 ```bash
-$ make olm-uninstall
 $ kubectl delete ns bundle-test
 ```
+
+## Architecture
+
+For a description of the operator's internal architecture, reconciliation pipeline, and package layout,
+see [ARCHITECTURE.md](./ARCHITECTURE.md).
 
 ## Extending the StackRox Custom Resource Definitions
 
@@ -233,23 +247,28 @@ Instructions and best practices on how to extend the StackRox CRDs is contained 
 These instructions are for deploying a version of the operator that has been pushed to the `rhacs-eng` Quay organization.
 See above for instructions on how to deploy an OLM bundle and index that was built locally.
 
+Note: as of early 2026, upstream OLM does not work on GKE out of the box due to network policy issues
+[(Slack thread)](https://kubernetes.slack.com/archives/CAW0GV7A5/p1763021938129309).
+Use an OpenShift cluster, which comes with OLM pre-installed.
+
 ### Prerequisites
 
 #### Required Binaries
 
-Both the `kubectl-kuttl` and `operator-sdk` binaries are required for the following make targets to work.
-There are make targets to install both executables:
+The `kubectl-kuttl` binary is required for the following make targets to work.
+There is a make target to install it:
 
 ```bash
-make operator-sdk
 make kuttl
 ```
 
-These make targets will add the executable to your `$GOPATH`.
-If that is not on your `$PATH`, then you can install the Operator SDK from its [release page](https://github.com/operator-framework/operator-sdk/releases)
-and kuttl from its [release page](https://github.com/kudobuilder/kuttl/releases).
+This make target will add the executable to your `$GOPATH`.
+If that is not on your `$PATH`, then you can install kuttl from its [release page](https://github.com/kudobuilder/kuttl/releases).
 
 #### Pull Secret
+
+If you are deploying on an OpenShift cluster created with [StackRox Infra](https://infra.rox.systems/), you can skip this section.
+Necessary pull secret is already included cluster-wide.
 
 You'll also need a Quay pull secret configured in `~/.docker/config.json`.
 This can be retrieved on quay.io by:
@@ -264,19 +283,23 @@ This can be retrieved on quay.io by:
 #### Clean Repo
 
 If `git describe --dirty` shows a `-dirty` suffix, you'll need to clean up your repo until git considers it "clean".
-Otherwise the make targets below will add `-dirty` to the image tag, and it likely won't be found.
+Otherwise, the make targets below will add `-dirty` to the image tag, and it likely won't be found.
+
+#### Images
+
+Push your changes to a GitHub PR (draft is OK) to let CI build and push images for you.
 
 ### Deploy
 
 Now the latest version (based off of `make tag`) can be installed like so:
 
 ```bash
-# TODO(ROX-11744): drop branding here once operator is available from quay.io/stackrox-io
+# TODO(ROX-11744): drop branding here once operator is available via OLM from quay.io/stackrox-io
 
 ROX_PRODUCT_BRANDING=RHACS_BRANDING make deploy-via-olm
 ```
 
-This installs the operator into the `stackrox-operator` namespace.
+This installs the operator into the `stackrox-operator-system` namespace.
 This can be overridden with a `TEST_NAMESPACE` argument.
 The version can be overridden with a `VERSION` argument.
 
@@ -291,8 +314,7 @@ ROX_PRODUCT_BRANDING=RHACS_BRANDING make deploy-via-olm TEST_NAMESPACE=my-favori
 You can blow everything away with:
 
 ```bash
-$ make olm-uninstall
-$ kubectl delete ns stackrox-operator
+$ kubectl delete ns stackrox-operator-system
 
 # Optionally remove CRDs
 $ make uninstall
@@ -300,3 +322,8 @@ $ make uninstall
 
 The above targets use `kuttl` internally, so if something goes wrong you may find
 [this guide](tests/TROUBLESHOOTING_E2E_TESTS.md) useful.
+
+## Install the operator using Helm chart
+
+1. Generate a chart using `./hack/generate-chart.sh {opensource|development_build|rhacs}`
+2. Install the operator using for example: `helm install --create-namespace --namespace stackrox-operator-system stackrox-operator ./dist/chart`

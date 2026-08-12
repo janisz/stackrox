@@ -12,7 +12,9 @@ import (
 	"github.com/operator-framework/helm-operator-plugins/pkg/values"
 	"github.com/pkg/errors"
 	"github.com/stackrox/rox/image"
+	"github.com/stackrox/rox/operator/internal/common/confighash"
 	commonLabels "github.com/stackrox/rox/operator/internal/common/labels"
+	"github.com/stackrox/rox/operator/internal/common/rendercache"
 	"github.com/stackrox/rox/operator/internal/overlays"
 	"github.com/stackrox/rox/operator/internal/utils"
 	"github.com/stackrox/rox/pkg/env"
@@ -46,7 +48,7 @@ var (
 )
 
 // SetupReconcilerWithManager creates and registers a new helm reconciler to the given controller manager.
-func SetupReconcilerWithManager(mgr ctrl.Manager, gvk schema.GroupVersionKind, chartPrefix image.ChartPrefix, translator values.Translator, extraOpts ...reconciler.Option) error {
+func SetupReconcilerWithManager(mgr ctrl.Manager, gvk schema.GroupVersionKind, chartPrefix image.ChartPrefix, translator values.Translator, renderCache *rendercache.RenderCache, extraOpts ...reconciler.Option) error {
 	metaVals := charts.GetMetaValuesForFlavor(defaults.GetImageFlavorFromEnv())
 	metaVals.Operator = true
 
@@ -88,6 +90,9 @@ func SetupReconcilerWithManager(mgr ctrl.Manager, gvk schema.GroupVersionKind, c
 			func(rm meta.RESTMapper, kubeClient kube.Interface, obj ctrlClient.Object) postrender.PostRenderer {
 				return commonLabels.NewLabelPostRenderer(kubeClient, commonLabels.DefaultLabels())
 			},
+			func(rm meta.RESTMapper, kubeClient kube.Interface, obj ctrlClient.Object) postrender.PostRenderer {
+				return confighash.NewPodTemplateAnnotationPostRenderer(kubeClient, obj, renderCache)
+			},
 		),
 	}
 
@@ -107,6 +112,7 @@ func SetupReconcilerWithManager(mgr ctrl.Manager, gvk schema.GroupVersionKind, c
 		reconciler.SkipPrimaryGVKSchemeRegistration(true),
 		reconciler.WithLog(logger),
 		reconciler.WithActionClientGetter(actionClientGetter),
+		reconciler.StripManifestFromStatus(true),
 	}
 	reconcilerOpts = append(reconcilerOpts, extraOpts...)
 
@@ -124,8 +130,8 @@ func SetupReconcilerWithManager(mgr ctrl.Manager, gvk schema.GroupVersionKind, c
 // HandleSiblings returns an event handler which generates reconcile requests for
 // every (in our case typically one) resource of specified gvk, which resides in the same namespace as the
 // observed resource of type T.
-func HandleSiblings[T ctrlClient.Object](gvk schema.GroupVersionKind, manager ctrl.Manager) handler.TypedEventHandler[T] {
-	return handler.TypedEnqueueRequestsFromMapFunc[T](func(ctx context.Context, object T) []reconcile.Request {
+func HandleSiblings[T ctrlClient.Object](gvk schema.GroupVersionKind, manager ctrl.Manager) handler.TypedEventHandler[T, reconcile.Request] {
+	return handler.TypedEnqueueRequestsFromMapFunc[T, reconcile.Request](func(ctx context.Context, object T) []reconcile.Request {
 		list := &unstructured.UnstructuredList{}
 		list.SetGroupVersionKind(gvk)
 		utils.ListSiblings(ctx, list, object, manager.GetClient())

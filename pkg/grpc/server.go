@@ -32,6 +32,7 @@ import (
 	"github.com/stackrox/rox/pkg/grpc/routes"
 	"github.com/stackrox/rox/pkg/httputil"
 	"github.com/stackrox/rox/pkg/logging"
+	pkgMetrics "github.com/stackrox/rox/pkg/metrics"
 	"github.com/stackrox/rox/pkg/netutil/pipeconn"
 	"github.com/stackrox/rox/pkg/sync"
 	promhttp "github.com/travelaudience/go-promhttp"
@@ -154,6 +155,8 @@ type Config struct {
 	// MaxConnectionAge is the maximum amount of time a connection may exist before it will be closed.
 	// Default is +infinity.
 	MaxConnectionAge time.Duration
+	// Subsystem is used to enrich metrics with information about the component that runs this API.
+	Subsystem pkgMetrics.Subsystem
 }
 
 // NewAPI returns an API object.
@@ -301,7 +304,14 @@ func (a *apiImpl) listenOnLocalEndpoint(server *grpc.Server) pipeconn.DialContex
 	log.Info("Launching backend gRPC listener")
 	go func() {
 		if err := server.Serve(lis); err != nil {
-			log.Fatal(err)
+			// If gRPC shutdown was requested, then we should only log that the endpoint is stopping. Otherwise, this is happening
+			// for unknown reasons, so we report a fatal error.
+			if a.shutdownInProgress.Load() {
+				log.Info("gRPC Stop requested: local endpoint shutting down")
+			} else {
+				log.Fatal(err)
+			}
+			return
 		}
 
 		if !a.shutdownInProgress.Load() {
@@ -312,7 +322,7 @@ func (a *apiImpl) listenOnLocalEndpoint(server *grpc.Server) pipeconn.DialContex
 }
 
 func (a *apiImpl) connectToLocalEndpoint(dialCtxFunc pipeconn.DialContextFunc) (*grpc.ClientConn, error) {
-	return grpc.Dial("", grpc.WithTransportCredentials(insecure.NewCredentials()),
+	return grpc.NewClient("passthrough:", grpc.WithLocalDNSResolution(), grpc.WithTransportCredentials(insecure.NewCredentials()),
 		grpc.WithContextDialer(func(ctx context.Context, endpoint string) (net.Conn, error) {
 			return dialCtxFunc(ctx)
 		}),
@@ -426,6 +436,7 @@ func (a *apiImpl) muxer(localConn *grpc.ClientConn) http.Handler {
 				},
 			}},
 		),
+		runtime.WithWriteContentLength(),
 		runtime.WithErrorHandler(errorHandler),
 	)
 	if localConn != nil {
@@ -479,7 +490,7 @@ func (a *apiImpl) run(startedSig *concurrency.ErrorSignal) {
 
 	var allSrvAndLiss []serverAndListener
 	for _, endpointCfg := range a.config.Endpoints {
-		addr, srvAndLiss, err := endpointCfg.instantiate(httpHandler, a.grpcServer)
+		addr, srvAndLiss, err := endpointCfg.instantiate(httpHandler, a.grpcServer, a.config.Subsystem)
 		if err != nil {
 			if endpointCfg.Optional {
 				log.Errorf("Failed to instantiate endpoint config of kind %s: %v", endpointCfg.Kind(), err)
@@ -514,7 +525,7 @@ func (a *apiImpl) run(startedSig *concurrency.ErrorSignal) {
 func (a *apiImpl) serveBlocking(srvAndLis serverAndListener, errC chan<- error) {
 	if err := srvAndLis.srv.Serve(srvAndLis.listener); err != nil {
 		// If gRPC shutdown was requested, then we should only log that the endpoint is stopping. Otherwise, this is happening
-		// for unknown reasons and an error will be reported.
+		// for unknown reasons, so we report an error.
 		if a.shutdownInProgress.Load() {
 			log.Infof("gRPC Stop requested: Endpoint shutting down: %s %s", srvAndLis.endpoint.Kind(), srvAndLis.listener.Addr())
 		} else {

@@ -1,5 +1,5 @@
 /* eslint-disable react/no-array-index-key */
-import React, { ReactElement } from 'react';
+import type { ChangeEvent, FormEvent, ReactElement } from 'react';
 import { FieldArray } from 'formik';
 import {
     Button,
@@ -9,16 +9,17 @@ import {
     FormHelperText,
     HelperText,
     HelperTextItem,
+    SelectOption,
     TextInput,
     Tooltip,
 } from '@patternfly/react-core';
-import { SelectOption } from '@patternfly/react-core/deprecated';
 import { ArrowRightIcon, InfoCircleIcon, PlusCircleIcon, TrashIcon } from '@patternfly/react-icons';
 
-import { Group } from 'services/AuthService';
-import { Role } from 'services/RolesService';
 import SelectSingle from 'Components/SelectSingle';
-import { getOriginLabel, isUserResource } from '../traits';
+import TypeaheadSelect from 'Components/TypeaheadSelect';
+import type { Group } from 'services/AuthService';
+import type { Role } from 'services/RolesService';
+import { getOriginLabel, isUserResource } from 'utils/traits.utils';
 
 export type RuleGroupErrors = {
     roleName?: string;
@@ -32,7 +33,7 @@ export type RuleGroupErrors = {
 export type RuleGroupsProps = {
     authProviderId: string;
     onChange: (
-        event: React.FormEvent<HTMLInputElement> | React.ChangeEvent<HTMLTextAreaElement>,
+        event: FormEvent<HTMLInputElement> | ChangeEvent<HTMLTextAreaElement>,
         _value: unknown
     ) => void;
     roles: Role[];
@@ -100,20 +101,20 @@ function RuleGroups({
                                 </FlexItem>
                                 <FlexItem>
                                     <FormGroup label="Key" fieldId={`groups[${index}].props.key`}>
-                                        <SelectSingle
+                                        <TypeaheadSelect
                                             id={`groups[${index}].props.key`}
                                             value={groups[`${index}`].props.key ?? ''}
                                             isDisabled={isDisabled(group)}
-                                            handleSelect={setFieldValue}
+                                            onChange={(value) =>
+                                                setFieldValue(`groups[${index}].props.key`, value)
+                                            }
                                             direction="up"
-                                            isCreatable
-                                            variant="typeahead"
-                                            placeholderText="Create or select a key"
-                                        >
-                                            {augmentedRuleKeys.map((ruleKey) => (
-                                                <SelectOption key={ruleKey} value={ruleKey} />
-                                            ))}
-                                        </SelectSingle>
+                                            allowCreate
+                                            placeholder="Create or select a key"
+                                            options={augmentedRuleKeys.map((key) => ({
+                                                value: key,
+                                            }))}
+                                        />
                                         <FormHelperText>
                                             <HelperText>
                                                 <HelperTextItem
@@ -169,9 +170,12 @@ function RuleGroups({
                                             handleSelect={setFieldValue}
                                             direction="up"
                                             placeholderText="Select a role"
+                                            toggleAriaLabel="Select a role"
                                         >
                                             {roles.map(({ name }) => (
-                                                <SelectOption key={name} value={name} />
+                                                <SelectOption key={name} value={name}>
+                                                    {name}
+                                                </SelectOption>
                                             ))}
                                         </SelectSingle>
                                         <FormHelperText>
@@ -192,25 +196,23 @@ function RuleGroups({
                                 {!isDisabled(group) && (
                                     <FlexItem>
                                         <Button
+                                            icon={<TrashIcon />}
                                             variant="plain"
                                             aria-label="Delete rule"
                                             style={{ transform: 'translate(0, 42px)' }}
                                             onClick={() => arrayHelpers.remove(index)}
-                                        >
-                                            <TrashIcon />
-                                        </Button>
+                                        />
                                     </FlexItem>
                                 )}
                                 {!isUserResource(group?.props?.traits) && (
                                     <FlexItem>
                                         <Tooltip content="This rule is managed declaratively and can only be edited declaratively.">
                                             <Button
+                                                icon={<InfoCircleIcon />}
                                                 variant="plain"
                                                 aria-label="Information button"
                                                 style={{ transform: 'translate(0, 42px)' }}
-                                            >
-                                                <InfoCircleIcon />
-                                            </Button>
+                                            />
                                         </Tooltip>
                                     </FlexItem>
                                 )}
@@ -223,7 +225,7 @@ function RuleGroups({
                                     variant="link"
                                     isInline
                                     isDisabled={!!errors?.length}
-                                    icon={<PlusCircleIcon className="pf-v5-u-mr-sm" />}
+                                    icon={<PlusCircleIcon className="pf-v6-u-mr-sm" />}
                                     onClick={() =>
                                         arrayHelpers.push({
                                             roleName: '',

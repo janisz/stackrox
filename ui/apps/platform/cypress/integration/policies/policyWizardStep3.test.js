@@ -1,18 +1,18 @@
-import { selectors } from '../../constants/PoliciesPage';
 import * as api from '../../constants/apiEndpoints';
 import withAuth from '../../helpers/basicAuth';
+import { hasFeatureFlag } from '../../helpers/features';
+import { closeModalByButton } from '../../helpers/modal';
 import {
-    visitPolicies,
+    cloneFirstPolicyFromTable,
     doPolicyRowAction,
     editFirstPolicyFromTable,
-    cloneFirstPolicyFromTable,
     goToStep3,
-} from '../../helpers/policies';
-import { closeModalByButton } from '../../helpers/modal';
-import { hasFeatureFlag } from '../../helpers/features';
+    visitPolicies,
+} from './Policies.helpers';
+import { selectors } from './Policies.selectors';
 
-const TREE_VIEW_SEARCH_INPUT = '.pf-v5-c-tree-view__search input[name="search-input"]';
-const TREE_VIEW_FIRST_LEVEL_CHILD = '.pf-v5-c-tree-view__list-item .pf-v5-c-tree-view__list-item';
+const TREE_VIEW_SEARCH_INPUT = '.pf-v6-c-tree-view__search input[name="search-input"]';
+const TREE_VIEW_FIRST_LEVEL_CHILD = '.pf-v6-c-tree-view__list-item .pf-v6-c-tree-view__list-item';
 
 // open Policy Fields modal, select given field, and add it to the section card
 function addPolicyField(fieldName) {
@@ -25,11 +25,11 @@ function addPolicyField(fieldName) {
     cy.get(TREE_VIEW_SEARCH_INPUT).type(firstWordOfFieldName);
 
     // Match entire title to distinguish CVSS From NVD CVSS.
-    cy.get(`${TREE_VIEW_FIRST_LEVEL_CHILD} .pf-v5-c-tree-view__node-title`)
+    cy.get(`${TREE_VIEW_FIRST_LEVEL_CHILD} .pf-v6-c-tree-view__node-title`)
         .contains(new RegExp(`^${fieldName}$`))
         .click();
 
-    cy.get(`${TREE_VIEW_FIRST_LEVEL_CHILD} .pf-v5-c-tree-view__node`).should(
+    cy.get(`${TREE_VIEW_FIRST_LEVEL_CHILD} .pf-v6-c-tree-view__node`).should(
         'have.class',
         'pf-m-current'
     );
@@ -48,7 +48,7 @@ function assertPolicyFieldNotAvailable(fieldName) {
     cy.get(TREE_VIEW_SEARCH_INPUT).type(firstWordOfFieldName);
 
     cy.get(
-        `${TREE_VIEW_FIRST_LEVEL_CHILD} .pf-v5-c-tree-view__node-title:contains(${fieldName})`
+        `${TREE_VIEW_FIRST_LEVEL_CHILD} .pf-v6-c-tree-view__node-title:contains(${fieldName})`
     ).should('not.exist');
 
     closeModalByButton('Cancel');
@@ -93,22 +93,23 @@ describe.skip('Policy wizard, Step 3 Policy Criteria', () => {
 
         // open policy fields modal
         cy.get('.policy-section-card button:contains("Add policy field")').click();
-        cy.get('.pf-v5-c-modal-box__title-text:contains("Add policy criteria field")');
+        cy.get('.pf-v6-c-modal-box__title-text:contains("Add policy criteria field")');
 
         // check that all Deploy-time categories are available
         // after filtering for Lifecycle was added, the number of groups for a Deploy-only policy is 7
         const GROUPS_AVAILABLE_FOR_DEPLOY_POLICY = [
             'Image registry',
             'Image contents',
+            'Image scanning',
             'Container configuration',
             'Deployment metadata',
             'Storage',
             'Networking',
-            'Kubernetes access',
+            'Service account',
         ];
-        cy.get('.pf-v5-c-tree-view__list-item').each((element, index) => {
+        cy.get('.pf-v6-c-tree-view__list-item').each((element, index) => {
             element.get(
-                `.pf-v5-c-tree-view__node-title:contains(${GROUPS_AVAILABLE_FOR_DEPLOY_POLICY[index]})`
+                `.pf-v6-c-tree-view__node-title:contains(${GROUPS_AVAILABLE_FOR_DEPLOY_POLICY[index]})`
             );
         });
 
@@ -117,12 +118,12 @@ describe.skip('Policy wizard, Step 3 Policy Criteria', () => {
             'Image registry',
             'Image name',
             'Image tag',
-            'Image signature',
+            'Require image signature',
         ];
-        cy.get('.pf-v5-c-tree-view__list-item:first').click();
+        cy.get('.pf-v6-c-tree-view__list-item:first').click();
         cy.get(TREE_VIEW_FIRST_LEVEL_CHILD).each((element, index) => {
             element.get(
-                `.pf-v5-c-tree-view__node-title:contains(${FIELDS_AVAILABLE_FOR_DEPLOY_POLICY[index]})`
+                `.pf-v6-c-tree-view__node-title:contains(${FIELDS_AVAILABLE_FOR_DEPLOY_POLICY[index]})`
             );
         });
 
@@ -359,23 +360,6 @@ describe.skip('Policy wizard, Step 3 Policy Criteria', () => {
                     });
             });
 
-            it('should populate multiselect dropdown and respect changed values', () => {
-                goToPoliciesAndCloneToStep3();
-                clearPolicyCriteriaCards();
-
-                addPolicyField('Mount propagation');
-                cy.get(selectors.step3.policyCriteria.value.multiselect).should('have.value', '');
-                cy.get(selectors.step3.policyCriteria.value.multiselect).click();
-                cy.get(selectors.step3.policyCriteria.value.multiselectOption)
-                    .first()
-                    .then((option) => {
-                        cy.wrap(option).click();
-                        cy.get(selectors.step3.policyCriteria.value.multiselect).contains(
-                            option.text()
-                        );
-                    });
-            });
-
             it('should populate policy field input nested group and parse value string to object and respect changed values', () => {
                 goToPoliciesAndCloneToStep3();
                 clearPolicyCriteriaCards();
@@ -403,7 +387,7 @@ describe.skip('Policy wizard, Step 3 Policy Criteria', () => {
 
                 goToPoliciesAndCloneToStep3();
                 clearPolicyCriteriaCards();
-                addPolicyField('Image signature');
+                addPolicyField('Require image signature');
                 cy.wait('@getSignatureIntegrations');
             });
 
@@ -478,13 +462,6 @@ describe.skip('Policy wizard, Step 3 Policy Criteria', () => {
             doPolicyRowAction(`${selectors.table.rows}:contains('capability')`, 'Clone');
             goToStep3();
             cy.get(selectors.step3.policyCriteria.value.select).contains('SYS_ADMIN');
-        });
-
-        it('should populate multiselect dropdown', () => {
-            visitPolicies();
-            doPolicyRowAction(`${selectors.table.rows}:contains('mount propagation')`, 'Clone');
-            goToStep3();
-            cy.get(selectors.step3.policyCriteria.value.multiselect).contains('Bidirectional');
         });
 
         it('should populate policy field input nested group', () => {

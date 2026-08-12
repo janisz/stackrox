@@ -6,9 +6,9 @@ import (
 
 	"github.com/pkg/errors"
 	profileDatastore "github.com/stackrox/rox/central/complianceoperator/v2/profiles/datastore"
-	snapshotDS "github.com/stackrox/rox/central/complianceoperator/v2/report/datastore"
+	snapshotDataStore "github.com/stackrox/rox/central/complianceoperator/v2/report/datastore"
 	scanConfigurationDS "github.com/stackrox/rox/central/complianceoperator/v2/scanconfigurations/datastore"
-	scan "github.com/stackrox/rox/central/complianceoperator/v2/scans/datastore"
+	scanDataStore "github.com/stackrox/rox/central/complianceoperator/v2/scans/datastore"
 	"github.com/stackrox/rox/generated/storage"
 	"github.com/stackrox/rox/pkg/concurrency"
 	"github.com/stackrox/rox/pkg/env"
@@ -55,9 +55,9 @@ type scanConfigWatcherImpl struct {
 	scanWatcherResoutsC chan *ScanWatcherResults
 	stopped             *concurrency.Signal
 
-	scanDS     scan.DataStore
+	scanDS     scanDataStore.DataStore
 	profileDS  profileDatastore.DataStore
-	snapshotDS snapshotDS.DataStore
+	snapshotDS snapshotDataStore.DataStore
 
 	resultsLock       sync.Mutex
 	readyQueue        readyQueue[*ScanConfigWatcherResults]
@@ -67,7 +67,7 @@ type scanConfigWatcherImpl struct {
 }
 
 // NewScanConfigWatcher creates a new ScanConfigWatcher
-func NewScanConfigWatcher(ctx, sensorCtx context.Context, watcherID string, sc *storage.ComplianceOperatorScanConfigurationV2, scanDS scan.DataStore, profileDS profileDatastore.DataStore, snapshotDS snapshotDS.DataStore, queue readyQueue[*ScanConfigWatcherResults]) *scanConfigWatcherImpl {
+func NewScanConfigWatcher(ctx, sensorCtx context.Context, watcherID string, sc *storage.ComplianceOperatorScanConfigurationV2, scanDS scanDataStore.DataStore, profileDS profileDatastore.DataStore, snapshotDS snapshotDataStore.DataStore, queue readyQueue[*ScanConfigWatcherResults]) *scanConfigWatcherImpl {
 	watcherCtx, cancel := context.WithCancel(ctx)
 	finishedSignal := concurrency.NewSignal()
 	timeout := NewTimer(env.ComplianceScanScheduleWatcherTimeout.DurationSetting())
@@ -144,6 +144,13 @@ func (w *scanConfigWatcherImpl) Finished() concurrency.ReadOnlySignal {
 	return w.stopped
 }
 
+func (w *scanConfigWatcherImpl) scanConfigName() string {
+	if w.scanConfigResults.ScanConfig != nil {
+		return w.scanConfigResults.ScanConfig.GetScanConfigName()
+	}
+	return w.scanConfigResults.WatcherID
+}
+
 func (w *scanConfigWatcherImpl) run(timer Timer) {
 	defer func() {
 		w.stopped.Signal()
@@ -153,15 +160,17 @@ func (w *scanConfigWatcherImpl) run(timer Timer) {
 	for {
 		select {
 		case <-w.ctx.Done():
-			log.Infof("Stopping scan config watcher")
 			concurrency.WithLock(&w.resultsLock, func() {
+				log.Infof("Stopping scan config watcher for %s. Received %d/%d scan results (watcher id: %s)",
+					w.scanConfigName(), len(w.scanConfigResults.ScanResults), w.totalResults, w.scanConfigResults.WatcherID)
 				w.scanConfigResults.Error = ErrScanConfigContextCancelled
 				w.readyQueue.Push(w.scanConfigResults)
 			})
 			return
 		case <-timer.C():
 			concurrency.WithLock(&w.resultsLock, func() {
-				log.Warnf("Timeout waiting for the ScanConfiguration %s's scans to finish", w.scanConfigResults.ScanConfig.GetScanConfigName())
+				log.Warnf("Timeout waiting for the ScanConfiguration %s's scans to finish. Received %d/%d scan results (watcher id: %s, pending: %v)",
+					w.scanConfigName(), len(w.scanConfigResults.ScanResults), w.totalResults, w.scanConfigResults.WatcherID, w.scansToWait.AsSlice())
 				w.scanConfigResults.Error = ErrScanConfigTimeout
 				w.readyQueue.Push(w.scanConfigResults)
 			})
@@ -197,7 +206,7 @@ func (w *scanConfigWatcherImpl) handleScanResults(result *ScanWatcherResults) er
 		}
 		w.scansToWait = scans
 		w.totalResults = len(w.scansToWait)
-		log.Debugf("Scan config %s needs to wait for %d scans", w.scanConfigResults.ScanConfig.GetScanConfigName(), w.totalResults)
+		log.Debugf("Scan config %s needs to wait for %d scans", w.scanConfigName(), w.totalResults)
 	}
 	log.Debugf("Scan to handle %s with id %s", result.Scan.GetScanName(), result.Scan.GetId())
 	scanResultKey := fmt.Sprintf("%s:%s", result.Scan.GetClusterId(), result.Scan.GetId())
@@ -240,13 +249,13 @@ func (w *scanConfigWatcherImpl) appendScanToSnapshots(ctx context.Context, scan 
 }
 
 // GetScansFromScanConfiguration returns the scans associated with a given ScanConfiguration
-func GetScansFromScanConfiguration(ctx context.Context, scanConfig *storage.ComplianceOperatorScanConfigurationV2, profileDataStore profileDatastore.DataStore, scanDataStore scan.DataStore) (set.StringSet, error) {
+func GetScansFromScanConfiguration(ctx context.Context, scanConfig *storage.ComplianceOperatorScanConfigurationV2, profileDataStore profileDatastore.DataStore, scanDataStore scanDataStore.DataStore) (set.StringSet, error) {
 	ret := set.NewStringSet()
-	var profileNames []string
+	profileNames := make([]string, 0, len(scanConfig.GetProfiles()))
 	for _, p := range scanConfig.GetProfiles() {
 		profileNames = append(profileNames, p.GetProfileName())
 	}
-	var clusters []string
+	clusters := make([]string, 0, len(scanConfig.GetClusters()))
 	for _, c := range scanConfig.GetClusters() {
 		clusters = append(clusters, c.GetClusterId())
 	}

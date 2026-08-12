@@ -3,10 +3,14 @@ package reportgenerator
 import (
 	"time"
 
+	"github.com/pkg/errors"
 	v1 "github.com/stackrox/rox/generated/api/v1"
 	"github.com/stackrox/rox/generated/storage"
 	"github.com/stackrox/rox/pkg/postgres/walker"
 )
+
+// ErrUserCancelled is the cause attached to a context when a user cancels a running report.
+var ErrUserCancelled = errors.New("report cancelled by user")
 
 // ReportRequest contains information needed to generate and notify a report
 type ReportRequest struct {
@@ -32,6 +36,7 @@ type ImageCVEQueryResponse struct {
 	Deployment        *string                        `db:"deployment"`
 	Image             *string                        `db:"image"`
 	Component         *string                        `db:"component"`
+	ComponentVersion  *string                        `db:"component_version"`
 	CVEID             *string                        `db:"cve_id"`
 	CVE               *string                        `db:"cve"`
 	Fixable           *bool                          `db:"fixable"`
@@ -41,6 +46,8 @@ type ImageCVEQueryResponse struct {
 	NVDCVSS           *float64                       `db:"nvd_cvss"`
 	EPSSProbability   *float64                       `db:"epss_probability"`
 	DiscoveredAtImage *time.Time                     `db:"first_image_occurrence_timestamp"`
+	AdvisoryName      *string                        `db:"advisory_name"`
+	AdvisoryLink      *string                        `db:"advisory_link"`
 
 	Link string
 }
@@ -78,6 +85,13 @@ func (res *ImageCVEQueryResponse) GetComponent() string {
 		return ""
 	}
 	return *res.Component
+}
+
+func (res *ImageCVEQueryResponse) GetComponentVersion() string {
+	if res.ComponentVersion == nil {
+		return ""
+	}
+	return *res.ComponentVersion
 }
 
 func (res *ImageCVEQueryResponse) GetCVEID() string {
@@ -131,6 +145,20 @@ func (res *ImageCVEQueryResponse) GetNVDCVSS() float64 {
 
 func (res *ImageCVEQueryResponse) GetEPSSProbability() *float64 {
 	return res.EPSSProbability
+}
+
+func (res *ImageCVEQueryResponse) GetAdvisoryName() string {
+	if res.AdvisoryName == nil {
+		return "Not Available"
+	}
+	return *res.AdvisoryName
+}
+
+func (res *ImageCVEQueryResponse) GetAdvisoryLink() string {
+	if res.AdvisoryLink == nil {
+		return ""
+	}
+	return *res.AdvisoryLink
 }
 
 func (res *ImageCVEQueryResponse) GetDiscoveredAtImage() string {

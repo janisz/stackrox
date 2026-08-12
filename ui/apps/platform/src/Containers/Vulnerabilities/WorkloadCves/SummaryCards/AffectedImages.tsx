@@ -1,5 +1,4 @@
-import React from 'react';
-import { Card, CardTitle, CardBody } from '@patternfly/react-core';
+import { Card, CardBody, CardTitle } from '@patternfly/react-core';
 
 export type AffectedImagesProps = {
     className?: string;
@@ -13,7 +12,7 @@ function AffectedImages({
     totalImagesCount,
 }: AffectedImagesProps) {
     return (
-        <Card className={className} isCompact isFlat>
+        <Card className={className} isCompact>
             <CardTitle>Affected images</CardTitle>
             <CardBody>
                 {affectedImageCount}/{totalImagesCount} images affected

@@ -1,12 +1,12 @@
 import qs from 'qs';
 
-import { ApiSortOption, SearchFilter } from 'types/search';
-import { SortOption } from 'types/table';
+import type { ApiSortOption, SearchFilter } from 'types/search';
+import type { SortOption } from 'types/table';
 
 import { getPaginationParams } from 'utils/searchUtils';
 import axios from './instance';
 
-import { Pagination } from './types';
+import type { Pagination } from './types';
 
 const eventsCountUrl = '/v1/count/administration/events';
 const eventsUrl = '/v1/administration/events';
@@ -77,6 +77,7 @@ export const domains = ['Authentication', 'General', 'Image Scanning', 'Integrat
  */
 export const resourceTypes = [
     'API Token',
+    'Auth Provider',
     'Backup',
     'Cloud Source',
     'Cluster',

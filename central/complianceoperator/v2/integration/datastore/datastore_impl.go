@@ -5,7 +5,6 @@ import (
 
 	"github.com/pkg/errors"
 	store "github.com/stackrox/rox/central/complianceoperator/v2/integration/store/postgres"
-	complianceUtils "github.com/stackrox/rox/central/complianceoperator/v2/utils"
 	v1 "github.com/stackrox/rox/generated/api/v1"
 	"github.com/stackrox/rox/generated/storage"
 	"github.com/stackrox/rox/pkg/errox"
@@ -45,12 +44,6 @@ func (ds *datastoreImpl) GetComplianceIntegrations(ctx context.Context, query *v
 
 // GetComplianceIntegrationsView provides an in memory layer on top of the underlying DB based storage.
 func (ds *datastoreImpl) GetComplianceIntegrationsView(ctx context.Context, query *v1.Query) ([]*IntegrationDetails, error) {
-	var err error
-	query, err = complianceUtils.WithSACFilter(ctx, resources.Compliance, query)
-	if err != nil {
-		return nil, err
-	}
-
 	cloned := query.CloneVT()
 	cloned.Selects = []*v1.QuerySelect{
 		search.NewQuerySelect(search.Cluster).Proto(),
@@ -63,7 +56,11 @@ func (ds *datastoreImpl) GetComplianceIntegrationsView(ctx context.Context, quer
 		search.NewQuerySelect(search.ComplianceOperatorIntegrationID).Proto(),
 	}
 
-	results, err := pgSearch.RunSelectRequestForSchema[IntegrationDetails](ctx, ds.db, schema.ComplianceIntegrationsSchema, cloned)
+	var results []*IntegrationDetails
+	err := pgSearch.RunSelectRequestForSchemaFn[IntegrationDetails](ctx, ds.db, schema.ComplianceIntegrationsSchema, cloned, func(r *IntegrationDetails) error {
+		results = append(results, r)
+		return nil
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -88,7 +85,7 @@ func (ds *datastoreImpl) AddComplianceIntegration(ctx context.Context, integrati
 	if err != nil {
 		return "", err
 	}
-	return integration.Id, nil
+	return integration.GetId(), nil
 }
 
 // UpdateComplianceIntegration is pass-through to the underlying store.
@@ -99,7 +96,7 @@ func (ds *datastoreImpl) UpdateComplianceIntegration(ctx context.Context, integr
 		return sac.ErrResourceAccessDenied
 	}
 
-	if integration.Id == "" {
+	if integration.GetId() == "" {
 		return errors.New("Unable to update compliance integration without an ID")
 	}
 
@@ -124,9 +121,8 @@ func (ds *datastoreImpl) RemoveComplianceIntegrationByCluster(ctx context.Contex
 		return sac.ErrResourceAccessDenied
 	}
 
-	_, storeErr := ds.storage.DeleteByQuery(ctx, search.NewQueryBuilder().
+	return ds.storage.DeleteByQuery(ctx, search.NewQueryBuilder().
 		AddExactMatches(search.ClusterID, clusterID).ProtoQuery())
-	return storeErr
 }
 
 // CountIntegrations returns count of integrations matching query

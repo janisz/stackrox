@@ -1,17 +1,17 @@
-import React, { ReactElement, useState } from 'react';
-import { format } from 'date-fns';
+import { useState } from 'react';
+import type { ReactElement } from 'react';
 import capitalize from 'lodash/capitalize';
 import {
     Card,
+    CardBody,
+    CardExpandableContent,
     CardHeader,
     CardTitle,
-    CardExpandableContent,
-    CardBody,
     DescriptionList,
 } from '@patternfly/react-core';
 
 import DescriptionListItem from 'Components/DescriptionListItem';
-import dateTimeFormat from 'constants/dateTimeFormat';
+import { getDateTime } from 'utils/dateUtils';
 
 type K8sCardProps = {
     keyValueAttrs?: {
@@ -28,12 +28,12 @@ function K8sCard({ message, keyValueAttrs = { attrs: [] }, time }: K8sCardProps)
     const [isExpanded, setIsExpanded] = useState(true);
 
     function onExpand() {
-        setIsExpanded(!isExpanded);
+        setIsExpanded((prev) => !prev);
     }
 
     return (
-        <div className="pf-v5-u-pb-md">
-            <Card isExpanded={isExpanded} isFlat>
+        <div className="pf-v6-u-pb-md">
+            <Card isExpanded={isExpanded}>
                 <CardHeader
                     onExpand={onExpand}
                     toggleButtonProps={{ 'aria-expanded': isExpanded, 'aria-label': 'Details' }}
@@ -41,9 +41,9 @@ function K8sCard({ message, keyValueAttrs = { attrs: [] }, time }: K8sCardProps)
                     <CardTitle>{message}</CardTitle>
                 </CardHeader>
                 <CardExpandableContent>
-                    <CardBody className="pf-v5-u-mt-lg">
+                    <CardBody className="pf-v6-u-mt-lg">
                         <DescriptionList isHorizontal>
-                            <DescriptionListItem term="Time" desc={format(time, dateTimeFormat)} />
+                            <DescriptionListItem term="Time" desc={getDateTime(time)} />
                             {keyValueAttrs.attrs.map(({ key, value }) => (
                                 <DescriptionListItem
                                     term={capitalize(key)}

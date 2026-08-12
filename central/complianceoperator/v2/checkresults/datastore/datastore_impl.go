@@ -2,33 +2,37 @@ package datastore
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/pkg/errors"
-	checkResultSearch "github.com/stackrox/rox/central/complianceoperator/v2/checkresults/datastore/search"
 	store "github.com/stackrox/rox/central/complianceoperator/v2/checkresults/store/postgres"
-	complianceUtils "github.com/stackrox/rox/central/complianceoperator/v2/utils"
 	"github.com/stackrox/rox/central/metrics"
 	v1 "github.com/stackrox/rox/generated/api/v1"
 	"github.com/stackrox/rox/generated/storage"
 	"github.com/stackrox/rox/pkg/postgres"
 	"github.com/stackrox/rox/pkg/postgres/schema"
+	"github.com/stackrox/rox/pkg/protocompat"
 	"github.com/stackrox/rox/pkg/sac"
 	"github.com/stackrox/rox/pkg/sac/resources"
 	"github.com/stackrox/rox/pkg/search"
 	pgSearch "github.com/stackrox/rox/pkg/search/postgres"
 	"github.com/stackrox/rox/pkg/search/postgres/aggregatefunc"
-	"github.com/stackrox/rox/pkg/utils"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 var (
 	complianceSAC = sac.ForResource(resources.Compliance)
 )
 
+const (
+	lastStartedTimestampColumnName = "laststartedtime"
+	scanRefIDColumnName            = "scanrefid"
+)
+
 type datastoreImpl struct {
-	store    store.Store
-	db       postgres.DB
-	searcher checkResultSearch.Searcher
+	store store.Store
+	db    postgres.DB
 }
 
 // UpsertResult adds the result to the database  If enabling the use of this
@@ -71,12 +75,6 @@ func (d *datastoreImpl) GetComplianceCheckResult(ctx context.Context, compliance
 func (d *datastoreImpl) ComplianceCheckResultStats(ctx context.Context, query *v1.Query) ([]*ResourceResultCountByClusterScan, error) {
 	defer metrics.SetDatastoreFunctionDuration(time.Now(), "ComplianceOperatorCheckResultV2", "ComplianceCheckResultStats")
 
-	var err error
-	query, err = complianceUtils.WithSACFilter(ctx, resources.Compliance, query)
-	if err != nil {
-		return nil, err
-	}
-
 	cloned := query.CloneVT()
 	cloned.Selects = []*v1.QuerySelect{
 		search.NewQuerySelect(search.ClusterID).Proto(),
@@ -109,7 +107,11 @@ func (d *datastoreImpl) ComplianceCheckResultStats(ctx context.Context, query *v
 	}
 
 	countQuery := d.withCountByResultSelectQuery(cloned, search.ClusterID)
-	countResults, err := pgSearch.RunSelectRequestForSchema[ResourceResultCountByClusterScan](ctx, d.db, schema.ComplianceOperatorCheckResultV2Schema, countQuery)
+	var countResults []*ResourceResultCountByClusterScan
+	err := pgSearch.RunSelectRequestForSchemaFn[ResourceResultCountByClusterScan](ctx, d.db, schema.ComplianceOperatorCheckResultV2Schema, countQuery, func(r *ResourceResultCountByClusterScan) error {
+		countResults = append(countResults, r)
+		return nil
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -120,12 +122,6 @@ func (d *datastoreImpl) ComplianceCheckResultStats(ctx context.Context, query *v
 // ComplianceProfileResultStats retrieves the profile result stats specified by query
 func (d *datastoreImpl) ComplianceProfileResultStats(ctx context.Context, query *v1.Query) ([]*ResourceResultCountByProfile, error) {
 	defer metrics.SetDatastoreFunctionDuration(time.Now(), "ComplianceOperatorCheckResultV2", "ComplianceProfileResultStats")
-
-	var err error
-	query, err = complianceUtils.WithSACFilter(ctx, resources.Compliance, query)
-	if err != nil {
-		return nil, err
-	}
 
 	cloned := query.CloneVT()
 	cloned.Selects = []*v1.QuerySelect{
@@ -149,7 +145,11 @@ func (d *datastoreImpl) ComplianceProfileResultStats(ctx context.Context, query 
 	}
 
 	countQuery := d.withCountByResultSelectQuery(cloned, search.ComplianceOperatorProfileName)
-	countResults, err := pgSearch.RunSelectRequestForSchema[ResourceResultCountByProfile](ctx, d.db, schema.ComplianceOperatorCheckResultV2Schema, countQuery)
+	var countResults []*ResourceResultCountByProfile
+	err := pgSearch.RunSelectRequestForSchemaFn[ResourceResultCountByProfile](ctx, d.db, schema.ComplianceOperatorCheckResultV2Schema, countQuery, func(r *ResourceResultCountByProfile) error {
+		countResults = append(countResults, r)
+		return nil
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -160,12 +160,6 @@ func (d *datastoreImpl) ComplianceProfileResultStats(ctx context.Context, query 
 // ComplianceProfileResults retrieves the profile results specified by query
 func (d *datastoreImpl) ComplianceProfileResults(ctx context.Context, query *v1.Query) ([]*ResourceResultsByProfile, error) {
 	defer metrics.SetDatastoreFunctionDuration(time.Now(), "ComplianceOperatorCheckResultV2", "ComplianceProfileResultStats")
-
-	var err error
-	query, err = complianceUtils.WithSACFilter(ctx, resources.Compliance, query)
-	if err != nil {
-		return nil, err
-	}
 
 	cloned := query.CloneVT()
 	cloned.Selects = []*v1.QuerySelect{
@@ -204,7 +198,11 @@ func (d *datastoreImpl) ComplianceProfileResults(ctx context.Context, query *v1.
 	}
 
 	countQuery := d.withCountByResultSelectQuery(cloned, search.ComplianceOperatorProfileName)
-	results, err := pgSearch.RunSelectRequestForSchema[ResourceResultsByProfile](ctx, d.db, schema.ComplianceOperatorCheckResultV2Schema, countQuery)
+	var results []*ResourceResultsByProfile
+	err := pgSearch.RunSelectRequestForSchemaFn[ResourceResultsByProfile](ctx, d.db, schema.ComplianceOperatorCheckResultV2Schema, countQuery, func(r *ResourceResultsByProfile) error {
+		results = append(results, r)
+		return nil
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -215,12 +213,6 @@ func (d *datastoreImpl) ComplianceProfileResults(ctx context.Context, query *v1.
 // ComplianceClusterStats retrieves the scan result stats specified by query for the clusters
 func (d *datastoreImpl) ComplianceClusterStats(ctx context.Context, query *v1.Query) ([]*ResultStatusCountByCluster, error) {
 	defer metrics.SetDatastoreFunctionDuration(time.Now(), "ComplianceOperatorCheckResultV2", "ComplianceClusterStats")
-
-	var err error
-	query, err = complianceUtils.WithSACFilter(ctx, resources.Compliance, query)
-	if err != nil {
-		return nil, err
-	}
 
 	cloned := query.CloneVT()
 	cloned.Selects = []*v1.QuerySelect{
@@ -251,7 +243,11 @@ func (d *datastoreImpl) ComplianceClusterStats(ctx context.Context, query *v1.Qu
 	}
 
 	countQuery := d.withCountByResultSelectQuery(cloned, search.ClusterID)
-	countResults, err := pgSearch.RunSelectRequestForSchema[ResultStatusCountByCluster](ctx, d.db, schema.ComplianceOperatorCheckResultV2Schema, countQuery)
+	var countResults []*ResultStatusCountByCluster
+	err := pgSearch.RunSelectRequestForSchemaFn[ResultStatusCountByCluster](ctx, d.db, schema.ComplianceOperatorCheckResultV2Schema, countQuery, func(r *ResultStatusCountByCluster) error {
+		countResults = append(countResults, r)
+		return nil
+	})
 	if err != nil {
 		return nil, errors.Wrap(err, "unable to retrieve data")
 	}
@@ -261,11 +257,6 @@ func (d *datastoreImpl) ComplianceClusterStats(ctx context.Context, query *v1.Qu
 
 // CountByField retrieves the distinct scan result counts specified by query based on specified search field
 func (d *datastoreImpl) CountByField(ctx context.Context, query *v1.Query, field search.FieldLabel) (int, error) {
-	var err error
-	query, err = complianceUtils.WithSACFilter(ctx, resources.Compliance, query)
-	if err != nil {
-		return 0, err
-	}
 
 	switch field {
 	case search.ClusterID:
@@ -289,89 +280,46 @@ func (d *datastoreImpl) WalkByQuery(ctx context.Context, query *v1.Query, fn fun
 }
 
 func (d *datastoreImpl) countByCluster(ctx context.Context, query *v1.Query, field search.FieldLabel) (int, error) {
-	var results []*clusterCount
-	results, err := pgSearch.RunSelectRequestForSchema[clusterCount](ctx, d.db, schema.ComplianceOperatorCheckResultV2Schema, withCountQuery(query, search.ClusterID))
-	if err != nil {
-		return 0, err
-	}
-	if len(results) == 0 {
-		return 0, nil
-	}
-	if len(results) > 1 {
-		err = errors.Errorf("Retrieved multiple rows when only one row is expected for count query %q", query.String())
-		utils.Should(err)
-		return 0, err
-	}
-	return results[0].TotalCount, nil
+	return pgSearch.RunDistinctCountForSchema(ctx, d.db, schema.ComplianceOperatorCheckResultV2Schema, query, search.ClusterID)
 }
 
 func (d *datastoreImpl) countByProfile(ctx context.Context, query *v1.Query) (int, error) {
-	var results []*profileCount
-	results, err := pgSearch.RunSelectRequestForSchema[profileCount](ctx, d.db, schema.ComplianceOperatorCheckResultV2Schema, withCountQuery(query, search.ComplianceOperatorProfileName))
-	if err != nil {
-		return 0, err
-	}
-	if len(results) == 0 {
-		return 0, nil
-	}
-	if len(results) > 1 {
-		err = errors.Errorf("Retrieved multiple rows when only one row is expected for count query %q", query.String())
-		utils.Should(err)
-		return 0, err
-	}
-	return results[0].TotalCount, nil
+	return pgSearch.RunDistinctCountForSchema(ctx, d.db, schema.ComplianceOperatorCheckResultV2Schema, query, search.ComplianceOperatorProfileName)
 }
 
 func (d *datastoreImpl) countByCheck(ctx context.Context, query *v1.Query) (int, error) {
-	var results []*complianceCheckCount
-	results, err := pgSearch.RunSelectRequestForSchema[complianceCheckCount](ctx, d.db, schema.ComplianceOperatorCheckResultV2Schema, withCountQuery(query, search.ComplianceOperatorCheckName))
-	if err != nil {
-		return 0, err
-	}
-	if len(results) == 0 {
-		return 0, nil
-	}
-	if len(results) > 1 {
-		err = errors.Errorf("Retrieved multiple rows when only one row is expected for count query %q", query.String())
-		utils.Should(err)
-		return 0, err
-	}
-	return results[0].TotalCount, nil
+	return pgSearch.RunDistinctCountForSchema(ctx, d.db, schema.ComplianceOperatorCheckResultV2Schema, query, search.ComplianceOperatorCheckName)
 }
 
 func (d *datastoreImpl) countByConfiguration(ctx context.Context, query *v1.Query) (int, error) {
-	var results []*configurationCount
-	results, err := pgSearch.RunSelectRequestForSchema[configurationCount](ctx, d.db, schema.ComplianceOperatorCheckResultV2Schema, withCountQuery(query, search.ComplianceOperatorScanConfigName))
-	if err != nil {
-		return 0, err
-	}
-	if len(results) == 0 {
-		return 0, nil
-	}
-	if len(results) > 1 {
-		err = errors.Errorf("Retrieved multiple rows when only one row is expected for count query %q", query.String())
-		utils.Should(err)
-		return 0, err
-	}
-	return results[0].TotalCount, nil
+	return pgSearch.RunDistinctCountForSchema(ctx, d.db, schema.ComplianceOperatorCheckResultV2Schema, query, search.ComplianceOperatorScanConfigName)
 }
 
 func (d *datastoreImpl) CountCheckResults(ctx context.Context, q *v1.Query) (int, error) {
-	return d.searcher.Count(ctx, q)
+	return d.store.Count(ctx, q)
 }
 
 func (d *datastoreImpl) DeleteResultsByCluster(ctx context.Context, clusterID string) error {
 	query := search.NewQueryBuilder().AddStrings(search.ClusterID, clusterID).ProtoQuery()
-	_, err := d.store.DeleteByQuery(ctx, query)
-	return err
+	return d.store.DeleteByQuery(ctx, query)
 }
 
-func withCountQuery(q *v1.Query, field search.FieldLabel) *v1.Query {
-	cloned := q.CloneVT()
-	cloned.Selects = []*v1.QuerySelect{
-		search.NewQuerySelect(field).AggrFunc(aggregatefunc.Count).Distinct().Proto(),
+func (d *datastoreImpl) DeleteResultsByScanConfigAndCluster(ctx context.Context, scanConfigName string, clusterIDs []string) error {
+	if scanConfigName == "" || len(clusterIDs) == 0 {
+		return nil
 	}
-	return cloned
+
+	query := search.NewQueryBuilder().AddExactMatches(search.ComplianceOperatorScanConfigName, scanConfigName).AddExactMatches(search.ClusterID, clusterIDs...).ProtoQuery()
+	return d.store.DeleteByQuery(ctx, query)
+}
+
+func (d *datastoreImpl) DeleteResultsByScans(ctx context.Context, scanRefIds []string) error {
+	if len(scanRefIds) == 0 {
+		return nil
+	}
+
+	query := search.NewQueryBuilder().AddExactMatches(search.ComplianceOperatorScanRef, scanRefIds...).ProtoQuery()
+	return d.store.DeleteByQuery(ctx, query)
 }
 
 func (d *datastoreImpl) withCountByResultSelectQuery(q *v1.Query, countOn search.FieldLabel) *v1.Query {
@@ -442,4 +390,25 @@ func (d *datastoreImpl) withCountByResultSelectQuery(q *v1.Query, countOn search
 			).Proto(),
 	)
 	return cloned
+}
+
+func (d *datastoreImpl) DeleteOldResults(ctx context.Context, lastStartedTimestamp *timestamppb.Timestamp, scanRefID string, includeCurrent bool) error {
+	if scanRefID == "" || lastStartedTimestamp == nil {
+		return nil
+	}
+	if err := lastStartedTimestamp.CheckValid(); err != nil {
+		return err
+	}
+	deleteFmt := "DELETE FROM %s WHERE %s = $1 AND (%s < $2 OR %s IS NULL)"
+	if includeCurrent {
+		deleteFmt = "DELETE FROM %s WHERE %s = $1 AND (%s <= $2 OR %s IS NULL)"
+	}
+	deleteStmt := fmt.Sprintf(deleteFmt,
+		schema.ComplianceOperatorCheckResultV2TableName,
+		scanRefIDColumnName,
+		lastStartedTimestampColumnName,
+		lastStartedTimestampColumnName,
+	)
+	_, err := d.db.Exec(ctx, deleteStmt, scanRefID, protocompat.NilOrTime(lastStartedTimestamp))
+	return err
 }

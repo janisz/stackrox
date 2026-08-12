@@ -30,7 +30,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/googlerpcStatus"
+              "$ref": "#/definitions/googleRpcStatus"
             }
           }
         },
@@ -65,7 +65,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/googlerpcStatus"
+              "$ref": "#/definitions/googleRpcStatus"
             }
           }
         },
@@ -76,6 +76,72 @@
             "required": true,
             "schema": {
               "$ref": "#/definitions/v1UpdateProcessBaselinesRequest"
+            }
+          }
+        ],
+        "tags": [
+          "ProcessBaselineService"
+        ]
+      }
+    },
+    "/v1/processbaselines/bulk/lock": {
+      "put": {
+        "summary": "`BulkLockProcessBaselines` locks process baselines given a cluster and\nan optional set of namespaces. It returns success or an error.",
+        "operationId": "ProcessBaselineService_BulkLockProcessBaselines",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1BulkUpdateProcessBaselinesResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/googleRpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/v1BulkProcessBaselinesRequest"
+            }
+          }
+        ],
+        "tags": [
+          "ProcessBaselineService"
+        ]
+      }
+    },
+    "/v1/processbaselines/bulk/unlock": {
+      "put": {
+        "summary": "`BulkUnockProcessBaselines` unlocks process baselines given a cluster and\nan optional set of namespaces. It returns success or an error.",
+        "operationId": "ProcessBaselineService_BulkUnlockProcessBaselines",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1BulkUpdateProcessBaselinesResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/googleRpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/v1BulkProcessBaselinesRequest"
             }
           }
         ],
@@ -98,7 +164,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/googlerpcStatus"
+              "$ref": "#/definitions/googleRpcStatus"
             }
           }
         },
@@ -148,7 +214,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/googlerpcStatus"
+              "$ref": "#/definitions/googleRpcStatus"
             }
           }
         },
@@ -169,7 +235,7 @@
     }
   },
   "definitions": {
-    "googlerpcStatus": {
+    "googleRpcStatus": {
       "type": "object",
       "properties": {
         "code": {
@@ -274,6 +340,28 @@
         },
         "namespace": {
           "type": "string"
+        }
+      }
+    },
+    "v1BulkProcessBaselinesRequest": {
+      "type": "object",
+      "properties": {
+        "clusterId": {
+          "type": "string"
+        },
+        "namespaces": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "v1BulkUpdateProcessBaselinesResponse": {
+      "type": "object",
+      "properties": {
+        "success": {
+          "type": "boolean"
         }
       }
     },

@@ -121,7 +121,7 @@ func TestStore_DispatcherEvents(t *testing.T) {
 	}
 
 	tested := NewStore().(*storeImpl)
-	fakeClient := fake.NewSimpleClientset()
+	fakeClient := fake.NewClientset()
 	dispatcher := NewDispatcher(tested, fakeClient)
 
 	eventsInOrder := []struct {
@@ -517,7 +517,7 @@ func TestStore_DeploymentRelationship(t *testing.T) {
 	for name, testCase := range testCases {
 		t.Run(name, func(t *testing.T) {
 			tested := NewStore().(*storeImpl)
-			fakeClient := fake.NewSimpleClientset()
+			fakeClient := fake.NewClientset()
 			dispatcher := NewDispatcher(tested, fakeClient)
 			var ref []resolver.DeploymentResolution
 			for _, update := range testCase.orderedUpdates {
@@ -609,13 +609,13 @@ func generateStore(counts storeObjectCounts) Store {
 }
 
 func BenchmarkRBACStoreUpsertTime(b *testing.B) {
-	for n := 0; n < b.N; n++ {
+	for b.Loop() {
 		generateStore(storeObjectCounts{roles: 1000, bindings: 10_000, namespaces: 10})
 	}
 }
 
 func runRBACBenchmarkGetPermissionLevelForDeployment(b *testing.B, store Store, keepCache bool) {
-	for n := 0; n < b.N; n++ {
+	for b.Loop() {
 		store.GetPermissionLevelForDeployment(
 			&storage.Deployment{ServiceAccount: "default-subject", Namespace: "namespace0"})
 		if !keepCache {
@@ -660,7 +660,7 @@ func BenchmarkRBACStoreAssignPermissionLevelToDeployment(b *testing.B) {
 }
 
 func BenchmarkRBACUpsertExistingBinding(b *testing.B) {
-	b.StopTimer()
+
 	store := NewStore()
 	binding := &v1.RoleBinding{
 		ObjectMeta: metav1.ObjectMeta{
@@ -673,8 +673,8 @@ func BenchmarkRBACUpsertExistingBinding(b *testing.B) {
 		},
 	}
 	store.UpsertBinding(binding)
-	b.StartTimer()
-	for n := 0; n < b.N; n++ {
+
+	for b.Loop() {
 		store.UpsertBinding(binding)
 	}
 }
@@ -1010,23 +1010,20 @@ func TestStoreGetPermissionLevelForDeployment(t *testing.T) {
 	}
 	for _, tc := range testCases {
 		name := fmt.Sprintf("%q in namespace %q should have %q permision level",
-			tc.deployment.ServiceAccount, tc.deployment.Namespace, tc.expected)
+			tc.deployment.GetServiceAccount(), tc.deployment.GetNamespace(), tc.expected)
 		t.Run(name, func(t *testing.T) {
-			t.Parallel()
 			assert.Equal(t, tc.expected.String(), store.GetPermissionLevelForDeployment(tc.deployment).String())
 		})
 
 		name = fmt.Sprintf("%q in namespace %q should have NO permisions after removing roles but keeping bindings",
-			tc.deployment.ServiceAccount, tc.deployment.Namespace)
+			tc.deployment.GetServiceAccount(), tc.deployment.GetNamespace())
 		t.Run(name, func(t *testing.T) {
-			t.Parallel()
 			assert.Equal(t, storage.PermissionLevel_NONE.String(), storeWithNoRoles.GetPermissionLevelForDeployment(tc.deployment).String())
 		})
 
 		name = fmt.Sprintf("%q in namespace %q should have NO permisions after removing bindings but keeping roles",
-			tc.deployment.ServiceAccount, tc.deployment.Namespace)
+			tc.deployment.GetServiceAccount(), tc.deployment.GetNamespace())
 		t.Run(name, func(t *testing.T) {
-			t.Parallel()
 			assert.Equal(t, storage.PermissionLevel_NONE.String(), storeWithNoBindings.GetPermissionLevelForDeployment(tc.deployment).String())
 		})
 	}

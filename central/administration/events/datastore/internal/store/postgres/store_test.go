@@ -41,10 +41,6 @@ func (s *AdministrationEventsStoreSuite) SetupTest() {
 	s.NoError(err)
 }
 
-func (s *AdministrationEventsStoreSuite) TearDownSuite() {
-	s.testDB.Teardown(s.T())
-}
-
 func (s *AdministrationEventsStoreSuite) TestStore() {
 	ctx := sac.WithAllAccess(context.Background())
 
@@ -96,6 +92,11 @@ func (s *AdministrationEventsStoreSuite) TestStore() {
 	}
 
 	s.NoError(store.UpsertMany(ctx, administrationEvents))
+
+	foundAdministrationEvents, missing, err := store.GetMany(ctx, administrationEventIDs)
+	s.NoError(err)
+	s.Empty(missing)
+	protoassert.ElementsMatch(s.T(), administrationEvents, foundAdministrationEvents)
 
 	administrationEventCount, err = store.Count(ctx, search.EmptyQuery())
 	s.NoError(err)

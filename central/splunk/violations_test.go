@@ -613,6 +613,111 @@ var (
 		Time:          makeTimestamp("2021-07-15T17:36:35.115310605Z"),
 		FirstOccurred: makeTimestamp("2021-07-15T17:26:35.115310605Z"),
 	}
+
+	fileAccessAlert = storage.Alert{
+		Id: "fa1eacce-5500-4000-a000-111111111111",
+		Policy: &storage.Policy{
+			Id:              "fa1eacce-5500-4000-b000-222222222222",
+			Name:            "File Access: /etc/passwd modified",
+			Description:     "Alert on modifications to /etc/passwd",
+			Rationale:       "Modifications to /etc/passwd may indicate credential tampering",
+			Categories:      []string{"Security Best Practices"},
+			LifecycleStages: []storage.LifecycleStage{storage.LifecycleStage_RUNTIME},
+			Severity:        storage.Severity_HIGH_SEVERITY,
+			PolicyVersion:   "1.1",
+		},
+		LifecycleStage: storage.LifecycleStage_RUNTIME,
+		Entity: &storage.Alert_Deployment_{
+			Deployment: &storage.Alert_Deployment{
+				Id:          "fa1eacce-5500-4000-c000-333333333333",
+				Name:        "nginx",
+				Type:        "Deployment",
+				Namespace:   "default",
+				NamespaceId: "fa1eacce-5500-4000-d000-444444444444",
+				ClusterId:   "fa1eacce-5500-4000-e000-555555555555",
+				ClusterName: "remote",
+			},
+		},
+		Violations: []*storage.Alert_Violation{
+			{
+				Message: "'/etc/passwd' opened (writable)",
+				MessageAttributes: &storage.Alert_Violation_FileAccess{
+					FileAccess: &storage.FileAccess{
+						File: &storage.FileAccess_File{
+							EffectivePath: "/etc/passwd",
+							ActualPath:    "/rootfs/etc/passwd",
+							Meta: &storage.FileAccess_FileMetadata{
+								Uid:      0,
+								Gid:      0,
+								Mode:     0644,
+								Username: "root",
+								Group:    "root",
+							},
+						},
+						Operation: storage.FileAccess_OPEN,
+						Timestamp: makeTimestamp("2021-08-10T14:30:00.123456789Z"),
+						Process: &storage.ProcessIndicator{
+							Id:            "fa1eacce-5500-4000-f000-666666666666",
+							DeploymentId:  "fa1eacce-5500-4000-c000-333333333333",
+							Namespace:     "default",
+							ClusterId:     "fa1eacce-5500-4000-e000-555555555555",
+							ContainerName: "nginx",
+							PodId:         "nginx-abc123",
+							Signal: &storage.ProcessSignal{
+								Name:         "vi",
+								Args:         "/etc/passwd",
+								ExecFilePath: "/usr/bin/vi",
+								Pid:          1234,
+								Uid:          0,
+								Gid:          0,
+								Time:         makeTimestamp("2021-08-10T14:29:59.000000000Z"),
+							},
+						},
+						Hostname: "worker-node-01",
+					},
+				},
+				Type: storage.Alert_Violation_FILE_ACCESS,
+			},
+			{
+				Message: "'/var/log/app.log' renamed",
+				MessageAttributes: &storage.Alert_Violation_FileAccess{
+					FileAccess: &storage.FileAccess{
+						File: &storage.FileAccess_File{
+							EffectivePath: "/var/log/app.log",
+							ActualPath:    "/rootfs/var/log/app.log",
+						},
+						Operation: storage.FileAccess_RENAME,
+						Moved: &storage.FileAccess_File{
+							EffectivePath: "/var/log/app.log.bak",
+							ActualPath:    "/rootfs/var/log/app.log.bak",
+						},
+						Timestamp: makeTimestamp("2021-08-10T14:31:00.987654321Z"),
+						Process: &storage.ProcessIndicator{
+							Id:            "fa1eacce-5500-4000-f000-777777777777",
+							DeploymentId:  "fa1eacce-5500-4000-c000-333333333333",
+							Namespace:     "default",
+							ClusterId:     "fa1eacce-5500-4000-e000-555555555555",
+							ContainerName: "nginx",
+							PodId:         "nginx-abc123",
+							Signal: &storage.ProcessSignal{
+								Name:         "mv",
+								Args:         "/var/log/app.log /var/log/app.log.bak",
+								ExecFilePath: "/usr/bin/mv",
+								Pid:          1235,
+								Uid:          0,
+								Gid:          0,
+								Time:         makeTimestamp("2021-08-10T14:31:00.000000000Z"),
+							},
+						},
+						Hostname: "worker-node-01",
+					},
+				},
+				Type: storage.Alert_Violation_FILE_ACCESS,
+			},
+		},
+		Time:          makeTimestamp("2021-08-10T14:31:00.987654321Z"),
+		FirstOccurred: makeTimestamp("2021-08-10T14:30:00.123456789Z"),
+	}
 )
 
 func TestViolations(t *testing.T) {
@@ -625,6 +730,7 @@ func (s *violationsTestSuite) SetupTest() {
 	s.k8sAlert = k8sAlert.CloneVT()
 	s.networkAlert = networkAlert.CloneVT()
 	s.resourceAlert = resourceAlert.CloneVT()
+	s.fileAccessAlert = fileAccessAlert.CloneVT()
 	s.allowCtx = sac.WithAllAccess(context.Background())
 }
 
@@ -777,6 +883,53 @@ func (s *violationsTestSuite) TestResourceAlert() {
 
 }
 
+func (s *violationsTestSuite) TestFileAccessAlert() {
+	vs := s.getViolations(s.prepare().setAlerts(s.fileAccessAlert).runRequestAndGetBody())
+	s.Len(vs, 2)
+
+	for _, v := range vs {
+		s.Equal("FILE_ACCESS", s.extr(v, ".violationInfo.violationType"))
+		s.checkViolationInfo(v)
+		s.checkAlertInfo(v, ".lifecycleStage")
+		s.assertPresent(v, ".deploymentInfo", ".deploymentId", ".deploymentName", ".deploymentType",
+			".deploymentNamespace", ".clusterId", ".clusterName")
+		s.checkPolicy(v)
+
+		// File access violations should have process info from FileAccess.process
+		s.assertPresent(v, ".processInfo", ".processName", ".execFilePath", ".pid")
+		s.Equal(float64(0), s.extr(v, ".processInfo.processUid"))
+		s.Equal(float64(0), s.extr(v, ".processInfo.processGid"))
+
+		// File access info should be present
+		s.assertPresent(v, ".fileAccessInfo", ".effectivePath", ".actualPath", ".operation", ".hostname")
+		s.Equal("worker-node-01", s.extr(v, ".fileAccessInfo.hostname"))
+	}
+
+	// First violation: OPEN on /etc/passwd
+	openViolation := vs[0]
+	s.Equal("2021-08-10T14:30:00.123456789Z", s.extr(openViolation, ".violationInfo.violationTime"))
+	s.Equal("OPEN", s.extr(openViolation, ".fileAccessInfo.operation"))
+	s.Equal("/etc/passwd", s.extr(openViolation, ".fileAccessInfo.effectivePath"))
+	s.Equal("/rootfs/etc/passwd", s.extr(openViolation, ".fileAccessInfo.actualPath"))
+	s.Equal("vi", s.extr(openViolation, ".processInfo.processName"))
+	// File metadata
+	s.Equal(float64(0), s.extr(openViolation, ".fileAccessInfo.fileUid"))
+	s.Equal(float64(0), s.extr(openViolation, ".fileAccessInfo.fileGid"))
+	s.Equal(float64(0644), s.extr(openViolation, ".fileAccessInfo.fileMode"))
+	s.Equal("root", s.extr(openViolation, ".fileAccessInfo.fileUsername"))
+	s.Equal("root", s.extr(openViolation, ".fileAccessInfo.fileGroup"))
+
+	// Second violation: RENAME
+	renameViolation := vs[1]
+	s.Equal("2021-08-10T14:31:00.987654321Z", s.extr(renameViolation, ".violationInfo.violationTime"))
+	s.Equal("RENAME", s.extr(renameViolation, ".fileAccessInfo.operation"))
+	s.Equal("/var/log/app.log", s.extr(renameViolation, ".fileAccessInfo.effectivePath"))
+	s.Equal("mv", s.extr(renameViolation, ".processInfo.processName"))
+	// Rename destination paths
+	s.Equal("/var/log/app.log.bak", s.extr(renameViolation, ".fileAccessInfo.movedEffectivePath"))
+	s.Equal("/rootfs/var/log/app.log.bak", s.extr(renameViolation, ".fileAccessInfo.movedActualPath"))
+}
+
 func (s *violationsTestSuite) TestViolationIdsAreDistinct() {
 	vs := s.getViolations(s.prepare().setAlerts(s.processAlert, s.k8sAlert, s.deployAlert, s.networkAlert).runRequestAndGetBody())
 
@@ -792,7 +945,7 @@ func (s *violationsTestSuite) TestWithDeploymentImage() {
 	alert := s.processAlert.CloneVT()
 	// Change alert's Entity from Alert_Deployment to Alert_Image. Conveniently the former Alert_Deployment has a ContainerImage we can use for testing.
 	alert.Entity = &storage.Alert_Image{
-		Image: alert.GetDeployment().Containers[0].GetImage(),
+		Image: alert.GetDeployment().GetContainers()[0].GetImage(),
 	}
 
 	vs := s.getViolations(s.prepare().setAlerts(alert).runRequestAndGetBody())
@@ -807,7 +960,7 @@ func (s *violationsTestSuite) TestWithDeploymentImage() {
 func (s *violationsTestSuite) TestAlertWithoutPolicy() {
 	alert := s.processAlert.CloneVT()
 	alert.Policy = nil
-	alert.ProcessViolation.Processes = alert.ProcessViolation.Processes[:1]
+	alert.ProcessViolation.Processes = alert.GetProcessViolation().GetProcesses()[:1]
 	vs := s.getViolations(s.prepare().setAlerts(alert).runRequestAndGetBody())
 	s.Nil(s.extr(vs[0], ".policyInfo"))
 }
@@ -820,7 +973,7 @@ func (s *violationsTestSuite) TestProcessAlertWithoutProcessIndicators() {
 
 func (s *violationsTestSuite) TestProcessAlertWithoutProcessSignal() {
 	alert := s.processAlert.CloneVT()
-	alert.ProcessViolation.Processes = alert.ProcessViolation.Processes[:1]
+	alert.ProcessViolation.Processes = alert.GetProcessViolation().GetProcesses()[:1]
 	alert.ProcessViolation.Processes[0].Signal = nil
 	vs := s.getViolations(s.prepare().setAlerts(alert).runRequestAndGetBody())
 	s.checkViolationInfo(vs[0], ".podId", ".podUid", ".containerName", ".containerStartTime") // .containerId isn't available
@@ -840,7 +993,7 @@ func (s *violationsTestSuite) TestAlertWithoutViolations() {
 func (s *violationsTestSuite) TestK8sAlertWithoutDeploymentOrResource() {
 	alert := s.k8sAlert.CloneVT()
 	alert.Entity = nil
-	alert.Violations = alert.Violations[:1]
+	alert.Violations = alert.GetViolations()[:1]
 	vs := s.getViolations(s.prepare().setAlerts(alert).runRequestAndGetBody())
 	s.Empty(s.extr(vs[0], ".deploymentInfo"))
 	s.Empty(s.extr(vs[0], ".resourceInfo"))
@@ -849,7 +1002,7 @@ func (s *violationsTestSuite) TestK8sAlertWithoutDeploymentOrResource() {
 func (s *violationsTestSuite) TestProcessAlertWithoutDeployment() {
 	alert := s.processAlert.CloneVT()
 	alert.Entity = nil
-	alert.ProcessViolation.Processes = alert.ProcessViolation.Processes[:1]
+	alert.ProcessViolation.Processes = alert.GetProcessViolation().GetProcesses()[:1]
 	vs := s.getViolations(s.prepare().setAlerts(alert).runRequestAndGetBody())
 	// deploymentInfo still has some attributes because they came from ProcessIndicator-s
 	s.assertPresent(vs[0], ".deploymentInfo", ".deploymentId", ".deploymentNamespace")
@@ -857,7 +1010,7 @@ func (s *violationsTestSuite) TestProcessAlertWithoutDeployment() {
 
 func (s *violationsTestSuite) TestProcessAlertNotMatchingDeploymentId() {
 	alert := s.processAlert.CloneVT()
-	alert.ProcessViolation.Processes = alert.ProcessViolation.Processes[:1]
+	alert.ProcessViolation.Processes = alert.GetProcessViolation().GetProcesses()[:1]
 	alert.ProcessViolation.Processes[0].DeploymentId = "blah"
 	vs := s.getViolations(s.prepare().setAlerts(alert).runRequestAndGetBody())
 	// DeploymentId value from ProcessIndicator should take priority
@@ -867,7 +1020,7 @@ func (s *violationsTestSuite) TestProcessAlertNotMatchingDeploymentId() {
 
 func (s *violationsTestSuite) TestProcessAlertNotMatchingDeploymentInfo() {
 	alert := s.processAlert.CloneVT()
-	alert.ProcessViolation.Processes = alert.ProcessViolation.Processes[:1]
+	alert.ProcessViolation.Processes = alert.GetProcessViolation().GetProcesses()[:1]
 	alert.ProcessViolation.Processes[0].ClusterId = "blah-cluster"
 	alert.ProcessViolation.Processes[0].Namespace = "blah-namespace"
 	vs := s.getViolations(s.prepare().setAlerts(alert).runRequestAndGetBody())
@@ -1190,6 +1343,57 @@ func (s *violationsTestSuite) TestCheckpointTimestampFiltering() {
 	}
 }
 
+func (s *violationsTestSuite) makeDelayedProcessAlert(signalTime, alertTime string) *storage.Alert {
+	alert := s.processAlert.CloneVT()
+	alert.ProcessViolation.Processes = alert.GetProcessViolation().GetProcesses()[:1]
+	alert.ProcessViolation.Processes[0].Signal.Time = makeTimestamp(signalTime)
+	alert.Time = makeTimestamp(alertTime)
+	return alert
+}
+
+func (s *violationsTestSuite) TestProcessViolationDelayedStorage() {
+	// Signal time is 50 seconds before alert time, simulating the pipeline delay
+	// from sensor -> central -> enrichment -> storage.
+	alert := s.makeDelayedProcessAlert("2021-02-01T17:15:00Z", "2021-02-01T17:15:50Z")
+
+	// Checkpoint window: 17:15:30 to 17:16:00
+	// Signal time (17:15:00) is before fromTime (17:15:30) — would normally be excluded.
+	// Alert time (17:15:50) is within [fromTime, toTime] — fallback should include it.
+	vs := s.getViolations(s.prepare().
+		setCheckpoint("2021-02-01T17:15:30Z__2021-02-01T17:16:00Z").
+		setAlerts(alert).runRequestAndGetBody())
+	s.Len(vs, 1)
+	// The reported violation time should still be the signal time, not alert time.
+	s.Equal("2021-02-01T17:15:00Z", s.extr(vs[0], ".violationInfo.violationTime"))
+}
+
+func (s *violationsTestSuite) TestProcessViolationTooOldSignalNotRecovered() {
+	// Signal time is more than maxProcessDetectionDelay (2 min) before alert time.
+	alert := s.makeDelayedProcessAlert("2021-02-01T17:12:00Z", "2021-02-01T17:15:50Z")
+
+	// Checkpoint window includes alert time but signal time is >2 min before alert time.
+	vs := s.getViolations(s.prepare().
+		setCheckpoint("2021-02-01T17:15:30Z__2021-02-01T17:16:00Z").
+		setAlerts(alert).runRequestAndGetBody())
+	s.Len(vs, 0)
+}
+
+func (s *violationsTestSuite) TestProcessViolationDelayedStorageNoDuplicates() {
+	alert := s.makeDelayedProcessAlert("2021-02-01T17:15:00Z", "2021-02-01T17:15:50Z")
+
+	// First window: should include the violation via fallback.
+	vs1 := s.getViolations(s.prepare().
+		setCheckpoint("2021-02-01T17:15:30Z__2021-02-01T17:16:00Z").
+		setAlerts(alert).runRequestAndGetBody())
+	s.Len(vs1, 1)
+
+	// Second window: checkpoint advances, should NOT include again.
+	vs2 := s.getViolations(s.prepare().
+		setCheckpoint("2021-02-01T17:16:00Z__2021-02-01T17:16:30Z").
+		setAlerts(alert).runRequestAndGetBody())
+	s.Len(vs2, 0)
+}
+
 func (s *violationsTestSuite) TestCheckpointFromAlertIDFiltering() {
 	smallerID, biggerID := s.processAlert.GetId(), s.k8sAlert.GetId()
 	if smallerID > biggerID {
@@ -1289,7 +1493,6 @@ func (rb *requestBuilder) runRequest(responseWriter http.ResponseWriter) {
 	alertsDS := rb.alertsDS
 	if !rb.useAlertsDS {
 		ds := makeDS(rb.t, rb.alerts)
-		defer ds.teardown(rb.t)
 		alertsDS = ds.alertsDS
 	}
 
@@ -1302,7 +1505,7 @@ func (rb *requestBuilder) runRequest(responseWriter http.ResponseWriter) {
 		q["from_checkpoint"] = rb.checkpointParams
 		u.RawQuery = q.Encode()
 	}
-	r := httptest.NewRequest("GET", u.String(), nil)
+	r := httptest.NewRequest(http.MethodGet, u.String(), nil)
 	r = r.WithContext(rb.ctx)
 
 	handler.ServeHTTP(responseWriter, r)
@@ -1388,8 +1591,8 @@ func (s *violationsTestSuite) TestGenerateViolationId() {
 }
 
 func BenchmarkGenerateViolationId(b *testing.B) {
-	violations := deployAlert.CloneVT().Violations
-	violations = append(violations, k8sAlert.CloneVT().Violations...)
+	violations := deployAlert.CloneVT().GetViolations()
+	violations = append(violations, k8sAlert.CloneVT().GetViolations()...)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		v := violations[i%len(violations)]

@@ -1,0 +1,84 @@
+import type { ReactElement } from 'react';
+import { Button, Flex, FlexItem, Label, LabelGroup } from '@patternfly/react-core';
+import { Globe } from 'react-feather'; // eslint-disable-line limited/no-feather-icons
+
+import type { SearchFilter } from 'types/search';
+
+import type { CompoundSearchFilterAttribute, CompoundSearchFilterConfig } from '../types';
+import { getCompoundSearchFilterLabelDescriptions, updateSearchFilter } from '../utils/utils';
+import type { IsGlobalPredicate } from '../utils/utils';
+
+const iconGlobe = <Globe height="15px" />;
+
+export type CompoundSearchFilterLabelsProps = {
+    attributesSeparateFromConfig: CompoundSearchFilterAttribute[];
+    config: CompoundSearchFilterConfig;
+    hasClearFilters?: boolean;
+    isGlobalPredicate?: IsGlobalPredicate; // for certain values in AdvancedFilterToolbar.tsx file
+    onFilterChange?: (searchFilter: SearchFilter) => void; // omit for view-based report details
+    searchFilter: SearchFilter;
+};
+
+function CompoundSearchFilterLabels({
+    attributesSeparateFromConfig,
+    config,
+    hasClearFilters = true,
+    isGlobalPredicate,
+    onFilterChange,
+    searchFilter,
+}: CompoundSearchFilterLabelsProps): ReactElement {
+    // Render separate attributes (more likely to be specified) preceding config.
+    const attributesFromConfig = config.flatMap(({ attributes }) => attributes);
+    const attributes = [...attributesSeparateFromConfig, ...attributesFromConfig];
+
+    const labelGroupDescriptions = getCompoundSearchFilterLabelDescriptions(
+        attributes,
+        searchFilter,
+        isGlobalPredicate
+    );
+
+    return (
+        <Flex className="search-filter-labels" spaceItems={{ default: 'spaceItemsXs' }}>
+            {labelGroupDescriptions.map(({ group, items }) => {
+                return (
+                    <FlexItem key={group.label}>
+                        <LabelGroup
+                            categoryName={group.label}
+                            isClosable={Boolean(onFilterChange)}
+                            onClick={
+                                onFilterChange &&
+                                (() =>
+                                    onFilterChange(updateSearchFilter(searchFilter, group.payload)))
+                            }
+                        >
+                            {items.map((item) => (
+                                <Label
+                                    key={item.label}
+                                    variant="outline"
+                                    icon={item.isGlobal ? iconGlobe : undefined}
+                                    closeBtnAriaLabel="Remove filter"
+                                    onClose={
+                                        onFilterChange &&
+                                        (() =>
+                                            onFilterChange(
+                                                updateSearchFilter(searchFilter, item.payload)
+                                            ))
+                                    }
+                                >
+                                    {item.label}
+                                </Label>
+                            ))}
+                        </LabelGroup>
+                    </FlexItem>
+                );
+            })}
+            {hasClearFilters && labelGroupDescriptions.length !== 0 && onFilterChange && (
+                <Button variant="link" onClick={() => onFilterChange({})}>
+                    Clear filters
+                </Button>
+            )}
+        </Flex>
+    );
+}
+
+export default CompoundSearchFilterLabels;

@@ -1,4 +1,4 @@
-import React, { useCallback, useContext, useEffect, useState } from 'react';
+import { useCallback, useContext, useEffect, useState } from 'react';
 import {
     Breadcrumb,
     BreadcrumbItem,
@@ -7,11 +7,11 @@ import {
     Tab,
     Tabs,
 } from '@patternfly/react-core';
-import { useParams } from 'react-router-dom';
+import { useParams } from 'react-router-dom-v5-compat';
 
 import BreadcrumbItemLink from 'Components/BreadcrumbItemLink';
-import { CompoundSearchFilterConfig, OnSearchPayload } from 'Components/CompoundSearchFilter/types';
-import { onURLSearch } from 'Components/CompoundSearchFilter/utils/utils';
+import type { OnSearchCallback } from 'Components/CompoundSearchFilter/types';
+import { updateSearchFilter } from 'Components/CompoundSearchFilter/utils/utils';
 import PageTitle from 'Components/PageTitle';
 import useURLStringUnion from 'hooks/useURLStringUnion';
 import useRestQuery from 'hooks/useRestQuery';
@@ -26,7 +26,6 @@ import {
 import { getTableUIState } from 'utils/getTableUIState';
 import { addRegexPrefixToFilters } from 'utils/searchUtils';
 
-import { Name } from 'Components/CompoundSearchFilter/attributes/cluster';
 import CheckDetailsHeader from './CheckDetailsHeader';
 import CheckDetailsTable, { tabContentIdForResults } from './CheckDetailsTable';
 import {
@@ -50,18 +49,10 @@ const tabContentIdForDetails = 'check-details-Details-tab-section';
 export const TAB_NAV_QUERY = 'detailsTab';
 const TAB_NAV_VALUES = [RESULTS_TAB, DETAILS_TAB] as const;
 
-const searchFilterConfig: CompoundSearchFilterConfig = [
-    {
-        displayName: 'Cluster',
-        searchCategory: 'CLUSTERS',
-        attributes: [Name],
-    },
-];
-
-function CheckDetails() {
+function CheckDetailsPage() {
     const { scanConfigurationsQuery, selectedScanConfigName, setSelectedScanConfigName } =
         useContext(ScanConfigurationsContext);
-    const { checkName, profileName } = useParams();
+    const { checkName, profileName } = useParams() as { checkName: string; profileName: string };
     const { generatePathWithScanConfig } = useScanConfigRouter();
     const [currentDatetime, setCurrentDatetime] = useState(new Date());
     const pagination = useURLPagination(DEFAULT_COMPLIANCE_PAGE_SIZE);
@@ -131,8 +122,8 @@ function CheckDetails() {
         }
     }, [checkResultsResponse]);
 
-    const onSearch = (payload: OnSearchPayload) => {
-        onURLSearch(searchFilter, setSearchFilter, payload);
+    const onSearch: OnSearchCallback = (payload) => {
+        setSearchFilter(updateSearchFilter(searchFilter, payload));
     };
 
     function onClearFilters() {
@@ -140,21 +131,10 @@ function CheckDetails() {
         setPage(1);
     }
 
-    const onCheckStatusSelect = (
-        filterType: 'Compliance Check Status',
-        checked: boolean,
-        selection: string
-    ) => {
-        const action = checked ? 'ADD' : 'REMOVE';
-        const category = filterType;
-        const value = selection;
-        onSearch({ action, category, value });
-    };
-
     return (
         <>
             <PageTitle title="Compliance coverage - Check" />
-            <PageSection variant="light" className="pf-v5-u-py-md">
+            <PageSection type="breadcrumb">
                 <Breadcrumb>
                     <BreadcrumbItemLink
                         to={generatePathWithScanConfig(coverageProfileChecksPath, {
@@ -166,18 +146,19 @@ function CheckDetails() {
                     <BreadcrumbItem isActive>{checkName}</BreadcrumbItem>
                 </Breadcrumb>
             </PageSection>
+            <PageSection>
+                <ScanConfigurationSelect
+                    isLoading={scanConfigurationsQuery.isLoading}
+                    scanConfigs={scanConfigurationsQuery.response.configurations}
+                    selectedScanConfigName={selectedScanConfigName}
+                    isScanConfigDisabled={(config) =>
+                        isScanConfigurationDisabled(config, { profileName })
+                    }
+                    setSelectedScanConfigName={setSelectedScanConfigName}
+                />
+            </PageSection>
             <Divider component="div" />
-            <ScanConfigurationSelect
-                isLoading={scanConfigurationsQuery.isLoading}
-                scanConfigs={scanConfigurationsQuery.response.configurations}
-                selectedScanConfigName={selectedScanConfigName}
-                isScanConfigDisabled={(config) =>
-                    isScanConfigurationDisabled(config, { profileName })
-                }
-                setSelectedScanConfigName={setSelectedScanConfigName}
-            />
-            <Divider component="div" />
-            <PageSection variant="light">
+            <PageSection>
                 <CheckDetailsHeader
                     checkName={checkName}
                     checkStatsResponse={checkStatsResponse}
@@ -185,13 +166,13 @@ function CheckDetails() {
                     error={checkStatsError}
                 />
             </PageSection>
-            <Divider component="div" />
             <Tabs
                 activeKey={activeTabKey}
                 onSelect={(_e, key) => {
                     setActiveTabKey(key);
                 }}
-                className="pf-v5-u-pl-md pf-v5-u-background-color-100 pf-v5-u-flex-shrink-0"
+                className="pf-v6-u-flex-shrink-0"
+                usePageInsets
             >
                 <Tab
                     eventKey={RESULTS_TAB}
@@ -204,35 +185,35 @@ function CheckDetails() {
                     tabContentId={tabContentIdForDetails}
                 />
             </Tabs>
-            <PageSection>
-                {activeTabKey === RESULTS_TAB && (
-                    <CheckDetailsTable
-                        checkResultsCount={checkResultsResponse?.totalCount ?? 0}
-                        currentDatetime={currentDatetime}
-                        pagination={pagination}
-                        profileName={profileName}
-                        tableState={tableState}
-                        getSortParams={getSortParams}
-                        searchFilterConfig={searchFilterConfig}
-                        searchFilter={searchFilter}
-                        onFilterChange={setSearchFilter}
-                        onSearch={onSearch}
-                        onCheckStatusSelect={onCheckStatusSelect}
-                        onClearFilters={onClearFilters}
-                    />
-                )}
-                {activeTabKey === DETAILS_TAB && (
-                    <PageSection variant="light" component="div" id={tabContentIdForDetails}>
-                        <CheckDetailsInfo
-                            checkDetails={checkDetailsResponse}
-                            isLoading={isLoadingCheckDetails}
-                            error={CheckDetailsError}
+            <PageSection hasBodyWrapper={false}>
+                <div>
+                    {activeTabKey === RESULTS_TAB && (
+                        <CheckDetailsTable
+                            checkResultsCount={checkResultsResponse?.totalCount ?? 0}
+                            currentDatetime={currentDatetime}
+                            pagination={pagination}
+                            profileName={profileName}
+                            tableState={tableState}
+                            getSortParams={getSortParams}
+                            searchFilter={searchFilter}
+                            onFilterChange={setSearchFilter}
+                            onSearch={onSearch}
+                            onClearFilters={onClearFilters}
                         />
-                    </PageSection>
-                )}
+                    )}
+                    {activeTabKey === DETAILS_TAB && (
+                        <div id={tabContentIdForDetails}>
+                            <CheckDetailsInfo
+                                checkDetails={checkDetailsResponse}
+                                isLoading={isLoadingCheckDetails}
+                                error={CheckDetailsError}
+                            />
+                        </div>
+                    )}
+                </div>
             </PageSection>
         </>
     );
 }
 
-export default CheckDetails;
+export default CheckDetailsPage;

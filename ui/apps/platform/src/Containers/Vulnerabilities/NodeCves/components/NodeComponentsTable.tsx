@@ -1,10 +1,9 @@
-import React from 'react';
 import { gql } from '@apollo/client';
 import { Table, Tbody, Td, Th, Thead, Tr } from '@patternfly/react-table';
 import sortBy from 'lodash/sortBy';
 
-import useTableSort from 'hooks/patternfly/useTableSort';
-import { ApiSortOptionSingle } from 'types/search';
+import useTableSort from 'hooks/useTableSort';
+import type { ApiSortOptionSingle } from 'types/search';
 import VulnerabilityFixableIconText from 'Components/PatternFly/IconText/VulnerabilityFixableIconText';
 
 function sortTableData(
@@ -68,13 +67,13 @@ function NodeComponentsTable({ data }: NodeComponentsTableProps) {
     }
 
     return (
-        <Table style={{ border: '1px solid var(--pf-v5-c-table--BorderColor)' }}>
+        <Table>
             <Thead noWrap>
                 <Tr>
                     <Th sort={getSortParams('Component')}>Component</Th>
-                    <Th sort={getSortParams('Type')}>Type</Th>
                     <Th>Version</Th>
                     <Th>CVE fixed in</Th>
+                    <Th sort={getSortParams('Type')}>Type</Th>
                 </Tr>
             </Thead>
             <Tbody>
@@ -83,13 +82,13 @@ function NodeComponentsTable({ data }: NodeComponentsTableProps) {
                     return (
                         <Tr key={name}>
                             <Td dataLabel="Component">{name}</Td>
-                            <Td dataLabel="Type">{source}</Td>
                             <Td dataLabel="Version">{version}</Td>
                             <Td dataLabel="CVE fixed in">
                                 {fixedByVersion || (
                                     <VulnerabilityFixableIconText isFixable={false} />
                                 )}
                             </Td>
+                            <Td dataLabel="Type">{source}</Td>
                         </Tr>
                     );
                 })}

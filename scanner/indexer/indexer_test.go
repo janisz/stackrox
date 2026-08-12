@@ -1,7 +1,6 @@
 package indexer
 
 import (
-	"context"
 	"errors"
 	"io"
 	"net/http"
@@ -13,8 +12,8 @@ import (
 	"github.com/quay/claircore"
 	"github.com/quay/claircore/libindex"
 	"github.com/quay/claircore/libvuln/updates"
+	"github.com/quay/claircore/test"
 	mockccindexer "github.com/quay/claircore/test/mock/indexer"
-	"github.com/quay/zlog"
 	"github.com/stackrox/rox/scanner/config"
 	mockindexer "github.com/stackrox/rox/scanner/datastore/postgres/mocks"
 	"github.com/stretchr/testify/assert"
@@ -58,7 +57,7 @@ log_level: info
 `
 
 	ic := mustLoadIndexerConfig(t, strings.NewReader(cfg))
-	indexer, err := newLibindex(zlog.Test(context.Background(), t), ic, http.DefaultClient, "", store, nil)
+	indexer, err := newLibindex(test.Logging(t), ic, http.DefaultClient, "", store, nil)
 	require.NoError(t, err)
 	assert.NotNil(t, indexer.Options.ScannerConfig.Repo["rhel-repository-scanner"])
 	assert.NotNil(t, indexer.Options.ScannerConfig.Package["rhel_containerscanner"])
@@ -66,7 +65,7 @@ log_level: info
 }
 
 func TestGetIndexReport(t *testing.T) {
-	ctx := zlog.Test(context.Background(), t)
+	ctx := test.Logging(t)
 
 	ctrl := gomock.NewController(t)
 	store := mockccindexer.NewMockStore(ctrl)
@@ -96,7 +95,7 @@ func TestGetIndexReport(t *testing.T) {
 	metadataStore.EXPECT().
 		ManifestExists(gomock.Any(), gomock.Any()).
 		Return(false, errors.New("error"))
-	ir, exists, err := indexer.GetIndexReport(ctx, "test")
+	ir, exists, err := indexer.GetIndexReport(ctx, "test", false)
 	assert.Nil(t, ir)
 	assert.False(t, exists)
 	assert.Error(t, err)
@@ -105,7 +104,7 @@ func TestGetIndexReport(t *testing.T) {
 	metadataStore.EXPECT().
 		ManifestExists(gomock.Any(), gomock.Any()).
 		Return(false, nil)
-	ir, exists, err = indexer.GetIndexReport(ctx, "test")
+	ir, exists, err = indexer.GetIndexReport(ctx, "test", false)
 	assert.Nil(t, ir)
 	assert.False(t, exists)
 	assert.NoError(t, err)
@@ -117,7 +116,7 @@ func TestGetIndexReport(t *testing.T) {
 	store.EXPECT().
 		ManifestScanned(gomock.Any(), gomock.Any(), gomock.Any()).
 		Return(false, errors.New("error"))
-	ir, exists, err = indexer.GetIndexReport(ctx, "test")
+	ir, exists, err = indexer.GetIndexReport(ctx, "test", false)
 	assert.Nil(t, ir)
 	assert.False(t, exists)
 	assert.Error(t, err)
@@ -129,7 +128,7 @@ func TestGetIndexReport(t *testing.T) {
 	store.EXPECT().
 		ManifestScanned(gomock.Any(), gomock.Any(), gomock.Any()).
 		Return(false, nil)
-	ir, exists, err = indexer.GetIndexReport(ctx, "test")
+	ir, exists, err = indexer.GetIndexReport(ctx, "test", false)
 	assert.Nil(t, ir)
 	assert.False(t, exists)
 	assert.NoError(t, err)
@@ -144,7 +143,7 @@ func TestGetIndexReport(t *testing.T) {
 	store.EXPECT().
 		IndexReport(gomock.Any(), gomock.Any()).
 		Return(nil, false, errors.New("error"))
-	ir, exists, err = indexer.GetIndexReport(ctx, "test")
+	ir, exists, err = indexer.GetIndexReport(ctx, "test", false)
 	assert.Nil(t, ir)
 	assert.False(t, exists)
 	assert.Error(t, err)
@@ -159,7 +158,7 @@ func TestGetIndexReport(t *testing.T) {
 	store.EXPECT().
 		IndexReport(gomock.Any(), gomock.Any()).
 		Return(nil, false, nil)
-	ir, exists, err = indexer.GetIndexReport(ctx, "test")
+	ir, exists, err = indexer.GetIndexReport(ctx, "test", false)
 	assert.Nil(t, ir)
 	assert.False(t, exists)
 	assert.NoError(t, err)
@@ -177,7 +176,7 @@ func TestGetIndexReport(t *testing.T) {
 	store.EXPECT().
 		IndexReport(gomock.Any(), gomock.Any()).
 		Return(blankReport, true, nil)
-	ir, exists, err = indexer.GetIndexReport(ctx, "test")
+	ir, exists, err = indexer.GetIndexReport(ctx, "test", false)
 	assert.Equal(t, blankReport, ir)
 	assert.True(t, exists)
 	assert.NoError(t, err)
@@ -252,5 +251,79 @@ func TestRandomExpiry(t *testing.T) {
 		expiry := i.randomExpiry(now)
 		assert.False(t, expiry.Before(oneMinute))
 		assert.True(t, expiry.Before(threeMinutes))
+	}
+}
+
+// Testing the unexported shouldUpdateExternalIndexReport function because its
+// output is particularly important to get right since it determines whether
+// a record will be updated on conflict.
+func Test_shouldUpdateExternalIndexReport(t *testing.T) {
+	tests := []struct {
+		name                 string
+		incomingIndexVersion string
+		savedIndexerVersion  string
+		want                 bool
+	}{
+		{
+			name:                 "incoming version is newer",
+			incomingIndexVersion: "4.8.3",
+			savedIndexerVersion:  "4.7.5",
+			want:                 true,
+		},
+		{
+			name:                 "saved version is newer",
+			incomingIndexVersion: "4.7.5",
+			savedIndexerVersion:  "4.8.3",
+			want:                 false,
+		},
+		{
+			name:                 "both versions are valid and the same",
+			incomingIndexVersion: "4.8.3",
+			savedIndexerVersion:  "4.8.3",
+			want:                 true,
+		},
+		{
+			name:                 "saved version is empty",
+			incomingIndexVersion: "4.8.3",
+			savedIndexerVersion:  "",
+			want:                 true,
+		},
+		{
+			name:                 "incoming version is empty",
+			incomingIndexVersion: "",
+			savedIndexerVersion:  "4.8.3",
+			want:                 false,
+		},
+		{
+			name:                 "both versions are empty",
+			incomingIndexVersion: "",
+			savedIndexerVersion:  "",
+			want:                 true,
+		},
+		{
+			name:                 "incoming version is considered invalid",
+			incomingIndexVersion: "vX.Y.Z",
+			savedIndexerVersion:  "4.8.3",
+			want:                 false,
+		},
+		{
+			name:                 "saved version is considered invalid",
+			incomingIndexVersion: "4.8.3",
+			savedIndexerVersion:  "vX.Y.Z",
+			want:                 true,
+		},
+		{
+			name:                 "both versions are considered invalid",
+			incomingIndexVersion: "vX.Y.Z",
+			savedIndexerVersion:  "vX.Y.Z",
+			want:                 true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := shouldUpdateExternalIndexReport(tt.incomingIndexVersion)
+			got := f(tt.savedIndexerVersion)
+			assert.Equal(t, tt.want, got)
+		})
 	}
 }

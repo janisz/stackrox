@@ -5,6 +5,8 @@ import (
 	"os/signal"
 
 	"github.com/pkg/errors"
+	"github.com/stackrox/rox/generated/storage"
+	"github.com/stackrox/rox/pkg/centralsensor"
 	"github.com/stackrox/rox/pkg/clientconn"
 	"github.com/stackrox/rox/pkg/continuousprofiling"
 	"github.com/stackrox/rox/pkg/devmode"
@@ -18,9 +20,13 @@ import (
 	"github.com/stackrox/rox/pkg/version"
 	"github.com/stackrox/rox/sensor/common/centralclient"
 	"github.com/stackrox/rox/sensor/common/cloudproviders/gcp"
+	"github.com/stackrox/rox/sensor/common/clusterid"
+	"github.com/stackrox/rox/sensor/kubernetes/certinit"
+	"github.com/stackrox/rox/sensor/kubernetes/certrefresh"
 	"github.com/stackrox/rox/sensor/kubernetes/client"
 	"github.com/stackrox/rox/sensor/kubernetes/crs"
 	"github.com/stackrox/rox/sensor/kubernetes/fake"
+	"github.com/stackrox/rox/sensor/kubernetes/helm"
 	"github.com/stackrox/rox/sensor/kubernetes/sensor"
 	"golang.org/x/sys/unix"
 )
@@ -54,6 +60,11 @@ func main() {
 		os.Exit(0)
 	}
 
+	// Initialize TLS certificates if needed (select between legacy and new service certificates)
+	if err := certinit.Run(); err != nil {
+		log.Fatalf("TLS certificate initialization failed: %v", err)
+	}
+
 	// Start the prometheus metrics server
 	metrics.NewServer(metrics.SensorSubsystem, metrics.NewTLSConfigurerFromEnv()).RunForever()
 	metrics.GatherThrottleMetricsForever(metrics.SensorSubsystem.String())
@@ -62,11 +73,24 @@ func main() {
 	signal.Notify(sigs, os.Interrupt, unix.SIGTERM)
 
 	var sharedClientInterface client.Interface
+	var sharedClientInterfaceForFetchingPodOwnership client.Interface
 
 	// Workload manager is only non-nil when we are mocking out the k8s client
 	workloadManager := fake.NewWorkloadManager(fake.ConfigDefaults())
 	if workloadManager != nil {
+		// The fake Kubernetes clientset does not support WatchList semantics
+		// (streaming initial events + bookmark). With WatchListClient enabled
+		// (the default since client-go v0.35 / k8s 1.35), reflectors expect a
+		// bookmark event that the fake client never sends, causing informers to
+		// hang indefinitely. Disable the feature when running with fake workloads.
+		// See: https://github.com/kubernetes/kubernetes/issues/135895
+		if err := os.Setenv("KUBE_FEATURE_WatchListClient", "false"); err != nil {
+			log.Errorf("Failed to disable WatchListClient feature gate: %v", err)
+		} else {
+			log.Info("Disabled WatchListClient feature gate for fake workload compatibility")
+		}
 		sharedClientInterface = workloadManager.Client()
+		sharedClientInterfaceForFetchingPodOwnership = client.MustCreateInterface()
 	} else {
 		sharedClientInterface = client.MustCreateInterface()
 	}
@@ -75,14 +99,25 @@ func main() {
 	if err != nil {
 		utils.CrashOnError(errors.Wrapf(err, "sensor failed to start while initializing central HTTP client for endpoint %s", env.CentralEndpoint.Setting()))
 	}
+	clusterIDHandler := clusterid.NewHandler()
 	centralConnFactory := centralclient.NewCentralConnectionFactory(centralClient)
-	certLoader := centralclient.RemoteCertLoader(centralClient)
+
+	var certLoader centralclient.CertLoader
+	helmManagedConfig, helmErr := helm.GetHelmManagedConfig(storage.ServiceType_SENSOR_SERVICE)
+	if helmErr == nil && centralsensor.SecuredClusterIsNotManagedManually(helmManagedConfig) {
+		// CA rotation aware cert loader for Operator- or Helm-managed clusters
+		certLoader = certrefresh.TLSChallengeCertLoader(centralClient, sharedClientInterface.Kubernetes())
+	} else {
+		certLoader = centralclient.RemoteCertLoader(centralClient)
+	}
 
 	s, err := sensor.CreateSensor(sensor.ConfigWithDefaults().
+		WithClusterIDHandler(clusterIDHandler).
 		WithK8sClient(sharedClientInterface).
 		WithCentralConnectionFactory(centralConnFactory).
 		WithCertLoader(certLoader).
-		WithWorkloadManager(workloadManager))
+		WithWorkloadManager(workloadManager).
+		WithIntrospectionK8sClient(sharedClientInterfaceForFetchingPodOwnership))
 	utils.CrashOnError(err)
 
 	s.Start()

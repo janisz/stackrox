@@ -4,10 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 
 	"github.com/google/go-containerregistry/pkg/authn"
 	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
-	"github.com/quay/zlog"
+	"github.com/quay/claircore/toolkit/log"
 	v4 "github.com/stackrox/rox/generated/internalapi/scanner/v4"
 	"github.com/stackrox/rox/pkg/env"
 	"github.com/stackrox/rox/pkg/errox"
@@ -24,13 +25,19 @@ import (
 
 var indexerAuth = perrpc.FromMap(map[authz.Authorizer][]string{
 	or.Or(idcheck.CentralOnly(), idcheck.SensorsOnly(), idcheck.ScannerV4MatcherOnly()): {
-		"/scanner.v4.Indexer/GetIndexReport",
-		"/scanner.v4.Indexer/HasIndexReport",
+		v4.Indexer_GetIndexReport_FullMethodName,
+		v4.Indexer_HasIndexReport_FullMethodName,
 	},
 	or.Or(idcheck.CentralOnly(), idcheck.SensorsOnly()): {
 		// Matcher should never attempt to create an index report.
-		"/scanner.v4.Indexer/CreateIndexReport",
-		"/scanner.v4.Indexer/GetOrCreateIndexReport",
+		v4.Indexer_CreateIndexReport_FullMethodName,
+		v4.Indexer_GetOrCreateIndexReport_FullMethodName,
+	},
+	or.Or(idcheck.CentralOnly()): {
+		v4.Indexer_StoreIndexReport_FullMethodName,
+	},
+	or.Or(idcheck.ScannerV4MatcherOnly()): {
+		v4.Indexer_GetRepositoryToCPEMapping_FullMethodName,
 	},
 })
 
@@ -51,15 +58,23 @@ func NewIndexerService(indexer indexer.Indexer) *indexerService {
 }
 
 func (s *indexerService) CreateIndexReport(ctx context.Context, req *v4.CreateIndexReportRequest) (*v4.IndexReport, error) {
-	ctx = zlog.ContextWithValues(ctx, "component", "scanner/service/indexer.CreateIndexReport")
+	return s.createIndexReport(ctx, req)
+}
+
+// createIndexReport creates an Index Report for the given request.
+// This function writes logs using the given context.
+func (s *indexerService) createIndexReport(ctx context.Context, req *v4.CreateIndexReportRequest) (*v4.IndexReport, error) {
+	slog.InfoContext(ctx, "creating index report for container image")
+
 	// TODO We currently only support container images, hence we assume the resource
 	//      is of that type. When introducing nodes and other resources, this should
 	//      evolve.
 	resourceType := "containerimage"
 	if err := validators.ValidateContainerImageRequest(req); err != nil {
+		slog.ErrorContext(ctx, "invalid request", "reason", err)
 		return nil, err
 	}
-	ctx = zlog.ContextWithValues(ctx, "resource_type", resourceType, "hash_id", req.GetHashId())
+	ctx = log.With(ctx, "resource_type", resourceType, "hash_id", req.GetHashId())
 
 	// Setup authentication.
 	var opts []indexer.Option
@@ -72,18 +87,17 @@ func (s *indexerService) CreateIndexReport(ctx context.Context, req *v4.CreateIn
 	}
 	opts = append(opts, indexer.InsecureSkipTLSVerify(req.GetContainerImage().GetInsecureSkipTlsVerify()))
 	// Create index report.
-	zlog.Info(ctx).
-		Str("image_url", req.GetContainerImage().GetUrl()).
-		Bool("has_auth", hasAuth).
-		Bool("insecure_skip_tls_verify", req.GetContainerImage().GetInsecureSkipTlsVerify()).
-		Msg("creating index report for container image")
+	slog.InfoContext(ctx, "creating index report for container image",
+		"image_url", req.GetContainerImage().GetUrl(),
+		"has_auth", hasAuth,
+		"insecure_skip_tls_verify", req.GetContainerImage().GetInsecureSkipTlsVerify())
 	clairReport, err := s.indexer.IndexContainerImage(
 		ctx,
 		req.GetHashId(),
 		req.GetContainerImage().GetUrl(),
 		opts...)
 	if err != nil {
-		zlog.Error(ctx).Err(err).Send()
+		slog.ErrorContext(ctx, "indexing container image failed", "reason", err)
 		return nil, err
 	}
 	if !clairReport.Success {
@@ -91,7 +105,7 @@ func (s *indexerService) CreateIndexReport(ctx context.Context, req *v4.CreateIn
 	}
 	indexReport, err := mappers.ToProtoV4IndexReport(clairReport)
 	if err != nil {
-		zlog.Error(ctx).Err(err).Msg("internal error: converting to v4.IndexReport")
+		slog.ErrorContext(ctx, "internal error: converting to v4.IndexReport", "reason", err)
 		return nil, err
 	}
 	indexReport.HashId = req.GetHashId()
@@ -99,48 +113,55 @@ func (s *indexerService) CreateIndexReport(ctx context.Context, req *v4.CreateIn
 }
 
 func (s *indexerService) GetIndexReport(ctx context.Context, req *v4.GetIndexReportRequest) (*v4.IndexReport, error) {
-	ctx = zlog.ContextWithValues(ctx,
-		"component", "scanner/service/indexer.GetIndexReport",
-		"hash_id", req.GetHashId(),
-	)
-	zlog.Info(ctx).Msg("getting index report for container image")
-	ccIR, err := getClairIndexReport(ctx, s.indexer, req.GetHashId())
+	ctx = log.With(ctx, "hash_id", req.GetHashId())
+	slog.InfoContext(ctx, "getting index report for container image")
+	ir, err := s.getIndexReport(ctx, req.GetHashId(), req.GetIncludeExternal())
+	switch {
+	case errors.Is(err, errox.NotFound):
+		slog.WarnContext(ctx, "index report not found", "reason", err)
+	case err != nil:
+		slog.ErrorContext(ctx, "internal error", "reason", err)
+	}
+	return ir, err
+}
+
+// getIndexReport fetches the Index Report for the resource with the given hashID.
+// No logging is performed; however, callers of this method may be
+// interested in logging the error. Returns errox.NotFound when the report does
+// not exist.
+func (s *indexerService) getIndexReport(ctx context.Context, hashID string, includeExternal bool) (*v4.IndexReport, error) {
+	ccIR, err := getClairIndexReport(ctx, s.indexer, hashID, includeExternal)
 	if err != nil {
-		zlog.Warn(ctx).Err(err).Send()
 		return nil, err
 	}
 	v4IR, err := mappers.ToProtoV4IndexReport(ccIR)
 	if err != nil {
-		zlog.Error(ctx).Err(err).Msg("internal error: converting to v4.IndexReport")
 		return nil, err
 	}
-	v4IR.HashId = req.GetHashId()
+	v4IR.HashId = hashID
 	return v4IR, nil
 }
 
 func (s *indexerService) GetOrCreateIndexReport(ctx context.Context, req *v4.GetOrCreateIndexReportRequest) (*v4.IndexReport, error) {
-	ctx = zlog.ContextWithValues(ctx,
-		"component", "scanner/service/indexer.GetOrCreateIndexReport",
-		"hash_id", req.GetHashId(),
-	)
+	ctx = log.With(ctx, "hash_id", req.GetHashId())
 
-	ir, err := s.GetIndexReport(ctx, &v4.GetIndexReportRequest{
-		HashId: req.GetHashId(),
-	})
+	slog.InfoContext(ctx, "getting index report for container image")
+	ir, err := s.getIndexReport(ctx, req.GetHashId(), false)
 	switch {
 	case errors.Is(err, nil):
 		return ir, nil
 	case errors.Is(err, errox.NotFound):
 		// Not found, log and go create.
-		zlog.Debug(ctx).Err(err).Msg("index report not found")
+		slog.DebugContext(ctx, "index report not found", "reason", err)
 	default:
+		slog.ErrorContext(ctx, "internal error", "reason", err)
 		return nil, err
 	}
 
 	// TODO We currently only support container images, hence we assume the resource
 	//      is of that type. When introducing nodes and other resources, this should
 	//      evolve.
-	return s.CreateIndexReport(ctx, &v4.CreateIndexReportRequest{
+	return s.createIndexReport(ctx, &v4.CreateIndexReportRequest{
 		HashId: req.GetHashId(),
 		ResourceLocator: &v4.CreateIndexReportRequest_ContainerImage{
 			ContainerImage: req.GetContainerImage(),
@@ -149,11 +170,8 @@ func (s *indexerService) GetOrCreateIndexReport(ctx context.Context, req *v4.Get
 }
 
 func (s *indexerService) HasIndexReport(ctx context.Context, req *v4.HasIndexReportRequest) (*v4.HasIndexReportResponse, error) {
-	ctx = zlog.ContextWithValues(ctx,
-		"component", "scanner/service/indexer.HasIndexReport",
-		"hash_id", req.GetHashId(),
-	)
-	_, err := getClairIndexReport(ctx, s.indexer, req.GetHashId())
+	ctx = log.With(ctx, "hash_id", req.GetHashId())
+	_, err := getClairIndexReport(ctx, s.indexer, req.GetHashId(), false)
 	var exists bool
 	switch {
 	case errors.Is(err, nil):
@@ -161,10 +179,70 @@ func (s *indexerService) HasIndexReport(ctx context.Context, req *v4.HasIndexRep
 	case errors.Is(err, errox.NotFound):
 		exists = false
 	default:
-		zlog.Error(ctx).Err(err).Msg("failed retrieve index report")
+		slog.ErrorContext(ctx, "failed retrieve index report", "reason", err)
 		return nil, err
 	}
 	return &v4.HasIndexReportResponse{Exists: exists}, nil
+}
+
+func (s *indexerService) StoreIndexReport(ctx context.Context, req *v4.StoreIndexReportRequest) (*v4.StoreIndexReportResponse, error) {
+	ctx = log.With(ctx, "hash_id", req.GetHashId())
+
+	resp := &v4.StoreIndexReportResponse{Status: "ERROR"}
+	if req.GetContents() == nil {
+		slog.DebugContext(ctx, "no contents, rejecting")
+		return resp, errox.InvalidArgs.New("empty contents")
+	}
+
+	slog.InfoContext(ctx, "storing external index report")
+	ir, err := parseIndexReport(req.GetContents())
+	if err != nil {
+		return resp, fmt.Errorf("parsing contents to index report: %w", err)
+	}
+
+	resp.Status, err = s.indexer.StoreIndexReport(ctx, req.GetHashId(), req.GetIndexerVersion(), ir)
+	if err != nil {
+		return resp, fmt.Errorf("storing external index report: %w", err)
+	}
+
+	return resp, nil
+}
+
+func (s *indexerService) GetRepositoryToCPEMapping(ctx context.Context, req *v4.GetRepositoryToCPEMappingRequest) (*v4.GetRepositoryToCPEMappingResponse, error) {
+	slog.InfoContext(ctx, "getting repository-to-CPE mapping")
+
+	fetchResult, err := s.indexer.GetRepositoryToCPEMapping(ctx, req.GetIfModifiedSince())
+	if err != nil {
+		slog.ErrorContext(ctx, "failed to get repository-to-CPE mapping", "reason", err)
+		return nil, errox.ServerError.New("fetching repository-to-CPE mapping").CausedBy(err)
+	}
+
+	// If not modified, return early.
+	if !fetchResult.Modified {
+		return &v4.GetRepositoryToCPEMappingResponse{
+			Modified:     false,
+			LastModified: fetchResult.LastModified,
+		}, nil
+	}
+
+	if fetchResult.Data == nil {
+		slog.ErrorContext(ctx, "indexer returned modified=true with nil data")
+		return nil, errox.InvariantViolation.New("indexer returned modified result with no data")
+	}
+
+	// Convert to proto format.
+	result := make(map[string]*v4.RepositoryCPEInfo, len(fetchResult.Data.Data))
+	for repo, info := range fetchResult.Data.Data {
+		if len(info.CPEs) > 0 {
+			result[repo] = &v4.RepositoryCPEInfo{Cpes: info.CPEs}
+		}
+	}
+
+	return &v4.GetRepositoryToCPEMappingResponse{
+		Modified:     true,
+		LastModified: fetchResult.LastModified,
+		Mapping:      result,
+	}, nil
 }
 
 // RegisterServiceServer registers this service with the given gRPC Server.

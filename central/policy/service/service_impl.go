@@ -12,6 +12,7 @@ import (
 	clusterDataStore "github.com/stackrox/rox/central/cluster/datastore"
 	deploymentDataStore "github.com/stackrox/rox/central/deployment/datastore"
 	"github.com/stackrox/rox/central/detection/lifecycle"
+	namespaceDataStore "github.com/stackrox/rox/central/namespace/datastore"
 	networkPolicyDS "github.com/stackrox/rox/central/networkpolicies/datastore"
 	notifierDataStore "github.com/stackrox/rox/central/notifier/datastore"
 	"github.com/stackrox/rox/central/policy/datastore"
@@ -28,9 +29,11 @@ import (
 	"github.com/stackrox/rox/pkg/booleanpolicy/policyversion"
 	"github.com/stackrox/rox/pkg/concurrency"
 	"github.com/stackrox/rox/pkg/contextutil"
-	"github.com/stackrox/rox/pkg/detection"
+	accesscontrol "github.com/stackrox/rox/pkg/defaults/accesscontrol"
+	pkgDetection "github.com/stackrox/rox/pkg/detection"
 	"github.com/stackrox/rox/pkg/errorhelpers"
 	"github.com/stackrox/rox/pkg/errox"
+	"github.com/stackrox/rox/pkg/features"
 	"github.com/stackrox/rox/pkg/grpc/authn"
 	"github.com/stackrox/rox/pkg/grpc/authz"
 	"github.com/stackrox/rox/pkg/grpc/authz/perrpc"
@@ -105,6 +108,7 @@ type serviceImpl struct {
 
 	policies          datastore.DataStore
 	clusters          clusterDataStore.DataStore
+	namespaces        namespaceDataStore.DataStore
 	deployments       deploymentDataStore.DataStore
 	networkPolicies   networkPolicyDS.DataStore
 	notifiers         notifierDataStore.DataStore
@@ -154,13 +158,20 @@ func (s *serviceImpl) getPolicy(ctx context.Context, id string) (*storage.Policy
 	if len(policy.GetCategories()) == 0 {
 		policy.Categories = []string{uncategorizedCategory}
 	}
+	stripEvaluationFilterIfDisabled(policy)
 	return policy, nil
+}
+
+func stripEvaluationFilterIfDisabled(p *storage.Policy) {
+	if !features.EvaluationFilter.Enabled() {
+		p.EvaluationFilter = nil
+	}
 }
 
 func convertPoliciesToListPolicies(policies []*storage.Policy) []*storage.ListPolicy {
 	listPolicies := make([]*storage.ListPolicy, 0, len(policies))
 	for _, p := range policies {
-		listPolicies = append(listPolicies, &storage.ListPolicy{
+		lp := &storage.ListPolicy{
 			Id:              p.GetId(),
 			Name:            p.GetName(),
 			Description:     p.GetDescription(),
@@ -172,7 +183,11 @@ func convertPoliciesToListPolicies(policies []*storage.Policy) []*storage.ListPo
 			EventSource:     p.GetEventSource(),
 			IsDefault:       p.GetIsDefault(),
 			Source:          p.GetSource(),
-		})
+		}
+		if features.EvaluationFilter.Enabled() {
+			lp.EvaluationFilter = p.GetEvaluationFilter()
+		}
+		listPolicies = append(listPolicies, lp)
 	}
 	return listPolicies
 }
@@ -332,11 +347,30 @@ func (s *serviceImpl) DeletePolicy(ctx context.Context, request *v1.ResourceByID
 	}
 
 	// Note: default policies cannot be deleted, only disabled
-	if policy.IsDefault {
+	if policy.GetIsDefault() {
 		return nil, errors.Wrap(errox.InvalidArgs, "A default policy cannot be deleted. (You can disable a default policy, but not delete it.)")
 	}
 
-	if err := s.policies.RemovePolicy(ctx, request.GetId()); err != nil {
+	// Declarative policies can only be deleted by the config-controller via its finalizer.
+	if policy.GetSource() == storage.PolicySource_DECLARATIVE {
+		identity, err := authn.IdentityFromContext(ctx)
+		if err != nil {
+			return nil, errors.Wrap(err, "failed to determine caller identity")
+		}
+		isConfigController := false
+		for _, role := range identity.Roles() {
+			if role.GetRoleName() == accesscontrol.ConfigController {
+				isConfigController = true
+				break
+			}
+		}
+		if !isConfigController {
+			return nil, errors.Wrap(errox.NotAuthorized,
+				"An externally managed policy can only be deleted by deleting the corresponding SecurityPolicy custom resource.")
+		}
+	}
+
+	if err := s.policies.RemovePolicy(ctx, policy); err != nil {
 		return nil, err
 	}
 
@@ -347,7 +381,6 @@ func (s *serviceImpl) DeletePolicy(ctx context.Context, request *v1.ResourceByID
 	if err := s.syncPoliciesWithSensors(); err != nil {
 		return nil, err
 	}
-
 	return &v1.Empty{}, nil
 }
 
@@ -386,7 +419,7 @@ func (s *serviceImpl) SubmitDryRunPolicyJob(ctx context.Context, request *storag
 }
 
 func (s *serviceImpl) QueryDryRunJobStatus(ctx context.Context, jobid *v1.JobId) (*v1.DryRunJobStatusResponse, error) {
-	metadata, res, completed, err := s.dryRunPolicyJobManager.GetTaskStatusAndMetadata(jobid.JobId)
+	metadata, res, completed, err := s.dryRunPolicyJobManager.GetTaskStatusAndMetadata(jobid.GetJobId())
 	if err != nil {
 		return nil, err
 	}
@@ -401,7 +434,7 @@ func (s *serviceImpl) QueryDryRunJobStatus(ctx context.Context, jobid *v1.JobId)
 
 	if completed {
 		resp.Result, _ = res.(*v1.DryRunResponse)
-		if resp.Result == nil {
+		if resp.GetResult() == nil {
 			return nil, errors.New("Invalid response.")
 		}
 	}
@@ -410,7 +443,7 @@ func (s *serviceImpl) QueryDryRunJobStatus(ctx context.Context, jobid *v1.JobId)
 }
 
 func (s *serviceImpl) CancelDryRunJob(ctx context.Context, jobid *v1.JobId) (*v1.Empty, error) {
-	metadata, _, _, err := s.dryRunPolicyJobManager.GetTaskStatusAndMetadata(jobid.JobId)
+	metadata, _, _, err := s.dryRunPolicyJobManager.GetTaskStatusAndMetadata(jobid.GetJobId())
 	if err != nil {
 		return nil, errors.Wrap(errox.InvalidArgs, err.Error())
 	}
@@ -419,7 +452,7 @@ func (s *serviceImpl) CancelDryRunJob(ctx context.Context, jobid *v1.JobId) (*v1
 		return nil, err
 	}
 
-	if err := s.dryRunPolicyJobManager.CancelTask(jobid.JobId); err != nil {
+	if err := s.dryRunPolicyJobManager.CancelTask(jobid.GetJobId()); err != nil {
 		return nil, errors.Wrap(errox.InvalidArgs, err.Error())
 	}
 
@@ -444,7 +477,11 @@ func (s *serviceImpl) predicateBasedDryRunPolicy(ctx context.Context, cancelCtx 
 		return &resp, nil
 	}
 
-	compiledPolicy, err := detection.CompilePolicy(request)
+	// Create providers for label-based scope matching
+	clusterProvider := s.clusters
+	namespaceProvider := s.namespaces
+
+	compiledPolicy, err := pkgDetection.CompilePolicy(request, clusterProvider, namespaceProvider)
 	if err != nil {
 		return nil, errors.Wrapf(errox.InvalidArgs, "invalid policy: %v", err)
 	}
@@ -493,7 +530,7 @@ func (s *serviceImpl) predicateBasedDryRunPolicy(ctx context.Context, cancelCtx 
 				return
 			}
 
-			if !compiledPolicy.AppliesTo(deployment) {
+			if !compiledPolicy.AppliesTo(ctx, deployment) {
 				return
 			}
 
@@ -564,7 +601,7 @@ func (s *serviceImpl) GetPolicyCategories(ctx context.Context, _ *v1.Empty) (*v1
 
 	response := new(v1.PolicyCategoriesResponse)
 	response.Categories = categorySet.AsSlice()
-	slices.Sort(response.Categories)
+	slices.Sort(response.GetCategories())
 
 	return response, nil
 }
@@ -621,7 +658,7 @@ func (s *serviceImpl) enablePolicyNotification(ctx context.Context, policyID str
 	if !exists {
 		return errors.Wrapf(errox.NotFound, "Policy %q not found", policyID)
 	}
-	notifierSet := set.NewStringSet(policy.Notifiers...)
+	notifierSet := set.NewStringSet(policy.GetNotifiers()...)
 	errorList := errorhelpers.NewErrorList("unable to use all requested notifiers")
 	for _, notifierID := range notifierIDs {
 		_, exists, err := s.notifiers.GetNotifier(ctx, notifierID)
@@ -669,7 +706,7 @@ func (s *serviceImpl) disablePolicyNotification(ctx context.Context, policyID st
 	if !exists {
 		return errors.Wrapf(errox.NotFound, "Policy %q not found", policyID)
 	}
-	notifierSet := set.NewStringSet(policy.Notifiers...)
+	notifierSet := set.NewStringSet(policy.GetNotifiers()...)
 	if notifierSet.Cardinality() == 0 {
 		return nil
 	}
@@ -714,13 +751,13 @@ func checkIdentityFromMetadata(ctx context.Context, metadata map[string]interfac
 
 func (s *serviceImpl) ExportPolicies(ctx context.Context, request *v1.ExportPoliciesRequest) (*storage.ExportPoliciesResponse, error) {
 	// missingIndices and policyErrors should not overlap
-	policyList, missingIndices, err := s.policies.GetPolicies(ctx, request.PolicyIds)
+	policyList, missingIndices, err := s.policies.GetPolicies(ctx, request.GetPolicyIds())
 	if err != nil {
 		return nil, err
 	}
 	errDetails := &v1.PolicyOperationErrorList{}
 	for _, missingIndex := range missingIndices {
-		policyID := request.PolicyIds[missingIndex]
+		policyID := request.GetPolicyIds()[missingIndex]
 		errDetails.Errors = append(errDetails.Errors, &v1.PolicyOperationError{
 			PolicyId: policyID,
 			Error: &v1.PolicyError{
@@ -740,6 +777,7 @@ func (s *serviceImpl) ExportPolicies(ctx context.Context, request *v1.ExportPoli
 
 	for _, policy := range policyList {
 		removeInternal(policy)
+		stripEvaluationFilterIfDisabled(policy)
 	}
 	return &storage.ExportPoliciesResponse{
 		Policies: policyList,
@@ -768,7 +806,7 @@ func (s *serviceImpl) convertAndValidateForImport(p *storage.Policy) error {
 }
 
 func (s *serviceImpl) ImportPolicies(ctx context.Context, request *v1.ImportPoliciesRequest) (*v1.ImportPoliciesResponse, error) {
-	responses := make([]*v1.ImportPolicyResponse, 0, len(request.Policies))
+	responses := make([]*v1.ImportPolicyResponse, 0, len(request.GetPolicies()))
 	allValidationSucceeded := true
 	// Validate input policies
 	validPolicyList := make([]*storage.Policy, 0, len(request.GetPolicies()))
@@ -800,7 +838,7 @@ func (s *serviceImpl) ImportPolicies(ctx context.Context, request *v1.ImportPoli
 		}
 		// Clone here because this may be the same object stored by the DB
 		importResponse.Policy = importResponse.GetPolicy().CloneVT()
-		removeInternal(importResponse.Policy)
+		removeInternal(importResponse.GetPolicy())
 	}
 
 	if err := s.syncPoliciesWithSensors(); err != nil {
@@ -1100,9 +1138,9 @@ func combineStrings(toCombine [][]string) []string {
 	for _, category := range toCombine {
 		maxIterations *= len(category)
 	}
-	for i := 0; i < maxIterations; i++ {
+	for range maxIterations {
 		combination := ""
-		for i := 0; i < len(indices); i++ {
+		for i := range indices {
 			if i > 0 {
 				combination = combination + "="
 			}
@@ -1110,7 +1148,7 @@ func combineStrings(toCombine [][]string) []string {
 		}
 		combinations = append(combinations, combination)
 
-		for index := len(indices) - 1; index >= 0; index-- {
+		for index := range slices.Backward(indices) {
 			indices[index]++
 			if indices[index] < len(toCombine[index]) {
 				break

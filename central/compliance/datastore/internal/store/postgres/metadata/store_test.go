@@ -44,10 +44,6 @@ func (s *ComplianceRunMetadataStoreSuite) SetupTest() {
 	s.NoError(err)
 }
 
-func (s *ComplianceRunMetadataStoreSuite) TearDownSuite() {
-	s.testDB.Teardown(s.T())
-}
-
 func (s *ComplianceRunMetadataStoreSuite) TestStore() {
 	ctx := sac.WithAllAccess(context.Background())
 
@@ -99,6 +95,11 @@ func (s *ComplianceRunMetadataStoreSuite) TestStore() {
 	}
 
 	s.NoError(store.UpsertMany(ctx, complianceRunMetadatas))
+
+	foundComplianceRunMetadatas, missing, err := store.GetMany(ctx, complianceRunMetadataIDs)
+	s.NoError(err)
+	s.Empty(missing)
+	protoassert.ElementsMatch(s.T(), complianceRunMetadatas, foundComplianceRunMetadatas)
 
 	complianceRunMetadataCount, err = store.Count(ctx, search.EmptyQuery())
 	s.NoError(err)
@@ -275,6 +276,25 @@ func (s *ComplianceRunMetadataStoreSuite) TestSACWalk() {
 				return nil
 			}
 			err := s.store.Walk(testCase.context, getIDs)
+			assert.NoError(t, err)
+			assert.ElementsMatch(t, testCase.expectedIdentifiers, identifiers)
+		})
+	}
+}
+
+func (s *ComplianceRunMetadataStoreSuite) TestSACGetByQueryFn() {
+	objA, objB, testCases := s.getTestData(storage.Access_READ_ACCESS)
+	s.Require().NoError(s.store.Upsert(withAllAccessCtx, objA))
+	s.Require().NoError(s.store.Upsert(withAllAccessCtx, objB))
+
+	for name, testCase := range testCases {
+		s.T().Run(fmt.Sprintf("with %s", name), func(t *testing.T) {
+			identifiers := []string{}
+			getIDs := func(obj *storage.ComplianceRunMetadata) error {
+				identifiers = append(identifiers, obj.GetRunId())
+				return nil
+			}
+			err := s.store.GetByQueryFn(testCase.context, nil, getIDs)
 			assert.NoError(t, err)
 			assert.ElementsMatch(t, testCase.expectedIdentifiers, identifiers)
 		})

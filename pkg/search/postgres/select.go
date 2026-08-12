@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"runtime/debug"
 	"strings"
 	"time"
@@ -11,16 +12,54 @@ import (
 	"github.com/georgysavva/scany/v2/pgxscan"
 	"github.com/pkg/errors"
 	v1 "github.com/stackrox/rox/generated/api/v1"
-	"github.com/stackrox/rox/pkg/env"
 	"github.com/stackrox/rox/pkg/postgres"
 	"github.com/stackrox/rox/pkg/postgres/pgutils"
 	"github.com/stackrox/rox/pkg/postgres/walker"
+	searchPkg "github.com/stackrox/rox/pkg/search"
+	"github.com/stackrox/rox/pkg/search/enumregistry"
+	"github.com/stackrox/rox/pkg/search/paginated"
 	"github.com/stackrox/rox/pkg/search/postgres/aggregatefunc"
 	pgsearch "github.com/stackrox/rox/pkg/search/postgres/query"
+	"github.com/stackrox/rox/pkg/sync"
 	"github.com/stackrox/rox/pkg/utils"
 )
 
-var scanAPI = newScanAPI(newDBScanAPI(dbscan.WithAllowUnknownColumns(true)))
+var (
+	scanAPI          = newScanAPI(newDBScanAPI(dbscan.WithAllowUnknownColumns(true)))
+	arrayFieldsCache sync.Map // reflect.Type -> map[string]bool
+)
+
+// getArrayFieldsFromType returns a map of db tag names to whether the field is a
+// slice type. Results are cached per type since reflect inspection is invariant.
+func getArrayFieldsFromType[T any]() map[string]bool {
+	var zero T
+	t := reflect.TypeOf(zero)
+
+	if t != nil && t.Kind() == reflect.Pointer {
+		t = t.Elem()
+	}
+	if t == nil || t.Kind() != reflect.Struct {
+		return nil
+	}
+
+	if cached, ok := arrayFieldsCache.Load(t); ok {
+		return cached.(map[string]bool)
+	}
+
+	arrayFields := make(map[string]bool)
+	for field := range t.Fields() {
+		dbTag := field.Tag.Get("db")
+		if dbTag == "" || dbTag == "-" {
+			continue
+		}
+		if field.Type.Kind() == reflect.Slice {
+			arrayFields[dbTag] = true
+		}
+	}
+
+	arrayFieldsCache.Store(t, arrayFields)
+	return arrayFields
+}
 
 func newScanAPI(dbscanAPI *dbscan.API) *pgxscan.API {
 	api, err := pgxscan.NewAPI(dbscanAPI)
@@ -38,9 +77,9 @@ func newDBScanAPI(opts ...dbscan.APIOption) *dbscan.API {
 	return api
 }
 
-// RunSelectRequestForSchema executes a select request against the database for given schema. The input query must
-// explicitly specify select fields.
-func RunSelectRequestForSchema[T any](ctx context.Context, db postgres.DB, schema *walker.Schema, q *v1.Query) ([]*T, error) {
+// RunSelectOneForSchema executes a select request against the database for given schema and returns a single result.
+// The input query must explicitly specify select fields. Returns nil if no results are found.
+func RunSelectOneForSchema[T any](ctx context.Context, db postgres.DB, schema *walker.Schema, q *v1.Query) (*T, error) {
 	var query *query
 	var err error
 	// Add this to be safe and convert panics to errors,
@@ -59,7 +98,10 @@ func RunSelectRequestForSchema[T any](ctx context.Context, db postgres.DB, schem
 		}
 	}()
 
-	query, err = standardizeSelectQueryAndPopulatePath(ctx, q, schema, SELECT)
+	// Extract array fields from destination type T to automatically detect child table aggregation
+	arrayFields := getArrayFieldsFromType[T]()
+
+	query, err = standardizeSelectQueryAndPopulatePath(ctx, q, schema, SELECT, arrayFields)
 	if err != nil {
 		return nil, err
 	}
@@ -67,12 +109,114 @@ func RunSelectRequestForSchema[T any](ctx context.Context, db postgres.DB, schem
 	if query == nil {
 		return nil, nil
 	}
-	return pgutils.Retry2(ctx, func() ([]*T, error) {
-		return retryableRunSelectRequestForSchema[T](ctx, db, query)
+	return pgutils.Retry2(ctx, func() (*T, error) {
+		return retryableRunSelectOneForSchema[T](ctx, db, query)
 	})
 }
 
-func standardizeSelectQueryAndPopulatePath(ctx context.Context, q *v1.Query, schema *walker.Schema, queryType QueryType) (*query, error) {
+// RunDistinctCountForSchema executes a SELECT COUNT(DISTINCT field) query and
+// returns the count as an int. This eliminates the need for callers to define
+// single-field count structs and handle nil checks.
+func RunDistinctCountForSchema(ctx context.Context, db postgres.DB, schema *walker.Schema, q *v1.Query, field searchPkg.FieldLabel) (retCount int, retErr error) {
+	var query *query
+	defer func() {
+		if r := recover(); r != nil {
+			if query != nil {
+				log.Errorf("Query issue: %s: %v", query.AsSQL(), r)
+			} else {
+				log.Errorf("Unexpected error running search request: %v", r)
+			}
+			debug.PrintStack()
+			retErr = fmt.Errorf("unexpected error running search request: %v", r)
+		}
+	}()
+
+	cloned := q.CloneVT()
+	cloned.Selects = []*v1.QuerySelect{
+		searchPkg.NewQuerySelect(field).AggrFunc(aggregatefunc.Count).Distinct().Proto(),
+	}
+
+	type countResult struct {
+		Count int `db:"count"`
+	}
+
+	var err error
+	query, err = standardizeSelectQueryAndPopulatePath(ctx, cloned, schema, SELECT, nil)
+	if err != nil {
+		return 0, err
+	}
+	if query == nil {
+		return 0, nil
+	}
+
+	// Override the alias to a fixed name so we can scan into a known struct.
+	if len(query.SelectedFields) > 0 {
+		query.SelectedFields[0].Alias = "count"
+	}
+
+	result, err := pgutils.Retry2(ctx, func() (*countResult, error) {
+		return retryableRunSelectOneForSchema[countResult](ctx, db, query)
+	})
+	if err != nil {
+		return 0, err
+	}
+	if result == nil {
+		return 0, nil
+	}
+	return result.Count, nil
+}
+
+// RunSelectRequestForSchema executes a select request against the database for given schema. The input query must
+// explicitly specify select fields.
+//
+// Deprecated: Use RunSelectRequestForSchemaFn
+func RunSelectRequestForSchema[T any](ctx context.Context, db postgres.DB, schema *walker.Schema, q *v1.Query) ([]*T, error) {
+	result := make([]*T, 0, paginated.GetLimit(q.GetPagination().GetLimit(), 100))
+	err := RunSelectRequestForSchemaFn(ctx, db, schema, q, func(t *T) error {
+		result = append(result, t)
+		return nil
+	})
+	return result, err
+}
+
+// RunSelectRequestForSchemaFn executes a select request against the database for given schema. The input query must
+// explicitly specify select fields.
+func RunSelectRequestForSchemaFn[T any](ctx context.Context, db postgres.DB, schema *walker.Schema, q *v1.Query, fn func(*T) error) (retErr error) {
+	var query *query
+	// Add this to be safe and convert panics to errors,
+	// since we do a lot of casting and other operations that could potentially panic in this code.
+	// Panics are expected ONLY in the event of a programming error, all foreseeable errors are handled
+	// the usual way.
+	defer func() {
+		if r := recover(); r != nil {
+			if query != nil {
+				log.Errorf("Query issue: %s: %v", query.AsSQL(), r)
+			} else {
+				log.Errorf("Unexpected error running search request: %v", r)
+			}
+			debug.PrintStack()
+			retErr = fmt.Errorf("unexpected error running search request: %v", r)
+		}
+	}()
+
+	// Extract array fields from destination type T to automatically detect child table aggregation
+	arrayFields := getArrayFieldsFromType[T]()
+
+	var err error
+	query, err = standardizeSelectQueryAndPopulatePath(ctx, q, schema, SELECT, arrayFields)
+	if err != nil {
+		return err
+	}
+	// A nil-query implies no results.
+	if query == nil {
+		return nil
+	}
+	return pgutils.Retry(ctx, func() error {
+		return retryableRunSelectRequestForSchemaFn[T](ctx, db, query, fn)
+	})
+}
+
+func standardizeSelectQueryAndPopulatePath(ctx context.Context, q *v1.Query, schema *walker.Schema, queryType QueryType, arrayFields map[string]bool) (*query, error) {
 	nowForQuery := time.Now()
 
 	var err error
@@ -81,17 +225,15 @@ func standardizeSelectQueryAndPopulatePath(ctx context.Context, q *v1.Query, sch
 		return nil, err
 	}
 
-	standardizeFieldNamesInQuery(q)
-	joins, dbFields := getJoinsAndFields(schema, q)
-	if len(q.GetSelects()) == 0 && q.GetQuery() == nil {
-		return nil, nil
+	q, err = enrichQueryWithSACFilter(ctx, q, schema, queryType)
+	if err != nil {
+		return nil, err
 	}
 
-	if env.ImageCVEEdgeCustomJoin.BooleanSetting() {
-		joins, err = handleImageCveEdgesTableInJoins(schema, joins)
-		if err != nil {
-			return nil, err
-		}
+	standardizeFieldNamesInQuery(q)
+	joins, dbFields := getJoinsAndFields(schema, q, arrayFields)
+	if len(q.GetSelects()) == 0 && q.GetQuery() == nil {
+		return nil, nil
 	}
 
 	parsedQuery := &query{
@@ -101,7 +243,7 @@ func standardizeSelectQueryAndPopulatePath(ctx context.Context, q *v1.Query, sch
 		Joins:     joins,
 	}
 
-	if err = populateSelect(parsedQuery, schema, q.GetSelects(), dbFields, nowForQuery); err != nil {
+	if err = populateSelect(parsedQuery, schema, q, dbFields, nowForQuery, arrayFields); err != nil {
 		return nil, errors.Wrapf(err, "failed to parse select portion of query -- %s --", q.String())
 	}
 
@@ -124,6 +266,21 @@ func standardizeSelectQueryAndPopulatePath(ctx context.Context, q *v1.Query, sch
 	if err := populateGroupBy(parsedQuery, q.GetGroupBy(), schema, dbFields); err != nil {
 		return nil, err
 	}
+	if parsedQuery.HasChildTableFields && len(parsedQuery.GroupBys) == 0 {
+		// Group by the raw PK column (no cast) so PostgreSQL recognizes functional
+		// dependency and allows non-aggregated parent columns in SELECT.
+		// applyGroupByPrimaryKeys uses selectQueryField which adds ::text for UUIDs,
+		// turning the GROUP BY into an expression that breaks functional dependency.
+		parsedQuery.GroupByPrimaryKey = true
+		for _, pk := range schema.PrimaryKeys() {
+			parsedQuery.GroupBys = append(parsedQuery.GroupBys, groupByEntry{
+				Field: pgsearch.SelectQueryField{
+					SelectPath:  qualifyColumn(pk.Schema.Table, pk.ColumnName, ""),
+					FromGroupBy: true,
+				},
+			})
+		}
+	}
 	if err := populatePagination(parsedQuery, q.GetPagination(), schema, dbFields); err != nil {
 		return nil, err
 	}
@@ -133,7 +290,7 @@ func standardizeSelectQueryAndPopulatePath(ctx context.Context, q *v1.Query, sch
 	return parsedQuery, nil
 }
 
-func retryableRunSelectRequestForSchema[T any](ctx context.Context, db postgres.DB, query *query) ([]*T, error) {
+func retryableRunSelectOneForSchema[T any](ctx context.Context, db postgres.DB, query *query) (*T, error) {
 	if len(query.SelectedFields) == 0 {
 		return nil, errors.New("select fields required for select query")
 	}
@@ -146,17 +303,134 @@ func retryableRunSelectRequestForSchema[T any](ctx context.Context, db postgres.
 	}
 	defer rows.Close()
 
-	var scannedRows []*T
-	if err := scanAPI.ScanAll(&scannedRows, rows); err != nil {
-		return nil, err
+	var row T
+	if err := scanAPI.ScanOne(&row, rows); err != nil {
+		return nil, errors.Wrap(err, "error scanning rows")
 	}
-	return scannedRows, rows.Err()
+	return &row, pgutils.ErrNilIfNoRows(err)
 }
 
-func populateSelect(querySoFar *query, schema *walker.Schema, querySelects []*v1.QuerySelect, queryFields map[string]searchFieldMetadata, nowForQuery time.Time) error {
+func retryableRunSelectRequestForSchemaFn[T any](ctx context.Context, db postgres.DB, query *query, fn func(*T) error) error {
+	if len(query.SelectedFields) == 0 {
+		return errors.New("select fields required for select query")
+	}
+
+	queryStr := query.AsSQL()
+
+	rows, err := tracedQuery(ctx, db, queryStr, query.Data...)
+	if err != nil {
+		return errors.Wrapf(err, "error executing query %s", queryStr)
+	}
+	defer rows.Close()
+
+	scanner := scanAPI.NewRowScanner(rows)
+	for rows.Next() {
+		var row T
+		if err := scanner.Scan(&row); err != nil {
+			return err
+		}
+		if err := fn(&row); err != nil {
+			return err
+		}
+	}
+	return rows.Err()
+}
+
+// DirectScanConfig holds the configuration for direct pgx row scanning.
+// This bypasses scany's reflection-based scanning for hot paths where the
+// column layout is known at compile time.
+type DirectScanConfig struct {
+	// ScanDests returns scan destination pointers. Called once before iteration;
+	// the returned slice is reused for every row. The order must match the
+	// SELECT columns including any extra columns injected by the query builder
+	// (e.g. ORDER BY fields added via ExtraSelectedFieldPaths).
+	ScanDests func() []any
+
+	// OnRow is called after each row is scanned into the destinations
+	// returned by the prior ScanDests call.
+	OnRow func() error
+}
+
+// RunSelectDirectFn executes a select request using the standard query builder
+// for WHERE/ORDER BY/LIMIT/SAC, but scans rows directly with pgx rows.Scan
+// instead of scany. This avoids reflection overhead on hot paths.
+//
+// The arrayFields parameter indicates which selected fields are array columns
+// in the parent table (same semantics as RunSelectRequestForSchemaFn's
+// type-detected array fields). Pass nil if no array fields are selected.
+func RunSelectDirectFn(ctx context.Context, db postgres.DB, schema *walker.Schema, q *v1.Query, arrayFields map[string]bool, cfg *DirectScanConfig) (retErr error) {
+	if cfg == nil {
+		return errors.New("DirectScanConfig must not be nil")
+	}
+	if cfg.ScanDests == nil {
+		return errors.New("DirectScanConfig.ScanDests must not be nil")
+	}
+	if cfg.OnRow == nil {
+		return errors.New("DirectScanConfig.OnRow must not be nil")
+	}
+	var builtQuery *query
+	defer func() {
+		if r := recover(); r != nil {
+			if builtQuery != nil {
+				log.Errorf("Query issue: %s: %v", builtQuery.AsSQL(), r)
+			} else {
+				log.Errorf("Unexpected error running search request: %v", r)
+			}
+			debug.PrintStack()
+			retErr = fmt.Errorf("unexpected error running search request: %v", r)
+		}
+	}()
+
+	builtQuery, err := standardizeSelectQueryAndPopulatePath(ctx, q, schema, SELECT, arrayFields)
+	if err != nil {
+		return err
+	}
+	if builtQuery == nil {
+		return nil
+	}
+	return pgutils.Retry(ctx, func() error {
+		return retryableRunSelectDirectFn(ctx, db, builtQuery, cfg)
+	})
+}
+
+func retryableRunSelectDirectFn(ctx context.Context, db postgres.DB, q *query, cfg *DirectScanConfig) error {
+	if len(q.SelectedFields) == 0 {
+		return errors.New("select fields required for select query")
+	}
+
+	// Guard against the query builder injecting columns beyond what the caller expects.
+	expectedCols := len(q.SelectedFields) + len(q.ExtraSelectedFieldPaths())
+	dests := cfg.ScanDests()
+	if len(dests) != expectedCols {
+		return errors.Errorf("scan destination count %d does not match projected column count %d", len(dests), expectedCols)
+	}
+
+	queryStr := q.AsSQL()
+
+	rows, err := tracedQuery(ctx, db, queryStr, q.Data...)
+	if err != nil {
+		return errors.Wrapf(err, "error executing query %s", queryStr)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		if err := rows.Scan(dests...); err != nil {
+			return err
+		}
+		if err := cfg.OnRow(); err != nil {
+			return err
+		}
+	}
+	return rows.Err()
+}
+
+func populateSelect(querySoFar *query, schema *walker.Schema, q *v1.Query, queryFields map[string]searchFieldMetadata, nowForQuery time.Time, arrayFields map[string]bool) error {
+	querySelects := q.GetSelects()
 	if len(querySelects) == 0 {
 		return errors.New("select portion of the query cannot be empty")
 	}
+
+	hasGroupBy := len(q.GetGroupBy().GetFields()) > 0
 
 	for idx, qs := range querySelects {
 		field := qs.GetField()
@@ -165,16 +439,20 @@ func populateSelect(querySoFar *query, schema *walker.Schema, querySelects []*v1
 		if dbField == nil {
 			return errors.Errorf("field %s in select portion of query does not exist in table %s or connected tables", field, schema.Table)
 		}
-		// TODO(mandar): Add support for the following.
-		if dbField.DataType == postgres.StringArray || dbField.DataType == postgres.IntArray ||
-			dbField.DataType == postgres.EnumArray || dbField.DataType == postgres.Map {
-			return errors.Errorf("field %s in select portion of query is unsupported", field)
+
+		isChildField := isChildTableField(dbField, schema)
+
+		if !isChildField && dbField.DataType == postgres.Map {
+			return errors.Errorf("map field %s in parent table is unsupported in select", field)
 		}
 
 		if qs.GetFilter() == nil {
-			querySoFar.SelectedFields = append(querySoFar.SelectedFields,
-				selectQueryField(field.GetName(), dbField, field.GetDistinct(), aggregatefunc.GetAggrFunc(field.GetAggregateFunc()), ""),
-			)
+			selectField := selectQueryField(field.GetName(), dbField, field.GetDistinct(), aggregatefunc.GetAggrFunc(field.GetAggregateFunc()), "")
+			if arrayFields != nil && isChildField && !hasGroupBy && arrayFields[strings.ToLower(selectField.Alias)] {
+				selectField.ChildTableAgg = true
+				querySoFar.HasChildTableFields = true
+			}
+			querySoFar.SelectedFields = append(querySoFar.SelectedFields, selectField)
 			querySoFar.DistinctAppliedToSelects = querySoFar.DistinctAppliedToSelects || field.GetDistinct()
 			continue
 		}
@@ -195,6 +473,10 @@ func populateSelect(querySoFar *query, schema *walker.Schema, querySelects []*v1
 		querySoFar.Data = append(querySoFar.Data, qe.Where.Values...)
 
 		selectField := selectQueryField(field.GetName(), dbField, field.GetDistinct(), aggregatefunc.GetAggrFunc(field.GetAggregateFunc()), qe.Where.Query)
+		if arrayFields != nil && isChildField && !hasGroupBy && arrayFields[strings.ToLower(selectField.Alias)] {
+			selectField.ChildTableAgg = true
+			querySoFar.HasChildTableFields = true
+		}
 		querySoFar.DistinctAppliedToSelects = querySoFar.DistinctAppliedToSelects || field.GetDistinct()
 		if alias := filter.GetName(); alias != "" {
 			selectField.Alias = alias
@@ -227,10 +509,26 @@ func selectQueryField(searchField string, field *walker.Field, selectDistinct bo
 	if dataType == "" {
 		dataType = field.DataType
 	}
+
+	// Add PostTransform for enum fields to convert integer values to strings
+	var postTransform func(interface{}) interface{}
+	if dataType == postgres.Enum {
+		var enumFieldPath string
+		if searchFieldObj, ok := field.Schema.OptionsMap.Get(searchField); ok {
+			enumFieldPath = searchFieldObj.FieldPath
+		}
+		postTransform = func(i interface{}) interface{} {
+			// The value from postgres is a *int, convert it to string using enum registry
+			return enumregistry.Lookup(enumFieldPath, int32(*(i.(*int))))
+		}
+	}
+
 	return pgsearch.SelectQueryField{
-		SelectPath:   selectPath,
-		Alias:        strings.Join(strings.Fields(searchField+" "+aggrFunc.Name()), "_"),
-		FieldType:    dataType,
-		DerivedField: aggrFunc != aggregatefunc.Unset,
+		SelectPath:    selectPath,
+		Alias:         strings.Join(strings.Fields(searchField+" "+aggrFunc.Name()), "_"),
+		FieldType:     dataType,
+		FieldPath:     strings.ToLower(searchField), // Store the search field name for FieldValues mapping
+		DerivedField:  aggrFunc != aggregatefunc.Unset,
+		PostTransform: postTransform,
 	}
 }

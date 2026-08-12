@@ -1,18 +1,27 @@
 name: Cache UI Dependencies
-description: Cache UI Dependencies
+description: Cache node_modules and Cypress binary for UI jobs
 inputs:
   lockFile:
     description: Where the package lock is written
-    required: true
+    required: false
     default: "ui/apps/platform/package-lock.json"
+  working-directory:
+    description: Directory containing the UI app
+    required: false
+    default: "ui/apps/platform"
+outputs:
+  cache-hit:
+    description: Whether the cache was restored (exact match)
+    value: ${{ steps.cache.outputs.cache-hit }}
 runs:
   using: composite
   steps:
     - name: Cache UI Dependencies
-      uses: actions/cache@v4
+      id: cache
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # ratchet:actions/cache@v6.1.0
       with:
         path: |
-          /github/home/.npm
-          /github/home/.cache/Cypress
-          /usr/local/share/.cache
-        key: npm-v2-${{ hashFiles(inputs.lockFile) }}
+          ${{ inputs.working-directory }}/node_modules
+          ~/.cache/Cypress
+        key: ui-deps-v1-${{ github.job }}-${{ hashFiles(inputs.lockFile) }}
+        restore-keys: ui-deps-v1-${{ github.job }}-

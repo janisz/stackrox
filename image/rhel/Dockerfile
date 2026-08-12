@@ -1,11 +1,7 @@
-ARG RPMS_REGISTRY=registry.access.redhat.com
-ARG RPMS_BASE_IMAGE=ubi8
-ARG RPMS_BASE_TAG=latest
-ARG BASE_REGISTRY=registry.access.redhat.com
-ARG BASE_IMAGE=ubi8-minimal
-ARG BASE_TAG=latest
+FROM registry.access.redhat.com/ubi9:latest AS ubi-base
+FROM registry.access.redhat.com/ubi9/ubi-micro:latest AS ubi-micro-base
 
-FROM ${RPMS_REGISTRY}/${RPMS_BASE_IMAGE}:${RPMS_BASE_TAG} AS downloads
+FROM ubi-base AS downloads
 
 ARG DEBUG_BUILD=no
 
@@ -13,16 +9,37 @@ WORKDIR /
 COPY download.sh /download.sh
 RUN /download.sh
 
-FROM ${BASE_REGISTRY}/${BASE_IMAGE}:${BASE_TAG} AS stackrox_data
+FROM ubi-base AS stackrox_data
 
-RUN mkdir /stackrox-data
-RUN microdnf upgrade --nobest -y  && microdnf install -y zip
+RUN dnf install -y zip
 
 WORKDIR /
 COPY fetch-stackrox-data.sh .
 RUN /fetch-stackrox-data.sh /stackrox-data
 
-FROM ${BASE_REGISTRY}/${BASE_IMAGE}:${BASE_TAG}
+FROM ubi-base AS package_installer
+
+COPY --from=ubi-micro-base / /out/
+COPY --from=downloads /output/rpms/ /tmp/
+COPY signatures/RPM-GPG-KEY-CentOS-Official /tmp/
+
+RUN rpm --import /tmp/RPM-GPG-KEY-CentOS-Official && \
+    dnf install -y \
+        --installroot=/out/ \
+        --releasever=9 \
+        --setopt=install_weak_deps=0 \
+        --nodocs \
+        findutils \
+        ca-certificates \
+        gzip \
+        less \
+        tar \
+        /tmp/postgres-libs.rpm \
+        /tmp/postgres.rpm && \
+    dnf clean all --installroot=/out/ && \
+    rm -rf /out/var/cache/dnf /out/var/cache/yum
+
+FROM ubi-micro-base
 
 ARG LABEL_VERSION
 ARG LABEL_RELEASE
@@ -45,27 +62,17 @@ ENV PATH="/stackrox:$PATH" \
     ROX_IMAGE_FLAVOR=${ROX_IMAGE_FLAVOR} \
     ROX_PRODUCT_BRANDING=${ROX_PRODUCT_BRANDING}
 
-COPY signatures/RPM-GPG-KEY-CentOS-Official /
-COPY static-bin /stackrox/
+COPY --from=package_installer /out/ /
 
-COPY --from=downloads /output/rpms/ /tmp/
+COPY static-bin /stackrox/
 COPY --from=downloads /output/go/ /go/
 
-RUN rpm --import RPM-GPG-KEY-CentOS-Official && \
-    microdnf -y upgrade --nobest && \
-    rpm -i --nodeps /tmp/postgres-libs.rpm && \
-    rpm -i --nodeps /tmp/postgres.rpm && \
-    microdnf install --setopt=install_weak_deps=0 --nodocs -y lz4 bzip2 util-linux && \
-    microdnf clean all -y && \
-    rm /tmp/postgres.rpm /tmp/postgres-libs.rpm RPM-GPG-KEY-CentOS-Official && \
-    # (Optional) Remove line below to keep package management utilities
-    rpm -e --nodeps $(rpm -qa curl '*rpm*' '*dnf*' '*libsolv*' '*hawkey*' 'yum*') && \
-    rm -rf /var/cache/dnf /var/cache/yum && \
+RUN \
     # The contents of paths mounted as emptyDir volumes in Kubernetes are saved
     # by the script `save-dir-contents` during the image build. The directory
     # contents are then restored by the script `restore-all-dir-contents`
     # during the container start.
-    chown -R 4000:4000 /etc/pki/ca-trust /etc/ssl && save-dir-contents /etc/pki/ca-trust /etc/ssl && \
+    chown -R 4000:4000 /etc/pki/ca-trust && save-dir-contents /etc/pki/ca-trust/source && \
     mkdir -p /var/lib/stackrox && chown -R 4000:4000 /var/lib/stackrox && \
     mkdir -p /var/log/stackrox && chown -R 4000:4000 /var/log/stackrox && \
     mkdir -p /var/cache/stackrox && chown -R 4000:4000 /var/cache/stackrox && \
@@ -85,16 +92,14 @@ COPY bin/kubernetes-sensor  /stackrox/bin/kubernetes-sensor
 COPY bin/sensor-upgrader    /stackrox/bin/sensor-upgrader
 COPY bin/admission-control  /stackrox/bin/admission-control
 COPY bin/config-controller  /stackrox/bin/config-controller
-COPY bin/init-tls-certs     /stackrox/bin/init-tls-certs
+COPY bin/central-worker     /stackrox/bin/central-worker
+COPY bin/roxagent           /stackrox/bin/roxagent
 COPY bin/roxctl*            /assets/downloads/cli/
 
-RUN ln -s /assets/downloads/cli/roxctl-linux-${TARGET_ARCH} /stackrox/roxctl && \
-    ln -s /assets/downloads/cli/roxctl-linux-amd64 /assets/downloads/cli/roxctl-linux
+RUN ln -s /assets/downloads/cli/roxctl-linux-${TARGET_ARCH} /stackrox/roxctl
 
 EXPOSE 8443
 
 USER 4000:4000
 
 ENTRYPOINT ["/stackrox/roxctl"]
-
-HEALTHCHECK CMD curl --insecure --fail https://127.0.0.1:8443/v1/ping

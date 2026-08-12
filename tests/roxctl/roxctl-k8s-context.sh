@@ -10,8 +10,54 @@ eecho() {
   echo "$@" >&2
 }
 
+wait_for_rbac() {
+  local verb="$1" resource="$2" sa="$3" namespace="$4"
+  local max_attempts=30
+
+  echo "Waiting for RBAC to propagate..."
+  for _i in $(seq 1 "$max_attempts"); do
+    if kubectl auth can-i "$verb" "$resource" \
+        --as="system:serviceaccount:${namespace}:${sa}" \
+        -n "$namespace" 2>/dev/null; then
+      return 0
+    fi
+    sleep 1
+  done
+
+  echo "RBAC propagation timed out waiting for ${sa} to ${verb} ${resource}" >&2
+  return 1
+}
+
 test_roxctl_cmd() {
   echo "Testing command: roxctl central whoami"
+
+  # Use isolated kubeconfig to avoid interference from background GKE token refresh.
+  # The refresh_gke_token() background process (scripts/ci/gke.sh:284-315) runs every
+  # 15 minutes and overwrites the kubeconfig file, which deletes custom contexts
+  # created by this test. Using a temporary kubeconfig prevents this race condition.
+  # See ROX-29633 for details.
+  #
+  # IMPORTANT: We use 'local' to scope KUBECONFIG to this function, preventing it
+  # from leaking to the parent shell. The 'export' makes it visible to child processes
+  # (kubectl, roxctl). When the function exits, the local variable is destroyed and
+  # the parent's KUBECONFIG remains unchanged.
+  local ORIGINAL_KUBECONFIG="${KUBECONFIG:-$HOME/.kube/config}"
+  local TEST_KUBECONFIG
+  TEST_KUBECONFIG=$(mktemp)
+
+  # Copy current config to isolated file
+  cp "$ORIGINAL_KUBECONFIG" "$TEST_KUBECONFIG"
+
+  # Set KUBECONFIG locally and export for child processes
+  local KUBECONFIG="$TEST_KUBECONFIG"
+  export KUBECONFIG
+
+  # Cleanup function only needs to remove the temp file
+  cleanup_kubeconfig() {
+    rm -f "$TEST_KUBECONFIG"
+  }
+  trap cleanup_kubeconfig EXIT
+
   CURRENT_CONTEXT=$(kubectl config current-context)
   CURRENT_CLUSTER=$(kubectl config view -o jsonpath="{.contexts[?(@.name=='$CURRENT_CONTEXT')].context.cluster}")
 
@@ -27,6 +73,7 @@ test_roxctl_cmd() {
   echo "Creating a service account with an insufficient role..."
   kubectl apply -f "tests/testdata/port-forward-role-bad.yaml"
   kubectl apply -f "tests/testdata/port-forward-sa.yaml"
+  wait_for_rbac "get" "services" "port-forward-sa" "stackrox"
   echo "Switching the context to use the service account token..."
   TOKEN=$(kubectl create token port-forward-sa)
   kubectl config set-credentials port-forward-user --token="$TOKEN"
@@ -50,6 +97,7 @@ test_roxctl_cmd() {
 
   echo "Updating the role with sufficient permissions..."
   kubectl apply -f "tests/testdata/port-forward-role-minimal.yaml"
+  wait_for_rbac "list" "pods" "port-forward-sa" "stackrox"
 
   echo "Switching back to the limited context..."
   kubectl config use-context port-forward-context

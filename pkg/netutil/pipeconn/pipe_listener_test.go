@@ -14,19 +14,17 @@ import (
 )
 
 func TestNetwork(t *testing.T) {
-	t.Parallel()
 
 	assert.Equal(t, Network, pipeAddr.Network())
 }
 
 func TestPipeListener_Connections(t *testing.T) {
-	t.Parallel()
 
 	lis, dialCtx := NewPipeListener()
 
-	var clientSum uint32
+	var clientSum atomic.Uint32
 	var wg sync.WaitGroup
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()
@@ -48,12 +46,12 @@ func TestPipeListener_Connections(t *testing.T) {
 
 			assert.NoError(t, conn.Close())
 
-			atomic.AddUint32(&clientSum, sum)
+			clientSum.Add(sum)
 		}(i)
 	}
 
-	var serverSum uint32
-	for i := 0; i < 10; i++ {
+	var serverSum atomic.Uint32
+	for i := range 10 {
 		conn, err := lis.Accept()
 		require.NoError(t, err)
 
@@ -75,7 +73,7 @@ func TestPipeListener_Connections(t *testing.T) {
 			assert.NoError(t, err)
 			assert.Equal(t, sum, binenc.BigEndian.Uint32(buf[:]))
 
-			atomic.AddUint32(&serverSum, sum)
+			serverSum.Add(sum)
 
 			n, err := io.ReadFull(conn, buf[:])
 			assert.Zero(t, n)
@@ -84,11 +82,10 @@ func TestPipeListener_Connections(t *testing.T) {
 	}
 
 	wg.Wait()
-	assert.Equal(t, serverSum, clientSum)
+	assert.Equal(t, serverSum.Load(), clientSum.Load())
 }
 
 func TestPipeListener_Close(t *testing.T) {
-	t.Parallel()
 
 	lis, dialCtx := NewPipeListener()
 

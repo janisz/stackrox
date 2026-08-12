@@ -3,6 +3,7 @@ package scannerv4
 import (
 	"context"
 	"fmt"
+	"io"
 	"time"
 
 	"github.com/google/go-containerregistry/pkg/authn"
@@ -12,6 +13,7 @@ import (
 	v4 "github.com/stackrox/rox/generated/internalapi/scanner/v4"
 	"github.com/stackrox/rox/generated/storage"
 	"github.com/stackrox/rox/pkg/env"
+	"github.com/stackrox/rox/pkg/features"
 	"github.com/stackrox/rox/pkg/logging"
 	"github.com/stackrox/rox/pkg/protocompat"
 	"github.com/stackrox/rox/pkg/registries"
@@ -20,14 +22,20 @@ import (
 	pkgscanner "github.com/stackrox/rox/pkg/scannerv4"
 	"github.com/stackrox/rox/pkg/scannerv4/client"
 	"github.com/stackrox/rox/pkg/uuid"
+	"github.com/stackrox/rox/pkg/version"
 	scannerv1 "github.com/stackrox/scanner/generated/scanner/api/v1"
 )
 
-// mockDigest is the digest used for annotating any Node Index.
+// mockNodeDigest is the digest used for annotating any Node Index.
 // The Scanner endpoint requires a digest for each image layer before analyzing it - TODO(ROX-25614)
 // As the Node contents are treated as one big image layer, they also need a bogus digest.
 // This digest is taken from the test of the digest library we're using (go-containerregistry).
-const mockDigest = "registry/repository@sha256:deadb33fdeadb33fdeadb33fdeadb33fdeadb33fdeadb33fdeadb33fdeadb33f"
+const mockNodeDigest = "registry/repository@sha256:deadb33fdeadb33fdeadb33fdeadb33fdeadb33fdeadb33fdeadb33fdeadb33f"
+
+// mockVirtualMachineDigest is the digest used for annotating any Virtual Machine Index.
+// The Scanner endpoint requires a digest for each image layer before analyzing it - TODO(ROX-25614)
+// As the Virtual Machine contents are treated as one big image layer, they also need a bogus digest.
+const mockVirtualMachineDigest = "vm-registry/repository@sha256:900dc0ffee900dc0ffee900dc0ffee900dc0ffee900dc0ffee900dc0ffee900d"
 
 var (
 	_ types.Scanner                  = (*scannerv4)(nil)
@@ -73,13 +81,13 @@ func newScanner(integration *storage.ImageIntegration, activeRegistries registri
 	}
 
 	indexerEndpoint := DefaultIndexerEndpoint
-	if conf.IndexerEndpoint != "" {
-		indexerEndpoint = conf.IndexerEndpoint
+	if conf.GetIndexerEndpoint() != "" {
+		indexerEndpoint = conf.GetIndexerEndpoint()
 	}
 
 	matcherEndpoint := DefaultMatcherEndpoint
-	if conf.MatcherEndpoint != "" {
-		matcherEndpoint = conf.MatcherEndpoint
+	if conf.GetMatcherEndpoint() != "" {
+		matcherEndpoint = conf.GetMatcherEndpoint()
 	}
 
 	numConcurrentScans := defaultMaxConcurrentScans
@@ -121,8 +129,54 @@ func (s *scannerv4) GetSBOM(image *storage.Image) ([]byte, bool, error) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), scanTimeout)
 	defer cancel()
-	sbom, found, err := s.scannerClient.GetSBOM(ctx, image.GetName().GetFullName(), digest, uri)
+	sbom, found, err := s.scannerClient.GetSBOM(ctx, image.GetName().GetFullName(), digest, uri, client.IncludeExternalIndexReports())
 	return sbom, found, err
+}
+
+// ScanSBOM scans an SBOM, the contentType (which would include media type, optionally version, etc.)
+// will be passed to the scanner to assist in parsing.
+func (s *scannerv4) ScanSBOM(ctx context.Context, sbomReader io.Reader, contentType string) (*v1.SBOMScanResponse, error) {
+	ctx, cancel := context.WithTimeout(ctx, scanTimeout)
+	defer cancel()
+
+	sbomBytes, err := io.ReadAll(sbomReader)
+	if err != nil {
+		return nil, fmt.Errorf("reading sbom: %w", err)
+	}
+
+	var scannerVersion pkgscanner.Version
+
+	vr, err := s.scannerClient.ScanSBOM(ctx, sbomBytes, contentType, client.Version(&scannerVersion))
+	if err != nil {
+		return nil, fmt.Errorf("scanning sbom: %w", err)
+	}
+
+	scannerVersionStr, err := scannerVersion.Encode()
+	if err != nil {
+		log.Warnf("Failed to encode Scanner version: %v", err)
+	}
+
+	return &v1.SBOMScanResponse{
+		Id:   vr.GetHashId(),
+		Scan: sbomScan(vr, scannerVersionStr),
+	}, nil
+}
+
+func sbomScan(vr *v4.VulnerabilityReport, scannerVersionStr string) *v1.SBOMScanResponse_SBOMScan {
+	imageScan := imageScan(nil, vr, scannerVersionStr)
+
+	for _, c := range imageScan.GetComponents() {
+		for _, v := range c.GetVulns() {
+			// With SBOMs we will not always know what the component represents.
+			v.VulnerabilityType = storage.EmbeddedVulnerability_UNKNOWN_VULNERABILITY
+		}
+	}
+
+	return &v1.SBOMScanResponse_SBOMScan{
+		ScannerVersion: imageScan.GetScannerVersion(),
+		ScanTime:       imageScan.GetScanTime(),
+		Components:     imageScan.GetComponents(),
+	}
 }
 
 func (s *scannerv4) GetScan(image *storage.Image) (*storage.ImageScan, error) {
@@ -155,24 +209,34 @@ func (s *scannerv4) GetScan(image *storage.Image) (*storage.ImageScan, error) {
 	)
 	ctx, cancel := context.WithTimeout(context.Background(), scanTimeout)
 	defer cancel()
+
+	var scannerVersion pkgscanner.Version
 	opt := client.ImageRegistryOpt{InsecureSkipTLSVerify: rc.GetInsecure()}
-	vr, err := s.scannerClient.IndexAndScanImage(ctx, digest, &auth, opt)
+	vr, err := s.scannerClient.IndexAndScanImage(ctx, digest, &auth, opt, client.Version(&scannerVersion))
 	if err != nil {
 		return nil, fmt.Errorf("index and scan image report (reference: %q): %w", digest.Name(), err)
 	}
+	scannerVersionStr, err := scannerVersion.Encode()
+	if err != nil {
+		log.Warnf("Failed to encode Scanner version: %v", err)
+	}
 
-	log.Debugf("Vuln report received for %q (hash %q): %d dists, %d envs, %d pkgs, %d repos, %d pkg vulns, %d vulns",
+	log.Debugf("Vuln report received for %q (hash %q): %d dists (%d deprecated), %d envs (%d deprecated), %d pkgs (%d deprecated), %d repos (%d deprecated), %d pkg vulns, %d vulns",
 		image.GetName().GetFullName(),
 		vr.GetHashId(),
 		len(vr.GetContents().GetDistributions()),
+		len(vr.GetContents().GetDistributionsDEPRECATED()),
 		len(vr.GetContents().GetEnvironments()),
+		len(vr.GetContents().GetEnvironmentsDEPRECATED()),
 		len(vr.GetContents().GetPackages()),
+		len(vr.GetContents().GetPackagesDEPRECATED()),
 		len(vr.GetContents().GetRepositories()),
+		len(vr.GetContents().GetRepositoriesDEPRECATED()),
 		len(vr.GetPackageVulnerabilities()),
 		len(vr.GetVulnerabilities()),
 	)
 
-	return imageScan(image.GetMetadata(), vr), nil
+	return imageScan(image.GetMetadata(), vr, scannerVersionStr), nil
 }
 
 func (s *scannerv4) GetVulnDefinitionsInfo() (*v1.VulnDefinitionsInfo, error) {
@@ -222,35 +286,75 @@ func (s *scannerv4) GetVulnerabilities(image *storage.Image, components *types.S
 
 	ctx, cancel := context.WithTimeout(context.Background(), scanTimeout)
 	defer cancel()
-	vr, err := s.scannerClient.GetVulnerabilities(ctx, digest, v4Contents)
+
+	imageScanScannerVersion := components.IndexerVersion
+	if version.GetVersionKind(components.IndexerVersion) == version.InvalidKind {
+		imageScanScannerVersion = ""
+	}
+
+	if features.ScannerV4StoreExternalIndexReports.Enabled() {
+		// Store the index report from external scanners. Note that this will use
+		// some time from the scan timeout.
+		err := s.scannerClient.StoreImageIndex(ctx, digest, imageScanScannerVersion, v4Contents)
+		if err != nil {
+			log.Warnf("Failed to store external index report: %v", err)
+		}
+	}
+
+	var scannerVersion pkgscanner.Version
+	vr, err := s.scannerClient.GetVulnerabilities(ctx, digest, v4Contents, client.Version(&scannerVersion))
 	if err != nil {
 		return nil, fmt.Errorf("get vulnerability report (reference: %q): %w", digest.Name(), err)
 	}
 
-	log.Debugf("Vuln report (match) received for %q (hash %q): %d dists, %d envs, %d pkgs, %d repos, %d pkg vulns, %d vulns",
+	if scannerVersion.Indexer == "" {
+		scannerVersion.Indexer = imageScanScannerVersion
+	}
+	scannerVersionStr, err := scannerVersion.Encode()
+	if err != nil {
+		log.Warnf("Failed to encode Scanner version: %v", err)
+	}
+
+	log.Debugf("Vuln report (match) received for %q (hash %q): %d dists (%d deprecated), %d envs (%d deprecated), %d pkgs (%d deprecated), %d repos (%d deprecated), %d pkg vulns, %d vulns",
 		image.GetName().GetFullName(),
 		vr.GetHashId(),
 		len(vr.GetContents().GetDistributions()),
+		len(vr.GetContents().GetDistributionsDEPRECATED()),
 		len(vr.GetContents().GetEnvironments()),
+		len(vr.GetContents().GetEnvironmentsDEPRECATED()),
 		len(vr.GetContents().GetPackages()),
+		len(vr.GetContents().GetPackagesDEPRECATED()),
 		len(vr.GetContents().GetRepositories()),
+		len(vr.GetContents().GetRepositoriesDEPRECATED()),
 		len(vr.GetPackageVulnerabilities()),
 		len(vr.GetVulnerabilities()),
 	)
 
-	return imageScan(image.GetMetadata(), vr), nil
+	return imageScan(image.GetMetadata(), vr, scannerVersionStr), nil
 }
 
 func (s *scannerv4) GetNodeVulnerabilityReport(node *storage.Node, indexReport *v4.IndexReport) (*v4.VulnerabilityReport, error) {
-	nodeDigest, err := name.NewDigest(mockDigest)
+	nodeDigest, err := name.NewDigest(mockNodeDigest)
 	if err != nil {
 		log.Errorf("Failed to parse digest from node %q: %v", node.GetName(), err)
 	}
 
+	vr, err := s.getVulnerabilityReport(nodeDigest, indexReport)
+	if err != nil {
+		return nil, errors.Wrap(err, "Scanner V4 client call to GetVulnerabilities")
+	}
+
+	return vr, nil
+}
+
+func (s *scannerv4) getVulnerabilityReport(
+	digest name.Digest,
+	indexReport *v4.IndexReport,
+) (*v4.VulnerabilityReport, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), scanTimeout)
 	defer cancel()
 
-	vr, err := s.scannerClient.GetVulnerabilities(ctx, nodeDigest, indexReport.GetContents())
+	vr, err := s.scannerClient.GetVulnerabilities(ctx, digest, indexReport.GetContents())
 	if err != nil {
 		return nil, errors.Wrap(err, "Scanner V4 client call to GetVulnerabilities")
 	}
@@ -266,7 +370,7 @@ func (s *scannerv4) GetNodeInventoryScan(node *storage.Node, inv *storage.NodeIn
 	if err != nil {
 		return nil, errors.Wrap(err, "Failed to create vulnerability report")
 	}
-	log.Debugf("Received Vulnerability Report with %d packages containing %d vulnerabilities", len(vr.GetContents().GetPackages()), len(vr.Vulnerabilities))
+	log.Debugf("Received Vulnerability Report with %d packages containing %d vulnerabilities", len(vr.GetContents().GetPackages()), len(vr.GetVulnerabilities()))
 	return toNodeScan(vr, node.GetOsImage()), nil
 }
 
@@ -277,6 +381,29 @@ func (s *scannerv4) GetNodeScan(_ *storage.Node) (*storage.NodeScan, error) {
 func (s *scannerv4) TestNodeScanner() error {
 	log.Warn("NodeScanner v4 - Returning FAKE 'success' to Test")
 	return nil
+}
+
+func (s *scannerv4) GetVirtualMachineScan(
+	vm *storage.VirtualMachine,
+	indexReport *v4.IndexReport,
+) (*storage.VirtualMachineScan, error) {
+	if s.scannerClient == nil {
+		return nil, errors.New("Scanner V4 client not available for VM enrichment")
+	}
+	if indexReport == nil {
+		return nil, errors.New("index report is required for VM scanning")
+	}
+	vmDigest, err := name.NewDigest(mockVirtualMachineDigest)
+	if err != nil {
+		return nil, errors.Wrapf(err, "failed to parse digest for VM %q", vm.GetName())
+	}
+
+	vr, err := s.getVulnerabilityReport(vmDigest, indexReport)
+	if err != nil {
+		return nil, errors.Wrapf(err, "failed to get vulnerability report for VM %q", vm.GetName())
+	}
+
+	return ToVirtualMachineScan(vr), nil
 }
 
 // NodeScannerCreator provides the type scanners.NodeScannerCreator to add to the scanners registry.
@@ -292,13 +419,13 @@ func newNodeScanner(integration *storage.NodeIntegration) (*scannerv4, error) {
 		return nil, errors.New("scanner v4 configuration required")
 	}
 	indexerEndpoint := DefaultIndexerEndpoint
-	if conf.IndexerEndpoint != "" {
-		indexerEndpoint = conf.IndexerEndpoint
+	if conf.GetIndexerEndpoint() != "" {
+		indexerEndpoint = conf.GetIndexerEndpoint()
 	}
 
 	matcherEndpoint := DefaultMatcherEndpoint
-	if conf.MatcherEndpoint != "" {
-		matcherEndpoint = conf.MatcherEndpoint
+	if conf.GetMatcherEndpoint() != "" {
+		matcherEndpoint = conf.GetMatcherEndpoint()
 	}
 
 	numConcurrentScans := defaultMaxConcurrentScans
@@ -325,4 +452,31 @@ func newNodeScanner(integration *storage.NodeIntegration) (*scannerv4, error) {
 	}
 
 	return scanner, nil
+}
+
+// NewVirtualMachineScanner provides a scannerv4 instance that is able to scan virtual machines
+func NewVirtualMachineScanner() (types.VirtualMachineScanner, error) {
+	return newVirtualMachineScanner(getMatcherOnlyScanner)
+}
+
+func newVirtualMachineScanner(clientCreator func(string) (client.Scanner, error)) (types.VirtualMachineScanner, error) {
+	matcherEndpoint := DefaultMatcherEndpoint
+
+	scannerClient, err := clientCreator(matcherEndpoint)
+	if err != nil {
+		return nil, err
+	}
+
+	numConcurrentScans := defaultMaxConcurrentScans
+
+	return &scannerv4{
+		name:              "Virtual machine scanner",
+		scannerClient:     scannerClient,
+		ScanSemaphore:     types.NewSemaphoreWithValue(numConcurrentScans),
+		NodeScanSemaphore: types.NewNodeSemaphoreWithValue(numConcurrentScans),
+	}, nil
+}
+
+func getMatcherOnlyScanner(matcherEndpoint string) (client.Scanner, error) {
+	return client.NewGRPCScanner(context.Background(), client.WithMatcherAddress(matcherEndpoint))
 }

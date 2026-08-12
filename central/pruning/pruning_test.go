@@ -13,6 +13,7 @@ import (
 	clusterDatastore "github.com/stackrox/rox/central/cluster/datastore"
 	clusterPostgres "github.com/stackrox/rox/central/cluster/store/cluster/postgres"
 	clusterHealthPostgres "github.com/stackrox/rox/central/cluster/store/clusterhealth/postgres"
+	clusterInitStoreMocks "github.com/stackrox/rox/central/clusterinit/store/mocks"
 	compliancePrunerMocks "github.com/stackrox/rox/central/complianceoperator/v2/pruner/mocks"
 	configDatastore "github.com/stackrox/rox/central/config/datastore"
 	configDatastoreMocks "github.com/stackrox/rox/central/config/datastore/mocks"
@@ -21,9 +22,11 @@ import (
 	deploymentDatastore "github.com/stackrox/rox/central/deployment/datastore"
 	imageDatastore "github.com/stackrox/rox/central/image/datastore"
 	imageDatastoreMocks "github.com/stackrox/rox/central/image/datastore/mocks"
-	imagePostgres "github.com/stackrox/rox/central/image/datastore/store/postgres"
-	componentsMocks "github.com/stackrox/rox/central/imagecomponent/datastore/mocks"
+	imagePostgresV2 "github.com/stackrox/rox/central/image/datastore/store/v2/postgres"
 	imageIntegrationDatastoreMocks "github.com/stackrox/rox/central/imageintegration/datastore/mocks"
+	imageV2Datastore "github.com/stackrox/rox/central/imagev2/datastore"
+	imageV2DatastoreMocks "github.com/stackrox/rox/central/imagev2/datastore/mocks"
+	imageV2Postgres "github.com/stackrox/rox/central/imagev2/datastore/store/postgres"
 	logimbueDataStore "github.com/stackrox/rox/central/logimbue/store"
 	namespaceMocks "github.com/stackrox/rox/central/namespace/datastore/mocks"
 	networkBaselineMocks "github.com/stackrox/rox/central/networkbaseline/manager/mocks"
@@ -31,7 +34,6 @@ import (
 	networkFlowDatastoreMocks "github.com/stackrox/rox/central/networkgraph/flow/datastore/mocks"
 	testNodeDatastore "github.com/stackrox/rox/central/node/datastore"
 	nodeDatastoreMocks "github.com/stackrox/rox/central/node/datastore/mocks"
-	nodeSearch "github.com/stackrox/rox/central/node/datastore/search"
 	nodePostgres "github.com/stackrox/rox/central/node/datastore/store/postgres"
 	platformmatcher "github.com/stackrox/rox/central/platform/matcher"
 	podDatastore "github.com/stackrox/rox/central/pod/datastore"
@@ -49,6 +51,7 @@ import (
 	roleBindingMocks "github.com/stackrox/rox/central/rbac/k8srolebinding/datastore/mocks"
 	riskDatastore "github.com/stackrox/rox/central/risk/datastore"
 	riskDatastoreMocks "github.com/stackrox/rox/central/risk/datastore/mocks"
+	roleDataStore "github.com/stackrox/rox/central/role/datastore"
 	secretMocks "github.com/stackrox/rox/central/secret/datastore/mocks"
 	connectionMocks "github.com/stackrox/rox/central/sensor/service/connection/mocks"
 	serviceAccountDataStore "github.com/stackrox/rox/central/serviceaccount/datastore"
@@ -64,6 +67,7 @@ import (
 	"github.com/stackrox/rox/pkg/fixtures/fixtureconsts"
 	"github.com/stackrox/rox/pkg/images/defaults"
 	"github.com/stackrox/rox/pkg/images/types"
+	"github.com/stackrox/rox/pkg/images/utils"
 	notifierMocks "github.com/stackrox/rox/pkg/notifier/mocks"
 	"github.com/stackrox/rox/pkg/postgres"
 	"github.com/stackrox/rox/pkg/postgres/pgtest"
@@ -159,16 +163,20 @@ func newImageInstance(id string, daysOld int) *storage.Image {
 	return &storage.Image{
 		Id:          id,
 		LastUpdated: protoconv.ConvertTimeToTimestamp(time.Now().Add(-24 * time.Duration(daysOld) * time.Hour)),
+		Name: &storage.ImageName{
+			FullName: "ghcr.io/stackrox/rox:latest@sha256:" + id,
+		},
 	}
 }
 
 func newDeployment(imageIDs ...string) *storage.Deployment {
-	var containers []*storage.Container
+	containers := make([]*storage.Container, 0, len(imageIDs))
 	for _, id := range imageIDs {
 		digest := types.NewDigest(id).Digest()
 		containers = append(containers, &storage.Container{
 			Image: &storage.ContainerImage{
-				Id: digest,
+				Id:   digest,
+				IdV2: uuid.NewV5FromNonUUIDs("ghcr.io/stackrox/rox:latest@"+digest, digest).String(),
 			},
 		})
 	}
@@ -208,6 +216,7 @@ func newPod(live bool, imageIDs ...string) *storage.Pod {
 	if live {
 		return &storage.Pod{
 			Id:                  fixtureconsts.PodUID1,
+			DeploymentId:        fixtureconsts.Deployment1,
 			LiveInstances:       instances,
 			TerminatedInstances: instanceLists,
 		}
@@ -215,15 +224,14 @@ func newPod(live bool, imageIDs ...string) *storage.Pod {
 
 	return &storage.Pod{
 		Id:                  fixtureconsts.PodUID2,
+		DeploymentId:        fixtureconsts.Deployment1,
 		TerminatedInstances: instanceLists,
 	}
 }
 
-func (s *PruningTestSuite) generateImageDataStructures(ctx context.Context) (alertDatastore.DataStore, configDatastore.DataStore, imageDatastore.DataStore, deploymentDatastore.DataStore, podDatastore.DataStore) {
+func (s *PruningTestSuite) generateImageDataStructures(ctx context.Context) (alertDatastore.DataStore, configDatastore.DataStore, imageDatastore.DataStore, imageV2Datastore.DataStore, deploymentDatastore.DataStore, podDatastore.DataStore) {
 	// Setup the mocks
 	ctrl := gomock.NewController(s.T())
-	mockComponentDatastore := componentsMocks.NewMockDataStore(ctrl)
-	mockComponentDatastore.EXPECT().Search(gomock.Any(), gomock.Any()).AnyTimes()
 	mockRiskDatastore := riskDatastoreMocks.NewMockDataStore(ctrl)
 	mockRiskDatastore.EXPECT().RemoveRisk(gomock.Any(), gomock.Any(), gomock.Any()).AnyTimes()
 
@@ -244,20 +252,30 @@ func (s *PruningTestSuite) generateImageDataStructures(ctx context.Context) (ale
 	mockFilter.EXPECT().UpdateByPod(gomock.Any()).AnyTimes()
 	mockFilter.EXPECT().DeleteByPod(gomock.Any()).AnyTimes()
 
-	deployments, err := deploymentDatastore.New(s.pool, nil, mockBaselineDataStore, nil, mockRiskDatastore, nil, mockFilter, ranking.NewRanker(), ranking.NewRanker(), ranking.NewRanker(), platformmatcher.Singleton())
+	deployments, err := deploymentDatastore.New(s.pool, nil, nil, mockBaselineDataStore, nil, mockRiskDatastore, nil, mockFilter, ranking.NewRanker(), ranking.NewRanker(), ranking.NewRanker(), platformmatcher.GetTestPlatformMatcherWithDefaultPlatformComponentConfig(ctrl))
 	require.NoError(s.T(), err)
 
-	images := imageDatastore.NewWithPostgres(
-		imagePostgres.New(s.pool, true, concurrency.NewKeyFence()),
-		mockRiskDatastore,
-		ranking.NewRanker(),
-		ranking.NewRanker(),
-	)
+	var images imageDatastore.DataStore
+	var imagesV2 imageV2Datastore.DataStore
+	if features.FlattenImageData.Enabled() {
+		imagesV2 = imageV2Datastore.NewWithPostgres(
+			imageV2Postgres.New(s.pool, true, concurrency.NewKeyFence()),
+			mockRiskDatastore,
+			ranking.ImageRanker(),
+			ranking.ComponentRanker(),
+		)
+	} else {
+		images = imageDatastore.NewWithPostgres(
+			imagePostgresV2.New(s.pool, true, concurrency.NewKeyFence()),
+			mockRiskDatastore,
+			ranking.ImageRanker(),
+			ranking.ComponentRanker(),
+		)
+	}
 
-	pods, err := podDatastore.NewPostgresDB(s.pool, mockProcessDataStore, mockPlopDataStore, mockFilter)
-	require.NoError(s.T(), err)
+	pods := podDatastore.NewPostgresDB(s.pool, mockProcessDataStore, mockPlopDataStore, mockFilter)
 
-	return mockAlertDatastore, mockConfigDatastore, images, deployments, pods
+	return mockAlertDatastore, mockConfigDatastore, images, imagesV2, deployments, pods
 }
 
 func (s *PruningTestSuite) generatePodDataStructures() podDatastore.DataStore {
@@ -273,8 +291,7 @@ func (s *PruningTestSuite) generatePodDataStructures() podDatastore.DataStore {
 	mockFilter.EXPECT().UpdateByPod(gomock.Any()).AnyTimes()
 	mockFilter.EXPECT().DeleteByPod(gomock.Any()).AnyTimes()
 
-	pods, err := podDatastore.NewPostgresDB(s.pool, mockProcessDataStore, mockPlopDataStore, mockFilter)
-	require.NoError(s.T(), err)
+	pods := podDatastore.NewPostgresDB(s.pool, mockProcessDataStore, mockPlopDataStore, mockFilter)
 
 	return pods
 }
@@ -287,7 +304,6 @@ func (s *PruningTestSuite) generateNodeDataStructures() testNodeDatastore.DataSt
 	nodeStore := nodePostgres.New(s.pool, false, concurrency.NewKeyFence())
 	nodes := testNodeDatastore.NewWithPostgres(
 		nodeStore,
-		nodeSearch.NewV2(nodeStore),
 		mockRiskDatastore,
 		ranking.NewRanker(),
 		ranking.NewRanker())
@@ -295,29 +311,29 @@ func (s *PruningTestSuite) generateNodeDataStructures() testNodeDatastore.DataSt
 	return nodes
 }
 
-func (s *PruningTestSuite) generateAlertDataStructures(ctx context.Context) (alertDatastore.DataStore, configDatastore.DataStore, imageDatastore.DataStore, deploymentDatastore.DataStore) {
+func (s *PruningTestSuite) generateAlertDataStructures(ctx context.Context) (alertDatastore.DataStore, configDatastore.DataStore, imageDatastore.DataStore, imageV2Datastore.DataStore, deploymentDatastore.DataStore) {
 	// Initialize real datastore
 	var (
 		alerts alertDatastore.DataStore
 		err    error
 	)
 
-	alerts, err = alertDatastore.GetTestPostgresDataStore(s.T(), s.pool)
-	require.NoError(s.T(), err)
+	alerts = alertDatastore.GetTestPostgresDataStore(s.T(), s.pool)
 
 	ctrl := gomock.NewController(s.T())
 
 	mockBaselineDataStore := processBaselineDatastoreMocks.NewMockDataStore(ctrl)
 
 	mockImageDatastore := imageDatastoreMocks.NewMockDataStore(ctrl)
+	mockImageV2Datastore := imageV2DatastoreMocks.NewMockDataStore(ctrl)
 	mockConfigDatastore := configDatastoreMocks.NewMockDataStore(ctrl)
 	mockConfigDatastore.EXPECT().GetPrivateConfig(ctx).Return(testConfig.GetPrivateConfig(), nil)
 
 	mockRiskDatastore := riskDatastoreMocks.NewMockDataStore(ctrl)
 
-	deployments, err := deploymentDatastore.New(s.pool, nil, mockBaselineDataStore, nil, mockRiskDatastore, nil, nil, ranking.NewRanker(), ranking.NewRanker(), ranking.NewRanker(), platformmatcher.Singleton())
+	deployments, err := deploymentDatastore.New(s.pool, nil, nil, mockBaselineDataStore, nil, mockRiskDatastore, nil, nil, ranking.NewRanker(), ranking.NewRanker(), ranking.NewRanker(), platformmatcher.GetTestPlatformMatcherWithDefaultPlatformComponentConfig(ctrl))
 	require.NoError(s.T(), err)
-	return alerts, mockConfigDatastore, mockImageDatastore, deployments
+	return alerts, mockConfigDatastore, mockImageDatastore, mockImageV2Datastore, deployments
 }
 
 func (s *PruningTestSuite) generateClusterDataStructures() (configDatastore.DataStore, deploymentDatastore.DataStore, clusterDatastore.DataStore) {
@@ -344,9 +360,11 @@ func (s *PruningTestSuite) generateClusterDataStructures() (configDatastore.Data
 	clusterFlows := networkFlowDatastoreMocks.NewMockClusterDataStore(mockCtrl)
 	flows := networkFlowDatastoreMocks.NewMockFlowDataStore(mockCtrl)
 	clusterCVEs := clusterCVEDS.NewMockDataStore(mockCtrl)
+	clusterInitStore := clusterInitStoreMocks.NewMockStore(mockCtrl)
 
 	// A bunch of these get called when a cluster is deleted
 	flowsDataStore.EXPECT().CreateFlowStore(gomock.Any(), gomock.Any()).AnyTimes().Return(networkFlowDatastoreMocks.NewMockFlowDataStore(mockCtrl), nil)
+	flowsDataStore.EXPECT().RemoveFlowStore(gomock.Any(), gomock.Any()).AnyTimes().Return(nil)
 	connMgr.EXPECT().CloseConnection(gomock.Any()).AnyTimes().Return()
 	namespaceDataStore.EXPECT().Search(gomock.Any(), gomock.Any()).AnyTimes().Return([]search.Result{}, nil)
 	podDataStore.EXPECT().Search(gomock.Any(), gomock.Any()).AnyTimes().Return(nil, nil)
@@ -378,7 +396,7 @@ func (s *PruningTestSuite) generateClusterDataStructures() (configDatastore.Data
 
 	mockConfigDatastore := configDatastoreMocks.NewMockDataStore(mockCtrl)
 
-	deployments, err := deploymentDatastore.New(s.pool, nil, mockBaselineDataStore, clusterFlows, mockRiskDatastore, nil, mockFilter, ranking.NewRanker(), ranking.NewRanker(), ranking.NewRanker(), platformmatcher.Singleton())
+	deployments, err := deploymentDatastore.New(s.pool, nil, nil, mockBaselineDataStore, clusterFlows, mockRiskDatastore, nil, mockFilter, ranking.NewRanker(), ranking.NewRanker(), ranking.NewRanker(), platformmatcher.GetTestPlatformMatcherWithDefaultPlatformComponentConfig(mockCtrl))
 	require.NoError(s.T(), err)
 
 	clusterDataStore, err := clusterDatastore.New(
@@ -401,7 +419,8 @@ func (s *PruningTestSuite) generateClusterDataStructures() (configDatastore.Data
 		notifierMock,
 		ranking.NewRanker(),
 		networkBaselineMgr,
-		compliancePruner)
+		compliancePruner,
+		clusterInitStore)
 	require.NoError(s.T(), err)
 
 	return mockConfigDatastore, deployments, clusterDataStore
@@ -506,7 +525,8 @@ func (s *PruningTestSuite) TestImagePruning() {
 				Containers: []*storage.Container{
 					{
 						Image: &storage.ContainerImage{
-							Id: "sha256:id1",
+							Id:   "sha256:id1",
+							IdV2: uuid.NewV5FromNonUUIDs("ghcr.io/stackrox/rox:latest@sha256:id1", "sha256:id1").String(),
 						},
 					},
 				},
@@ -551,25 +571,34 @@ func (s *PruningTestSuite) TestImagePruning() {
 		s.T().Run(c.name, func(t *testing.T) {
 			// Get all of the image constructs because I update the time within the store
 			// So to test need to update them separately
-			alerts, config, images, deployments, pods := s.generateImageDataStructures(ctx)
+			alerts, config, images, imagesV2, deployments, pods := s.generateImageDataStructures(ctx)
 			nodes := s.generateNodeDataStructures()
 
-			gc := newGarbageCollector(alerts, nodes, images, nil, deployments, pods,
-				nil, nil, nil, config, nil, nil, nil,
-				nil, nil, nil, nil, nil, nil,
-				nil, nil).(*garbageCollectorImpl)
+			gc := newGarbageCollector(alerts, nodes, images, imagesV2, nil, deployments, pods,
+				nil, nil, nil, config, nil,
+				nil, nil, nil, nil, nil, nil, nil,
+				nil, nil, nil).(*garbageCollectorImpl)
+			gc.postgres = s.pool
 
 			// Add images, deployments, and pods into the datastores
 			if c.deployment != nil {
 				require.NoError(t, deployments.UpsertDeployment(ctx, c.deployment))
 			}
 			if c.pod != nil {
-				c.pod.DeploymentId = c.deployment.GetId()
+				if c.deployment != nil {
+					c.pod.DeploymentId = c.deployment.GetId()
+				}
 				require.NoError(t, pods.UpsertPod(ctx, c.pod))
 			}
 			for _, image := range c.images {
-				image.Id = types.NewDigest(image.Id).Digest()
-				require.NoError(t, images.UpsertImage(ctx, image))
+				if features.FlattenImageData.Enabled() {
+					image.Id = types.NewDigest(image.GetId()).Digest()
+					imageV2 := utils.ConvertToV2(image)
+					require.NoError(t, imagesV2.UpsertImage(ctx, imageV2))
+				} else {
+					image.Id = types.NewDigest(image.GetId()).Digest()
+					require.NoError(t, images.UpsertImage(ctx, image))
+				}
 			}
 
 			privateConfig, err := config.GetPrivateConfig(ctx)
@@ -578,28 +607,228 @@ func (s *PruningTestSuite) TestImagePruning() {
 			gc.collectImages(privateConfig)
 
 			// Grab the  actual remaining images and make sure they match the images expected to be remaining
-			remainingImages, err := images.SearchListImages(ctx, search.EmptyQuery())
+			if features.FlattenImageData.Enabled() {
+				remainingImages, err := imagesV2.SearchRawImages(ctx, search.EmptyQuery())
+				require.NoError(t, err)
+
+				ids := make([]string, 0, len(remainingImages))
+				for _, i := range remainingImages {
+					ids = append(ids, i.GetDigest())
+				}
+				for i, eid := range c.expectedIDs {
+					c.expectedIDs[i] = types.NewDigest(eid).Digest()
+				}
+
+				assert.ElementsMatch(t, c.expectedIDs, ids)
+
+				cleanUpIDs := make([]string, 0, len(remainingImages))
+				for _, image := range remainingImages {
+					cleanUpIDs = append(cleanUpIDs, image.GetId())
+				}
+				require.NoError(t, imagesV2.DeleteImages(ctx, cleanUpIDs...))
+
+				if c.pod != nil {
+					require.NoError(t, pods.RemovePod(ctx, c.pod.GetId()))
+				}
+			} else {
+				remainingImages, err := images.SearchListImages(ctx, search.EmptyQuery())
+				require.NoError(t, err)
+
+				ids := make([]string, 0, len(remainingImages))
+				for _, i := range remainingImages {
+					ids = append(ids, i.GetId())
+				}
+				for i, eid := range c.expectedIDs {
+					c.expectedIDs[i] = types.NewDigest(eid).Digest()
+				}
+
+				assert.ElementsMatch(t, c.expectedIDs, ids)
+
+				var cleanUpIDs []string
+				for _, image := range c.images {
+					cleanUpIDs = append(cleanUpIDs, image.GetId())
+				}
+				require.NoError(t, images.DeleteImages(ctx, cleanUpIDs...))
+
+				if c.pod != nil {
+					require.NoError(t, pods.RemovePod(ctx, c.pod.GetId()))
+				}
+			}
+		})
+	}
+}
+
+func (s *PruningTestSuite) TestImagePruningSameDigestDifferentName() {
+	if !features.FlattenImageData.Enabled() {
+		s.T().Skip("only applicable when FlattenImageData is enabled")
+	}
+
+	ctx := sac.WithAllAccess(context.Background())
+
+	digest := types.NewDigest("shareddigest").Digest()
+	differentDigest := types.NewDigest("newdigest").Digest()
+
+	nameA := &storage.ImageName{FullName: "ghcr.io/stackrox/imageA:latest@" + digest}
+	nameB := &storage.ImageName{FullName: "ghcr.io/stackrox/imageB:latest@" + digest}
+	oldTimestamp := protoconv.ConvertTimeToTimestamp(
+		time.Now().Add(-24 * time.Duration(configDatastore.DefaultImageRetention+1) * time.Hour),
+	)
+
+	imageA := &storage.ImageV2{
+		Id:          utils.NewImageV2ID(nameA, digest),
+		Digest:      digest,
+		Name:        nameA,
+		LastUpdated: oldTimestamp,
+	}
+	imageB := &storage.ImageV2{
+		Id:          utils.NewImageV2ID(nameB, digest),
+		Digest:      digest,
+		Name:        nameB,
+		LastUpdated: oldTimestamp,
+	}
+
+	type testCase struct {
+		name             string
+		images           []*storage.ImageV2
+		deployments      []*storage.Deployment
+		pods             []*storage.Pod
+		expectedImageIDs []string
+	}
+
+	cases := []testCase{
+		{
+			name:   "active pod from different deployment with same digest - should prune unreferenced image",
+			images: []*storage.ImageV2{imageA, imageB},
+			deployments: []*storage.Deployment{
+				{
+					Id: fixtureconsts.Deployment1,
+					Containers: []*storage.Container{
+						{
+							Image: &storage.ContainerImage{
+								Id:   digest,
+								IdV2: imageB.GetId(),
+								Name: nameB,
+							},
+						},
+					},
+				},
+			},
+			pods: []*storage.Pod{
+				{
+					Id:           fixtureconsts.PodUID1,
+					DeploymentId: fixtureconsts.Deployment1,
+					LiveInstances: []*storage.ContainerInstance{
+						{ImageDigest: digest},
+					},
+				},
+			},
+			expectedImageIDs: []string{imageB.GetId()},
+		},
+		{
+			name:   "stuck pod - deployment no longer references digest - should not prune",
+			images: []*storage.ImageV2{imageA},
+			deployments: []*storage.Deployment{
+				{
+					Id: fixtureconsts.Deployment1,
+					Containers: []*storage.Container{
+						{
+							Image: &storage.ContainerImage{
+								Id:   differentDigest,
+								IdV2: uuid.NewV5FromNonUUIDs("ghcr.io/stackrox/imageA:v2@"+differentDigest, differentDigest).String(),
+								Name: &storage.ImageName{FullName: "ghcr.io/stackrox/imageA:v2@" + differentDigest},
+							},
+						},
+					},
+				},
+			},
+			pods: []*storage.Pod{
+				{
+					Id:           fixtureconsts.PodUID1,
+					DeploymentId: fixtureconsts.Deployment1,
+					LiveInstances: []*storage.ContainerInstance{
+						{ImageDigest: digest},
+					},
+				},
+			},
+			expectedImageIDs: []string{imageA.GetId()},
+		},
+		{
+			name:   "stuck pod in one deployment, different deployment has same digest - should not prune",
+			images: []*storage.ImageV2{imageA, imageB},
+			deployments: []*storage.Deployment{
+				{
+					Id: fixtureconsts.Deployment1,
+					Containers: []*storage.Container{
+						{
+							Image: &storage.ContainerImage{
+								Id:   differentDigest,
+								IdV2: uuid.NewV5FromNonUUIDs("ghcr.io/stackrox/imageA:v2@"+differentDigest, differentDigest).String(),
+								Name: &storage.ImageName{FullName: "ghcr.io/stackrox/imageA:v2@" + differentDigest},
+							},
+						},
+					},
+				},
+				{
+					Id: fixtureconsts.Deployment2,
+					Containers: []*storage.Container{
+						{
+							Image: &storage.ContainerImage{
+								Id:   digest,
+								IdV2: imageB.GetId(),
+								Name: nameB,
+							},
+						},
+					},
+				},
+			},
+			pods: []*storage.Pod{
+				{
+					Id:           fixtureconsts.PodUID1,
+					DeploymentId: fixtureconsts.Deployment1,
+					LiveInstances: []*storage.ContainerInstance{
+						{ImageDigest: digest},
+					},
+				},
+			},
+			expectedImageIDs: []string{imageA.GetId(), imageB.GetId()},
+		},
+	}
+
+	for _, c := range cases {
+		s.T().Run(c.name, func(t *testing.T) {
+			defer func() {
+				_, _ = s.pool.Exec(ctx, "TRUNCATE images_v2, deployments, pods CASCADE")
+			}()
+
+			_, config, _, imagesV2, deployments, pods := s.generateImageDataStructures(ctx)
+			gc := newGarbageCollector(nil, nil, nil, imagesV2, nil, deployments, pods,
+				nil, nil, nil, config, nil,
+				nil, nil, nil, nil, nil, nil, nil,
+				nil, nil, nil).(*garbageCollectorImpl)
+			gc.postgres = s.pool
+
+			for _, dep := range c.deployments {
+				require.NoError(t, deployments.UpsertDeployment(ctx, dep))
+			}
+			for _, pod := range c.pods {
+				require.NoError(t, pods.UpsertPod(ctx, pod))
+			}
+			for _, img := range c.images {
+				require.NoError(t, imagesV2.UpsertImage(ctx, img))
+			}
+
+			privateConfig, err := config.GetPrivateConfig(ctx)
+			require.NoError(t, err)
+			gc.collectImages(privateConfig)
+
+			remainingImages, err := imagesV2.SearchRawImages(ctx, search.EmptyQuery())
 			require.NoError(t, err)
 
-			var ids []string
-			for _, i := range remainingImages {
-				ids = append(ids, i.GetId())
+			remainingIDs := make([]string, 0, len(remainingImages))
+			for _, img := range remainingImages {
+				remainingIDs = append(remainingIDs, img.GetId())
 			}
-			for i, eid := range c.expectedIDs {
-				c.expectedIDs[i] = types.NewDigest(eid).Digest()
-			}
-
-			assert.ElementsMatch(t, c.expectedIDs, ids)
-
-			var cleanUpIDs []string
-			for _, image := range c.images {
-				cleanUpIDs = append(cleanUpIDs, image.Id)
-			}
-			require.NoError(t, images.DeleteImages(ctx, cleanUpIDs...))
-
-			if c.pod != nil {
-				require.NoError(t, pods.RemovePod(ctx, c.pod.Id))
-			}
+			assert.ElementsMatch(t, c.expectedImageIDs, remainingIDs)
 		})
 	}
 }
@@ -807,7 +1036,7 @@ func (s *PruningTestSuite) TestClusterPruning() {
 			for _, cluster := range c.clusters {
 				clusterID, err := clusterDS.AddCluster(ctx, cluster)
 				require.NoError(t, err)
-				require.NoError(t, clusterDS.UpdateClusterHealth(ctx, clusterID, cluster.HealthStatus))
+				require.NoError(t, clusterDS.UpdateClusterHealth(ctx, clusterID, cluster.GetHealthStatus()))
 			}
 
 			if c.recentlyRun {
@@ -816,10 +1045,10 @@ func (s *PruningTestSuite) TestClusterPruning() {
 				lastClusterPruneTime = time.Now().Add(-24 * time.Hour)
 			}
 
-			gc := newGarbageCollector(nil, nil, nil, clusterDS, deploymentsDS, nil,
+			gc := newGarbageCollector(nil, nil, nil, nil, clusterDS, deploymentsDS, nil,
+				nil, nil, nil, nil, nil,
 				nil, nil, nil, nil, nil, nil,
-				nil, nil, nil, nil, nil, nil,
-				nil, nil, nil).(*garbageCollectorImpl)
+				nil, nil, nil, nil).(*garbageCollectorImpl)
 			gc.collectClusters(c.config)
 
 			// Now get all clusters and compare the names to ensure only the expected ones exist
@@ -919,7 +1148,7 @@ func (s *PruningTestSuite) TestClusterPruningCentralCheck() {
 			}
 			clusterID, err := clusterDS.AddCluster(ctx, cluster)
 			require.NoError(t, err)
-			require.NoError(t, clusterDS.UpdateClusterHealth(ctx, clusterID, cluster.HealthStatus))
+			require.NoError(t, clusterDS.UpdateClusterHealth(ctx, clusterID, cluster.GetHealthStatus()))
 
 			// Add the deployments whose params are being changed for this test
 			for _, d := range c.deploys {
@@ -943,10 +1172,10 @@ func (s *PruningTestSuite) TestClusterPruningCentralCheck() {
 			// Run GC
 			lastClusterPruneTime = time.Now().Add(-24 * time.Hour)
 
-			gc := newGarbageCollector(nil, nil, nil, clusterDS, deploymentsDS, nil,
+			gc := newGarbageCollector(nil, nil, nil, nil, clusterDS, deploymentsDS, nil,
+				nil, nil, nil, nil, nil,
 				nil, nil, nil, nil, nil, nil,
-				nil, nil, nil, nil, nil, nil,
-				nil, nil, nil).(*garbageCollectorImpl)
+				nil, nil, nil, nil).(*garbageCollectorImpl)
 			gc.collectClusters(getCluserRetentionConfig(60, 90, 72))
 
 			// Now get all clusters and compare the names to ensure only the expected ones exist
@@ -1118,13 +1347,13 @@ func (s *PruningTestSuite) TestAlertPruning() {
 		s.T().Run(c.name, func(t *testing.T) {
 			// Get all of the image constructs because I update the time within the store
 			// So to test need to update them separately
-			alerts, config, images, deployments := s.generateAlertDataStructures(ctx)
+			alerts, config, images, imagesV2, deployments := s.generateAlertDataStructures(ctx)
 			nodes := s.generateNodeDataStructures()
 
-			gc := newGarbageCollector(alerts, nodes, images, nil, deployments, nil,
-				nil, nil, nil, config, nil, nil,
+			gc := newGarbageCollector(alerts, nodes, images, imagesV2, nil, deployments, nil,
+				nil, nil, nil, config, nil,
 				nil, nil, nil, nil, nil, nil,
-				nil, nil, nil).(*garbageCollectorImpl)
+				nil, nil, nil, nil).(*garbageCollectorImpl)
 
 			// Add alerts into the datastores
 			for _, alert := range c.alerts {
@@ -1150,7 +1379,7 @@ func (s *PruningTestSuite) TestAlertPruning() {
 			require.NoError(t, err)
 
 			log.Infof("Remaining alerts: %v", remainingAlerts)
-			var ids []string
+			ids := make([]string, 0, len(remainingAlerts))
 			for _, i := range remainingAlerts {
 				ids = append(ids, i.GetId())
 			}
@@ -1297,25 +1526,21 @@ func (s *PruningTestSuite) TestRemoveOrphanedProcesses() {
 			// Populate some actual data so the query returns what needs deleted
 			deploymentDS, err := deploymentDatastore.GetTestPostgresDataStore(t, db.DB)
 			s.Nil(err)
-			for _, deploymentID := range c.deployments.AsSlice() {
+			for deploymentID := range c.deployments.All() {
 				s.NoError(deploymentDS.UpsertDeployment(s.ctx, &storage.Deployment{Id: deploymentID, ClusterId: fixtureconsts.Cluster1}))
 			}
 
-			podDS, err := podDatastore.GetTestPostgresDataStore(t, db.DB)
-			s.Nil(err)
-			for _, podID := range c.pods.AsSlice() {
+			podDS := podDatastore.GetTestPostgresDataStore(t, db.DB)
+			for podID := range c.pods.All() {
 				err := podDS.UpsertPod(s.ctx, &storage.Pod{Id: podID, ClusterId: fixtureconsts.Cluster1})
 				s.Nil(err)
 			}
 
-			actualProcessDatastore, err := processIndicatorDatastore.GetTestPostgresDataStore(t, db.DB)
-			s.Nil(err)
+			actualProcessDatastore := processIndicatorDatastore.GetTestPostgresDataStore(t, db.DB)
 			s.NoError(actualProcessDatastore.AddProcessIndicators(s.ctx, c.initialProcesses...))
 
-			processes.EXPECT().PruneProcessIndicators(gomock.Any(), c.expectedDeletions).AnyTimes()
+			processes.EXPECT().PruneProcessIndicators(gomock.Any(), c.expectedDeletions, gomock.Any()).AnyTimes()
 			gci.removeOrphanedProcesses()
-
-			db.Teardown(t)
 		})
 	}
 }
@@ -1351,8 +1576,11 @@ func (s *PruningTestSuite) TestRemoveOrphanedPLOPs() {
 						ProcessArgs:         "test_arguments1",
 						ProcessExecFilePath: "test_path1",
 					},
+					DeploymentId: fixtureconsts.Deployment1,
+					PodUid:       fixtureconsts.PodUID1,
 				},
 			},
+			pods:              set.NewFrozenStringSet(fixtureconsts.PodUID1),
 			expectedDeletions: []string{plopID1},
 		},
 		{
@@ -1373,9 +1601,11 @@ func (s *PruningTestSuite) TestRemoveOrphanedPLOPs() {
 						ProcessExecFilePath: "test_path1",
 					},
 					DeploymentId: fixtureconsts.Deployment1,
+					PodUid:       fixtureconsts.PodUID1,
 				},
 			},
 			deployments:       set.NewFrozenStringSet(fixtureconsts.Deployment1),
+			pods:              set.NewFrozenStringSet(fixtureconsts.PodUID1),
 			expectedDeletions: []string{},
 		},
 		{
@@ -1395,8 +1625,12 @@ func (s *PruningTestSuite) TestRemoveOrphanedPLOPs() {
 						ProcessArgs:         "test_arguments1",
 						ProcessExecFilePath: "test_path1",
 					},
+					DeploymentId: fixtureconsts.Deployment1,
+					PodUid:       fixtureconsts.PodUID1,
 				},
 			},
+			deployments:       set.NewFrozenStringSet(fixtureconsts.Deployment1),
+			pods:              set.NewFrozenStringSet(fixtureconsts.PodUID1),
 			expectedDeletions: []string{plopID1},
 		},
 		{
@@ -1420,6 +1654,7 @@ func (s *PruningTestSuite) TestRemoveOrphanedPLOPs() {
 					PodUid:       fixtureconsts.PodUID1,
 				},
 			},
+			deployments:       set.NewFrozenStringSet(fixtureconsts.Deployment1),
 			expectedDeletions: []string{plopID1},
 		},
 		{
@@ -1447,6 +1682,30 @@ func (s *PruningTestSuite) TestRemoveOrphanedPLOPs() {
 			pods:              set.NewFrozenStringSet(fixtureconsts.PodUID1),
 			expectedDeletions: []string{},
 		},
+		{
+			name: "Plop does not have a poduid so it is removed",
+			initialPlops: []*storage.ProcessListeningOnPortStorage{
+				{
+					Id:                 plopID1,
+					Port:               1234,
+					Protocol:           storage.L4Protocol_L4_PROTOCOL_TCP,
+					CloseTimestamp:     nil,
+					ProcessIndicatorId: fixtureconsts.ProcessIndicatorID1,
+					Closed:             false,
+					Process: &storage.ProcessIndicatorUniqueKey{
+						PodId:               fixtureconsts.PodUID1,
+						ContainerName:       "test_container1",
+						ProcessName:         "test_process1",
+						ProcessArgs:         "test_arguments1",
+						ProcessExecFilePath: "test_path1",
+					},
+					DeploymentId: fixtureconsts.Deployment1,
+				},
+			},
+			deployments:       set.NewFrozenStringSet(fixtureconsts.Deployment1),
+			pods:              set.NewFrozenStringSet(fixtureconsts.PodUID1),
+			expectedDeletions: []string{plopID1},
+		},
 	}
 
 	for _, c := range cases {
@@ -1458,17 +1717,17 @@ func (s *PruningTestSuite) TestRemoveOrphanedPLOPs() {
 				postgres: db,
 				plops:    plopDS,
 			}
+			prunedPLOPsWithoutPodUIDs = false
 
 			// Populate some actual data so the query returns what needs deleted
 			deploymentDS, err := deploymentDatastore.GetTestPostgresDataStore(t, db.DB)
 			s.Nil(err)
-			for _, deploymentID := range c.deployments.AsSlice() {
+			for deploymentID := range c.deployments.All() {
 				s.NoError(deploymentDS.UpsertDeployment(s.ctx, &storage.Deployment{Id: deploymentID, ClusterId: fixtureconsts.Cluster1}))
 			}
 
-			podDS, err := podDatastore.GetTestPostgresDataStore(t, db.DB)
-			s.Nil(err)
-			for _, podID := range c.pods.AsSlice() {
+			podDS := podDatastore.GetTestPostgresDataStore(t, db.DB)
+			for podID := range c.pods.All() {
 				err := podDS.UpsertPod(s.ctx, &storage.Pod{Id: podID, ClusterId: fixtureconsts.Cluster1})
 				s.Nil(err)
 			}
@@ -1572,13 +1831,12 @@ func (s *PruningTestSuite) TestMarkOrphanedAlerts() {
 				alerts:   alerts,
 			}
 
-			actualAlertsDS, err := alertDatastore.GetTestPostgresDataStore(t, db.DB)
-			assert.NoError(t, err)
+			actualAlertsDS := alertDatastore.GetTestPostgresDataStore(t, db.DB)
 
 			deploymentDS, err := deploymentDatastore.GetTestPostgresDataStore(t, db.DB)
 			assert.NoError(t, err)
 
-			for _, depID := range c.deployments.AsSlice() {
+			for depID := range c.deployments.All() {
 				assert.NoError(t, deploymentDS.UpsertDeployment(pruningCtx, &storage.Deployment{Id: depID}))
 			}
 			for _, la := range c.initialAlerts {
@@ -1805,14 +2063,20 @@ func (s *PruningTestSuite) TestRemoveOrphanedImageRisks() {
 		s.T().Run(c.name, func(t *testing.T) {
 			ctrl := gomock.NewController(t)
 			images := imageDatastoreMocks.NewMockDataStore(ctrl)
+			imagesV2 := imageV2DatastoreMocks.NewMockDataStore(ctrl)
 			risks := riskDatastoreMocks.NewMockDataStore(ctrl)
 			gci := &garbageCollectorImpl{
-				images: images,
-				risks:  risks,
+				images:   images,
+				imagesV2: imagesV2,
+				risks:    risks,
 			}
 
 			risks.EXPECT().Search(gomock.Any(), gomock.Any()).Return(c.risks, nil)
-			images.EXPECT().Search(gomock.Any(), gomock.Any()).Return(c.images, nil)
+			if features.FlattenImageData.Enabled() {
+				imagesV2.EXPECT().Search(gomock.Any(), gomock.Any()).Return(c.images, nil)
+			} else {
+				images.EXPECT().Search(gomock.Any(), gomock.Any()).Return(c.images, nil)
+			}
 			for _, id := range c.expectedDeletions {
 				risks.EXPECT().RemoveRisk(gomock.Any(), id, storage.RiskSubjectType_IMAGE).Return(nil)
 			}
@@ -1984,8 +2248,7 @@ func (s *PruningTestSuite) TestRemoveOrphanedRBACObjects() {
 
 	for _, c := range cases {
 		s.T().Run(c.name, func(t *testing.T) {
-			serviceAccounts, err := serviceAccountDataStore.GetTestPostgresDataStore(t, s.pool)
-			assert.NoError(t, err)
+			serviceAccounts := serviceAccountDataStore.GetTestPostgresDataStore(t, s.pool)
 			k8sRoles := k8sRoleDataStore.GetTestPostgresDataStore(t, s.pool)
 			k8sRoleBindings := k8sRoleBindingDataStore.GetTestPostgresDataStore(t, s.pool)
 
@@ -2092,11 +2355,11 @@ func (s *PruningTestSuite) TestRemoveLogImbues() {
 
 			gc.pruneLogImbues()
 
-			logImbues, err := logImbueStore.GetAll(pruningCtx)
+			err := logImbueStore.Walk(pruningCtx, func(li *storage.LogImbue) error {
+				assert.False(t, c.expectedLogDeletions.Contains(li.GetId()))
+				return nil
+			})
 			assert.NoError(t, err)
-			for _, li := range logImbues {
-				assert.False(t, c.expectedLogDeletions.Contains(li.Id))
-			}
 		})
 	}
 }
@@ -2246,8 +2509,380 @@ func (s *PruningTestSuite) TestPruneOrphanedNodeCVEs() {
 	}
 }
 
+func (s *PruningTestSuite) TestRemoveExpiredDynamicRBACObjects() {
+	EnableDynamicRBACPruning()
+
+	now := time.Now()
+	yesterday := now.Add(-24 * time.Hour)
+	tomorrow := now.Add(24 * time.Hour)
+	twoDaysAgo := now.Add(-48 * time.Hour)
+
+	// Create classic (non-expiring) access scope and permission set for roles to reference.
+	classicPS := &storage.PermissionSet{
+		Id:               uuid.NewV4().String(),
+		Name:             "classic-ps",
+		ResourceToAccess: map[string]storage.Access{"Cluster": storage.Access_READ_ACCESS},
+		Traits:           nil,
+	}
+	classicAS := &storage.SimpleAccessScope{
+		Id:     uuid.NewV4().String(),
+		Name:   "classic-as",
+		Rules:  &storage.SimpleAccessScope_Rules{},
+		Traits: nil,
+	}
+
+	// Pre-generate UUIDs for test cases where we need to reference them in expected deletions.
+	ps1ID := uuid.NewV4().String()
+	ps2ID := uuid.NewV4().String()
+	ps3ID := uuid.NewV4().String()
+	as1ID := uuid.NewV4().String()
+	as2ID := uuid.NewV4().String()
+	as3ID := uuid.NewV4().String()
+	psExpiredID := uuid.NewV4().String()
+	psNoExpiryID := uuid.NewV4().String()
+	asExpiredID := uuid.NewV4().String()
+	asActiveID := uuid.NewV4().String()
+
+	cases := []struct {
+		name                  string
+		roles                 []*storage.Role
+		permissionSets        []*storage.PermissionSet
+		accessScopes          []*storage.SimpleAccessScope
+		expectedRoleDeletions set.FrozenStringSet
+		expectedPSDeletions   set.FrozenStringSet
+		expectedASDeletions   set.FrozenStringSet
+	}{
+		{
+			name: "remove expired roles only",
+			roles: []*storage.Role{
+				{
+					Name:            "role-1",
+					PermissionSetId: classicPS.GetId(),
+					AccessScopeId:   classicAS.GetId(),
+					Traits: &storage.Traits{
+						ExpiresAt: timestamppb.New(yesterday),
+					},
+				},
+				{
+					Name:            "role-2",
+					PermissionSetId: classicPS.GetId(),
+					AccessScopeId:   classicAS.GetId(),
+					Traits: &storage.Traits{
+						ExpiresAt: timestamppb.New(tomorrow),
+					},
+				},
+				{
+					Name:            "role-3",
+					PermissionSetId: classicPS.GetId(),
+					AccessScopeId:   classicAS.GetId(),
+					Traits:          &storage.Traits{},
+				},
+			},
+			expectedRoleDeletions: set.NewFrozenStringSet("role-1"),
+			expectedPSDeletions:   set.NewFrozenStringSet(),
+			expectedASDeletions:   set.NewFrozenStringSet(),
+		},
+		{
+			name: "remove expired permission sets only",
+			permissionSets: []*storage.PermissionSet{
+				{
+					Id:   ps1ID,
+					Name: "ps-1",
+					Traits: &storage.Traits{
+						ExpiresAt: timestamppb.New(twoDaysAgo),
+					},
+				},
+				{
+					Id:   ps2ID,
+					Name: "ps-2",
+					Traits: &storage.Traits{
+						ExpiresAt: timestamppb.New(tomorrow),
+					},
+				},
+				{
+					Id:     ps3ID,
+					Name:   "ps-3",
+					Traits: &storage.Traits{},
+				},
+			},
+			expectedRoleDeletions: set.NewFrozenStringSet(),
+			expectedPSDeletions:   set.NewFrozenStringSet(ps1ID),
+			expectedASDeletions:   set.NewFrozenStringSet(),
+		},
+		{
+			name: "remove expired access scopes only",
+			accessScopes: []*storage.SimpleAccessScope{
+				{
+					Id:    as1ID,
+					Name:  "as-1",
+					Rules: &storage.SimpleAccessScope_Rules{},
+					Traits: &storage.Traits{
+						ExpiresAt: timestamppb.New(yesterday),
+					},
+				},
+				{
+					Id:    as2ID,
+					Name:  "as-2",
+					Rules: &storage.SimpleAccessScope_Rules{},
+					Traits: &storage.Traits{
+						ExpiresAt: timestamppb.New(tomorrow),
+					},
+				},
+				{
+					Id:     as3ID,
+					Name:   "as-3",
+					Rules:  &storage.SimpleAccessScope_Rules{},
+					Traits: &storage.Traits{},
+				},
+			},
+			expectedRoleDeletions: set.NewFrozenStringSet(),
+			expectedPSDeletions:   set.NewFrozenStringSet(),
+			expectedASDeletions:   set.NewFrozenStringSet(as1ID),
+		},
+		{
+			name: "remove expired objects of all types",
+			roles: []*storage.Role{
+				{
+					Name:            "role-expired",
+					PermissionSetId: classicPS.GetId(),
+					AccessScopeId:   classicAS.GetId(),
+					Traits: &storage.Traits{
+						ExpiresAt: timestamppb.New(yesterday),
+					},
+				},
+				{
+					Name:            "role-active",
+					PermissionSetId: classicPS.GetId(),
+					AccessScopeId:   classicAS.GetId(),
+					Traits: &storage.Traits{
+						ExpiresAt: timestamppb.New(tomorrow),
+					},
+				},
+			},
+			permissionSets: []*storage.PermissionSet{
+				{
+					Id:   psExpiredID,
+					Name: "ps-expired",
+					Traits: &storage.Traits{
+						ExpiresAt: timestamppb.New(twoDaysAgo),
+					},
+				},
+				{
+					Id:     psNoExpiryID,
+					Name:   "ps-no-expiry",
+					Traits: &storage.Traits{},
+				},
+			},
+			accessScopes: []*storage.SimpleAccessScope{
+				{
+					Id:    asExpiredID,
+					Name:  "as-expired",
+					Rules: &storage.SimpleAccessScope_Rules{},
+					Traits: &storage.Traits{
+						ExpiresAt: timestamppb.New(yesterday),
+					},
+				},
+				{
+					Id:    asActiveID,
+					Name:  "as-active",
+					Rules: &storage.SimpleAccessScope_Rules{},
+					Traits: &storage.Traits{
+						ExpiresAt: timestamppb.New(tomorrow),
+					},
+				},
+			},
+			expectedRoleDeletions: set.NewFrozenStringSet("role-expired"),
+			expectedPSDeletions:   set.NewFrozenStringSet(psExpiredID),
+			expectedASDeletions:   set.NewFrozenStringSet(asExpiredID),
+		},
+		{
+			name: "nothing to remove when all unexpired",
+			roles: []*storage.Role{
+				{
+					Name:            "role-1",
+					PermissionSetId: classicPS.GetId(),
+					AccessScopeId:   classicAS.GetId(),
+					Traits: &storage.Traits{
+						ExpiresAt: timestamppb.New(tomorrow),
+					},
+				},
+			},
+			permissionSets: []*storage.PermissionSet{
+				{
+					Id:     uuid.NewV4().String(),
+					Name:   "ps-1",
+					Traits: &storage.Traits{},
+				},
+			},
+			accessScopes: []*storage.SimpleAccessScope{
+				{
+					Id:    uuid.NewV4().String(),
+					Name:  "as-1",
+					Rules: &storage.SimpleAccessScope_Rules{},
+					Traits: &storage.Traits{
+						ExpiresAt: timestamppb.New(tomorrow),
+					},
+				},
+			},
+			expectedRoleDeletions: set.NewFrozenStringSet(),
+			expectedPSDeletions:   set.NewFrozenStringSet(),
+			expectedASDeletions:   set.NewFrozenStringSet(),
+		},
+		{
+			name:                  "nothing to remove when no objects exist",
+			expectedRoleDeletions: set.NewFrozenStringSet(),
+			expectedPSDeletions:   set.NewFrozenStringSet(),
+			expectedASDeletions:   set.NewFrozenStringSet(),
+		},
+	}
+
+	for _, c := range cases {
+		s.T().Run(c.name, func(t *testing.T) {
+			roleStore := roleDataStore.GetTestPostgresDataStore(t, s.pool)
+
+			// Add classic permission set and access scope for roles to reference.
+			assert.NoError(t, roleStore.AddPermissionSet(pruningCtx, classicPS))
+			assert.NoError(t, roleStore.AddAccessScope(pruningCtx, classicAS))
+			t.Cleanup(func() {
+				_ = roleStore.RemovePermissionSet(pruningCtx, classicPS.GetId())
+				_ = roleStore.RemoveAccessScope(pruningCtx, classicAS.GetId())
+			})
+
+			for _, role := range c.roles {
+				assert.NoError(t, roleStore.AddRole(pruningCtx, role))
+				t.Cleanup(func() {
+					_ = roleStore.RemoveRole(pruningCtx, role.GetName())
+				})
+			}
+
+			for _, ps := range c.permissionSets {
+				assert.NoError(t, roleStore.AddPermissionSet(pruningCtx, ps))
+				t.Cleanup(func() {
+					_ = roleStore.RemovePermissionSet(pruningCtx, ps.GetId())
+				})
+			}
+
+			for _, as := range c.accessScopes {
+				assert.NoError(t, roleStore.AddAccessScope(pruningCtx, as))
+				t.Cleanup(func() {
+					_ = roleStore.RemoveAccessScope(pruningCtx, as.GetId())
+				})
+			}
+
+			gc := &garbageCollectorImpl{
+				roleStore: roleStore,
+			}
+
+			gc.removeExpiredDynamicRBACObjects()
+
+			for _, role := range c.roles {
+				_, ok, err := roleStore.GetRole(pruningCtx, role.GetName())
+				assert.NoError(t, err)
+				assert.Equal(t, !c.expectedRoleDeletions.Contains(role.GetName()), ok)
+			}
+
+			for _, ps := range c.permissionSets {
+				_, ok, err := roleStore.GetPermissionSet(pruningCtx, ps.GetId())
+				assert.NoError(t, err)
+				assert.Equal(t, !c.expectedPSDeletions.Contains(ps.GetId()), ok)
+			}
+
+			for _, as := range c.accessScopes {
+				_, ok, err := roleStore.GetAccessScope(pruningCtx, as.GetId())
+				assert.NoError(t, err)
+				assert.Equal(t, !c.expectedASDeletions.Contains(as.GetId()), ok)
+			}
+		})
+	}
+}
+
+func (s *PruningTestSuite) TestRemoveExpiredDynamicRBACObjects_WhenDisabled() {
+	disableDynamicRBACPruningForTest(s.T())
+
+	now := time.Now()
+	yesterday := now.Add(-24 * time.Hour)
+
+	// Create classic (non-expiring) access scope and permission set for roles to reference.
+	classicPS := &storage.PermissionSet{
+		Id:               uuid.NewV4().String(),
+		Name:             "classic-ps-disabled",
+		ResourceToAccess: map[string]storage.Access{"Cluster": storage.Access_READ_ACCESS},
+		Traits:           nil,
+	}
+	classicAS := &storage.SimpleAccessScope{
+		Id:     uuid.NewV4().String(),
+		Name:   "classic-as-disabled",
+		Rules:  &storage.SimpleAccessScope_Rules{},
+		Traits: nil,
+	}
+
+	roleStore := roleDataStore.GetTestPostgresDataStore(s.T(), s.pool)
+
+	// Add classic permission set and access scope for roles to reference.
+	s.Require().NoError(roleStore.AddPermissionSet(pruningCtx, classicPS))
+	s.Require().NoError(roleStore.AddAccessScope(pruningCtx, classicAS))
+	s.T().Cleanup(func() {
+		_ = roleStore.RemovePermissionSet(pruningCtx, classicPS.GetId())
+		_ = roleStore.RemoveAccessScope(pruningCtx, classicAS.GetId())
+	})
+
+	// Create expired RBAC objects.
+	expiredRole := &storage.Role{
+		Name:            "expired-role-disabled",
+		PermissionSetId: classicPS.GetId(),
+		AccessScopeId:   classicAS.GetId(),
+		Traits: &storage.Traits{
+			ExpiresAt: timestamppb.New(yesterday),
+		},
+	}
+	expiredPS := &storage.PermissionSet{
+		Id:   uuid.NewV4().String(),
+		Name: "expired-ps-disabled",
+		Traits: &storage.Traits{
+			ExpiresAt: timestamppb.New(yesterday),
+		},
+	}
+	expiredAS := &storage.SimpleAccessScope{
+		Id:    uuid.NewV4().String(),
+		Name:  "expired-as-disabled",
+		Rules: &storage.SimpleAccessScope_Rules{},
+		Traits: &storage.Traits{
+			ExpiresAt: timestamppb.New(yesterday),
+		},
+	}
+
+	s.Require().NoError(roleStore.AddRole(pruningCtx, expiredRole))
+	s.Require().NoError(roleStore.AddPermissionSet(pruningCtx, expiredPS))
+	s.Require().NoError(roleStore.AddAccessScope(pruningCtx, expiredAS))
+	s.T().Cleanup(func() {
+		_ = roleStore.RemoveRole(pruningCtx, expiredRole.GetName())
+		_ = roleStore.RemovePermissionSet(pruningCtx, expiredPS.GetId())
+		_ = roleStore.RemoveAccessScope(pruningCtx, expiredAS.GetId())
+	})
+
+	gc := &garbageCollectorImpl{
+		roleStore: roleStore,
+	}
+
+	// Call pruning - it should be a no-op since pruning is disabled.
+	gc.removeExpiredDynamicRBACObjects()
+
+	// Verify that none of the expired objects were deleted.
+	_, ok, err := roleStore.GetRole(pruningCtx, expiredRole.GetName())
+	s.NoError(err)
+	s.True(ok, "expired role should still exist when pruning is disabled")
+
+	_, ok, err = roleStore.GetPermissionSet(pruningCtx, expiredPS.GetId())
+	s.NoError(err)
+	s.True(ok, "expired permission set should still exist when pruning is disabled")
+
+	_, ok, err = roleStore.GetAccessScope(pruningCtx, expiredAS.GetId())
+	s.NoError(err)
+	s.True(ok, "expired access scope should still exist when pruning is disabled")
+}
+
 func (s *PruningTestSuite) addSomePods(podDS podDatastore.DataStore, clusterID string, numberPods int) {
-	for i := 0; i < numberPods; i++ {
+	for range numberPods {
 		pod := &storage.Pod{
 			Id:        uuid.NewV4().String(),
 			ClusterId: clusterID,
@@ -2258,7 +2893,7 @@ func (s *PruningTestSuite) addSomePods(podDS podDatastore.DataStore, clusterID s
 }
 
 func (s *PruningTestSuite) addNodes(nodeDS testNodeDatastore.DataStore, clusterID string, numberOfNodes int) {
-	for i := 0; i < numberOfNodes; i++ {
+	for range numberOfNodes {
 		pod := &storage.Node{
 			Id:        uuid.NewV4().String(),
 			ClusterId: clusterID,

@@ -2,44 +2,22 @@ import Raven from 'raven-js';
 import axios from 'services/instance';
 import qs from 'qs';
 
-import { ApiSortOption, SearchFilter } from 'types/search';
-import { SlimUser } from 'types/user.proto';
+import type { ApiSortOption, SearchFilter } from 'types/search';
+import type { SlimUser } from 'types/user.proto';
 import { getPaginationParams, getRequestQueryStringForSearchFilter } from 'utils/searchUtils';
 
 import { getQueryString } from 'utils/queryStringUtils';
-import { Snapshot } from 'types/reportJob';
-import { ComplianceProfileSummary, complianceV2Url } from './ComplianceCommon';
-import { CancellableRequest, makeCancellableAxiosRequest } from './cancellationUtils';
-import { NotifierConfiguration } from './ReportsService.types';
-import { Empty } from './types';
+import type { Snapshot } from 'types/reportJob';
+import type { Schedule } from 'types/schedule.proto';
+import { complianceV2Url } from './ComplianceCommon';
+import type { ComplianceProfileSummary } from './ComplianceCommon';
+import { makeCancellableAxiosRequest } from './cancellationUtils';
+import type { CancellableRequest } from './cancellationUtils';
+import type { NotifierConfiguration } from './ReportsService.types';
+import type { Empty } from './types';
 
 const complianceScanConfigBaseUrl = `${complianceV2Url}/scan/configurations`;
 export const complianceReportDownloadURL = '/v2/compliance/scan/configurations/reports/download';
-
-export type ScheduleBase = {
-    hour: number;
-    minute: number;
-};
-
-export type UnsetSchedule = ScheduleBase & {
-    intervalType: 'UNSET';
-};
-
-export type DailySchedule = ScheduleBase & {
-    intervalType: 'DAILY';
-};
-
-export type WeeklySchedule = ScheduleBase & {
-    intervalType: 'WEEKLY';
-    daysOfWeek: { days: number[] };
-};
-
-export type MonthlySchedule = ScheduleBase & {
-    intervalType: 'MONTHLY';
-    daysOfMonth: { days: number[] };
-};
-
-export type Schedule = UnsetSchedule | DailySchedule | WeeklySchedule | MonthlySchedule;
 
 export type IntervalType = Schedule['intervalType'];
 

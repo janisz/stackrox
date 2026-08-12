@@ -1,6 +1,6 @@
 // If you're adding a new attribute, make sure to add it to "namespaceAttributes" as well
 
-import { CompoundSearchFilterAttribute } from '../types';
+import type { CompoundSearchFilterAttribute } from '../types';
 
 export const ID: CompoundSearchFilterAttribute = {
     displayName: 'ID',
@@ -30,4 +30,4 @@ export const Annotation: CompoundSearchFilterAttribute = {
     inputType: 'autocomplete',
 };
 
-export const namespaceAttributes = [ID, Name, Label, Annotation];
+export const namespaceAttributes = [Annotation, ID, Label, Name];

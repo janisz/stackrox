@@ -22,6 +22,7 @@ import (
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/fake"
+	"k8s.io/client-go/rest"
 )
 
 type updaterSuite struct {
@@ -36,6 +37,10 @@ func TestClusterStatusUpdater(t *testing.T) {
 type fakeClientSet struct {
 	k8s    kubernetes.Interface
 	config configVersioned.Interface
+}
+
+func (c *fakeClientSet) RESTConfig() *rest.Config {
+	return nil
 }
 
 func (c *fakeClientSet) Kubernetes() kubernetes.Interface {
@@ -64,12 +69,12 @@ func (c *fakeClientSet) OpenshiftOperator() operatorVersioned.Interface {
 
 func (s *updaterSuite) createUpdater(getProviders func(context.Context) *storage.ProviderMetadata,
 	getMetadata providerMetadataFromOpenShift, configClient ...*configFake.Clientset) {
-	config := configFake.NewSimpleClientset()
+	config := configFake.NewClientset()
 	if len(configClient) != 0 {
 		config = configClient[0]
 	}
 	s.updater = NewUpdater(&fakeClientSet{
-		k8s:    fake.NewSimpleClientset(),
+		k8s:    fake.NewClientset(),
 		config: config,
 	})
 	s.updater.(*updaterImpl).getProviders = getProviders
@@ -478,9 +483,9 @@ func (s *updaterSuite) Test_GetCloudProviderMetadata() {
 	for name, tc := range cases {
 		s.Run(name, func() {
 			s.T().Setenv(env.OpenshiftAPI.EnvVar(), strconv.FormatBool(tc.openshift))
-			config := configFake.NewSimpleClientset()
+			config := configFake.NewClientset()
 			if tc.infra != nil {
-				config = configFake.NewSimpleClientset(tc.infra, tc.cv)
+				config = configFake.NewClientset(tc.infra, tc.cv)
 			}
 			s.createUpdater(tc.getProviders, getProviderMetadataFromOpenShiftConfig, config)
 			u := s.updater.(*updaterImpl)

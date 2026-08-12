@@ -1,14 +1,14 @@
-import React from 'react';
 import keyBy from 'lodash/keyBy';
 import { Flex } from '@patternfly/react-core';
 import { useDrop } from 'react-dnd';
 import { useFormikContext } from 'formik';
 
-import { Policy } from 'types/policy.proto';
-import { Descriptor } from './policyCriteriaDescriptors';
+import type { Policy } from 'types/policy.proto';
+import type { Descriptor } from './policyCriteriaDescriptors';
 import { getEmptyPolicyFieldCard } from '../../policies.utils';
 
 import './PolicySectionDropTarget.css';
+import type { CSSProperties } from 'react';
 
 function getPolicyCriteriaFieldKeys(policyGroups, descriptors) {
     const fieldNameMap = keyBy(policyGroups, (field) => field.fieldName as string);
@@ -52,14 +52,14 @@ function PolicySectionDropTarget({ sectionIndex, descriptors }) {
         }),
     });
 
-    let dropStyle = 'pf-v5-u-background-color-200';
+    const dropStyle: CSSProperties = {
+        backgroundColor: 'var(--pf-t--global--background--color--secondary--default)',
+    };
     // getItemType returns the item type if an item is currently being dragged
     if (!canDrop && !!getItemType) {
-        dropStyle = 'pf-v5-u-background-color-disabled-color-200';
+        dropStyle.backgroundColor = 'var(--pf-t--global--background--color--disabled--default)';
     } else if (canDrop && isOver) {
-        dropStyle = 'pf-v5-u-background-color-success';
-    } else if (canDrop) {
-        dropStyle = 'pf-v5-u-background-color-default';
+        dropStyle.borderColor = 'var(--pf-t--global--border--color--brand--default)';
     }
 
     return (
@@ -67,7 +67,8 @@ function PolicySectionDropTarget({ sectionIndex, descriptors }) {
             <Flex
                 data-testid="policy-section-drop-target"
                 justifyContent={{ default: 'justifyContentCenter' }}
-                className={`pf-v5-u-p-sm dropzone ${dropStyle}`}
+                className={`pf-v6-u-p-sm dropzone`}
+                style={dropStyle}
             >
                 Drop a policy field inside
             </Flex>

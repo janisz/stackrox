@@ -1,6 +1,6 @@
 import { gql, useQuery } from '@apollo/client';
 import { getRequestQueryStringForSearchFilter } from 'utils/searchUtils';
-import { VulnerabilityException } from 'services/VulnerabilityExceptionService';
+import type { VulnerabilityException } from 'services/VulnerabilityExceptionService';
 import { sortCveDistroList } from '../../utils/sortUtils';
 import { getImageScopeSearchValue } from '../utils';
 
@@ -67,7 +67,7 @@ function useRequestCVEsDetails(exception: VulnerabilityException): UseAffectedIm
                 summary: prioritizedDistros.length > 0 ? prioritizedDistros[0].summary : '',
                 numAffectedImages: imageCVE.affectedImageCount,
             };
-        }) || [];
+        }) ?? [];
 
     return {
         isLoading,

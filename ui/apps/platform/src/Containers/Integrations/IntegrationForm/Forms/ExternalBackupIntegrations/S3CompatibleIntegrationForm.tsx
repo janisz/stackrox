@@ -1,36 +1,34 @@
-import React, { ReactElement } from 'react';
+import type { ReactElement } from 'react';
 import {
     Checkbox,
+    Content,
     Form,
-    FormSelect,
     List,
     ListItem,
     PageSection,
-    Text,
+    SelectOption,
     TextInput,
 } from '@patternfly/react-core';
-import { SelectOption } from '@patternfly/react-core/deprecated';
 import * as yup from 'yup';
 import merge from 'lodash/merge';
 
-import { BackupIntegrationBase } from 'services/BackupIntegrationsService';
+import type { BackupIntegrationBase } from 'services/BackupIntegrationsService';
 
-import usePageState from 'Containers/Integrations/hooks/usePageState';
 import FormMessage from 'Components/PatternFly/FormMessage';
 import FormCancelButton from 'Components/PatternFly/FormCancelButton';
 import FormTestButton from 'Components/PatternFly/FormTestButton';
 import FormSaveButton from 'Components/PatternFly/FormSaveButton';
 import ExternalLink from 'Components/PatternFly/IconText/ExternalLink';
 import SelectSingle from 'Components/SelectSingle';
-import IntegrationHelpIcon from '../Components/IntegrationHelpIcon';
+
+import usePageState from '../../../hooks/usePageState';
 import useIntegrationForm from '../../useIntegrationForm';
-import { IntegrationFormProps } from '../../integrationFormTypes';
+import type { IntegrationFormProps } from '../../integrationFormTypes';
 
 import IntegrationFormActions from '../../IntegrationFormActions';
 import FormLabelGroup from '../../FormLabelGroup';
-import ScheduleIntervalOptions from '../../FormSchedule/ScheduleIntervalOptions';
-import ScheduleWeeklyOptions from '../../FormSchedule/ScheduleWeeklyOptions';
-import ScheduleDailyOptions from '../../FormSchedule/ScheduleDailyOptions';
+
+import IntegrationHelpIcon from '../Components/IntegrationHelpIcon';
 
 const urlStyles = [
     {
@@ -42,6 +40,26 @@ const urlStyles = [
         value: 'S3_URL_STYLE_VIRTUAL_HOSTED',
     },
 ];
+
+const intervalOptions = [
+    { label: 'Daily', value: 'DAILY' },
+    { label: 'Weekly', value: 'WEEKLY' },
+];
+
+const weeklyOptions = [
+    { label: 'Sunday', value: '0' },
+    { label: 'Monday', value: '1' },
+    { label: 'Tuesday', value: '2' },
+    { label: 'Wednesday', value: '3' },
+    { label: 'Thursday', value: '4' },
+    { label: 'Friday', value: '5' },
+    { label: 'Saturday', value: '6' },
+];
+
+const dailyOptions = Array.from({ length: 24 }, (_, i) => ({
+    label: `${String(i).padStart(2, '0')}:00 UTC`,
+    value: String(i),
+}));
 
 export type S3CompatibleIntegration = {
     s3compatible: {
@@ -178,6 +196,19 @@ function S3CompatibleIntegrationForm({
         return setFieldValue(event.target.id, value, false);
     }
 
+    function onScheduleIntervalChange(fieldId, value) {
+        // Initialize weekly day when switching to WEEKLY
+        if (value === 'WEEKLY' && !values.externalBackup.schedule.weekly) {
+            setFieldValue('externalBackup.schedule', {
+                ...values.externalBackup.schedule,
+                intervalType: value,
+                weekly: { day: 0 },
+            });
+        } else {
+            setFieldValue(fieldId, value);
+        }
+    }
+
     function onUpdateCredentialsChange(value, event) {
         setFieldValue('externalBackup.s3compatible.accessKeyId', '');
         setFieldValue('externalBackup.s3compatible.secretAccessKey', '');
@@ -186,7 +217,7 @@ function S3CompatibleIntegrationForm({
 
     return (
         <>
-            <PageSection variant="light" isFilled hasOverflowScroll>
+            <PageSection isFilled hasOverflowScroll>
                 <FormMessage message={message} />
                 <Form isWidthLimited>
                     <FormLabelGroup
@@ -230,15 +261,19 @@ function S3CompatibleIntegrationForm({
                         touched={touched}
                         errors={errors}
                     >
-                        <FormSelect
+                        <SelectSingle
                             id="externalBackup.schedule.intervalType"
                             value={values.externalBackup.schedule.intervalType}
-                            onChange={(event, value) => onChange(value, event)}
+                            handleSelect={onScheduleIntervalChange}
                             onBlur={handleBlur}
                             isDisabled={!isEditable}
                         >
-                            <ScheduleIntervalOptions />
-                        </FormSelect>
+                            {intervalOptions.map(({ value, label }) => (
+                                <SelectOption key={value} value={value}>
+                                    {label}
+                                </SelectOption>
+                            ))}
+                        </SelectSingle>
                     </FormLabelGroup>
                     {values.externalBackup.schedule.intervalType === 'WEEKLY' && (
                         <FormLabelGroup
@@ -248,15 +283,19 @@ function S3CompatibleIntegrationForm({
                             touched={touched}
                             errors={errors}
                         >
-                            <FormSelect
+                            <SelectSingle
                                 id="externalBackup.schedule.weekly.day"
-                                value={values.externalBackup.schedule?.weekly?.day}
-                                onChange={(event, value) => onChange(value, event)}
+                                value={String(values.externalBackup.schedule?.weekly?.day ?? 0)}
+                                handleSelect={setFieldValue}
                                 onBlur={handleBlur}
                                 isDisabled={!isEditable}
                             >
-                                <ScheduleWeeklyOptions />
-                            </FormSelect>
+                                {weeklyOptions.map(({ value, label }) => (
+                                    <SelectOption key={value} value={value}>
+                                        {label}
+                                    </SelectOption>
+                                ))}
+                            </SelectSingle>
                         </FormLabelGroup>
                     )}
                     <FormLabelGroup
@@ -266,15 +305,19 @@ function S3CompatibleIntegrationForm({
                         touched={touched}
                         errors={errors}
                     >
-                        <FormSelect
+                        <SelectSingle
                             id="externalBackup.schedule.hour"
-                            value={values.externalBackup.schedule.hour}
-                            onChange={(event, value) => onChange(value, event)}
+                            value={String(values.externalBackup.schedule.hour)}
+                            handleSelect={setFieldValue}
                             onBlur={handleBlur}
                             isDisabled={!isEditable}
                         >
-                            <ScheduleDailyOptions />
-                        </FormSelect>
+                            {dailyOptions.map(({ value, label }) => (
+                                <SelectOption key={value} value={value}>
+                                    {label}
+                                </SelectOption>
+                            ))}
+                        </SelectSingle>
                     </FormLabelGroup>
                     <FormLabelGroup
                         isRequired
@@ -295,7 +338,7 @@ function S3CompatibleIntegrationForm({
                     </FormLabelGroup>
                     <FormLabelGroup
                         label="Object prefix"
-                        labelIcon={
+                        labelHelp={
                             <IntegrationHelpIcon
                                 helpTitle="Object prefix"
                                 helpText={
@@ -323,7 +366,7 @@ function S3CompatibleIntegrationForm({
                     <FormLabelGroup
                         isRequired
                         label="Endpoint"
-                        labelIcon={
+                        labelHelp={
                             <IntegrationHelpIcon
                                 helpTitle="Endpoint"
                                 helpText={
@@ -354,24 +397,26 @@ function S3CompatibleIntegrationForm({
                     <FormLabelGroup
                         isRequired
                         label="Region"
-                        labelIcon={
+                        labelHelp={
                             <IntegrationHelpIcon
                                 helpTitle="Region"
                                 helpText={
                                     <div>
-                                        Consult the service provider&apos;s S3 compatibility
-                                        instructions for the correct region.
+                                        The region for the S3-compatible endpoint. Consult the
+                                        service provider&apos;s instructions for the correct value.
+                                        Many providers accept `us-east-1` as a default.
                                     </div>
                                 }
                                 ariaLabel="Help for region"
                             />
                         }
                         fieldId="externalBackup.s3compatible.region"
-                        helperText="example, us-west-2"
+                        helperText="example, us-east-1"
                         touched={touched}
                         errors={errors}
                     >
                         <TextInput
+                            isRequired
                             type="text"
                             id="externalBackup.s3compatible.region"
                             value={values.externalBackup.s3compatible.region}
@@ -382,23 +427,25 @@ function S3CompatibleIntegrationForm({
                     </FormLabelGroup>
                     <FormLabelGroup
                         label="URL style"
-                        labelIcon={
+                        labelHelp={
                             <IntegrationHelpIcon
                                 helpTitle="Virtual hosting of buckets"
                                 helpText={
                                     <>
-                                        <Text>Defines the bucket URL addressing:</Text>
-                                        <List className="pf-v5-u-py-sm">
+                                        <Content component="p">
+                                            Defines the bucket URL addressing:
+                                        </Content>
+                                        <List className="pf-v6-u-py-sm">
                                             <ListItem>
                                                 Virtual-hosted-style buckets are addressed as
-                                                https://&#60;bucket&#62;.&#60;endpoint&#62
+                                                https://&#60;bucket&#62;.&#60;endpoint&#62;.
                                             </ListItem>
                                             <ListItem>
                                                 Path-style buckets are addressed as
-                                                https://&#60;endpoint&#62;/&#60;bucket&#62;
+                                                https://&#60;endpoint&#62;/&#60;bucket&#62;.
                                             </ListItem>
                                         </List>
-                                        <Text>
+                                        <Content component="p">
                                             For more information, see{' '}
                                             <ExternalLink>
                                                 <a
@@ -409,7 +456,7 @@ function S3CompatibleIntegrationForm({
                                                     AWS documentation about virtual hosting
                                                 </a>
                                             </ExternalLink>
-                                        </Text>
+                                        </Content>
                                     </>
                                 }
                                 ariaLabel="Help for URL style"

@@ -1,14 +1,13 @@
-import React, { useState } from 'react';
-import { Alert, Button, Flex, Form, Modal, Text, TextArea } from '@patternfly/react-core';
+import { useState } from 'react';
+import { Alert, Button, Content, Flex, Form, TextArea } from '@patternfly/react-core';
+import { Modal } from '@patternfly/react-core/deprecated';
 import * as yup from 'yup';
 import { useFormik } from 'formik';
 import isEqual from 'lodash/isEqual';
 
 import useModal from 'hooks/useModal';
-import {
-    VulnerabilityException,
-    denyVulnerabilityException,
-} from 'services/VulnerabilityExceptionService';
+import { denyVulnerabilityException } from 'services/VulnerabilityExceptionService';
+import type { VulnerabilityException } from 'services/VulnerabilityExceptionService';
 import useRestMutation from 'hooks/useRestMutation';
 import { getAxiosErrorMessage } from 'utils/responseErrorUtils';
 
@@ -99,7 +98,7 @@ function RequestDenialButtonModal({ exception, onSuccess }: RequestDenialButtonM
                         title="Denying the request will return the CVEs to the 'Observed' status."
                         component="p"
                     >
-                        <Text>CVE count: {exception.cves.length}</Text>
+                        <Content component="p">CVE count: {exception.cves.length}</Content>
                     </Alert>
                     <Form>
                         <FormLabelGroup

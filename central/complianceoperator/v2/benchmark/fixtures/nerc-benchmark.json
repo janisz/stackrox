@@ -1,0 +1,10 @@
+{
+  "name": "North American Electric Reliability Corporation (NERC) Critical Infrastructure Protection (CIP) cybersecurity standards profile",
+  "provider": "NERC",
+  "shortName": "NERC-CIP",
+  "profiles": [
+    { "profileName": "ocp4-nerc-cip" },
+    { "profileName": "ocp4-nerc-cip-node" },
+    { "profileName": "rhcos4-nerc-cip" }
+  ]
+}

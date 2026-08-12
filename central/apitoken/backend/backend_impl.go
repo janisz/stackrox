@@ -16,7 +16,7 @@ import (
 type backendImpl struct {
 	tokenStore datastore.DataStore
 	issuer     tokens.Issuer
-	source     *sourceImpl
+	source     tokens.RevocationLayer
 }
 
 func (c *backendImpl) GetTokenOrNil(ctx context.Context, tokenID string) (*storage.TokenMetadata, error) {
@@ -31,8 +31,12 @@ func (c *backendImpl) IssueRoleToken(ctx context.Context, name string, roleNames
 	if expireAt != nil && expireAt.Before(time.Now()) {
 		return "", nil, errox.InvalidArgs.New("Expiration date cannot be in the past")
 	}
-	claims := tokens.RoxClaims{RoleNames: roleNames, Name: name, ExpireAt: expireAt}
-	tokenInfo, err := c.issuer.Issue(ctx, claims)
+	claims := tokens.RoxClaims{RoleNames: roleNames, Name: name}
+	var opts []tokens.Option
+	if expireAt != nil {
+		opts = append(opts, tokens.WithExpiry(*expireAt))
+	}
+	tokenInfo, err := c.issuer.Issue(ctx, claims, opts...)
 	if err != nil {
 		return "", nil, err
 	}
@@ -54,7 +58,7 @@ func (c *backendImpl) RevokeToken(ctx context.Context, tokenID string) (bool, er
 	if t == nil {
 		return false, nil
 	}
-	if t.Revoked {
+	if t.GetRevoked() {
 		return true, nil
 	}
 

@@ -37,6 +37,13 @@ const (
 	// detected but not yet seen in the database. Ten seconds were chosen based on our understanding how quickly
 	// violations are persisted.
 	eventualConsistencyMargin = 10 * time.Second
+
+	// maxProcessDetectionDelay is the maximum expected delay between when a process runs (signal time) and when
+	// the resulting alert is stored in Central's database. The full pipeline is: sensor detection -> transmission
+	// to central -> enrichment -> database storage. In CI environments this delay has been observed at 50+ seconds.
+	// This constant bounds the fallback recovery window for process violations whose signal time has already been
+	// passed by the checkpoint but whose alert was recently stored.
+	maxProcessDetectionDelay = 2 * time.Minute
 )
 
 var (
@@ -109,7 +116,7 @@ func getViolationsResponse(alertDS datastore.DataStore, r *http.Request, paginat
 
 	response := integrations.SplunkViolationsResponse{}
 
-	for len(response.Violations) < pagination.violationsPerResponse {
+	for len(response.GetViolations()) < pagination.violationsPerResponse {
 		alerts, err := queryAlerts(r.Context(), alertDS, checkpoint, pagination.maxAlertsFromQuery)
 		if err != nil {
 			return nil, err
@@ -130,7 +137,7 @@ func getViolationsResponse(alertDS datastore.DataStore, r *http.Request, paginat
 
 			// We cannot strictly limit number of violations in the response without further complicating the checkpoint
 			// format. Therefore we stop after we got enough violations and processed the entire Alert.
-			if len(response.Violations) >= pagination.violationsPerResponse {
+			if len(response.GetViolations()) >= pagination.violationsPerResponse {
 				break
 			}
 		}
@@ -210,8 +217,11 @@ func extractViolations(alert *storage.Alert, fromTime time.Time, toTime time.Tim
 			seenViolations = true
 
 			violationTime := getProcessViolationTime(alert, procIndicator)
-			if violationTime == nil || violationTime.Compare(fromTime) <= 0 ||
-				violationTime.Compare(toTime) > 0 {
+			if violationTime == nil {
+				continue
+			}
+			if !isTimeInWindow(violationTime, fromTime, toTime) &&
+				!isProcessViolationRecoverableViaAlertTime(violationTime, alert, fromTime, toTime) {
 				continue
 			}
 
@@ -258,6 +268,14 @@ func extractViolations(alert *storage.Alert, fromTime time.Time, toTime time.Tim
 			NetworkFlowInfo: v.GetNetworkFlowInfo().CloneVT(),
 		}
 
+		if v.GetType() == storage.Alert_Violation_FILE_ACCESS {
+			fileAccess := v.GetFileAccess()
+			violation.FileAccessInfo = extractFileAccessInfo(fileAccess)
+			if proc := fileAccess.GetProcess(); proc != nil {
+				violation.ProcessInfo = extractProcessInfo(alert.GetId(), proc)
+			}
+		}
+
 		addEntityInfoToSplunkViolation(alert, &violation, deploymentInfo)
 
 		result = append(result, &violation)
@@ -299,6 +317,25 @@ func generateViolationID(alertID string, v *storage.Alert_Violation) (string, er
 	return uuid.NewV5(alertUUID, hex.Dump(data)).String(), nil
 }
 
+func isTimeInWindow(t *time.Time, fromTime, toTime time.Time) bool {
+	return t != nil && t.Compare(fromTime) > 0 && t.Compare(toTime) <= 0
+}
+
+// isProcessViolationRecoverableViaAlertTime returns true when a process violation's signal time has
+// fallen behind the checkpoint window but the alert was recently stored (alert.Time is within the
+// window). This handles the race where the pipeline delay between process execution and alert
+// storage exceeds the checkpoint advancement rate.
+func isProcessViolationRecoverableViaAlertTime(signalTime *time.Time, alert *storage.Alert, fromTime, toTime time.Time) bool {
+	alertTime := protocompat.ConvertTimestampToTimeOrNil(alert.GetTime())
+	if alertTime == nil {
+		return false
+	}
+	if !isTimeInWindow(alertTime, fromTime, toTime) {
+		return false
+	}
+	return signalTime.After(alertTime.Add(-maxProcessDetectionDelay))
+}
+
 func getProcessViolationTime(fromAlert *storage.Alert, fromProcIndicator *storage.ProcessIndicator) *time.Time {
 	timestamp := fromProcIndicator.GetSignal().GetTime()
 	if timestamp == nil {
@@ -334,6 +371,10 @@ func extractProcessViolationInfo(fromAlert *storage.Alert, fromProcViolation *st
 func getNonProcessViolationTime(fromAlert *storage.Alert, fromViolation *storage.Alert_Violation) *time.Time {
 	timestamp := fromViolation.GetTime()
 	if timestamp == nil {
+		// File access violations store time on the FileAccess message
+		timestamp = fromViolation.GetFileAccess().GetTimestamp()
+	}
+	if timestamp == nil {
 		// Use alert timestamp as a fallback in case violation timestamp wasn't provided.
 		timestamp = fromAlert.GetTime()
 	}
@@ -350,11 +391,11 @@ func extractNonProcessViolationInfo(fromAlert *storage.Alert, fromViolation *sto
 
 	var podID, containerName string
 	for _, kv := range msgAttrs {
-		if kv.Key == printer.PodKey {
-			podID = kv.Value
+		if kv.GetKey() == printer.PodKey {
+			podID = kv.GetValue()
 		}
-		if kv.Key == printer.ContainerKey {
-			containerName = kv.Value
+		if kv.GetKey() == printer.ContainerKey {
+			containerName = kv.GetValue()
 		}
 	}
 
@@ -366,6 +407,8 @@ func extractNonProcessViolationInfo(fromAlert *storage.Alert, fromViolation *sto
 		typ = integrations.SplunkViolation_ViolationInfo_K8S_EVENT
 	case storage.Alert_Violation_NETWORK_FLOW:
 		typ = integrations.SplunkViolation_ViolationInfo_NETWORK_FLOW
+	case storage.Alert_Violation_FILE_ACCESS:
+		typ = integrations.SplunkViolation_ViolationInfo_FILE_ACCESS
 	}
 
 	violationTime := getNonProcessViolationTime(fromAlert, fromViolation)
@@ -389,10 +432,10 @@ func extractViolationMessageAttrs(fromViolation *storage.Alert_Violation) []*sto
 
 	// Filter out some message attributes, but only for K8S Events
 	// This is done so that we can reduce the amount of unnecessary bytes to Splunk for fields that can be inferred.
-	if fromViolation.Type == storage.Alert_Violation_K8S_EVENT {
+	if fromViolation.GetType() == storage.Alert_Violation_K8S_EVENT {
 		var filteredAttrs []*storage.Alert_Violation_KeyValueAttrs_KeyValueAttr
 		for _, kvp := range msgAttrs {
-			if !violationMessagesToRemoveForK8SEvent.Contains(kvp.Key) {
+			if !violationMessagesToRemoveForK8SEvent.Contains(kvp.GetKey()) {
 				filteredAttrs = append(filteredAttrs, kvp)
 			}
 		}
@@ -454,6 +497,35 @@ func extractProcessInfo(alertID string, from *storage.ProcessIndicator) *integra
 	}
 
 	return splunkProcessInfo
+}
+
+func extractFileAccessInfo(from *storage.FileAccess) *integrations.SplunkViolation_FileAccessInfo {
+	if from == nil {
+		return nil
+	}
+	info := &integrations.SplunkViolation_FileAccessInfo{
+		Operation: from.GetOperation().String(),
+		Hostname:  from.GetHostname(),
+	}
+	if f := from.GetFile(); f != nil {
+		info.EffectivePath = f.GetEffectivePath()
+		info.ActualPath = f.GetActualPath()
+		if m := f.GetMeta(); m != nil {
+			info.FileUid = protocompat.ProtoUInt32Value(m.GetUid())
+			info.FileGid = protocompat.ProtoUInt32Value(m.GetGid())
+			info.FileMode = protocompat.ProtoUInt32Value(m.GetMode())
+			info.FileUsername = m.GetUsername()
+			info.FileGroup = m.GetGroup()
+			info.AclType = m.GetAclType()
+			info.AclEntries = m.GetAclEntries()
+			info.XattrName = m.GetXattrName()
+		}
+	}
+	if moved := from.GetMoved(); moved != nil {
+		info.MovedEffectivePath = moved.GetEffectivePath()
+		info.MovedActualPath = moved.GetActualPath()
+	}
+	return info
 }
 
 func extractAlertInfo(from *storage.Alert, violationInfo *integrations.SplunkViolation_ViolationInfo) *integrations.SplunkViolation_AlertInfo {

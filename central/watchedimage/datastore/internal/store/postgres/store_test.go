@@ -41,10 +41,6 @@ func (s *WatchedImagesStoreSuite) SetupTest() {
 	s.NoError(err)
 }
 
-func (s *WatchedImagesStoreSuite) TearDownSuite() {
-	s.testDB.Teardown(s.T())
-}
-
 func (s *WatchedImagesStoreSuite) TestStore() {
 	ctx := sac.WithAllAccess(context.Background())
 
@@ -96,6 +92,11 @@ func (s *WatchedImagesStoreSuite) TestStore() {
 	}
 
 	s.NoError(store.UpsertMany(ctx, watchedImages))
+
+	foundWatchedImages, missing, err := store.GetMany(ctx, watchedImageIDs)
+	s.NoError(err)
+	s.Empty(missing)
+	protoassert.ElementsMatch(s.T(), watchedImages, foundWatchedImages)
 
 	watchedImageCount, err = store.Count(ctx, search.EmptyQuery())
 	s.NoError(err)

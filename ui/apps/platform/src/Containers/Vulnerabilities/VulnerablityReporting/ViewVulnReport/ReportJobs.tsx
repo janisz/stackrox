@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import { useState } from 'react';
 import {
     ActionsColumn,
     ExpandableRowContent,
@@ -14,51 +14,51 @@ import {
     AlertGroup,
     Bullseye,
     Button,
-    Card,
-    Divider,
+    Content,
     Flex,
     FlexItem,
     Pagination,
+    SelectOption,
     Spinner,
     Switch,
-    Text,
     Toolbar,
     ToolbarContent,
     ToolbarItem,
 } from '@patternfly/react-core';
-import { SelectOption } from '@patternfly/react-core/deprecated';
 import { ExclamationCircleIcon, FilterIcon } from '@patternfly/react-icons';
 
-import { ReportConfiguration } from 'services/ReportsService.types';
+import type {
+    ConfiguredReportSnapshot,
+    ImageVulnerabilityReportConfiguration,
+} from 'services/ReportsService.types';
 import { getDateTime } from 'utils/dateUtils';
-import { sanitizeFilename } from 'utils/fileUtils';
-import { getReportFormValuesFromConfiguration } from 'Containers/Vulnerabilities/VulnerablityReporting/utils';
 import useSet from 'hooks/useSet';
 import useURLPagination from 'hooks/useURLPagination';
 import useInterval from 'hooks/useInterval';
-import useFetchReportHistory from 'Containers/Vulnerabilities/VulnerablityReporting/api/useFetchReportHistory';
-import { getRequestQueryString } from 'Containers/Vulnerabilities/VulnerablityReporting/api/apiUtils';
 import useURLSort from 'hooks/useURLSort';
-import { saveFile } from 'services/DownloadService';
-import useDeleteDownloadModal from 'Containers/Vulnerabilities/VulnerablityReporting/hooks/useDeleteDownloadModal';
+import { deleteDownloadableReport, downloadReportByJobId } from 'services/ReportsService';
 import useAuthStatus from 'hooks/useAuthStatus';
 
 import DeleteModal from 'Components/PatternFly/DeleteModal';
 import EmptyStateTemplate from 'Components/EmptyStateTemplate/EmptyStateTemplate';
 import CheckboxSelect from 'Components/PatternFly/CheckboxSelect';
-import { TemplatePreviewArgs } from 'Components/EmailTemplate/EmailTemplateModal';
-import NotifierConfigurationView from 'Components/NotifierConfiguration/NotifierConfigurationView';
 
-import { RunState, runStates } from 'types/reportJob';
-import { deleteDownloadableReport } from 'services/ReportsService';
+import { runStates } from 'types/reportJob';
+import type { RunState } from 'types/reportJob';
 import ReportJobStatus from 'Components/ReportJob/ReportJobStatus';
-import EmailTemplatePreview from '../components/EmailTemplatePreview';
-import ReportParametersDetails from '../components/ReportParametersDetails';
-import ScheduleDetails from '../components/ScheduleDetails';
-import { defaultEmailBody, getDefaultEmailSubject } from '../forms/emailTemplateFormUtils';
+
+import ImageVulnerabilityReportView from '../../ImageVulnerabilityReports/View/ImageVulnerabilityReportView';
+import {
+    attributesSeparateFromConfigForImageVulnerabilityReport,
+    searchFilterConfigForImageVulnerabilityReport,
+} from '../../searchFilterConfig';
+
+import { getRequestQueryString } from '../api/apiUtils';
+import useFetchReportHistory from '../api/useFetchReportHistory';
+import useDeleteDownloadModal from '../hooks/useDeleteDownloadModal';
 import JobDetails from './JobDetails';
 
-export type RunHistoryProps = {
+export type ReportJobsProps = {
     reportId: string;
 };
 
@@ -69,12 +69,23 @@ const sortOptions = {
 
 const headingLevel = 'h2';
 
-function ReportJobs({ reportId }: RunHistoryProps) {
+const onDownload = (snapshot: ConfiguredReportSnapshot) => () => {
+    const { reportJobId, name, reportStatus } = snapshot;
+    const { completedAt } = reportStatus;
+    const filename = `${name}-${completedAt}`;
+    return downloadReportByJobId({
+        reportJobId,
+        filename,
+        fileExtension: 'zip',
+    });
+};
+
+function ReportJobs({ reportId }: ReportJobsProps) {
     const { currentUser } = useAuthStatus();
     const { page, perPage, setPage, setPerPage } = useURLPagination(10);
     const { sortOption, getSortParams } = useURLSort(sortOptions);
     const [filteredStatuses, setFilteredStatuses] = useState<RunState[]>([]);
-    const [showOnlyMyJobs, setShowOnlyMyJobs] = React.useState<boolean>(false);
+    const [showOnlyMyJobs, setShowOnlyMyJobs] = useState<boolean>(false);
     const expandedRowSet = useSet<string>();
 
     const query = getRequestQueryString({
@@ -112,10 +123,10 @@ function ReportJobs({ reportId }: RunHistoryProps) {
     return (
         <>
             <Toolbar>
-                <ToolbarContent>
+                <ToolbarContent alignItems="center">
                     <ToolbarItem>
                         <CheckboxSelect
-                            ariaLabel="CVE severity checkbox select"
+                            ariaLabel="Report status filter"
                             toggleIcon={<FilterIcon />}
                             selections={filteredStatuses}
                             onChange={(selection) => {
@@ -131,22 +142,25 @@ function ReportJobs({ reportId }: RunHistoryProps) {
                             <SelectOption value={runStates.PREPARING}>Preparing</SelectOption>
                             <SelectOption value={runStates.WAITING}>Waiting</SelectOption>
                             <SelectOption value={runStates.GENERATED}>
-                                Download generated
+                                Report download is ready
                             </SelectOption>
-                            <SelectOption value={runStates.DELIVERED}>Email delivered</SelectOption>
-                            <SelectOption value={runStates.FAILURE}>Error</SelectOption>
+                            <SelectOption value={runStates.DELIVERED}>
+                                Report successfully sent
+                            </SelectOption>
+                            <SelectOption value={runStates.FAILURE}>
+                                Report failed to generate
+                            </SelectOption>
                         </CheckboxSelect>
                     </ToolbarItem>
-                    <ToolbarItem className="pf-v5-u-flex-grow-1">
+                    <ToolbarItem className="pf-v6-u-flex-grow-1">
                         <Switch
                             id="view-only-my-jobs"
                             label="View only my jobs"
-                            labelOff="View only my jobs"
                             isChecked={showOnlyMyJobs}
                             onChange={(_event, checked: boolean) => handleChange(checked)}
                         />
                     </ToolbarItem>
-                    <ToolbarItem variant="pagination" align={{ default: 'alignRight' }}>
+                    <ToolbarItem variant="pagination" align={{ default: 'alignEnd' }}>
                         <Pagination
                             toggleTemplate={({ firstIndex, lastIndex }) => (
                                 <span>
@@ -165,21 +179,20 @@ function ReportJobs({ reportId }: RunHistoryProps) {
                     </ToolbarItem>
                 </ToolbarContent>
             </Toolbar>
-            <Divider component="div" />
             {error && (
-                <Bullseye className="pf-v5-u-background-color-100">
+                <Bullseye>
                     <EmptyStateTemplate
                         title="Error loading report jobs"
                         headingLevel="h2"
                         icon={ExclamationCircleIcon}
-                        iconClassName="pf-v5-u-danger-color-100"
+                        status="danger"
                     >
                         {error}
                     </EmptyStateTemplate>
                 </Bullseye>
             )}
             {isLoading && !reportSnapshots && (
-                <Bullseye className="pf-v5-u-background-color-100 pf-v5-u-p-lg">
+                <Bullseye className="pf-v6-u-p-lg">
                     <Spinner aria-label="Loading report jobs" />
                 </Bullseye>
             )}
@@ -187,17 +200,13 @@ function ReportJobs({ reportId }: RunHistoryProps) {
                 <Table aria-label="Simple table" variant="compact">
                     <Thead>
                         <Tr>
-                            <Th>
-                                <span className="pf-v5-screen-reader">Row expansion</span>
-                            </Th>
+                            <Th screenReaderText="Row expansion" />
                             <Th width={25} sort={getSortParams('Report Completion Time')}>
                                 Completed
                             </Th>
                             <Th width={25}>Status</Th>
                             <Th width={50}>Requester</Th>
-                            <Th>
-                                <span className="pf-v5-screen-reader">Row actions</span>
-                            </Th>
+                            <Th screenReaderText="Row actions" />
                         </Tr>
                     </Thead>
                     {reportSnapshots.length === 0 && (
@@ -209,7 +218,9 @@ function ReportJobs({ reportId }: RunHistoryProps) {
                                             title="No report jobs found"
                                             headingLevel="h2"
                                         >
-                                            <Text>Clear any search value and try again</Text>
+                                            <Content component="p">
+                                                Clear any search value and try again
+                                            </Content>
                                             <Button
                                                 variant="link"
                                                 onClick={() => {
@@ -226,56 +237,15 @@ function ReportJobs({ reportId }: RunHistoryProps) {
                         </Tbody>
                     )}
                     {reportSnapshots.map((reportSnapshot, rowIndex) => {
-                        const {
-                            reportConfigId,
-                            reportJobId,
-                            name,
-                            description,
-                            vulnReportFilters,
-                            collectionSnapshot,
-                            schedule,
-                            notifiers,
-                            reportStatus,
-                            user,
-                            isDownloadAvailable,
-                        } = reportSnapshot;
+                        const { reportJobId, reportStatus, user, isDownloadAvailable } =
+                            reportSnapshot;
                         const isExpanded = expandedRowSet.has(reportJobId);
-                        const reportConfiguration: ReportConfiguration = {
-                            id: reportConfigId,
-                            name,
-                            description: description ?? '',
-                            type: 'VULNERABILITY',
-                            vulnReportFilters,
-                            notifiers,
-                            schedule,
-                            resourceScope: {
-                                collectionScope: {
-                                    collectionId: collectionSnapshot.id,
-                                    collectionName: collectionSnapshot.name,
-                                },
-                            },
-                        };
-                        const formValues =
-                            getReportFormValuesFromConfiguration(reportConfiguration);
                         const areDownloadActionsDisabled = currentUser.userId !== user.id;
-
-                        function onDownload() {
-                            const { completedAt } = reportStatus;
-                            const filename = `${name}-${completedAt}`;
-                            const sanitizedFilename = sanitizeFilename(filename);
-                            return saveFile({
-                                method: 'get',
-                                url: `/api/reports/jobs/download?id=${reportJobId}`,
-                                data: null,
-                                timeout: 300000,
-                                name: `${sanitizedFilename}.zip`,
-                            });
-                        }
 
                         const rowActions = [
                             {
                                 title: (
-                                    <span className="pf-v5-u-danger-color-100">
+                                    <span className="pf-v6-u-text-color-status-danger">
                                         Delete download
                                     </span>
                                 ),
@@ -306,7 +276,7 @@ function ReportJobs({ reportId }: RunHistoryProps) {
                                             reportStatus={reportSnapshot.reportStatus}
                                             isDownloadAvailable={reportSnapshot.isDownloadAvailable}
                                             areDownloadActionsDisabled={areDownloadActionsDisabled}
-                                            onDownload={onDownload}
+                                            onDownload={onDownload(reportSnapshot)}
                                         />
                                     </Td>
                                     <Td dataLabel="Requester">{user.name}</Td>
@@ -323,70 +293,34 @@ function ReportJobs({ reportId }: RunHistoryProps) {
                                 <Tr isExpanded={isExpanded}>
                                     <Td colSpan={5}>
                                         <ExpandableRowContent>
-                                            <Card className="pf-v5-u-m-md pf-v5-u-p-md" isFlat>
-                                                <Flex>
-                                                    <FlexItem>
-                                                        <JobDetails
-                                                            reportStatus={reportStatus}
-                                                            isDownloadAvailable={
-                                                                isDownloadAvailable
-                                                            }
-                                                        />
-                                                    </FlexItem>
-                                                    <Divider
-                                                        component="div"
-                                                        className="pf-v5-u-my-md"
+                                            <Flex
+                                                direction={{ default: 'column' }}
+                                                spaceItems={{ default: 'spaceItemsLg' }}
+                                            >
+                                                <FlexItem>
+                                                    <JobDetails
+                                                        reportStatus={reportStatus}
+                                                        isDownloadAvailable={isDownloadAvailable}
                                                     />
-                                                    <FlexItem>
-                                                        <ReportParametersDetails
-                                                            headingLevel={headingLevel}
-                                                            formValues={formValues}
-                                                        />
-                                                    </FlexItem>
-                                                    <Divider
-                                                        component="div"
-                                                        className="pf-v5-u-my-md"
+                                                </FlexItem>
+                                                <FlexItem>
+                                                    <ImageVulnerabilityReportView
+                                                        attributesSeparateFromConfig={
+                                                            attributesSeparateFromConfigForImageVulnerabilityReport
+                                                        }
+                                                        headingLevel={headingLevel}
+                                                        horizontalTermWidthModifier={{
+                                                            default: '24ch',
+                                                        }}
+                                                        searchFilterConfig={
+                                                            searchFilterConfigForImageVulnerabilityReport
+                                                        }
+                                                        values={
+                                                            reportSnapshot as unknown as ImageVulnerabilityReportConfiguration
+                                                        }
                                                     />
-                                                    <FlexItem>
-                                                        <NotifierConfigurationView
-                                                            headingLevel={headingLevel}
-                                                            customBodyDefault={defaultEmailBody}
-                                                            customSubjectDefault={getDefaultEmailSubject(
-                                                                formValues.reportParameters
-                                                                    .reportName,
-                                                                formValues.reportParameters
-                                                                    .reportScope?.name
-                                                            )}
-                                                            notifierConfigurations={
-                                                                formValues.deliveryDestinations
-                                                            }
-                                                            renderTemplatePreview={({
-                                                                customBody,
-                                                                customSubject,
-                                                                customSubjectDefault,
-                                                            }: TemplatePreviewArgs) => (
-                                                                <EmailTemplatePreview
-                                                                    emailSubject={customSubject}
-                                                                    emailBody={customBody}
-                                                                    defaultEmailSubject={
-                                                                        customSubjectDefault
-                                                                    }
-                                                                    reportParameters={
-                                                                        formValues.reportParameters
-                                                                    }
-                                                                />
-                                                            )}
-                                                        />
-                                                    </FlexItem>
-                                                    <Divider
-                                                        component="div"
-                                                        className="pf-v5-u-my-md"
-                                                    />
-                                                    <FlexItem>
-                                                        <ScheduleDetails formValues={formValues} />
-                                                    </FlexItem>
-                                                </Flex>
-                                            </Card>
+                                                </FlexItem>
+                                            </Flex>
                                         </ExpandableRowContent>
                                     </Td>
                                 </Tr>
@@ -409,7 +343,7 @@ function ReportJobs({ reportId }: RunHistoryProps) {
                             variant="danger"
                             title={deleteDownloadError}
                             component="p"
-                            className="pf-v5-u-mb-sm"
+                            className="pf-v6-u-mb-sm"
                         />
                     )}
                 </AlertGroup>

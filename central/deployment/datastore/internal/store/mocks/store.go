@@ -13,6 +13,7 @@ import (
 	context "context"
 	reflect "reflect"
 
+	views "github.com/stackrox/rox/central/deployment/views"
 	v1 "github.com/stackrox/rox/generated/api/v1"
 	storage "github.com/stackrox/rox/generated/storage"
 	search "github.com/stackrox/rox/pkg/search"
@@ -86,6 +87,21 @@ func (m *MockStore) Get(ctx context.Context, id string) (*storage.Deployment, bo
 func (mr *MockStoreMockRecorder) Get(ctx, id any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Get", reflect.TypeOf((*MockStore)(nil).Get), ctx, id)
+}
+
+// GetContainerImageViews mocks base method.
+func (m *MockStore) GetContainerImageViews(ctx context.Context, q *v1.Query) ([]*views.ContainerImageView, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "GetContainerImageViews", ctx, q)
+	ret0, _ := ret[0].([]*views.ContainerImageView)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// GetContainerImageViews indicates an expected call of GetContainerImageViews.
+func (mr *MockStoreMockRecorder) GetContainerImageViews(ctx, q any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetContainerImageViews", reflect.TypeOf((*MockStore)(nil).GetContainerImageViews), ctx, q)
 }
 
 // GetIDs mocks base method.
@@ -169,6 +185,21 @@ func (m *MockStore) Search(ctx context.Context, q *v1.Query) ([]search.Result, e
 func (mr *MockStoreMockRecorder) Search(ctx, q any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Search", reflect.TypeOf((*MockStore)(nil).Search), ctx, q)
+}
+
+// SearchListDeployments mocks base method.
+func (m *MockStore) SearchListDeployments(ctx context.Context, q *v1.Query) ([]*storage.ListDeployment, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "SearchListDeployments", ctx, q)
+	ret0, _ := ret[0].([]*storage.ListDeployment)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// SearchListDeployments indicates an expected call of SearchListDeployments.
+func (mr *MockStoreMockRecorder) SearchListDeployments(ctx, q any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SearchListDeployments", reflect.TypeOf((*MockStore)(nil).SearchListDeployments), ctx, q)
 }
 
 // Upsert mocks base method.

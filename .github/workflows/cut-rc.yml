@@ -55,15 +55,15 @@ run-name: >-
     )
   }}
 
-# Ensure that only a single release automation workflow can run at a time.
-concurrency: Release automation
+# Ensure that only a single automation workflow can run at a time for each release.
+concurrency: Release automation ${{ inputs.version }}
 
 jobs:
   properties:
     runs-on: ubuntu-latest
     outputs:
       slack-channel: ${{ fromJSON(format('["{0}","{1}"]', steps.fetch.outputs.dry-slack-channel, steps.fetch.outputs.slack-channel))[github.event.inputs.dry-run != 'true'] }}
-      jira-projects: ${{ steps.fetch.outputs.jira-projects }}
+      jira-project: ${{ steps.fetch.outputs.jira-project }}
     steps:
       - name: Read workflow properties file
         id: fetch
@@ -102,12 +102,14 @@ jobs:
         # Checking unequal with "false" because closed milestones have unset input values.
         if: github.event.inputs.check-jira-issues != 'false'
         env:
+          JIRA_USER: ${{ vars.RHACS_BOT_GITHUB_EMAIL }}
           JIRA_TOKEN: ${{ secrets.JIRA_TOKEN }}
+          JIRA_BASE_URL: ${{ vars.JIRA_BASE_URL }}
         run: |
           set -uo pipefail
           gh api -H "$ACCEPT_RAW" "${{env.script_url}}" | bash -s -- \
             check-jira-issues \
-            "${{needs.properties.outputs.jira-projects}}" \
+            "${{needs.properties.outputs.jira-project}}" \
             "${{needs.variables.outputs.release}}" \
             "${{needs.variables.outputs.patch}}" \
             "${{needs.variables.outputs.named-release-patch}}"
@@ -175,7 +177,7 @@ jobs:
     needs: [variables, properties, postpone-prs, check-jira]
     steps:
       - name: Check out code
-        uses: actions/checkout@v4
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # ratchet:actions/checkout@v7.0.0
         with:
           ref: ${{needs.variables.outputs.branch}}
           token: ${{ secrets.RHACS_BOT_GITHUB_TOKEN }}
@@ -183,6 +185,13 @@ jobs:
         run: |
           git config user.name "${{github.event.sender.login}}"
           git config user.email noreply@github.com
+      - name: Check CHANGELOG entry exists for release "${{ needs.variables.outputs.named-release-patch }}"
+        run: |
+          set -uo pipefail
+          gh api -H "$ACCEPT_RAW" "${{ env.script_url }}" | bash -s -- \
+            check-changelog \
+            "${{ needs.variables.outputs.branch }}" \
+            "${{ needs.variables.outputs.named-release-patch }}"
       - run: |
           # Could be optimized: done only if there are closed PRs to cherry-pick
           git fetch origin ${{env.main_branch}}:${{env.main_branch}} --unshallow
@@ -198,7 +207,7 @@ jobs:
 
       - name: Post to Slack about picked cherries
         if: failure() && steps.cherry-pick.outputs.bad-cherries != ''
-        uses: slackapi/slack-github-action@v2.0.0
+        uses: slackapi/slack-github-action@45a88b9581bfab2566dc881e2cd66d334e621e2c # ratchet:slackapi/slack-github-action@v3.0.3
         with:
           method: chat.postMessage
           token: ${{ secrets.SLACK_BOT_TOKEN }}
@@ -274,12 +283,11 @@ jobs:
           gh api -H "$ACCEPT_RAW" "${{env.script_url}}" | bash -s -- \
             create-release \
             "${{ needs.variables.outputs.milestone }}" \
+            "${{ needs.variables.outputs.branch }}" \
             "true"
 
-      - run: |
-          echo "Created GitHub pre-release [${{needs.variables.outputs.milestone}}](${{steps.pre-release.outputs.url}})" >> "$GITHUB_STEP_SUMMARY"
       - name: Post to Slack
-        uses: slackapi/slack-github-action@v2.0.0
+        uses: slackapi/slack-github-action@45a88b9581bfab2566dc881e2cd66d334e621e2c # ratchet:slackapi/slack-github-action@v3.0.3
         with:
           method: chat.postMessage
           token: ${{ secrets.SLACK_BOT_TOKEN }}
@@ -299,11 +307,31 @@ jobs:
                   text: |
                     :arrow_right: Once all checks pass and you're ready for release, run the <${{ github.server_url }}/${{ github.repository }}/actions/workflows/finish-release.yml|Finish Release> workflow and delete the `${{ needs.variables.outputs.next-milestone }}` milestone to avoid confusion.
 
+  trim-cluster-names:
+    runs-on: ubuntu-latest
+    outputs:
+      cluster-with-fake-load-name-cleaned: ${{ steps.cluster-names.outputs.cluster-with-fake-load-name-cleaned }}
+      cluster-with-real-load-name-cleaned: ${{ steps.cluster-names.outputs.cluster-with-real-load-name-cleaned }}
+    env:
+      CLUSTER_WITH_FAKE_LOAD_NAME: lfl-${{format('{0}{1}', github.event.milestone.title, github.event.inputs.version)}}
+      CLUSTER_WITH_REAL_LOAD_NAME: lrl-${{format('{0}{1}', github.event.milestone.title, github.event.inputs.version)}}
+    steps:
+      - name: Trim and clean cluster names
+        id: cluster-names
+        run: |
+          # Cluster names are cropped to infra's max length and dots replaced with dashes.
+          # Latter is to avoid informing release engineers of incorrect cluster names.
+          CLEANED_CLUSTER_WITH_FAKE_LOAD_NAME="$(echo "${CLUSTER_WITH_FAKE_LOAD_NAME:0:28}" | tr '.' '-')"
+          echo "cluster-with-fake-load-name-cleaned=${CLEANED_CLUSTER_WITH_FAKE_LOAD_NAME}" >> "${GITHUB_OUTPUT}"
+
+          CLEANED_CLUSTER_WITH_REAL_LOAD_NAME="$(echo "${CLUSTER_WITH_REAL_LOAD_NAME:0:28}" | tr '.' '-')"
+          echo "cluster-with-real-load-name-cleaned=${CLEANED_CLUSTER_WITH_REAL_LOAD_NAME}" >> "${GITHUB_OUTPUT}"
+
   clusters:
     name: Setup demo clusters
     secrets: inherit
-    needs: [variables, cut-rc]
-    uses: stackrox/actions/.github/workflows/create-demo-clusters.yml@v1
+    needs: [variables, cut-rc, trim-cluster-names]
+    uses: stackrox/actions/.github/workflows/create-demo-clusters.yml@4efb76aa74694b9ee55e95c4ead57fdf50d79ddf # ratchet:stackrox/actions/.github/workflows/create-demo-clusters.yml@v1
     if: >- # Skip if no clusters are going to be created. Checking unequal with "false" because closed milestones have unset input values.
       github.event.inputs.create-k8s-cluster != 'false' ||
       github.event.inputs.create-os4-cluster != 'false' ||
@@ -318,5 +346,5 @@ jobs:
       workflow-ref: v1
       kube-burner-config-ref: ${{needs.variables.outputs.milestone}}
       kube-burner-config-repo: stackrox
-      cluster-with-fake-load-name: long-fake-load-${{ needs.variables.outputs.milestone }}
-      cluster-with-real-load-name: long-real-load-${{ needs.variables.outputs.milestone }}
+      cluster-with-fake-load-name: ${{ needs.trim-cluster-names.outputs.cluster-with-fake-load-name-cleaned }}
+      cluster-with-real-load-name: ${{ needs.trim-cluster-names.outputs.cluster-with-real-load-name-cleaned }}

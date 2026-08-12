@@ -1,28 +1,42 @@
-import React, { ReactElement, useEffect, useState } from 'react';
+import type { ReactElement } from 'react';
 import {
+    Content,
     Divider,
     Flex,
     FlexItem,
     Stack,
     StackItem,
-    Text,
     Title,
     ToggleGroup,
     ToggleGroupItem,
 } from '@patternfly/react-core';
 
-import { UseURLPaginationResult } from 'hooks/useURLPagination';
-import { UseUrlSearchReturn } from 'hooks/useURLSearch';
+import type { QueryValue } from 'hooks/useURLParameter';
 
 import { ExternalEntitiesIcon } from '../common/NetworkGraphIcons';
 import ExternalFlowsTable from './ExternalFlowsTable';
 import ExternalIpsContainer from './ExternalIpsContainer';
-import { NetworkScopeHierarchy } from '../types/networkScopeHierarchy';
-import { CustomEdgeModel, CustomNodeModel } from '../types/topology.type';
+import type { NetworkScopeHierarchy } from '../types/networkScopeHierarchy';
+import type { CustomEdgeModel, CustomNodeModel } from '../types/topology.type';
 import { getNodeById } from '../utils/networkGraphUtils';
 import EntityDetails from './EntityDetails';
 
-export type ExternalEntitiesView = 'external-ips' | 'workloads-with-external-flows';
+import {
+    usePagination,
+    useSearchFilterSidePanel,
+    useSidePanelToggle,
+} from '../NetworkGraphURLStateContext';
+
+const EXTERNAL_ENTITIES_TOGGLES = ['EXTERNAL_IPS', 'WORKLOAD_EXTERNAL_FLOWS'] as const;
+export type ExternalEntitiesToggleKey = (typeof EXTERNAL_ENTITIES_TOGGLES)[number];
+
+export const DEFAULT_EXTERNAL_ENTITIES_TOGGLE: ExternalEntitiesToggleKey = 'EXTERNAL_IPS';
+
+export function isValidExternalEntitiesToggle(
+    value: QueryValue
+): value is ExternalEntitiesToggleKey {
+    return typeof value === 'string' && EXTERNAL_ENTITIES_TOGGLES.some((state) => state === value);
+}
 
 export type ExternalEntitiesSideBarProps = {
     labelledById: string;
@@ -33,8 +47,6 @@ export type ExternalEntitiesSideBarProps = {
     scopeHierarchy: NetworkScopeHierarchy;
     onNodeSelect: (id: string) => void;
     onExternalIPSelect: (externalIP: string | undefined) => void;
-    urlPagination: UseURLPaginationResult;
-    urlSearchFiltering: UseUrlSearchReturn;
 };
 
 function EntityTitleText({ text, id }: { text: string | undefined; id: string }) {
@@ -54,19 +66,12 @@ function ExternalEntitiesSideBar({
     selectedExternalIP,
     onNodeSelect,
     onExternalIPSelect,
-    urlPagination,
-    urlSearchFiltering,
 }: ExternalEntitiesSideBarProps): ReactElement {
-    const [selectedView, setSelectedView] = useState<ExternalEntitiesView>('external-ips');
+    const { selectedToggleSidePanel, setSelectedToggleSidePanel } = useSidePanelToggle();
 
     const entityNode = getNodeById(nodes, id);
-    const { setPage } = urlPagination;
-    const { setSearchFilter } = urlSearchFiltering;
-
-    useEffect(() => {
-        setPage(1);
-        setSearchFilter({});
-    }, [selectedExternalIP, selectedView, setPage, setSearchFilter]);
+    const { setPage } = usePagination();
+    const { setSearchFilter } = useSearchFilterSidePanel();
 
     if (selectedExternalIP) {
         return (
@@ -77,53 +82,61 @@ function ExternalEntitiesSideBar({
                 scopeHierarchy={scopeHierarchy}
                 onNodeSelect={onNodeSelect}
                 onExternalIPSelect={onExternalIPSelect}
-                urlPagination={urlPagination}
-                urlSearchFiltering={urlSearchFiltering}
             />
         );
+    }
+
+    const selectedView: ExternalEntitiesToggleKey = isValidExternalEntitiesToggle(
+        selectedToggleSidePanel
+    )
+        ? selectedToggleSidePanel
+        : DEFAULT_EXTERNAL_ENTITIES_TOGGLE;
+
+    function handleToggle(view: ExternalEntitiesToggleKey) {
+        setSelectedToggleSidePanel(view);
+        setPage(1);
+        setSearchFilter({});
     }
 
     return (
         <Stack>
             <StackItem>
-                <Flex direction={{ default: 'row' }} className="pf-v5-u-p-md pf-v5-u-mb-0">
+                <Flex direction={{ default: 'row' }} className="pf-v6-u-p-md pf-v6-u-mb-0">
                     <FlexItem>
                         <ExternalEntitiesIcon />
                     </FlexItem>
                     <FlexItem>
                         <EntityTitleText text={entityNode?.label} id={labelledById} />
-                        <Text className="pf-v5-u-font-size-sm pf-v5-u-color-200">
+                        <Content component="p" className="pf-v6-u-font-size-sm pf-v6-u-color-200">
                             Connected entities outside your cluster
-                        </Text>
+                        </Content>
                     </FlexItem>
                 </Flex>
             </StackItem>
             <Divider component="hr" />
-            <StackItem className="pf-v5-u-p-md">
+            <StackItem className="pf-v6-u-p-md">
                 <ToggleGroup aria-label="Toggle between external IPs and workload flows view">
                     <ToggleGroupItem
                         text="External IPs"
-                        buttonId="external-ips"
-                        isSelected={selectedView === 'external-ips'}
-                        onChange={() => setSelectedView('external-ips')}
+                        buttonId="EXTERNAL_IPS"
+                        isSelected={selectedView === 'EXTERNAL_IPS'}
+                        onChange={() => handleToggle('EXTERNAL_IPS')}
                     />
                     <ToggleGroupItem
                         text="Workloads with external flows"
-                        buttonId="workloads-with-external-flows"
-                        isSelected={selectedView === 'workloads-with-external-flows'}
-                        onChange={() => setSelectedView('workloads-with-external-flows')}
+                        buttonId="WORKLOAD_EXTERNAL_FLOWS"
+                        isSelected={selectedView === 'WORKLOAD_EXTERNAL_FLOWS'}
+                        onChange={() => handleToggle('WORKLOAD_EXTERNAL_FLOWS')}
                     />
                 </ToggleGroup>
             </StackItem>
             <Divider component="hr" />
             <StackItem isFilled style={{ overflow: 'auto' }}>
-                <Stack className="pf-v5-u-p-md">
-                    {selectedView === 'external-ips' ? (
+                <Stack className="pf-v6-u-p-md">
+                    {selectedView === 'EXTERNAL_IPS' ? (
                         <ExternalIpsContainer
                             scopeHierarchy={scopeHierarchy}
                             onExternalIPSelect={onExternalIPSelect}
-                            urlPagination={urlPagination}
-                            urlSearchFiltering={urlSearchFiltering}
                         />
                     ) : (
                         <ExternalFlowsTable

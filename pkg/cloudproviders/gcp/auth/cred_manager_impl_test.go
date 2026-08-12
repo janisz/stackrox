@@ -2,14 +2,18 @@ package auth
 
 import (
 	"context"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/stackrox/rox/pkg/sync"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/watch"
 	"k8s.io/client-go/kubernetes/fake"
+	k8stesting "k8s.io/client-go/testing"
 )
 
 const (
@@ -31,10 +35,10 @@ const (
 )
 
 func TestCredentialManager(t *testing.T) {
-	t.Parallel()
 	cases := map[string]struct {
 		setupFn  func(k8sClient *fake.Clientset) error
 		expected string
+		changes  int
 	}{
 		"secret added": {
 			setupFn: func(k8sClient *fake.Clientset) error {
@@ -51,6 +55,7 @@ func TestCredentialManager(t *testing.T) {
 				return err
 			},
 			expected: fakeSTSConfig,
+			changes:  1,
 		},
 		"secret updated": {
 			setupFn: func(k8sClient *fake.Clientset) error {
@@ -67,8 +72,6 @@ func TestCredentialManager(t *testing.T) {
 				if err != nil {
 					return err
 				}
-				// Allow the state to propagate.
-				time.Sleep(10 * time.Millisecond)
 
 				_, err = k8sClient.CoreV1().Secrets(namespace).Update(
 					context.Background(),
@@ -83,6 +86,7 @@ func TestCredentialManager(t *testing.T) {
 				return err
 			},
 			expected: fakeSTSConfig,
+			changes:  2,
 		},
 		"secret deleted": {
 			setupFn: func(k8sClient *fake.Clientset) error {
@@ -99,8 +103,6 @@ func TestCredentialManager(t *testing.T) {
 				if err != nil {
 					return err
 				}
-				// Allow the state to propagate.
-				time.Sleep(10 * time.Millisecond)
 
 				return k8sClient.CoreV1().Secrets(namespace).Delete(
 					context.Background(),
@@ -109,6 +111,7 @@ func TestCredentialManager(t *testing.T) {
 				)
 			},
 			expected: "",
+			changes:  2,
 		},
 		"no secret": {
 			setupFn:  func(k8sClient *fake.Clientset) error { return nil },
@@ -118,22 +121,47 @@ func TestCredentialManager(t *testing.T) {
 
 	for name, c := range cases {
 		t.Run(name, func(t *testing.T) {
-			t.Parallel()
-			k8sClient := fake.NewSimpleClientset()
-			manager := newCredentialsManagerImpl(k8sClient, namespace, secretName, func() {})
+			var changeCount atomic.Int32
+
+			k8sClient := fake.NewClientset()
+
+			watchRegistered := make(chan struct{})
+			var watchOnce sync.Once
+			k8sClient.PrependWatchReactor("secrets", func(action k8stesting.Action) (bool, watch.Interface, error) {
+				w, err := k8sClient.Tracker().Watch(action.GetResource(), action.GetNamespace())
+				watchOnce.Do(func() { close(watchRegistered) })
+				return true, w, err
+			})
+
+			manager := newCredentialsManagerImpl(k8sClient, namespace, secretName, func() {
+				changeCount.Add(1)
+			})
 			manager.Start()
 			defer manager.Stop()
-			require.Eventually(t, manager.informer.HasSynced, 5*time.Second, 100*time.Millisecond)
 
-			err := c.setupFn(k8sClient)
-			require.NoError(t, err)
+			// There is a problem with fake informer. It happens that Go routine that starts informers,
+			// marks HasSynced as a true before watchers are registered. Because of that,
+			// events are never received. There are no watchers that are listening to these events
+			// after HasSynced is true. That's why we need to wait for HasSynced and Watch event.
+			require.Eventually(t, manager.informer.HasSynced, 30*time.Second, 100*time.Millisecond)
 
-			// Assert that the secret data has been updated.
-			assert.EventuallyWithT(t, func(t *assert.CollectT) {
+			// Wait that watch is executed and events will be properly received.
+			select {
+			case <-watchRegistered:
+			case <-time.After(10 * time.Second):
+				require.FailNow(t, "timed out waiting for watch to be registered")
+			}
+
+			require.NoError(t, c.setupFn(k8sClient))
+
+			assert.Eventually(t, func() bool {
 				manager.mutex.RLock()
 				defer manager.mutex.RUnlock()
-				assert.Equal(t, []byte(c.expected), manager.stsConfig)
-			}, 5*time.Second, 100*time.Millisecond)
+				return changeCount.Load() == int32(c.changes) &&
+					string(manager.stsConfig) == c.expected
+			}, 10*time.Second, 50*time.Millisecond,
+				"callbacks not invoked as expected or state incorrect (changes: %d/%d)",
+				changeCount.Load(), c.changes)
 		})
 	}
 }

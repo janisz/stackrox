@@ -1,0 +1,1293 @@
+//go:build sql_integration
+
+package datastore
+
+import (
+	"context"
+	"fmt"
+	"testing"
+	"time"
+
+	"github.com/stackrox/rox/central/alert/datastore/internal/store/postgres"
+	alertviews "github.com/stackrox/rox/central/alert/views"
+	matcherMocks "github.com/stackrox/rox/central/platform/matcher/mocks"
+	v1 "github.com/stackrox/rox/generated/api/v1"
+	"github.com/stackrox/rox/generated/storage"
+	"github.com/stackrox/rox/pkg/alert/convert"
+	"github.com/stackrox/rox/pkg/features"
+	"github.com/stackrox/rox/pkg/fixtures"
+	"github.com/stackrox/rox/pkg/fixtures/fixtureconsts"
+	"github.com/stackrox/rox/pkg/postgres/pgtest"
+	"github.com/stackrox/rox/pkg/protoassert"
+	"github.com/stackrox/rox/pkg/protoutils"
+	"github.com/stackrox/rox/pkg/sac"
+	"github.com/stackrox/rox/pkg/search"
+	"github.com/stretchr/testify/suite"
+	"go.uber.org/mock/gomock"
+)
+
+var (
+	ctx = sac.WithAllAccess(context.Background())
+)
+
+type AlertDatastoreImplSuite struct {
+	suite.Suite
+
+	testPostgres *pgtest.TestPostgres
+	datastore    DataStore
+	matcher      *matcherMocks.MockPlatformMatcher
+	mockCtrl     *gomock.Controller
+
+	// Track alert IDs created during tests for cleanup
+	createdAlertIDs []string
+}
+
+func TestAlertDatastoreImpl(t *testing.T) {
+	suite.Run(t, new(AlertDatastoreImplSuite))
+}
+
+func (s *AlertDatastoreImplSuite) SetupTest() {
+	s.testPostgres = pgtest.ForT(s.T())
+	s.mockCtrl = gomock.NewController(s.T())
+	s.matcher = matcherMocks.NewMockPlatformMatcher(s.mockCtrl)
+
+	store := postgres.New(s.testPostgres.DB)
+	s.datastore = New(s.testPostgres.DB, store, s.matcher)
+
+	// Initialize alert tracking
+	s.createdAlertIDs = []string{}
+}
+
+func (s *AlertDatastoreImplSuite) TearDownTest() {
+	// Clean up any alerts created during the test
+	if len(s.createdAlertIDs) > 0 {
+		_ = s.datastore.DeleteAlerts(ctx, s.createdAlertIDs...)
+	}
+}
+
+// Helper method to create an alert and track it for cleanup
+func (s *AlertDatastoreImplSuite) createAndTrackAlert(alert *storage.Alert) {
+	s.createdAlertIDs = append(s.createdAlertIDs, alert.GetId())
+	err := s.datastore.UpsertAlert(ctx, alert)
+	s.NoError(err)
+}
+
+// TestSearch covers the same functionality as searcher_postgres_test.go TestSearch
+func (s *AlertDatastoreImplSuite) TestSearch() {
+	alert := fixtures.GetAlert()
+	alert.EntityType = storage.Alert_DEPLOYMENT
+	alert.PlatformComponent = false
+
+	// Mock platform matcher to return false for platform component
+	s.matcher.EXPECT().MatchAlert(gomock.Any()).Return(false, nil)
+
+	// Test alert doesn't exist initially
+	foundAlert, exists, err := s.datastore.GetAlert(ctx, alert.GetId())
+	s.NoError(err)
+	s.False(exists)
+	s.Nil(foundAlert)
+
+	// Upsert the alert
+	s.NoError(s.datastore.UpsertAlert(ctx, alert))
+	foundAlert, exists, err = s.datastore.GetAlert(ctx, alert.GetId())
+	s.NoError(err)
+	s.True(exists)
+	protoassert.Equal(s.T(), alert, foundAlert)
+
+	// Test common alert searches
+	results, err := s.datastore.Search(ctx, search.NewQueryBuilder().AddExactMatches(search.DeploymentID, alert.GetDeployment().GetId()).ProtoQuery(), true)
+	s.NoError(err)
+	s.Len(results, 1)
+
+	q := search.NewQueryBuilder().
+		AddExactMatches(search.DeploymentID, alert.GetDeployment().GetId()).
+		AddExactMatches(search.PolicyID, alert.GetPolicy().GetId()).
+		AddStrings(search.ViolationState, storage.ViolationState_ACTIVE.String()).
+		ProtoQuery()
+	results, err = s.datastore.Search(ctx, q, true)
+	s.NoError(err)
+	s.Len(results, 1)
+
+	q = search.NewQueryBuilder().
+		AddBools(search.PlatformComponent, false).
+		AddExactMatches(search.EntityType, storage.Alert_DEPLOYMENT.String()).
+		ProtoQuery()
+	results, err = s.datastore.Search(ctx, q, true)
+	s.NoError(err)
+	s.Len(results, 1)
+
+	q = search.NewQueryBuilder().
+		AddBools(search.PlatformComponent, true).
+		ProtoQuery()
+	results, err = s.datastore.Search(ctx, q, true)
+	s.NoError(err)
+	s.Len(results, 0)
+}
+
+// TestSearchResolved covers the same functionality as searcher_postgres_test.go TestSearchResolved
+func (s *AlertDatastoreImplSuite) TestSearchResolved() {
+	ids := []string{fixtureconsts.Alert1, fixtureconsts.Alert2, fixtureconsts.Alert3, fixtureconsts.Alert4}
+	allAlertIds := make(map[string]bool)
+	unresolvedAlertIds := make(map[string]bool)
+
+	// Mock platform matcher to return false for all alerts
+	s.matcher.EXPECT().MatchAlert(gomock.Any()).Return(false, nil).Times(len(ids))
+
+	for i, id := range ids {
+		alert := fixtures.GetAlert()
+		alert.Id = id
+		alert.EntityType = storage.Alert_DEPLOYMENT
+		alert.PlatformComponent = false
+		if i >= 2 {
+			alert.State = storage.ViolationState_RESOLVED
+		} else {
+			unresolvedAlertIds[alert.GetId()] = true
+		}
+		allAlertIds[alert.GetId()] = true
+		s.NoError(s.datastore.UpsertAlert(ctx, alert))
+		foundAlert, exists, err := s.datastore.GetAlert(ctx, id)
+		s.True(exists)
+		s.NoError(err)
+		protoassert.Equal(s.T(), alert, foundAlert)
+	}
+
+	// Test search including resolved alerts
+	results, err := s.datastore.Search(ctx, search.EmptyQuery(), false)
+	s.NoError(err)
+	// Check that all alerts are found and mark them as found
+	for _, result := range results {
+		s.True(allAlertIds[result.ID])
+		allAlertIds[result.ID] = false
+	}
+	// Check that all ids were found
+	for entry := range allAlertIds {
+		s.False(allAlertIds[entry])
+	}
+
+	// Test search excluding resolved alerts (only unresolved)
+	results, err = s.datastore.Search(ctx, search.EmptyQuery(), true)
+	s.NoError(err)
+	for _, result := range results {
+		s.True(unresolvedAlertIds[result.ID])
+		unresolvedAlertIds[result.ID] = false
+	}
+	for entry := range unresolvedAlertIds {
+		s.False(unresolvedAlertIds[entry])
+	}
+}
+
+// TestCountResolved covers the same functionality as searcher_postgres_test.go TestCountResolved
+func (s *AlertDatastoreImplSuite) TestCountResolved() {
+	ids := []string{fixtureconsts.Alert1, fixtureconsts.Alert2, fixtureconsts.Alert3, fixtureconsts.Alert4}
+
+	// Mock platform matcher to return false for all alerts
+	s.matcher.EXPECT().MatchAlert(gomock.Any()).Return(false, nil).Times(len(ids))
+
+	for i, id := range ids {
+		alert := fixtures.GetAlert()
+		alert.Id = id
+		alert.EntityType = storage.Alert_DEPLOYMENT
+		alert.PlatformComponent = false
+		if i >= 2 {
+			alert.State = storage.ViolationState_RESOLVED
+		}
+		s.NoError(s.datastore.UpsertAlert(ctx, alert))
+		foundAlert, exists, err := s.datastore.GetAlert(ctx, id)
+		s.True(exists)
+		s.NoError(err)
+		protoassert.Equal(s.T(), alert, foundAlert)
+	}
+
+	// Test count including resolved alerts
+	results, err := s.datastore.Count(ctx, search.EmptyQuery(), false)
+	s.NoError(err)
+	s.Equal(4, results)
+
+	// Test count excluding resolved alerts (only unresolved)
+	results, err = s.datastore.Count(ctx, search.EmptyQuery(), true)
+	s.NoError(err)
+	s.Equal(2, results)
+}
+
+// TestSearchAlerts tests the SearchAlerts functionality with deployment alert
+func (s *AlertDatastoreImplSuite) TestSearchAlerts() {
+	alert := fixtures.GetAlert()
+	alert.EntityType = storage.Alert_DEPLOYMENT
+	alert.PlatformComponent = false
+
+	// Mock platform matcher to return false for platform component
+	s.matcher.EXPECT().MatchAlert(gomock.Any()).Return(false, nil)
+
+	// Upsert the alert
+	s.NoError(s.datastore.UpsertAlert(ctx, alert))
+
+	// Test SearchAlerts
+	searchResults, err := s.datastore.SearchAlerts(ctx, search.EmptyQuery())
+	s.NoError(err)
+	s.Len(searchResults, 1)
+	s.Equal(alert.GetId(), searchResults[0].GetId())
+	s.Equal(alert.GetPolicy().GetName(), searchResults[0].GetName())
+	s.Equal(v1.SearchCategory_ALERTS, searchResults[0].GetCategory())
+	expectedLocation := "/prod cluster/stackrox/Deployment/nginx_server"
+	s.Equal(searchResults[0].GetLocation(), expectedLocation)
+}
+
+// TestSearchAlerts tests the SearchAlerts functionality with resource alert
+func (s *AlertDatastoreImplSuite) TestSearchResourceAlerts() {
+	alert := fixtures.GetResourceAlert()
+	alert.PlatformComponent = false
+
+	// Mock platform matcher to return false for platform component
+	s.matcher.EXPECT().MatchAlert(gomock.Any()).Return(false, nil)
+
+	// Upsert the alert
+	s.NoError(s.datastore.UpsertAlert(ctx, alert))
+
+	// Test SearchAlerts
+	searchResults, err := s.datastore.SearchAlerts(ctx, search.EmptyQuery())
+	s.NoError(err)
+	s.Len(searchResults, 1)
+	s.Equal(alert.GetId(), searchResults[0].GetId())
+	s.Equal(alert.GetPolicy().GetName(), searchResults[0].GetName())
+	s.Equal(v1.SearchCategory_ALERTS, searchResults[0].GetCategory())
+	expectedLocation := "/prod cluster/stackrox/Secrets/my-secret"
+	s.Equal(searchResults[0].GetLocation(), expectedLocation)
+}
+
+// Test non namespaced resource alert
+func (s *AlertDatastoreImplSuite) TestSearchNonNameSpacedAlerts() {
+	alert := fixtures.GetScopedResourceAlert(fixtureconsts.Alert1, fixtureconsts.Cluster1, "")
+	alert.PlatformComponent = false
+
+	// Mock platform matcher to return false for platform component
+	s.matcher.EXPECT().MatchAlert(gomock.Any()).Return(false, nil)
+
+	// Upsert the alert
+	s.NoError(s.datastore.UpsertAlert(ctx, alert))
+
+	// Test SearchAlerts
+	searchResults, err := s.datastore.SearchAlerts(ctx, search.EmptyQuery())
+	s.NoError(err)
+	s.Len(searchResults, 1)
+	s.Equal(alert.GetId(), searchResults[0].GetId())
+	s.Equal(alert.GetPolicy().GetName(), searchResults[0].GetName())
+	s.Equal(v1.SearchCategory_ALERTS, searchResults[0].GetCategory())
+	expectedLocation := "/prod cluster/Secrets/my-secret"
+	s.Equal(searchResults[0].GetLocation(), expectedLocation)
+}
+
+// TestSearchRawAlerts tests the SearchRawAlerts functionality with real data
+func (s *AlertDatastoreImplSuite) TestSearchRawAlerts() {
+	alert := fixtures.GetAlert()
+	alert.EntityType = storage.Alert_DEPLOYMENT
+	alert.PlatformComponent = false
+
+	// Mock platform matcher to return false for platform component
+	s.matcher.EXPECT().MatchAlert(gomock.Any()).Return(false, nil)
+
+	// Upsert the alert
+	s.NoError(s.datastore.UpsertAlert(ctx, alert))
+
+	// Test SearchRawAlerts excluding resolved
+	rawAlerts, err := s.datastore.SearchRawAlerts(ctx, search.EmptyQuery(), true)
+	s.NoError(err)
+	s.Len(rawAlerts, 1)
+	protoassert.Equal(s.T(), alert, rawAlerts[0])
+
+	// Mark alert as resolved
+	s.matcher.EXPECT().MatchAlert(gomock.Any()).Return(false, nil)
+	resolvedAlerts, err := s.datastore.MarkAlertsResolvedBatch(ctx, alert.GetId())
+	s.NoError(err)
+	s.Len(resolvedAlerts, 1)
+	s.Equal(storage.ViolationState_RESOLVED, resolvedAlerts[0].GetState())
+
+	// Test SearchRawAlerts excluding resolved (should return 0)
+	rawAlerts, err = s.datastore.SearchRawAlerts(ctx, search.EmptyQuery(), true)
+	s.NoError(err)
+	s.Len(rawAlerts, 0)
+
+	// Test SearchRawAlerts including resolved (should return 1)
+	rawAlerts, err = s.datastore.SearchRawAlerts(ctx, search.EmptyQuery(), false)
+	s.NoError(err)
+	s.Len(rawAlerts, 1)
+	s.Equal(storage.ViolationState_RESOLVED, rawAlerts[0].GetState())
+}
+
+// TestSearchAlertPolicyNamesAndSeverities tests the column-projection search
+func (s *AlertDatastoreImplSuite) TestSearchAlertPolicyNamesAndSeverities() {
+	alert := fixtures.GetAlert()
+	alert.EntityType = storage.Alert_DEPLOYMENT
+	alert.PlatformComponent = false
+
+	// Mock platform matcher to return false for platform component
+	s.matcher.EXPECT().MatchAlert(gomock.Any()).Return(false, nil)
+
+	// Upsert the alert
+	s.NoError(s.datastore.UpsertAlert(ctx, alert))
+
+	// Test 1: Search excluding resolved returns the alert's policy name and severity
+	results, err := s.datastore.SearchAlertPolicyNamesAndSeverities(ctx, search.EmptyQuery(), true)
+	s.NoError(err)
+	s.Len(results, 1)
+	s.Equal(alert.GetPolicy().GetName(), results[0].GetPolicyName())
+	s.Equal(alert.GetPolicy().GetSeverity(), results[0].GetSeverity())
+
+	// Test 2: Search with deployment ID filter
+	q := search.NewQueryBuilder().
+		AddExactMatches(search.DeploymentID, alert.GetDeployment().GetId()).
+		ProtoQuery()
+	results, err = s.datastore.SearchAlertPolicyNamesAndSeverities(ctx, q, true)
+	s.NoError(err)
+	s.Len(results, 1)
+	s.Equal(alert.GetPolicy().GetName(), results[0].GetPolicyName())
+	s.Equal(alert.GetPolicy().GetSeverity(), results[0].GetSeverity())
+
+	// Test 3: Mark alert as resolved
+	s.matcher.EXPECT().MatchAlert(gomock.Any()).Return(false, nil)
+	resolvedAlerts, err := s.datastore.MarkAlertsResolvedBatch(ctx, alert.GetId())
+	s.NoError(err)
+	s.Len(resolvedAlerts, 1)
+
+	// Test 4: Search excluding resolved should return 0
+	results, err = s.datastore.SearchAlertPolicyNamesAndSeverities(ctx, search.EmptyQuery(), true)
+	s.NoError(err)
+	s.Len(results, 0)
+
+	// Test 5: Search including resolved should return 1
+	results, err = s.datastore.SearchAlertPolicyNamesAndSeverities(ctx, search.EmptyQuery(), false)
+	s.NoError(err)
+	s.Len(results, 1)
+	s.Equal(alert.GetPolicy().GetName(), results[0].GetPolicyName())
+	s.Equal(alert.GetPolicy().GetSeverity(), results[0].GetSeverity())
+}
+
+// TestSearchAlertPolicyNamesAndSeveritiesMultiple tests with multiple alerts of different severities
+func (s *AlertDatastoreImplSuite) TestSearchAlertPolicyNamesAndSeveritiesMultiple() {
+	severities := []storage.Severity{
+		storage.Severity_LOW_SEVERITY,
+		storage.Severity_MEDIUM_SEVERITY,
+		storage.Severity_HIGH_SEVERITY,
+		storage.Severity_CRITICAL_SEVERITY,
+	}
+	alertIDs := []string{fixtureconsts.Alert1, fixtureconsts.Alert2, fixtureconsts.Alert3, fixtureconsts.Alert4}
+
+	s.matcher.EXPECT().MatchAlert(gomock.Any()).Return(false, nil).Times(len(alertIDs))
+
+	for i, id := range alertIDs {
+		alert := fixtures.GetAlert()
+		alert.Id = id
+		alert.EntityType = storage.Alert_DEPLOYMENT
+		alert.PlatformComponent = false
+		alert.Policy.Name = fmt.Sprintf("Policy %d", i+1)
+		alert.Policy.Severity = severities[i]
+		s.createAndTrackAlert(alert)
+	}
+
+	results, err := s.datastore.SearchAlertPolicyNamesAndSeverities(ctx, search.EmptyQuery(), true)
+	s.NoError(err)
+	s.Len(results, len(alertIDs))
+
+	// Collect results into a map for order-independent assertions
+	resultMap := make(map[string]*alertviews.PolicyNameAndSeverity)
+	for _, r := range results {
+		resultMap[r.GetPolicyName()] = r
+	}
+
+	for i, sev := range severities {
+		name := fmt.Sprintf("Policy %d", i+1)
+		s.Contains(resultMap, name)
+		s.Equal(sev, resultMap[name].GetSeverity())
+	}
+}
+
+// TestSearchListAlerts tests the SearchListAlerts functionality with pagination
+func (s *AlertDatastoreImplSuite) TestSearchListAlerts() {
+	// Create multiple alerts to test pagination
+	alertIDs := []string{
+		fixtureconsts.Deployment1,
+		fixtureconsts.Deployment2,
+		fixtureconsts.Deployment3,
+		fixtureconsts.Deployment4,
+		fixtureconsts.Deployment5,
+	}
+
+	createdAlerts := make([]*storage.Alert, 0, len(alertIDs))
+	for i, id := range alertIDs {
+		alert := fixtures.GetAlert()
+		alert.Id = id
+		alert.EntityType = storage.Alert_DEPLOYMENT
+		alert.PlatformComponent = false
+		// Vary the policy names to make alerts distinguishable
+		alert.Policy.Name = fmt.Sprintf("Test Policy %d", i+1)
+
+		s.matcher.EXPECT().MatchAlert(gomock.Any()).Return(false, nil)
+		s.createAndTrackAlert(alert)
+		createdAlerts = append(createdAlerts, alert)
+	}
+
+	// Test 1: Search without pagination (should return all alerts)
+	listAlerts, err := s.datastore.SearchListAlerts(ctx, search.EmptyQuery(), true)
+	s.NoError(err)
+	s.Len(listAlerts, len(alertIDs))
+
+	// Test 2: Search with limit (first 2 alerts)
+	queryWithLimit := &v1.Query{
+		Pagination: &v1.QueryPagination{
+			Limit: 2,
+		},
+	}
+	listAlerts, err = s.datastore.SearchListAlerts(ctx, queryWithLimit, true)
+	s.NoError(err)
+	s.Len(listAlerts, 2)
+
+	// Verify the returned alerts are from our created set
+	returnedIDs := make(map[string]bool)
+	for _, alert := range listAlerts {
+		returnedIDs[alert.GetId()] = true
+		// Ensure it's one of our created alerts
+		s.Contains(alertIDs, alert.GetId())
+	}
+	s.Len(returnedIDs, 2) // Ensure no duplicates
+
+	// Test 3: Search with offset and limit (skip first 2, get next 2)
+	queryWithOffsetLimit := &v1.Query{
+		Pagination: &v1.QueryPagination{
+			Offset: 2,
+			Limit:  2,
+		},
+	}
+	listAlerts, err = s.datastore.SearchListAlerts(ctx, queryWithOffsetLimit, true)
+	s.NoError(err)
+	s.Len(listAlerts, 2)
+
+	// Verify these are different alerts from the first page
+	offsetReturnedIDs := make(map[string]bool)
+	for _, alert := range listAlerts {
+		offsetReturnedIDs[alert.GetId()] = true
+		s.Contains(alertIDs, alert.GetId())
+		// Ensure these are different from the first page
+		s.False(returnedIDs[alert.GetId()], "Alert %s should not appear in both pages", alert.GetId())
+	}
+	s.Len(offsetReturnedIDs, 2)
+
+	// Test 4: Search with large offset (should return remaining alerts)
+	queryWithLargeOffset := &v1.Query{
+		Pagination: &v1.QueryPagination{
+			Offset: 4,
+			Limit:  10, // More than remaining
+		},
+	}
+	listAlerts, err = s.datastore.SearchListAlerts(ctx, queryWithLargeOffset, true)
+	s.NoError(err)
+	s.Len(listAlerts, 1) // Only 1 alert remaining after offset 4
+
+	// Test 5: Search with offset beyond available results
+	queryBeyondResults := &v1.Query{
+		Pagination: &v1.QueryPagination{
+			Offset: 10, // Beyond our 5 alerts
+			Limit:  5,
+		},
+	}
+	listAlerts, err = s.datastore.SearchListAlerts(ctx, queryBeyondResults, true)
+	s.NoError(err)
+	s.Len(listAlerts, 0) // Should return empty
+
+	// Test 6: Verify content of returned alerts matches expected structure
+	firstPageQuery := &v1.Query{
+		Pagination: &v1.QueryPagination{
+			Limit: 1,
+		},
+	}
+	listAlerts, err = s.datastore.SearchListAlerts(ctx, firstPageQuery, true)
+	s.NoError(err)
+	s.Len(listAlerts, 1)
+
+	// Find the corresponding created alert and verify conversion
+	returnedAlert := listAlerts[0]
+	var matchingCreatedAlert *storage.Alert
+	for _, created := range createdAlerts {
+		if created.GetId() == returnedAlert.GetId() {
+			matchingCreatedAlert = created
+			break
+		}
+	}
+	s.NotNil(matchingCreatedAlert, "Should find matching created alert")
+
+	expectedListAlert := convert.AlertToListAlert(matchingCreatedAlert)
+	// PostgreSQL timestamps have microsecond precision, so round both
+	// sides to microseconds before comparing.
+	expectedListAlert.Time = protoutils.RoundTimestamp(expectedListAlert.GetTime(), time.Microsecond)
+	returnedAlert.Time = protoutils.RoundTimestamp(returnedAlert.GetTime(), time.Microsecond)
+	protoassert.Equal(s.T(), expectedListAlert, returnedAlert)
+}
+
+// TestSearchListAlertsEntityTypes verifies that the projection-based SearchListAlerts
+// correctly handles deployment, resource, and node entity types, including
+// deployment_type, enforcement_count, and categories.
+func (s *AlertDatastoreImplSuite) TestSearchListAlertsEntityTypes() {
+	// 1. Deployment alert with deployment_type and enforcement.
+	deployAlert := fixtures.GetAlert()
+	deployAlert.Id = fixtureconsts.Deployment1
+	deployAlert.GetDeployment().Type = "DaemonSet"
+	deployAlert.EntityType = storage.Alert_DEPLOYMENT
+	deployAlert.PlatformComponent = false
+	deployAlert.Enforcement = &storage.Alert_Enforcement{
+		Action: storage.EnforcementAction_SCALE_TO_ZERO_ENFORCEMENT,
+	}
+	s.matcher.EXPECT().MatchAlert(gomock.Any()).Return(false, nil)
+	s.createAndTrackAlert(deployAlert)
+
+	// 2. Resource alert.
+	resourceAlert := fixtures.GetResourceAlert()
+	resourceAlert.Id = fixtureconsts.Deployment2
+	resourceAlert.EntityType = storage.Alert_RESOURCE
+	resourceAlert.PlatformComponent = false
+	s.matcher.EXPECT().MatchAlert(gomock.Any()).Return(false, nil)
+	s.createAndTrackAlert(resourceAlert)
+
+	// 3. Node alert.
+	nodeAlert := fixtures.GetScopedNodeAlert(fixtureconsts.Deployment3, fixtureconsts.Cluster1, fixtureconsts.Node1, "test-node")
+	nodeAlert.EntityType = storage.Alert_NODE
+	nodeAlert.PlatformComponent = false
+	s.matcher.EXPECT().MatchAlert(gomock.Any()).Return(false, nil)
+	s.createAndTrackAlert(nodeAlert)
+
+	// Search all.
+	listAlerts, err := s.datastore.SearchListAlerts(ctx, search.EmptyQuery(), false)
+	s.NoError(err)
+	s.Len(listAlerts, 3)
+
+	// Verify each entity type by comparing with convert.AlertToListAlert.
+	for _, la := range listAlerts {
+		switch la.GetId() {
+		case deployAlert.GetId():
+			expected := convert.AlertToListAlert(deployAlert)
+			s.Equal("DaemonSet", la.GetDeployment().GetDeploymentType())
+			s.Equal(expected.GetEnforcementCount(), la.GetEnforcementCount())
+			s.Equal(expected.GetPolicy().GetCategories(), la.GetPolicy().GetCategories())
+			s.NotNil(la.GetCommonEntityInfo())
+			s.Equal(storage.ListAlert_DEPLOYMENT, la.GetCommonEntityInfo().GetResourceType())
+
+		case resourceAlert.GetId():
+			s.NotNil(la.GetResource())
+			s.Equal(resourceAlert.GetResource().GetName(), la.GetResource().GetName())
+			s.NotNil(la.GetCommonEntityInfo())
+			s.Equal(storage.ListAlert_ResourceType(storage.Alert_Resource_SECRETS), la.GetCommonEntityInfo().GetResourceType())
+
+		case nodeAlert.GetId():
+			s.NotNil(la.GetNode())
+			s.Equal("test-node", la.GetNode().GetName())
+			s.NotNil(la.GetCommonEntityInfo())
+			s.Equal(nodeAlert.GetClusterName(), la.GetCommonEntityInfo().GetClusterName())
+
+		default:
+			s.Failf("unexpected alert ID", "got %s", la.GetId())
+		}
+	}
+}
+
+// TestCountAlerts tests the CountAlerts functionality
+func (s *AlertDatastoreImplSuite) TestCountAlerts() {
+	// Create some active alerts using Alert constants
+	activeAlertIDs := []string{fixtureconsts.Alert1, fixtureconsts.Alert2, fixtureconsts.Alert3}
+	for _, id := range activeAlertIDs {
+		alert := fixtures.GetAlert()
+		alert.Id = id
+		alert.State = storage.ViolationState_ACTIVE
+		alert.EntityType = storage.Alert_DEPLOYMENT
+		alert.PlatformComponent = false
+
+		s.matcher.EXPECT().MatchAlert(gomock.Any()).Return(false, nil)
+		s.createAndTrackAlert(alert)
+	}
+
+	// Create a resolved alert using Alert constant
+	resolvedAlert := fixtures.GetAlert()
+	resolvedAlert.Id = fixtureconsts.Alert4
+	resolvedAlert.State = storage.ViolationState_RESOLVED
+	resolvedAlert.EntityType = storage.Alert_DEPLOYMENT
+	resolvedAlert.PlatformComponent = false
+
+	s.matcher.EXPECT().MatchAlert(gomock.Any()).Return(false, nil)
+	s.createAndTrackAlert(resolvedAlert)
+
+	// Test CountAlerts - should only count active alerts
+	count, err := s.datastore.CountAlerts(ctx)
+	s.NoError(err)
+	s.Equal(len(activeAlertIDs), count)
+}
+
+// TestMarkAlertsResolvedBatch tests the batch resolution functionality
+func (s *AlertDatastoreImplSuite) TestMarkAlertsResolvedBatch() {
+	// Create multiple active alerts
+	alertIDs := []string{fixtureconsts.Alert1, fixtureconsts.Alert2, fixtureconsts.Alert3}
+
+	for _, id := range alertIDs {
+		alert := fixtures.GetAlert()
+		alert.Id = id
+		alert.State = storage.ViolationState_ACTIVE
+		alert.EntityType = storage.Alert_DEPLOYMENT
+		alert.PlatformComponent = false
+
+		s.matcher.EXPECT().MatchAlert(gomock.Any()).Return(false, nil)
+		s.NoError(s.datastore.UpsertAlert(ctx, alert))
+	}
+
+	// Mock platform matcher for the resolution process
+	s.matcher.EXPECT().MatchAlert(gomock.Any()).Return(false, nil).Times(len(alertIDs))
+
+	// Mark alerts as resolved
+	resolvedAlerts, err := s.datastore.MarkAlertsResolvedBatch(ctx, alertIDs...)
+	s.NoError(err)
+	s.Len(resolvedAlerts, len(alertIDs))
+
+	// Verify all alerts are resolved
+	for _, resolvedAlert := range resolvedAlerts {
+		s.Equal(storage.ViolationState_RESOLVED, resolvedAlert.GetState())
+		s.NotNil(resolvedAlert.GetResolvedAt())
+	}
+
+	// Verify alerts are actually resolved in storage
+	for _, id := range alertIDs {
+		alert, exists, err := s.datastore.GetAlert(ctx, id)
+		s.NoError(err)
+		s.True(exists)
+		s.Equal(storage.ViolationState_RESOLVED, alert.GetState())
+	}
+}
+
+// TestDeleteAlerts tests the delete functionality
+func (s *AlertDatastoreImplSuite) TestDeleteAlerts() {
+	// Create alerts
+	alertIDs := []string{fixtureconsts.Alert1, fixtureconsts.Alert2}
+
+	for _, id := range alertIDs {
+		alert := fixtures.GetAlert()
+		alert.Id = id
+		alert.EntityType = storage.Alert_DEPLOYMENT
+		alert.PlatformComponent = false
+
+		s.matcher.EXPECT().MatchAlert(gomock.Any()).Return(false, nil)
+		s.NoError(s.datastore.UpsertAlert(ctx, alert))
+	}
+
+	// Verify alerts exist
+	for _, id := range alertIDs {
+		_, exists, err := s.datastore.GetAlert(ctx, id)
+		s.NoError(err)
+		s.True(exists)
+	}
+
+	// Delete alerts
+	err := s.datastore.DeleteAlerts(ctx, alertIDs...)
+	s.NoError(err)
+
+	// Verify alerts are deleted
+	for _, id := range alertIDs {
+		_, exists, err := s.datastore.GetAlert(ctx, id)
+		s.NoError(err)
+		s.False(exists)
+	}
+}
+
+// TestWalkByQuery tests the WalkByQuery functionality
+func (s *AlertDatastoreImplSuite) TestWalkByQuery() {
+	// Create alerts
+	alertIDs := []string{fixtureconsts.Alert1, fixtureconsts.Alert2}
+
+	for _, id := range alertIDs {
+		alert := fixtures.GetAlert()
+		alert.Id = id
+		alert.EntityType = storage.Alert_DEPLOYMENT
+		alert.PlatformComponent = false
+
+		s.matcher.EXPECT().MatchAlert(gomock.Any()).Return(false, nil)
+		s.NoError(s.datastore.UpsertAlert(ctx, alert))
+	}
+
+	// Walk by query and collect alerts
+	var walkedAlerts []*storage.Alert
+	err := s.datastore.WalkByQuery(ctx, search.EmptyQuery(), func(alert *storage.Alert) error {
+		walkedAlerts = append(walkedAlerts, alert)
+		return nil
+	})
+	s.NoError(err)
+	s.Len(walkedAlerts, len(alertIDs))
+
+	// Verify walked alerts contain our created alerts
+	walkedIDs := make(map[string]bool)
+	for _, alert := range walkedAlerts {
+		walkedIDs[alert.GetId()] = true
+	}
+	for _, id := range alertIDs {
+		s.True(walkedIDs[id])
+	}
+}
+
+// TestWalkAll tests the WalkAll functionality
+func (s *AlertDatastoreImplSuite) TestWalkAll() {
+	// Create alerts
+	alertIDs := []string{fixtureconsts.Alert1, fixtureconsts.Alert2}
+
+	for _, id := range alertIDs {
+		alert := fixtures.GetAlert()
+		alert.Id = id
+		alert.EntityType = storage.Alert_DEPLOYMENT
+		alert.PlatformComponent = false
+
+		s.matcher.EXPECT().MatchAlert(gomock.Any()).Return(false, nil)
+		s.NoError(s.datastore.UpsertAlert(ctx, alert))
+	}
+
+	// Walk all alerts and collect them
+	var walkedAlerts []*storage.ListAlert
+	err := s.datastore.WalkAll(ctx, func(listAlert *storage.ListAlert) error {
+		walkedAlerts = append(walkedAlerts, listAlert)
+		return nil
+	})
+	s.NoError(err)
+	s.Len(walkedAlerts, len(alertIDs))
+
+	// Verify walked alerts contain our created alerts
+	walkedIDs := make(map[string]bool)
+	for _, alert := range walkedAlerts {
+		walkedIDs[alert.GetId()] = true
+	}
+	for _, id := range alertIDs {
+		s.True(walkedIDs[id])
+	}
+}
+
+// TestSearchAlertPolicyGroups tests the SearchAlertPolicyGroups aggregate query
+func (s *AlertDatastoreImplSuite) TestSearchAlertPolicyGroups() {
+	alert := fixtures.GetAlert()
+	alert.EntityType = storage.Alert_DEPLOYMENT
+	alert.PlatformComponent = false
+
+	// Mock platform matcher to return false for platform component
+	s.matcher.EXPECT().MatchAlert(gomock.Any()).Return(false, nil)
+
+	// Upsert the alert
+	s.NoError(s.datastore.UpsertAlert(ctx, alert))
+	s.createdAlertIDs = append(s.createdAlertIDs, alert.GetId())
+
+	// Test 1: Search excluding resolved returns the alert's policy group
+	results, err := s.datastore.SearchAlertPolicyGroups(ctx, search.EmptyQuery(), true)
+	s.NoError(err)
+	s.Len(results, 1)
+	s.Equal(alert.GetPolicy().GetId(), results[0].PolicyID)
+	s.Equal(alert.GetPolicy().GetName(), results[0].PolicyName)
+	s.Equal(int(alert.GetPolicy().GetSeverity()), results[0].Severity)
+	s.Equal(alert.GetPolicy().GetDescription(), results[0].Description)
+	s.ElementsMatch(alert.GetPolicy().GetCategories(), results[0].Categories)
+	s.Equal(1, results[0].NumAlerts)
+
+	// Test 2: Mark alert as resolved
+	s.matcher.EXPECT().MatchAlert(gomock.Any()).Return(false, nil)
+	resolvedAlerts, err := s.datastore.MarkAlertsResolvedBatch(ctx, alert.GetId())
+	s.NoError(err)
+	s.Len(resolvedAlerts, 1)
+
+	// Test 3: Search excluding resolved should return 0
+	results, err = s.datastore.SearchAlertPolicyGroups(ctx, search.EmptyQuery(), true)
+	s.NoError(err)
+	s.Len(results, 0)
+
+	// Test 4: Search including resolved should return 1
+	results, err = s.datastore.SearchAlertPolicyGroups(ctx, search.EmptyQuery(), false)
+	s.NoError(err)
+	s.Len(results, 1)
+	s.Equal(alert.GetPolicy().GetId(), results[0].PolicyID)
+	s.ElementsMatch(alert.GetPolicy().GetCategories(), results[0].Categories)
+}
+
+// TestSearchAlertPolicyGroupsMultiple tests with multiple alerts grouped by policy
+func (s *AlertDatastoreImplSuite) TestSearchAlertPolicyGroupsMultiple() {
+	alertIDs := []string{fixtureconsts.Alert1, fixtureconsts.Alert2, fixtureconsts.Alert3, fixtureconsts.Alert4}
+	policyCategories := [][]string{
+		{"Image Assurance"},
+		{"Image Assurance"},
+		{"Network", "Security"},
+		{"Network", "Security"},
+	}
+
+	s.matcher.EXPECT().MatchAlert(gomock.Any()).Return(false, nil).Times(len(alertIDs))
+
+	for i, id := range alertIDs {
+		alert := fixtures.GetAlert()
+		alert.Id = id
+		alert.EntityType = storage.Alert_DEPLOYMENT
+		alert.PlatformComponent = false
+		// Use two distinct policies: first two alerts share policy A, last two share policy B
+		if i < 2 {
+			alert.Policy.Id = "policy-a"
+			alert.Policy.Name = "Policy A"
+			alert.Policy.Severity = storage.Severity_LOW_SEVERITY
+			alert.Policy.Description = "low severity policy"
+		} else {
+			alert.Policy.Id = "policy-b"
+			alert.Policy.Name = "Policy B"
+			alert.Policy.Severity = storage.Severity_HIGH_SEVERITY
+			alert.Policy.Description = "high severity policy"
+		}
+		alert.Policy.Categories = policyCategories[i]
+		s.createAndTrackAlert(alert)
+	}
+
+	results, err := s.datastore.SearchAlertPolicyGroups(ctx, search.EmptyQuery(), true)
+	s.NoError(err)
+	s.Len(results, 2)
+
+	// Collect results into a map for order-independent assertions
+	resultMap := make(map[string]*alertviews.AlertPolicyGroup)
+	for _, r := range results {
+		resultMap[r.PolicyID] = r
+	}
+
+	s.Contains(resultMap, "policy-a")
+	s.Equal("Policy A", resultMap["policy-a"].PolicyName)
+	s.Equal(int(storage.Severity_LOW_SEVERITY), resultMap["policy-a"].Severity)
+	s.ElementsMatch([]string{"Image Assurance"}, resultMap["policy-a"].Categories)
+	s.Equal(2, resultMap["policy-a"].NumAlerts)
+
+	s.Contains(resultMap, "policy-b")
+	s.Equal("Policy B", resultMap["policy-b"].PolicyName)
+	s.Equal(int(storage.Severity_HIGH_SEVERITY), resultMap["policy-b"].Severity)
+	s.ElementsMatch([]string{"Network", "Security"}, resultMap["policy-b"].Categories)
+	s.Equal(2, resultMap["policy-b"].NumAlerts)
+}
+
+// TestSearchAlertTimeseriesEvents tests the SearchAlertTimeseriesEvents column-projection query
+func (s *AlertDatastoreImplSuite) TestSearchAlertTimeseriesEvents() {
+	alert := fixtures.GetAlert()
+	alert.EntityType = storage.Alert_DEPLOYMENT
+	alert.PlatformComponent = false
+
+	s.matcher.EXPECT().MatchAlert(gomock.Any()).Return(false, nil)
+	s.createAndTrackAlert(alert)
+
+	// Test 1: Search excluding resolved returns the alert's timeseries event fields
+	results, err := s.datastore.SearchAlertTimeseriesEvents(ctx, search.EmptyQuery(), true)
+	s.NoError(err)
+	s.Len(results, 1)
+	s.Equal(alert.GetId(), results[0].GetAlertID())
+	s.Equal(alert.GetDeployment().GetClusterName(), results[0].GetClusterName())
+	s.Equal(alert.GetPolicy().GetSeverity(), results[0].GetSeverity())
+	s.Equal(alert.GetState(), results[0].GetState())
+	s.NotNil(results[0].Time)
+
+	// Test 2: Mark alert as resolved
+	s.matcher.EXPECT().MatchAlert(gomock.Any()).Return(false, nil)
+	resolvedAlerts, err := s.datastore.MarkAlertsResolvedBatch(ctx, alert.GetId())
+	s.NoError(err)
+	s.Len(resolvedAlerts, 1)
+
+	// Test 3: Search excluding resolved should return 0
+	results, err = s.datastore.SearchAlertTimeseriesEvents(ctx, search.EmptyQuery(), true)
+	s.NoError(err)
+	s.Len(results, 0)
+
+	// Test 4: Search including resolved should return 1
+	results, err = s.datastore.SearchAlertTimeseriesEvents(ctx, search.EmptyQuery(), false)
+	s.NoError(err)
+	s.Len(results, 1)
+	s.Equal(alert.GetId(), results[0].GetAlertID())
+	s.Equal(storage.ViolationState_RESOLVED, results[0].GetState())
+}
+
+// TestSearchAlertTimeseriesEventsMultiple tests with multiple alerts across clusters/severities
+func (s *AlertDatastoreImplSuite) TestSearchAlertTimeseriesEventsMultiple() {
+	alertIDs := []string{fixtureconsts.Alert1, fixtureconsts.Alert2, fixtureconsts.Alert3, fixtureconsts.Alert4}
+	clusterNames := []string{"dev", "dev", "prod", "prod"}
+	severities := []storage.Severity{
+		storage.Severity_CRITICAL_SEVERITY,
+		storage.Severity_HIGH_SEVERITY,
+		storage.Severity_LOW_SEVERITY,
+		storage.Severity_MEDIUM_SEVERITY,
+	}
+	states := []storage.ViolationState{
+		storage.ViolationState_RESOLVED,
+		storage.ViolationState_ACTIVE,
+		storage.ViolationState_RESOLVED,
+		storage.ViolationState_ACTIVE,
+	}
+
+	s.matcher.EXPECT().MatchAlert(gomock.Any()).Return(false, nil).Times(len(alertIDs))
+
+	for i, id := range alertIDs {
+		alert := fixtures.GetAlert()
+		alert.Id = id
+		alert.EntityType = storage.Alert_DEPLOYMENT
+		alert.PlatformComponent = false
+		alert.Policy.Severity = severities[i]
+		alert.State = states[i]
+		alert.GetDeployment().ClusterName = clusterNames[i]
+		alert.GetDeployment().ClusterId = fmt.Sprintf("cluster-%s", clusterNames[i])
+		alert.ClusterName = clusterNames[i]
+		alert.ClusterId = fmt.Sprintf("cluster-%s", clusterNames[i])
+		s.createAndTrackAlert(alert)
+	}
+
+	// Search including all states to get all 4 alerts
+	results, err := s.datastore.SearchAlertTimeseriesEvents(ctx, search.EmptyQuery(), false)
+	s.NoError(err)
+	s.Len(results, len(alertIDs))
+
+	// Collect results into a map for order-independent assertions
+	resultMap := make(map[string]*alertviews.AlertTimeseriesEvent)
+	for _, r := range results {
+		resultMap[r.GetAlertID()] = r
+	}
+
+	for i, id := range alertIDs {
+		s.Contains(resultMap, id)
+		s.Equal(clusterNames[i], resultMap[id].GetClusterName())
+		s.Equal(severities[i], resultMap[id].GetSeverity())
+		s.Equal(states[i], resultMap[id].GetState())
+	}
+
+	// Search excluding resolved should return only active alerts
+	results, err = s.datastore.SearchAlertTimeseriesEvents(ctx, search.EmptyQuery(), true)
+	s.NoError(err)
+	s.Len(results, 2)
+	for _, r := range results {
+		s.NotEqual(storage.ViolationState_RESOLVED, r.GetState())
+	}
+}
+
+// TestSearchAlertDeploymentIDs tests the deployment ID projection query
+func (s *AlertDatastoreImplSuite) TestSearchAlertDeploymentIDs() {
+	alert := fixtures.GetAlert()
+	alert.EntityType = storage.Alert_DEPLOYMENT
+	alert.PlatformComponent = false
+
+	s.matcher.EXPECT().MatchAlert(gomock.Any()).Return(false, nil)
+	s.createAndTrackAlert(alert)
+
+	// Test 1: Search excluding resolved returns the deployment ID
+	ids, err := s.datastore.SearchAlertDeploymentIDs(ctx, search.EmptyQuery(), true)
+	s.NoError(err)
+	s.Len(ids, 1)
+	s.Equal(alert.GetDeployment().GetId(), ids[0])
+
+	// Test 2: Search with policy filter
+	q := search.NewQueryBuilder().
+		AddExactMatches(search.PolicyID, alert.GetPolicy().GetId()).
+		ProtoQuery()
+	ids, err = s.datastore.SearchAlertDeploymentIDs(ctx, q, true)
+	s.NoError(err)
+	s.Len(ids, 1)
+	s.Equal(alert.GetDeployment().GetId(), ids[0])
+
+	// Test 3: Mark alert as resolved
+	s.matcher.EXPECT().MatchAlert(gomock.Any()).Return(false, nil)
+	_, err = s.datastore.MarkAlertsResolvedBatch(ctx, alert.GetId())
+	s.NoError(err)
+
+	// Test 4: Search excluding resolved should return 0
+	ids, err = s.datastore.SearchAlertDeploymentIDs(ctx, search.EmptyQuery(), true)
+	s.NoError(err)
+	s.Len(ids, 0)
+
+	// Test 5: Search including resolved should return 1
+	ids, err = s.datastore.SearchAlertDeploymentIDs(ctx, search.EmptyQuery(), false)
+	s.NoError(err)
+	s.Len(ids, 1)
+}
+
+// TestSearchAlertDeploymentIDsDeduplication tests that duplicate deployment IDs are collapsed
+func (s *AlertDatastoreImplSuite) TestSearchAlertDeploymentIDsDeduplication() {
+	// Create multiple alerts for the same deployment (different policies)
+	alertIDs := []string{fixtureconsts.Alert1, fixtureconsts.Alert2, fixtureconsts.Alert3}
+
+	s.matcher.EXPECT().MatchAlert(gomock.Any()).Return(false, nil).Times(len(alertIDs))
+
+	sharedDeploymentID := fixtureconsts.Deployment1
+	for i, id := range alertIDs {
+		alert := fixtures.GetAlert()
+		alert.Id = id
+		alert.EntityType = storage.Alert_DEPLOYMENT
+		alert.PlatformComponent = false
+		alert.Policy.Id = fmt.Sprintf("policy-%d", i)
+		alert.Policy.Name = fmt.Sprintf("Policy %d", i)
+		alert.GetDeployment().Id = sharedDeploymentID
+		s.createAndTrackAlert(alert)
+	}
+
+	// Should return only 1 unique deployment ID despite 3 alerts
+	ids, err := s.datastore.SearchAlertDeploymentIDs(ctx, search.EmptyQuery(), true)
+	s.NoError(err)
+	s.Len(ids, 1)
+	s.Equal(sharedDeploymentID, ids[0])
+}
+
+// TestSearchAlertDeploymentIDsMultipleDeployments tests with alerts across different deployments
+func (s *AlertDatastoreImplSuite) TestSearchAlertDeploymentIDsMultipleDeployments() {
+	alertIDs := []string{fixtureconsts.Alert1, fixtureconsts.Alert2, fixtureconsts.Alert3}
+	deploymentIDs := []string{fixtureconsts.Deployment1, fixtureconsts.Deployment2, fixtureconsts.Deployment3}
+
+	s.matcher.EXPECT().MatchAlert(gomock.Any()).Return(false, nil).Times(len(alertIDs))
+
+	for i, id := range alertIDs {
+		alert := fixtures.GetAlert()
+		alert.Id = id
+		alert.EntityType = storage.Alert_DEPLOYMENT
+		alert.PlatformComponent = false
+		alert.GetDeployment().Id = deploymentIDs[i]
+		s.createAndTrackAlert(alert)
+	}
+
+	ids, err := s.datastore.SearchAlertDeploymentIDs(ctx, search.EmptyQuery(), true)
+	s.NoError(err)
+	s.Len(ids, 3)
+	s.ElementsMatch(deploymentIDs, ids)
+}
+
+// TestSearchAlertDeploymentIDsResourceAlerts tests that resource alerts (no deployment) return empty deployment IDs
+func (s *AlertDatastoreImplSuite) TestSearchAlertDeploymentIDsResourceAlerts() {
+	alert := fixtures.GetResourceAlert()
+	alert.PlatformComponent = false
+
+	s.matcher.EXPECT().MatchAlert(gomock.Any()).Return(false, nil)
+	s.createAndTrackAlert(alert)
+
+	// Resource alerts have no deployment ID — should be filtered out
+	ids, err := s.datastore.SearchAlertDeploymentIDs(ctx, search.EmptyQuery(), true)
+	s.NoError(err)
+	s.Len(ids, 0)
+}
+
+// TestUpsert_PlatformComponentAndEntityTypeAssignment tests platform component assignment logic
+// Moved from datastore_test.go and converted to use real data instead of mocks
+func (s *AlertDatastoreImplSuite) TestUpsert_PlatformComponentAndEntityTypeAssignment() {
+	s.T().Setenv(features.PlatformComponents.EnvVar(), "true")
+	if !features.PlatformComponents.Enabled() {
+		s.T().Skip("Skip test when ROX_PLATFORM_COMPONENTS disabled")
+		s.T().SkipNow()
+	}
+
+	// Test Case 1: Resource alert
+	resourceAlert := &storage.Alert{
+		Id: fixtureconsts.AlertFake,
+		Entity: &storage.Alert_Resource_{Resource: &storage.Alert_Resource{
+			Name:         "test-secret",
+			ClusterId:    fixtureconsts.Cluster1,
+			Namespace:    "test-namespace",
+			ResourceType: storage.Alert_Resource_SECRETS,
+		}},
+		Policy: &storage.Policy{
+			Id:   "policy-1",
+			Name: "Test Policy",
+		},
+		State: storage.ViolationState_ACTIVE,
+	}
+
+	// Mock platform matcher to return false (not a platform component)
+	s.matcher.EXPECT().MatchAlert(gomock.Any()).Return(false, nil)
+	s.createAndTrackAlert(resourceAlert)
+
+	// Verify alert was stored with correct entity type and platform component flag
+	storedAlert, exists, err := s.datastore.GetAlert(ctx, resourceAlert.GetId())
+	s.NoError(err)
+	s.True(exists)
+	s.Equal(storage.Alert_RESOURCE, storedAlert.GetEntityType())
+	s.False(storedAlert.GetPlatformComponent())
+
+	// Test Case 2: Container image alert
+	imageAlert := &storage.Alert{
+		Id: fixtureconsts.Role1,
+		Entity: &storage.Alert_Image{Image: &storage.ContainerImage{
+			Id: "image-id",
+			Name: &storage.ImageName{
+				FullName: "nginx:latest",
+			},
+		}},
+		Policy: &storage.Policy{
+			Id:   "policy-2",
+			Name: "Test Policy 2",
+		},
+		State: storage.ViolationState_ACTIVE,
+	}
+
+	// Mock platform matcher to return false (not a platform component)
+	s.matcher.EXPECT().MatchAlert(gomock.Any()).Return(false, nil)
+	s.createAndTrackAlert(imageAlert)
+
+	// Verify alert was stored with correct entity type and platform component flag
+	storedAlert, exists, err = s.datastore.GetAlert(ctx, imageAlert.GetId())
+	s.NoError(err)
+	s.True(exists)
+	s.Equal(storage.Alert_CONTAINER_IMAGE, storedAlert.GetEntityType())
+	s.False(storedAlert.GetPlatformComponent())
+
+	// Test Case 3: Deployment alert not matching platform rules
+	deploymentAlert := &storage.Alert{
+		Id: fixtureconsts.Role2,
+		Entity: &storage.Alert_Deployment_{Deployment: &storage.Alert_Deployment{
+			Id:        "deployment-id",
+			Name:      "test-deployment",
+			Namespace: "my-namespace",
+			ClusterId: fixtureconsts.Cluster1,
+		}},
+		Policy: &storage.Policy{
+			Id:   "policy-3",
+			Name: "Test Policy 3",
+		},
+		State: storage.ViolationState_ACTIVE,
+	}
+
+	// Mock platform matcher to return false (not matching platform rules)
+	s.matcher.EXPECT().MatchAlert(gomock.Any()).Return(false, nil)
+	s.createAndTrackAlert(deploymentAlert)
+
+	// Verify alert was stored with correct entity type and platform component flag
+	storedAlert, exists, err = s.datastore.GetAlert(ctx, deploymentAlert.GetId())
+	s.NoError(err)
+	s.True(exists)
+	s.Equal(storage.Alert_DEPLOYMENT, storedAlert.GetEntityType())
+	s.False(storedAlert.GetPlatformComponent())
+
+	// Test Case 4: Deployment alert matching platform rules
+	platformDeploymentAlert := &storage.Alert{
+		Id: fixtureconsts.Role3,
+		Entity: &storage.Alert_Deployment_{Deployment: &storage.Alert_Deployment{
+			Id:        "platform-deployment-id",
+			Name:      "openshift-controller",
+			Namespace: "openshift-system",
+			ClusterId: fixtureconsts.Cluster1,
+		}},
+		Policy: &storage.Policy{
+			Id:   "policy-4",
+			Name: "Test Policy 4",
+		},
+		State: storage.ViolationState_ACTIVE,
+	}
+
+	// Mock platform matcher to return true (matching platform rules)
+	s.matcher.EXPECT().MatchAlert(gomock.Any()).Return(true, nil)
+	s.createAndTrackAlert(platformDeploymentAlert)
+
+	// Verify alert was stored with correct entity type and platform component flag
+	storedAlert, exists, err = s.datastore.GetAlert(ctx, platformDeploymentAlert.GetId())
+	s.NoError(err)
+	s.True(exists)
+	s.Equal(storage.Alert_DEPLOYMENT, storedAlert.GetEntityType())
+	s.True(storedAlert.GetPlatformComponent())
+}
+
+func (s *AlertDatastoreImplSuite) TestSearchAlertMatchKeysDeployment() {
+	alert := fixtures.GetAlert()
+	alert.Id = fixtureconsts.Alert1
+	alert.State = storage.ViolationState_ACTIVE
+	alert.LifecycleStage = storage.LifecycleStage_DEPLOY
+	alert.GetDeployment().Id = fixtureconsts.Deployment2
+	alert.GetDeployment().Inactive = false
+
+	s.matcher.EXPECT().MatchAlert(gomock.Any()).Return(false, nil)
+	s.createAndTrackAlert(alert)
+
+	q := search.NewQueryBuilder().
+		AddExactMatches(search.ViolationState, storage.ViolationState_ACTIVE.String()).
+		AddExactMatches(search.DeploymentID, fixtureconsts.Deployment2).
+		ProtoQuery()
+
+	keys, err := s.datastore.SearchAlertMatchKeys(ctx, q, false)
+	s.NoError(err)
+	s.Require().Len(keys, 1)
+
+	key := keys[0]
+	s.Equal(alert.GetId(), key.GetId())
+	s.Equal(alert.GetPolicy().GetId(), key.GetPolicyId())
+	s.Equal(alert.GetState(), key.GetState())
+	s.Equal(alert.GetLifecycleStage(), key.GetLifecycleStage())
+	s.Equal(fixtureconsts.Deployment2, key.GetDeploymentId())
+	s.True(key.HasDeployment())
+	s.False(key.IsDeploymentInactive())
+	s.False(key.HasResource())
+	s.False(key.HasNode())
+}
+
+func (s *AlertDatastoreImplSuite) TestSearchAlertMatchKeysResource() {
+	alert := fixtures.GetResourceAlert()
+	alert.State = storage.ViolationState_ACTIVE
+	alert.LifecycleStage = storage.LifecycleStage_RUNTIME
+	res := alert.GetResource()
+
+	s.matcher.EXPECT().MatchAlert(gomock.Any()).Return(false, nil)
+	s.createAndTrackAlert(alert)
+
+	q := search.NewQueryBuilder().
+		AddExactMatches(search.ViolationState, storage.ViolationState_ACTIVE.String()).
+		AddExactMatches(search.AlertID, alert.GetId()).
+		ProtoQuery()
+
+	keys, err := s.datastore.SearchAlertMatchKeys(ctx, q, false)
+	s.NoError(err)
+	s.Require().Len(keys, 1)
+
+	key := keys[0]
+	s.Equal(alert.GetId(), key.GetId())
+	s.Equal(alert.GetPolicy().GetId(), key.GetPolicyId())
+	s.Equal(alert.GetState(), key.GetState())
+	s.Equal(alert.GetLifecycleStage(), key.GetLifecycleStage())
+	s.False(key.HasDeployment())
+	s.True(key.HasResource())
+	s.Equal(res.GetResourceType(), key.GetResourceType())
+	s.Equal(res.GetName(), key.GetResourceName())
+	s.Equal(res.GetClusterId(), key.GetClusterId())
+	s.Equal(res.GetNamespace(), key.GetNamespace())
+}
+
+func (s *AlertDatastoreImplSuite) TestSearchAlertMatchKeysNode() {
+	alert := fixtures.GetNodeAlert()
+	alert.State = storage.ViolationState_ACTIVE
+	alert.LifecycleStage = storage.LifecycleStage_RUNTIME
+	node := alert.GetNode()
+
+	s.matcher.EXPECT().MatchAlert(gomock.Any()).Return(false, nil)
+	s.createAndTrackAlert(alert)
+
+	q := search.NewQueryBuilder().
+		AddExactMatches(search.ViolationState, storage.ViolationState_ACTIVE.String()).
+		AddExactMatches(search.AlertID, alert.GetId()).
+		ProtoQuery()
+
+	keys, err := s.datastore.SearchAlertMatchKeys(ctx, q, false)
+	s.NoError(err)
+	s.Require().Len(keys, 1)
+
+	key := keys[0]
+	s.Equal(alert.GetId(), key.GetId())
+	s.Equal(alert.GetPolicy().GetId(), key.GetPolicyId())
+	s.Equal(alert.GetState(), key.GetState())
+	s.Equal(alert.GetLifecycleStage(), key.GetLifecycleStage())
+	s.False(key.HasDeployment())
+	s.False(key.HasResource())
+	s.True(key.HasNode())
+	s.Equal(node.GetId(), key.GetNodeId())
+	s.Equal(node.GetName(), key.GetNodeName())
+	s.Equal(node.GetClusterId(), key.GetClusterId())
+}
+
+func (s *AlertDatastoreImplSuite) TestSearchAlertMatchKeysExcludesResolved() {
+	active := fixtures.GetAlert()
+	active.Id = fixtureconsts.Alert1
+	active.State = storage.ViolationState_ACTIVE
+
+	resolved := fixtures.GetAlert()
+	resolved.Id = fixtureconsts.Alert2
+	resolved.State = storage.ViolationState_RESOLVED
+
+	s.matcher.EXPECT().MatchAlert(gomock.Any()).Return(false, nil).Times(2)
+	s.createAndTrackAlert(active)
+	s.createAndTrackAlert(resolved)
+
+	q := search.NewQueryBuilder().
+		AddExactMatches(search.AlertID, active.GetId(), resolved.GetId()).
+		ProtoQuery()
+
+	keys, err := s.datastore.SearchAlertMatchKeys(ctx, q, true)
+	s.NoError(err)
+	s.Require().Len(keys, 1)
+	s.Equal(active.GetId(), keys[0].GetId())
+}

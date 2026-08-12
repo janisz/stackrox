@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"math/rand"
 	"os"
 	"slices"
@@ -13,8 +14,13 @@ import (
 
 	deploymentDataStore "github.com/stackrox/rox/central/deployment/datastore"
 	imageDataStore "github.com/stackrox/rox/central/image/datastore"
+	imageV2DataStore "github.com/stackrox/rox/central/imagev2/datastore"
+	imageMapperDatastore "github.com/stackrox/rox/central/imagev2/datastore/mapper/datastore"
+	podDatastore "github.com/stackrox/rox/central/pod/datastore"
+	deploymentsView "github.com/stackrox/rox/central/views/deployments"
 	imagesView "github.com/stackrox/rox/central/views/images"
 	"github.com/stackrox/rox/generated/storage"
+	"github.com/stackrox/rox/pkg/features"
 	"github.com/stackrox/rox/pkg/jsonutil"
 	"github.com/stackrox/rox/pkg/logging"
 	"github.com/stackrox/rox/pkg/postgres/pgtest"
@@ -36,11 +42,19 @@ var (
 // ExportServicePostgresTestHelper is a utility to help testing the
 // export APIs (takes over the data injection).
 type ExportServicePostgresTestHelper struct {
-	Ctx         context.Context
-	pool        *pgtest.TestPostgres
-	Deployments deploymentDataStore.DataStore
-	Images      imageDataStore.DataStore
-	ImageView   imagesView.ImageView
+	Ctx            context.Context
+	pool           *pgtest.TestPostgres
+	Deployments    deploymentDataStore.DataStore
+	Images         imageDataStore.DataStore
+	ImagesV2       imageV2DataStore.DataStore
+	ImageView      imagesView.ImageView
+	Pods           podDatastore.DataStore
+	DeploymentView deploymentsView.DeploymentView
+}
+
+// GetDB returns the postgres database connection.
+func (h *ExportServicePostgresTestHelper) GetDB() *pgtest.TestPostgres {
+	return h.pool
 }
 
 // SetupTest prepares the ExportServicePostgresTestHelper struct for testing.
@@ -58,15 +72,16 @@ func (h *ExportServicePostgresTestHelper) SetupTest(tb testing.TB) error {
 		return err
 	}
 	h.Deployments = deploymentStore
-	h.Images = imageDataStore.GetTestPostgresDataStore(tb, h.pool)
+	h.DeploymentView = deploymentsView.NewDeploymentView(h.pool)
+	if features.FlattenImageData.Enabled() {
+		h.Images = imageMapperDatastore.GetTestPostgresDataStore(tb, h.pool)
+	} else {
+		h.Images = imageDataStore.GetTestPostgresDataStore(tb, h.pool)
+	}
+	h.ImagesV2 = imageV2DataStore.GetTestPostgresDataStore(tb, h.pool)
 	h.ImageView = imagesView.NewImageView(h.pool)
+	h.Pods = podDatastore.GetTestPostgresDataStore(tb, h.pool)
 	return nil
-}
-
-// TearDownTest cleans up the ExportServicePostgresTestHelper resources after testing.
-func (h *ExportServicePostgresTestHelper) TearDownTest(tb testing.TB) {
-	h.pool.Teardown(tb)
-	h.pool.Close()
 }
 
 func getImageSetPath() (string, error) {
@@ -149,7 +164,7 @@ func (h *ExportServicePostgresTestHelper) InjectImages(
 	copies := count / len(baseImages)
 	extras := count % len(baseImages)
 	upsertCtx := sac.WithAllAccess(context.Background())
-	for i := 0; i < len(baseImages); i++ {
+	for i := range baseImages {
 		copyCount := copies
 		if i < extras {
 			copyCount++
@@ -158,12 +173,9 @@ func (h *ExportServicePostgresTestHelper) InjectImages(
 		imgName := img.GetName()
 		for j := 0; j < copyCount; j++ {
 			clone := img.CloneVT()
-			hash, err := random.GenerateString(64, random.HexValues)
-			if err != nil {
-				return nil, nil, err
-			}
+			hash := random.GenerateString(64, random.HexValues)
 			clone.Id = fmt.Sprintf("sha256:%s", hash)
-			err = h.Images.UpsertImage(upsertCtx, clone)
+			err := h.Images.UpsertImage(upsertCtx, clone)
 			if err != nil {
 				return nil, nil, err
 			}
@@ -181,21 +193,22 @@ func (h *ExportServicePostgresTestHelper) InjectDeployments(
 	count int,
 	imageIDs []string,
 	imageNamesByIDs map[string]*storage.ImageName,
-) error {
+) ([]*storage.Deployment, error) {
 	upsertCtx := sac.WithAllAccess(context.Background())
-	for i := 0; i < count; i++ {
+	deployments := make([]*storage.Deployment, 0, count)
+	for i := range count {
 		deployment := &storage.Deployment{}
 		err := testutils.FullInit(deployment, testutils.UniqueInitializer(), testutils.JSONFieldsFilter)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		nbContainers := (i % 3) + 1
 		containers := make([]*storage.Container, 0, nbContainers)
-		for j := 0; j < nbContainers; j++ {
+		for range nbContainers {
 			container := &storage.Container{}
 			err := testutils.FullInit(container, testutils.UniqueInitializer(), testutils.JSONFieldsFilter)
 			if err != nil {
-				return err
+				return nil, err
 			}
 			idx := int(rand.Int31()) % len(imageIDs)
 			imageID := imageIDs[idx]
@@ -212,17 +225,17 @@ func (h *ExportServicePostgresTestHelper) InjectDeployments(
 			// range. These get reverted to fixed valid values so decoders
 			// do not break.
 			container.Image = containerImage
-			for _, v := range container.Volumes {
+			for _, v := range container.GetVolumes() {
 				v.MountPropagation = storage.Volume_NONE
 			}
-			if container.Config != nil {
-				for _, e := range container.Config.Env {
+			if container.GetConfig() != nil {
+				for _, e := range container.GetConfig().GetEnv() {
 					e.EnvVarSource = storage.ContainerConfig_EnvironmentConfig_UNKNOWN
 				}
 			}
-			for _, portConfig := range container.Ports {
+			for _, portConfig := range container.GetPorts() {
 				portConfig.Exposure = storage.PortConfig_INTERNAL
-				for _, exposureInfo := range portConfig.ExposureInfos {
+				for _, exposureInfo := range portConfig.GetExposureInfos() {
 					exposureInfo.Level = storage.PortConfig_INTERNAL
 				}
 			}
@@ -236,13 +249,55 @@ func (h *ExportServicePostgresTestHelper) InjectDeployments(
 			deployment.Namespace = namepsace90pct
 		}
 		// Set the enum values to valid data.
-		for _, portConfig := range deployment.Ports {
+		for _, portConfig := range deployment.GetPorts() {
 			portConfig.Exposure = storage.PortConfig_INTERNAL
-			for _, exposureInfo := range portConfig.ExposureInfos {
+			for _, exposureInfo := range portConfig.GetExposureInfos() {
 				exposureInfo.Level = storage.PortConfig_INTERNAL
 			}
 		}
+
 		err = h.Deployments.UpsertDeployment(upsertCtx, deployment)
+		if err != nil {
+			return nil, err
+		}
+		deployments = append(deployments, deployment)
+	}
+	return deployments, nil
+}
+
+// InjectPods creates a set of pseudo-random pods in DB
+func (h *ExportServicePostgresTestHelper) InjectPods(
+	_ testing.TB,
+	deployments []*storage.Deployment,
+) error {
+	upsertCtx := sac.WithAllAccess(context.Background())
+	for _, dep := range deployments {
+		pod := &storage.Pod{}
+		err := testutils.FullInit(pod, testutils.UniqueInitializer(), testutils.JSONFieldsFilter)
+		if err != nil {
+			return err
+		}
+		pod.DeploymentId = dep.GetId()
+		pod.Namespace = dep.GetNamespace()
+		pod.ClusterId = dep.GetClusterId()
+
+		podLiveInstances := make([]*storage.ContainerInstance, 0, len(dep.GetContainers()))
+		for _, container := range dep.GetContainers() {
+			instance := &storage.ContainerInstance{}
+			err := testutils.FullInit(instance, testutils.UniqueInitializer(), testutils.JSONFieldsFilter)
+			if err != nil {
+				return err
+			}
+
+			instance.ContainerName = container.GetName()
+			instance.ContainingPodId = pod.GetId()
+			instance.ImageDigest = container.GetImage().GetId()
+
+			podLiveInstances = append(podLiveInstances, instance)
+		}
+		pod.LiveInstances = podLiveInstances
+
+		err = h.Pods.UpsertPod(upsertCtx, pod)
 		if err != nil {
 			return err
 		}
@@ -294,12 +349,14 @@ func (h *ExportServicePostgresTestHelper) InjectDataAndRunBenchmark(
 				b.Error(err)
 			}
 			imageIDs = append(imageIDs, addedImageIDs...)
-			for imageID, imageName := range addedImageNamesByID {
-				imageNamesByIDs[imageID] = imageName
-			}
+			maps.Copy(imageNamesByIDs, addedImageNamesByID)
 		}
 		log.Info("Injecting ", delta, " deployments")
-		err := h.InjectDeployments(b, delta, imageIDs, imageNamesByIDs)
+		deployments, err := h.InjectDeployments(b, delta, imageIDs, imageNamesByIDs)
+		if err != nil {
+			b.Error(err)
+		}
+		err = h.InjectPods(b, deployments)
 		if err != nil {
 			b.Error(err)
 		}
@@ -307,7 +364,6 @@ func (h *ExportServicePostgresTestHelper) InjectDataAndRunBenchmark(
 		b.Run(fmt.Sprintf("%d", datasetSize), benchmark)
 		lastDatasetSize = datasetSize
 	}
-
 }
 
 // ExportTestCase contains the parameters for an export API test.

@@ -1,11 +1,12 @@
-import React, { ReactElement } from 'react';
+import { useState } from 'react';
+import type { ReactElement } from 'react';
 import {
+    Content,
     Divider,
     Flex,
     FlexItem,
     Stack,
     StackItem,
-    Text,
     Title,
     Toolbar,
     ToolbarContent,
@@ -19,8 +20,8 @@ import {
     getNetworkFlows,
     getNumFlows,
 } from '../utils/flowUtils';
-import { AdvancedFlowsFilterType } from '../common/AdvancedFlowsFilter/types';
-import { CustomEdgeModel, CustomNodeModel } from '../types/topology.type';
+import type { AdvancedFlowsFilterType } from '../common/AdvancedFlowsFilter/types';
+import type { CustomEdgeModel, CustomNodeModel } from '../types/topology.type';
 
 import AdvancedFlowsFilter, {
     defaultAdvancedFlowsFilters,
@@ -50,8 +51,8 @@ function GenericEntitiesSideBar({
     sidebarTitle,
     flowTableLabel,
 }: GenericEntitiesSideBarProps): ReactElement {
-    const [entityNameFilter, setEntityNameFilter] = React.useState<string>('');
-    const [advancedFilters, setAdvancedFilters] = React.useState<AdvancedFlowsFilterType>(
+    const [entityNameFilter, setEntityNameFilter] = useState<string>('');
+    const [advancedFilters, setAdvancedFilters] = useState<AdvancedFlowsFilterType>(
         defaultAdvancedFlowsFilters
     );
     const flows = getNetworkFlows(nodes, edges, id);
@@ -59,8 +60,8 @@ function GenericEntitiesSideBar({
     const initialExpandedRows = filteredFlows
         .filter((row) => row.children && !!row.children.length)
         .map((row) => row.id); // Default to all expanded
-    const [expandedRows, setExpandedRows] = React.useState<string[]>(initialExpandedRows);
-    const [selectedRows, setSelectedRows] = React.useState<string[]>([]);
+    const [expandedRows, setExpandedRows] = useState<string[]>(initialExpandedRows);
+    const [selectedRows, setSelectedRows] = useState<string[]>([]);
 
     const entityNode = getNodeById(nodes, id);
     const numFlows = getNumFlows(filteredFlows);
@@ -73,21 +74,21 @@ function GenericEntitiesSideBar({
     return (
         <Stack>
             <StackItem>
-                <Flex direction={{ default: 'row' }} className="pf-v5-u-p-md pf-v5-u-mb-0">
+                <Flex direction={{ default: 'row' }} className="pf-v6-u-p-md pf-v6-u-mb-0">
                     <FlexItem>{EntityHeaderIcon}</FlexItem>
                     <FlexItem>
                         <Title headingLevel="h2" id={labelledById}>
                             {entityNode?.label}
                         </Title>
-                        <Text className="pf-v5-u-font-size-sm pf-v5-u-color-200">
+                        <Content component="p" className="pf-v6-u-font-size-sm pf-v6-u-color-200">
                             {sidebarTitle}
-                        </Text>
+                        </Content>
                     </FlexItem>
                 </Flex>
             </StackItem>
             <Divider component="hr" />
             <StackItem isFilled style={{ overflow: 'auto' }}>
-                <Stack className="pf-v5-u-p-md">
+                <Stack className="pf-v6-u-p-md">
                     <StackItem>
                         <Flex>
                             <FlexItem flex={{ default: 'flex_1' }}>
@@ -105,10 +106,10 @@ function GenericEntitiesSideBar({
                             </FlexItem>
                         </Flex>
                     </StackItem>
-                    <Divider component="hr" className="pf-v5-u-py-md" />
-                    <StackItem className="pf-v5-u-pb-md">
-                        <Toolbar className="pf-v5-u-p-0">
-                            <ToolbarContent className="pf-v5-u-px-0">
+                    <Divider component="hr" className="pf-v6-u-py-md" />
+                    <StackItem className="pf-v6-u-pb-md">
+                        <Toolbar className="pf-v6-u-p-0">
+                            <ToolbarContent className="pf-v6-u-px-0">
                                 <ToolbarItem>
                                     <FlowsTableHeaderText type="active" numFlows={numFlows} />
                                 </ToolbarItem>

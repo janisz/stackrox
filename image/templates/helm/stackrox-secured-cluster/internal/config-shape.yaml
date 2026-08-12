@@ -62,9 +62,16 @@ image:
     name: null # string
     tag: null # string
     fullRef: null # string
+  fact:
+    registry: null # string
+    name: null # string
+    repository: null # string
+    tag: null # string
+    fullRef: null # string
+    pullPolicy: null # string
 env:
+  grpcEnforceALPN: null # bool
   openshift: null # bool | int
-  istio: null # bool
   storageClasses:
     all: {} # dict
     default: null # string
@@ -100,6 +107,7 @@ admissionControl:
     disableBypass: null # bool
     timeout: null # natural number
     enforceOnUpdates: null # bool
+  enforce: null # bool
   imagePullPolicy: null # string
   replicas: null # int
   affinity: null # dict
@@ -125,6 +133,8 @@ collector:
   complianceImagePullPolicy: null # string
   complianceResources: null # string | dict
   nodeScanningResources: null # string | dict
+  famEnabled: null # bool
+  famResources: null # string | dict
   serviceTLS:
     cert: null # string
     key: null # string
@@ -142,6 +152,8 @@ collector:
     enabled: null # bool
 auditLogs:
   disableCollection: null # bool
+autoLockProcessBaselines:
+  enabled: null # bool
 customize:
   labels: {} # dict
   annotations: {} # dict
@@ -198,5 +210,13 @@ network:
   enableNetworkPolicies: null # bool
 system:
   enablePodSecurityPolicies: null # bool
+virtualMachines:
+  enabled: null # bool
 crs:
   file: null # string
+consolePlugin:
+  enabled: null # bool
+processIndicators:
+  noPersistence: null # bool
+  excludeOpenshiftNs: null # bool
+  excludeNamespaceFilter: null # string

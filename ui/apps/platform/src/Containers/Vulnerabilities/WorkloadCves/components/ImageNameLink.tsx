@@ -1,9 +1,9 @@
-import React, { useState } from 'react';
-import { Link } from 'react-router-dom';
+import { useState } from 'react';
+import { Link } from 'react-router-dom-v5-compat';
 import { Button, Flex, FlexItem, Tooltip, Truncate } from '@patternfly/react-core';
 import { OutlinedCopyIcon } from '@patternfly/react-icons';
+import useClipboardCopy from 'hooks/useClipboardCopy';
 
-import { getWorkloadEntityPagePath } from '../../utils/searchUtils';
 import { getImageBaseNameDisplay } from '../utils/images';
 import useVulnerabilityState from '../hooks/useVulnerabilityState';
 import useWorkloadCveViewContext from '../hooks/useWorkloadCveViewContext';
@@ -14,25 +14,24 @@ export type ImageNameLinkProps = {
         registry: string;
         tag: string;
     };
-    id: string;
-    children?: React.ReactNode;
+    id: string; // UUID - used for linking to the image detail page
+    digest?: string; // For ImageV2, the SHA digest - used for display when tag is not present
 };
 
-function ImageNameLink({ name, id, children }: ImageNameLinkProps) {
-    const { getAbsoluteUrl } = useWorkloadCveViewContext();
+function ImageNameLink({ name, id, digest }: ImageNameLinkProps) {
+    const { urlBuilder } = useWorkloadCveViewContext();
     const vulnerabilityState = useVulnerabilityState();
     const [copyIconTooltip, setCopyIconTooltip] = useState('Copy image name');
+    const { copyToClipboard } = useClipboardCopy();
 
     const { registry } = name;
 
-    // If tag is not provided, use the image hash (id) full the full image name
-    const baseName = getImageBaseNameDisplay(id, name);
+    // For display: use digest (SHA) if available, otherwise use id (UUID)
+    const imageShaForDisplay = digest || id;
+    const baseName = getImageBaseNameDisplay(imageShaForDisplay, name);
 
     function copyImageName() {
-        navigator?.clipboard
-            ?.writeText(`${registry}/${baseName}`)
-            .then(() => setCopyIconTooltip('Copied!'))
-            .catch(() => {}); /* Nothing to do */
+        return copyToClipboard(`${registry}/${baseName}`).then(() => setCopyIconTooltip('Copied!'));
     }
 
     return (
@@ -43,13 +42,10 @@ function ImageNameLink({ name, id, children }: ImageNameLinkProps) {
             spaceItems={{ default: 'spaceItemsNone' }}
         >
             <Flex direction={{ default: 'column' }} spaceItems={{ default: 'spaceItemsNone' }}>
-                <Link
-                    to={getAbsoluteUrl(getWorkloadEntityPagePath('Image', id, vulnerabilityState))}
-                >
+                <Link to={urlBuilder.imageDetails(id, vulnerabilityState)}>
                     <Truncate position="middle" content={baseName} />
                 </Link>{' '}
-                <span className="pf-v5-u-color-200 pf-v5-u-font-size-sm">in {registry}</span>
-                <div>{children}</div>
+                <span className="pf-v6-u-color-200 pf-v6-u-font-size-sm">in {registry}</span>
             </Flex>
             <FlexItem>
                 <Tooltip
@@ -61,15 +57,14 @@ function ImageNameLink({ name, id, children }: ImageNameLinkProps) {
                     content={<div>{copyIconTooltip}</div>}
                 >
                     <Button
-                        className="pf-v5-u-pt-xs"
+                        icon={<OutlinedCopyIcon />}
+                        className="pf-v6-u-pt-xs"
                         id={`copy-image-name-button-${id}`}
                         aria-label={'Copy image name'}
                         type="button"
                         variant="plain"
                         onClick={copyImageName}
-                    >
-                        <OutlinedCopyIcon />
-                    </Button>
+                    />
                 </Tooltip>
             </FlexItem>
         </Flex>

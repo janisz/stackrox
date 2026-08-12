@@ -1,4 +1,4 @@
-import React, { ReactElement, ReactNode } from 'react';
+import type { ReactElement, ReactNode } from 'react';
 
 type PopoverBodyContentProps =
     | {
@@ -7,12 +7,12 @@ type PopoverBodyContentProps =
       }
     | {
           headerContent: ReactNode;
-          headerIcon?: React.ReactNode;
+          headerIcon?: ReactNode;
           bodyContent: ReactNode;
       }
     | {
           headerContent: ReactNode;
-          headerIcon?: React.ReactNode;
+          headerIcon?: ReactNode;
           bodyContent: ReactNode;
           footerContent: ReactNode;
       };
@@ -24,18 +24,18 @@ function PopoverBodyContent(props: PopoverBodyContentProps): ReactElement {
     return (
         <>
             {'headerContent' in props && props.headerContent && (
-                <div className="pf-v5-c-popover__header">
-                    <div className="pf-v5-c-popover__title">
+                <div className="pf-v6-c-popover__header">
+                    <div className="pf-v6-c-popover__title">
                         {props.headerIcon && (
-                            <span className="pf-v5-c-popover__title-icon">{props.headerIcon}</span>
+                            <span className="pf-v6-c-popover__title-icon">{props.headerIcon}</span>
                         )}
-                        <p className="pf-v5-c-popover__title-text">{props.headerContent}</p>
+                        <p className="pf-v6-c-popover__title-text">{props.headerContent}</p>
                     </div>
                 </div>
             )}
-            <div className="bodyContent">{props.bodyContent}</div>
+            <div>{props.bodyContent}</div>
             {'footerContent' in props && props.footerContent && (
-                <div className="pf-v5-c-popover__footer">{props.footerContent}</div>
+                <div className="pf-v6-c-popover__footer">{props.footerContent}</div>
             )}
         </>
     );

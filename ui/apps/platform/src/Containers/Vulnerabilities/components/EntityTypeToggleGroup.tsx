@@ -1,23 +1,22 @@
-import React from 'react';
 import { ToggleGroup, ToggleGroupItem, pluralize } from '@patternfly/react-core';
 
 import useURLStringUnion from 'hooks/useURLStringUnion';
-import { NonEmptyArray } from 'utils/type.utils';
-import { EntityTab } from '../types';
+import type { NonEmptyArray } from 'utils/type.utils';
+import type { EntityTab } from '../types';
 
-type EntityTabToggleGroupProps<EntityTabType extends EntityTab> = {
+type EntityTypeToggleGroupProps<EntityTabType extends EntityTab> = {
     className?: string;
     entityTabs: Readonly<NonEmptyArray<EntityTabType>>;
     entityCounts: Record<EntityTabType, number>;
     onChange: (entityTab: EntityTabType) => void;
 };
 
-export function EntityTabToggleGroup<EntityTabType extends EntityTab>({
+export function EntityTypeToggleGroup<EntityTabType extends EntityTab>({
     className = '',
     entityTabs,
     entityCounts,
     onChange,
-}: EntityTabToggleGroupProps<EntityTabType>) {
+}: EntityTypeToggleGroupProps<EntityTabType>) {
     const [activeEntityTabKey, setActiveEntityTabKey] = useURLStringUnion('entityTab', entityTabs);
 
     function handleEntityTabChange(entityTab: EntityTabType) {
@@ -40,4 +39,4 @@ export function EntityTabToggleGroup<EntityTabType extends EntityTab>({
     );
 }
 
-export default EntityTabToggleGroup;
+export default EntityTypeToggleGroup;

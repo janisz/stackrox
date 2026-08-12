@@ -1,19 +1,24 @@
-import React, { ReactElement } from 'react';
-import { selectors } from 'reducers';
-import { useSelector } from 'react-redux';
-import IntegrationTile from './IntegrationTile';
+import type { ReactElement } from 'react';
+
+import useRestQuery from 'hooks/useRestQuery';
+import { fetchMachineAccessConfigs } from 'services/MachineAccessService';
+
 import {
     authenticationTokensSource as source,
-    machineAccessDescriptor as descriptor,
     getIntegrationsListPath,
+    machineAccessDescriptor as descriptor,
 } from '../utils/integrationsList';
+import IntegrationTile from './IntegrationTile';
 
-function MachineAccessConfigTile(): ReactElement {
-    const { image, label, type } = descriptor;
-    const integrations = useSelector(selectors.getMachineAccessConfigs);
+const { Logo, label, type } = descriptor;
+
+function MachineAccessTile(): ReactElement {
+    const { data } = useRestQuery(fetchMachineAccessConfigs);
+    const integrations = data?.configs ?? [];
+
     return (
         <IntegrationTile
-            image={image}
+            Logo={Logo}
             label={label}
             linkTo={getIntegrationsListPath(source, type)}
             numIntegrations={integrations.length}
@@ -21,4 +26,4 @@ function MachineAccessConfigTile(): ReactElement {
     );
 }
 
-export default MachineAccessConfigTile;
+export default MachineAccessTile;

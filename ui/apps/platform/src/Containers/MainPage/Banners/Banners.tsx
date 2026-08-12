@@ -1,10 +1,10 @@
-import React, { ReactElement } from 'react';
+import type { ReactElement } from 'react';
 
 import useCentralCapabilities from 'hooks/useCentralCapabilities';
+import useIsLegacyScannerEnabled from 'hooks/useIsLegacyScannerEnabled';
 import useIsScannerV4Enabled from 'hooks/useIsScannerV4Enabled';
 import usePermissions from 'hooks/usePermissions';
 
-import AnnouncementBanner from './AnnouncementBanner';
 import CredentialExpiryBanner from './CredentialExpiryBanner';
 import DatabaseStatusBanner from './DatabaseStatusBanner';
 import OutdatedVersionBanner from './OutdatedVersionBanner';
@@ -19,11 +19,11 @@ function Banners(): ReactElement {
     const hasAdministrationWritePermission = hasReadWriteAccess('Administration');
     const showCertGenerateAction = centralCanUpdateCert && hasAdministrationWritePermission;
 
+    const isLegacyScannerEnabled = useIsLegacyScannerEnabled();
     const isScannerV4Enabled = useIsScannerV4Enabled();
 
     return (
         <>
-            <AnnouncementBanner />
             <CredentialExpiryBanner
                 component="CENTRAL"
                 showCertGenerateAction={showCertGenerateAction}
@@ -32,10 +32,12 @@ function Banners(): ReactElement {
                 component="CENTRAL_DB"
                 showCertGenerateAction={showCertGenerateAction}
             />
-            <CredentialExpiryBanner
-                component="SCANNER"
-                showCertGenerateAction={showCertGenerateAction}
-            />
+            {isLegacyScannerEnabled && (
+                <CredentialExpiryBanner
+                    component="SCANNER"
+                    showCertGenerateAction={showCertGenerateAction}
+                />
+            )}
             {isScannerV4Enabled && (
                 <CredentialExpiryBanner
                     component="SCANNER_V4"

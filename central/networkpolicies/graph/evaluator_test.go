@@ -652,7 +652,7 @@ type testEdge struct {
 }
 
 func egressEdges(src string, dsts ...string) []testEdge {
-	var edges []testEdge
+	edges := make([]testEdge, 0, len(dsts))
 	for _, d := range dsts {
 		edges = append(edges, testEdge{Source: src, Target: d})
 	}
@@ -660,7 +660,7 @@ func egressEdges(src string, dsts ...string) []testEdge {
 }
 
 func egressEdgesWithPorts(src string, pds portDescs, dsts ...string) []testEdge {
-	var edges []testEdge
+	edges := make([]testEdge, 0, len(dsts))
 	for _, d := range dsts {
 		edges = append(edges, testEdge{Source: src, Target: d, Ports: pds})
 	}
@@ -668,7 +668,7 @@ func egressEdgesWithPorts(src string, pds portDescs, dsts ...string) []testEdge 
 }
 
 func ingressEdges(dst string, srcs ...string) []testEdge {
-	var edges []testEdge
+	edges := make([]testEdge, 0, len(srcs))
 	for _, s := range srcs {
 		edges = append(edges, testEdge{Source: s, Target: dst})
 	}
@@ -676,7 +676,7 @@ func ingressEdges(dst string, srcs ...string) []testEdge {
 }
 
 func ingressEdgesWithPort(dst string, pds portDescs, srcs ...string) []testEdge {
-	var edges []testEdge
+	edges := make([]testEdge, 0, len(srcs))
 	for _, s := range srcs {
 		edges = append(edges, testEdge{Source: s, Target: dst, Ports: pds})
 	}
@@ -1363,7 +1363,7 @@ func TestEvaluateClusters(t *testing.T) {
 			nodes := graph.GetNodes()
 			require.Len(t, nodes, len(testCase.nodes))
 			for idx, expected := range testCase.nodes {
-				protoassert.Equal(t, expected, nodes[idx], "(pod, id): ", idx, expected.Entity.Id)
+				protoassert.Equal(t, expected, nodes[idx], "(pod, id): ", idx, expected.GetEntity().GetId())
 			}
 		})
 	}
@@ -2143,7 +2143,7 @@ func TestGetApplicable(t *testing.T) {
 func populateOutEdges(nodes []*v1.NetworkNode, edges []testEdge) {
 	indexMap := make(map[string]int)
 	for i, node := range nodes {
-		indexMap[node.Entity.Id] = i
+		indexMap[node.GetEntity().GetId()] = i
 	}
 
 	for _, e := range edges {

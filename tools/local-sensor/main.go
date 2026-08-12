@@ -2,10 +2,9 @@ package main
 
 import (
 	"context"
-	"encoding/binary"
-	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/http"
@@ -15,19 +14,23 @@ import (
 	"path"
 	"runtime"
 	"runtime/pprof"
+	"strings"
 	"syscall"
 	"time"
 
 	"github.com/pkg/errors"
 	"github.com/stackrox/rox/generated/internalapi/central"
 	"github.com/stackrox/rox/generated/storage"
+	"github.com/stackrox/rox/pkg/centralsensor"
 	"github.com/stackrox/rox/pkg/clientconn"
+	"github.com/stackrox/rox/pkg/concurrency"
 	"github.com/stackrox/rox/pkg/continuousprofiling"
 	"github.com/stackrox/rox/pkg/env"
-	"github.com/stackrox/rox/pkg/features"
 	"github.com/stackrox/rox/pkg/metrics"
+	"github.com/stackrox/rox/pkg/prometheusutil"
 	"github.com/stackrox/rox/pkg/utils"
 	"github.com/stackrox/rox/sensor/common/centralclient"
+	"github.com/stackrox/rox/sensor/common/clusterid"
 	commonSensor "github.com/stackrox/rox/sensor/common/sensor"
 	centralDebug "github.com/stackrox/rox/sensor/debugger/central"
 	"github.com/stackrox/rox/sensor/debugger/certs"
@@ -41,12 +44,18 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/test/bufconn"
+	"k8s.io/apimachinery/pkg/util/validation"
 	_ "k8s.io/client-go/plugin/pkg/client/auth/gcp"
 )
 
-// local-sensor is an application that allows you to run sensor in your host machine, while mocking a
-// gRPC connection to central. This was introduced for testing and debugging purposes. At its current form,
-// it does not connect to a real central, but instead it dumps all gRPC messages that would be sent to central in a file.
+const (
+	metricsSnapshotTimeout = 15 * time.Second
+	runLabelTimeLayout     = "2006-01-02T15.04.05Z"
+)
+
+// local-sensor is an application that allows you to run sensor on your host machine for testing and
+// debugging purposes. It can either connect to a real Central instance using the -connect-central flag,
+// or use a fake Central that dumps all gRPC messages to a file.
 
 func createConnectionAndStartServer(fakeCentral *centralDebug.FakeService) (*grpc.ClientConn, *centralDebug.FakeService, func()) {
 	buffer := 1024 * 1024
@@ -81,6 +90,7 @@ type localSensorConfig struct {
 	Duration           time.Duration
 	OutputFormat       string
 	CentralOutput      string
+	SkipCentralOutput  bool
 	RecordK8sEnabled   bool
 	RecordK8sFile      string
 	ReplayK8sEnabled   bool
@@ -91,58 +101,15 @@ type localSensorConfig struct {
 	PoliciesFile       string
 	FakeWorkloadFile   string
 	WithMetrics        bool
+	MetricsSnapshotOut string
+	OutputLabel        string
 	NoCPUProfile       bool
 	NoMemProfile       bool
 	PprofServer        bool
 	CentralEndpoint    string
 	FakeCollector      bool
-}
-
-const (
-	jsonFormat string = "json"
-	rawFormat  string = "raw"
-)
-
-func writeOutputInJSONFormat(messages []*central.MsgFromSensor, start, end time.Time, outfile string) {
-	dateFormat := "02.01.15 11:06:39"
-	data, err := json.Marshal(&sensorMessageJSONOutput{
-		ScenarioStart:      start.Format(dateFormat),
-		ScenarioEnd:        end.Format(dateFormat),
-		MessagesFromSensor: messages,
-	})
-	utils.CrashOnError(err)
-	utils.CrashOnError(os.WriteFile(outfile, data, 0644))
-}
-
-func writeOutputInBinaryFormat(messages []*central.MsgFromSensor, _, _ time.Time, outfile string) {
-	file, err := os.OpenFile(outfile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-	defer func() {
-		utils.CrashOnError(file.Close())
-	}()
-	utils.CrashOnError(err)
-	for _, m := range messages {
-		d, err := m.MarshalVT()
-		utils.CrashOnError(err)
-		buf := make([]byte, 4)
-		binary.LittleEndian.PutUint32(buf, uint32(len(d)))
-		_, err = file.Write(buf)
-		utils.CrashOnError(err)
-		_, err = file.Write(d)
-		utils.CrashOnError(err)
-	}
-	if outfile != "/dev/null" {
-		utils.CrashOnError(file.Sync())
-	}
-}
-
-var validFormats = map[string]func([]*central.MsgFromSensor, time.Time, time.Time, string){
-	jsonFormat: writeOutputInJSONFormat,
-	rawFormat:  writeOutputInBinaryFormat,
-}
-
-func isValidOutputFormat(format string) bool {
-	_, ok := validFormats[format]
-	return ok
+	Namespace          string
+	OperatorInstall    bool
 }
 
 func mustGetCommandLineArgs() localSensorConfig {
@@ -151,6 +118,7 @@ func mustGetCommandLineArgs() localSensorConfig {
 		Duration:           0,
 		OutputFormat:       "json",
 		CentralOutput:      "central-out.json",
+		SkipCentralOutput:  false,
 		RecordK8sEnabled:   false,
 		RecordK8sFile:      "k8s-trace.jsonl",
 		ReplayK8sEnabled:   false,
@@ -160,11 +128,15 @@ func mustGetCommandLineArgs() localSensorConfig {
 		PoliciesFile:       "",
 		FakeWorkloadFile:   "",
 		WithMetrics:        false,
+		MetricsSnapshotOut: "",
+		OutputLabel:        "",
 		NoCPUProfile:       false,
 		NoMemProfile:       false,
 		PprofServer:        false,
 		CentralEndpoint:    "",
 		FakeCollector:      false,
+		Namespace:          certs.DefaultNamespace,
+		OperatorInstall:    false,
 	}
 	flag.BoolVar(&sensorConfig.NoCPUProfile, "no-cpu-prof", sensorConfig.NoCPUProfile, "disables producing CPU profile for performance analysis")
 	flag.BoolVar(&sensorConfig.NoMemProfile, "no-mem-prof", sensorConfig.NoMemProfile, "disables producing memory profile for performance analysis")
@@ -172,6 +144,7 @@ func mustGetCommandLineArgs() localSensorConfig {
 	flag.BoolVar(&sensorConfig.Verbose, "verbose", sensorConfig.Verbose, "prints all messages to stdout as well as to the output file")
 	flag.DurationVar(&sensorConfig.Duration, "duration", sensorConfig.Duration, "duration that the scenario should run (leave it empty to run it without timeout)")
 	flag.StringVar(&sensorConfig.CentralOutput, "central-out", sensorConfig.CentralOutput, "file to store the events that would be sent to central")
+	flag.BoolVar(&sensorConfig.SkipCentralOutput, "skip-central-output", sensorConfig.SkipCentralOutput, "disables recording fake central messages and writing central output files")
 	flag.StringVar(&sensorConfig.OutputFormat, "format", sensorConfig.OutputFormat, "format of sensor's events file: 'raw' or 'json'")
 	flag.BoolVar(&sensorConfig.RecordK8sEnabled, "record", sensorConfig.RecordK8sEnabled, "whether to record a trace with k8s events")
 	flag.StringVar(&sensorConfig.RecordK8sFile, "record-out", sensorConfig.RecordK8sFile, "a file where recorded trace would be stored")
@@ -181,12 +154,22 @@ func mustGetCommandLineArgs() localSensorConfig {
 	flag.StringVar(&sensorConfig.PoliciesFile, "with-policies", sensorConfig.PoliciesFile, " a file containing a list of policies")
 	flag.StringVar(&sensorConfig.FakeWorkloadFile, "with-fakeworkload", sensorConfig.FakeWorkloadFile, " a file containing a FakeWorkload definition")
 	flag.BoolVar(&sensorConfig.WithMetrics, "with-metrics", sensorConfig.WithMetrics, "enables the metric server")
+	flag.StringVar(&sensorConfig.MetricsSnapshotOut, "metrics-snapshot-out", sensorConfig.MetricsSnapshotOut, "file to store a pre-shutdown Prometheus metrics snapshot when metrics are enabled")
+	flag.StringVar(&sensorConfig.OutputLabel, "output-label", sensorConfig.OutputLabel, "label used in all output filenames (cpu/mem profiles, metrics snapshot); defaults to UTC timestamp")
 	flag.BoolVar(&sensorConfig.PprofServer, "with-pprof-server", sensorConfig.PprofServer, "enables the pprof server on port :6060")
 	flag.StringVar(&sensorConfig.CentralEndpoint, "connect-central", sensorConfig.CentralEndpoint, "connects to a Central instance rather than a fake Central")
+	flag.StringVar(&sensorConfig.Namespace, "namespace", sensorConfig.Namespace, "namespace where sensor is deployed (used for certificate generation when connecting to real Central)")
 	flag.BoolVar(&sensorConfig.FakeCollector, "with-fake-collector", sensorConfig.FakeCollector, "enables sensor to allow connections from a fake collector")
+	flag.BoolVar(&sensorConfig.OperatorInstall, "operator-install", sensorConfig.OperatorInstall, "use together with connect-central, indicates that the remote ACS was installed with the Operator")
 	flag.Parse()
 
 	sensorConfig.CentralOutput = path.Clean(sensorConfig.CentralOutput)
+	if sensorConfig.MetricsSnapshotOut != "" {
+		if !sensorConfig.WithMetrics {
+			log.Fatalf("-metrics-snapshot-out requires -with-metrics to be enabled")
+		}
+		sensorConfig.MetricsSnapshotOut = path.Clean(sensorConfig.MetricsSnapshotOut)
+	}
 
 	if sensorConfig.ReplayK8sEnabled && sensorConfig.RecordK8sEnabled {
 		log.Fatalf("cannot record and replay a trace at the same time. Use either -record or -replay flag")
@@ -203,16 +186,25 @@ func mustGetCommandLineArgs() localSensorConfig {
 		log.Fatalf("trace source empty")
 	}
 
-	if !isValidOutputFormat(sensorConfig.OutputFormat) {
+	if !centralDebug.IsValidOutputFormat(sensorConfig.OutputFormat) {
 		log.Fatalf("invalid format '%s'", sensorConfig.OutputFormat)
+	}
+
+	if sensorConfig.CentralEndpoint != "" && sensorConfig.SkipCentralOutput {
+		log.Fatalf("-skip-central-output cannot be used together with -connect-central")
+	}
+
+	if errs := validation.IsDNS1123Label(sensorConfig.Namespace); len(errs) > 0 {
+		log.Fatalf("invalid namespace '%s': %s", sensorConfig.Namespace, errs[0])
 	}
 
 	sensorConfig.ReplayK8sTraceFile = path.Clean(sensorConfig.ReplayK8sTraceFile)
 	return sensorConfig
 }
 
-func writeMemoryProfile() {
-	f, err := os.Create(fmt.Sprintf("local-sensor-mem-%s.prof", time.Now().UTC().Format(time.RFC3339)))
+func writeMemoryProfile(runLabel string) {
+	name := fmt.Sprintf("local-sensor-mem-%s.prof", runLabel)
+	f, err := os.Create(name)
 	if err != nil {
 		log.Fatal("could not create memory profile: ", err)
 	}
@@ -221,26 +213,96 @@ func writeMemoryProfile() {
 	if err := pprof.Lookup("allocs").WriteTo(f, 0); err != nil {
 		log.Fatal("could not write memory profile: ", err)
 	}
-	log.Printf("Wrote memory profile")
+	log.Printf("Wrote memory profile to %s", name)
 }
 
-func registerHostKillSignals(startTime time.Time, fakeCentral *centralDebug.FakeService, writeMemProfile bool, outfile string, outputFormat string, cancelFunc context.CancelFunc, sensor *commonSensor.Sensor) {
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
-	<-ctx.Done()
-	// We cancel the creation of Events
-	cancelFunc()
-	endTime := time.Now()
-	if writeMemProfile {
-		writeMemoryProfile()
+func makeRunLabel(name string, now time.Time) string {
+	sanitized := sanitizeFilenameLabel(name)
+	if sanitized != "" {
+		return sanitized
 	}
-	sensor.Stop()
-	pprof.StopCPUProfile()
-	if fakeCentral != nil {
-		allMessages := fakeCentral.GetAllMessages()
-		dumpMessages(allMessages, startTime, endTime, outfile, outputFormat)
+	return now.UTC().Format(runLabelTimeLayout)
+}
+
+func sanitizeFilenameLabel(label string) string {
+	label = strings.TrimSpace(label)
+	if label == "" {
+		return ""
 	}
-	os.Exit(0)
+
+	var builder strings.Builder
+	builder.Grow(len(label))
+
+	lastWasSeparator := false
+	for _, r := range label {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+			builder.WriteRune(r)
+			lastWasSeparator = false
+		default:
+			if builder.Len() == 0 || lastWasSeparator {
+				continue
+			}
+			builder.WriteByte('-')
+			lastWasSeparator = true
+		}
+	}
+
+	return strings.Trim(builder.String(), "-")
+}
+
+func writeMetricsSnapshot(parentCtx context.Context, filePath string) error {
+	return writeMetricsSnapshotWithExporter(parentCtx, filePath, prometheusutil.ExportText)
+}
+
+func writeMetricsSnapshotWithExporter(parentCtx context.Context, filePath string, exportMetrics func(context.Context, io.Writer) error) error {
+	f, err := os.Create(filePath)
+	if err != nil {
+		return errors.Wrapf(err, "could not create metrics snapshot %q", filePath)
+	}
+	defer utils.IgnoreError(f.Close)
+
+	snapshotCtx, cancel := context.WithTimeout(parentCtx, metricsSnapshotTimeout)
+	defer cancel()
+
+	if err := exportMetrics(snapshotCtx, f); err != nil {
+		return errors.Wrapf(err, "could not write metrics snapshot %q", filePath)
+	}
+
+	log.Printf("Wrote metrics snapshot to %s", filePath)
+	return nil
+}
+
+func logTimeLeft(stop <-chan struct{}, deadline time.Time, tickerC <-chan time.Time, now func() time.Time, logf func(string, ...any)) {
+	for {
+		select {
+		case <-stop:
+			return
+		case <-tickerC:
+			remaining := deadline.Sub(now()).Round(time.Second)
+			if remaining > 0 {
+				logf("Time left in local-sensor run: %s", remaining)
+			}
+		}
+	}
+}
+
+// stopSensorAndWorkload stops the workload manager and sensor in the correct order.
+// This function is idempotent and safe to call multiple times.
+func stopSensorAndWorkload(workloadManager *fake.WorkloadManager, sensor *commonSensor.Sensor, pipeline sensor.ProcessPipelineHandle) {
+	// Stop fake workload goroutines before shutting down sensor to prevent sending on closed channels.
+	// Stop() is idempotent and can be called multiple times.
+	if workloadManager != nil {
+		workloadManager.Stop()
+	}
+	if sensor != nil {
+		sensor.Stop()
+	}
+	if pipeline != nil {
+		if err := pipeline.WaitForShutdown(); err != nil {
+			log.Printf("warning: waiting for process pipeline shutdown failed: %v", err)
+		}
+	}
 }
 
 // local-sensor adds three new flags to sensor:
@@ -255,6 +317,18 @@ func main() {
 		log.Printf("unable to start continuous profiling: %v", err)
 	}
 	localConfig := mustGetCommandLineArgs()
+	var durationC <-chan time.Time
+	if localConfig.Duration > 0 {
+		durationDeadline := time.Now().Add(localConfig.Duration)
+		durationTimer := time.NewTimer(localConfig.Duration)
+		defer durationTimer.Stop()
+		durationC = durationTimer.C
+		durationLogStop := make(chan struct{})
+		durationLogTicker := time.NewTicker(time.Minute)
+		defer durationLogTicker.Stop()
+		defer close(durationLogStop)
+		go logTimeLeft(durationLogStop, durationDeadline, durationLogTicker.C, time.Now, log.Printf)
+	}
 	if localConfig.WithMetrics {
 		// Start the prometheus metrics server
 		metrics.NewServer(metrics.SensorSubsystem, metrics.NewTLSConfigurerFromEnv()).RunForever()
@@ -265,11 +339,23 @@ func main() {
 	if localConfig.ReplayK8sEnabled {
 		k8sClient = k8s.MakeFakeClient()
 	}
-	var workloadManager *fake.WorkloadManager
+	var (
+		workloadManager *fake.WorkloadManager
+		processPipeline sensor.ProcessPipelineHandle
+	)
 	// if we are using a fake workload we don't want to connect to a real K8s cluster
 	if localConfig.FakeWorkloadFile != "" {
+		if _, err := os.Stat(localConfig.FakeWorkloadFile); err != nil {
+			if os.IsNotExist(err) {
+				log.Fatalf("fake workload profile %q not found", localConfig.FakeWorkloadFile)
+			}
+			log.Fatalf("unable to access fake workload profile %q: %v", localConfig.FakeWorkloadFile, err)
+		}
 		workloadManager = fake.NewWorkloadManager(fake.ConfigDefaults().
 			WithWorkloadFile(localConfig.FakeWorkloadFile))
+		if workloadManager == nil {
+			log.Fatalf("failed to initialize fake workload manager from workload profile %q", localConfig.FakeWorkloadFile)
+		}
 		k8sClient = workloadManager.Client()
 	}
 	if k8sClient == nil {
@@ -277,8 +363,11 @@ func main() {
 		k8sClient, err = k8s.MakeOutOfClusterClient()
 		utils.CrashOnError(err)
 	}
+
+	runLabel := makeRunLabel(localConfig.OutputLabel, time.Now())
+
 	if !localConfig.NoCPUProfile {
-		f, err := os.Create(fmt.Sprintf("local-sensor-cpu-%s.prof", time.Now().UTC().Format(time.RFC3339)))
+		f, err := os.Create(fmt.Sprintf("local-sensor-cpu-%s.prof", runLabel))
 		if err != nil {
 			log.Fatal("could not create CPU profile: ", err)
 		}
@@ -305,6 +394,7 @@ func main() {
 	var connection centralclient.CentralConnectionFactory
 	var certLoader centralclient.CertLoader
 	var spyCentral *centralDebug.FakeService
+	clusterIDHandler := clusterid.NewHandler()
 	if isFakeCentral {
 		connection, certLoader, spyCentral = setupCentralWithFakeConnection(localConfig)
 		defer spyCentral.Stop()
@@ -312,15 +402,31 @@ func main() {
 		connection, certLoader = setupCentralWithRealConnection(k8sClient, localConfig)
 	}
 
+	if spyCentral != nil {
+		spyCentral.SetMessageRecording(!localConfig.SkipCentralOutput)
+	}
+
 	ctx, cancelFunc := context.WithCancel(context.Background())
 	defer cancelFunc()
 
 	sensorConfig := sensor.ConfigWithDefaults().
+		WithClusterIDHandler(clusterIDHandler).
 		WithK8sClient(k8sClient).
 		WithCentralConnectionFactory(connection).
 		WithCertLoader(certLoader).
 		WithLocalSensor(true).
-		WithWorkloadManager(workloadManager)
+		WithWorkloadManager(workloadManager).
+		WithProcessPipelineObserver(func(p sensor.ProcessPipelineHandle) {
+			processPipeline = p
+		})
+
+	// When connecting to real Central, override deployment identification with explicit namespace
+	// to avoid panic during certificate generation (namespace is required but cannot be detected
+	// when running outside a Kubernetes pod without service account files)
+	if !isFakeCentral {
+		deploymentID := createDeploymentIdentificationWithNamespace(localConfig.Namespace)
+		sensorConfig = sensorConfig.WithDeploymentIdentification(deploymentID)
+	}
 
 	if localConfig.FakeCollector {
 		acceptAnyFn := func(ctx context.Context, _ string) (context.Context, error) {
@@ -381,45 +487,111 @@ func main() {
 		}()
 	}
 
+	// CreateSensor will set up the workload manager handlers (SetSignalHandlers, SetVMIndexReportHandler, SetVMStore)
+	// if workloadManager is not nil and VirtualMachines feature is enabled
 	s, err := sensor.CreateSensor(sensorConfig)
 	if err != nil {
 		panic(err)
 	}
 
-	go s.Start()
-	go registerHostKillSignals(startTime, spyCentral, !localConfig.NoMemProfile, localConfig.CentralOutput, localConfig.OutputFormat, cancelFunc, s)
+	sigCh := make(chan os.Signal, 2)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	// Prevent SIGPIPE from killing the process when stdout/stderr is a broken pipe
+	// (e.g. running with "| tee"). Without this, tee dying from SIGINT breaks the
+	// pipe and the next log write terminates the process before graceful shutdown.
+	signal.Ignore(syscall.SIGPIPE)
 
+	// Global signal handler: first signal triggers graceful shutdown from any
+	// phase (waiting for connection, running scenario, or cleanup). Second
+	// signal force-exits. Without this, signals received outside the main
+	// select are silently buffered and dropped once the buffer fills.
+	shutdownRequested := concurrency.NewSignal()
+	go func() {
+		sig := <-sigCh
+		log.Printf("Received %s, starting graceful shutdown (press Ctrl-C again to force exit)", sig)
+		shutdownRequested.Signal()
+		sig = <-sigCh
+		log.Printf("Received %s during graceful shutdown, exiting immediately", sig)
+		os.Exit(130)
+	}()
+
+	go s.Start()
+
+	durationExpired := false
 	if spyCentral != nil {
-		spyCentral.ConnectionStarted.Wait()
+		select {
+		case <-spyCentral.ConnectionStarted.Done():
+		case <-durationC:
+			durationExpired = true
+			log.Printf("Scenario duration elapsed before fake central connection started")
+		case <-shutdownRequested.Done():
+			durationExpired = true
+		}
 	}
 
-	if localConfig.FakeCollector {
+	if !durationExpired && localConfig.FakeCollector {
 		fakeCollector := collector.NewFakeCollector(collector.WithDefaultConfig())
 		if err := fakeCollector.Start(); err != nil {
 			log.Fatalln(err)
 		}
 	}
 
-	log.Printf("Running scenario for %f minutes\n", localConfig.Duration.Minutes())
-	select {
-	case <-time.Tick(localConfig.Duration):
-		s.Stop()
-		break
-	case <-s.Stopped().Done():
-		break
+	if !durationExpired {
+		log.Printf("Running scenario for %.1f minutes\n", localConfig.Duration.Minutes())
+		select {
+		case <-durationC:
+		case <-s.Stopped().Done():
+		case <-shutdownRequested.Done():
+		}
 	}
 
-	if spyCentral != nil {
-		endTime := time.Now()
-		allMessages := spyCentral.GetAllMessages()
-		dumpMessages(allMessages, startTime, endTime, localConfig.CentralOutput, localConfig.OutputFormat)
+	if localConfig.WithMetrics {
+		metricsSnapshotOut := localConfig.MetricsSnapshotOut
+		if metricsSnapshotOut == "" {
+			metricsSnapshotOut = fmt.Sprintf("local-sensor-metrics-%s.prom", runLabel)
+		}
+		if err := writeMetricsSnapshot(ctx, metricsSnapshotOut); err != nil {
+			log.Printf("warning: %v", err)
+		}
+	}
 
+	cancelFunc()
+	if !localConfig.NoMemProfile {
+		writeMemoryProfile(runLabel)
+	}
+	log.Printf("Stopping sensor and workload manager...")
+	stopSensorAndWorkload(workloadManager, s, processPipeline)
+	pprof.StopCPUProfile()
+	log.Printf("Stopping spyCentral")
+	if spyCentral != nil {
+		if !localConfig.SkipCentralOutput {
+			spyCentral.DumpAllMessages(startTime, time.Now(), localConfig.CentralOutput, localConfig.OutputFormat)
+		}
 		spyCentral.KillSwitch.Signal()
 	}
 }
 
+// createDeploymentIdentificationWithNamespace creates a minimal DeploymentIdentification
+// for local-sensor connecting to real Central. Only AppNamespace is required for certificate
+// generation; other fields (namespace IDs, service account ID) can remain empty for local development.
+func createDeploymentIdentificationWithNamespace(namespace string) *storage.SensorDeploymentIdentification {
+	return &storage.SensorDeploymentIdentification{
+		AppNamespace: namespace,
+		// SystemNamespaceId, DefaultNamespaceId, AppNamespaceId, AppServiceaccountId
+		// are not required for certificate generation and can be empty for local-sensor
+	}
+}
+
 func setupCentralWithRealConnection(cli client.Interface, localConfig localSensorConfig) (centralclient.CentralConnectionFactory, centralclient.CertLoader) {
-	certFetcher := certs.NewCertificateFetcher(cli, certs.WithOutputDir("tmp/"))
+	certFetcherOpts := []certs.OptionFunc{
+		certs.WithOutputDir("tmp/"),
+		certs.WithNamespace(localConfig.Namespace),
+	}
+	// Operator installations do not have the clusterNameSecret (usually 'helm-effective-cluster-name')
+	if localConfig.OperatorInstall {
+		certFetcherOpts = append(certFetcherOpts, certs.WithClusterName("", "", ""))
+	}
+	certFetcher := certs.NewCertificateFetcher(cli, certFetcherOpts...)
 	if err := certFetcher.FetchCertificatesAndSetEnvironment(); err != nil {
 		utils.CrashOnError(errors.Wrap(err, "failed to retrieve sensor's certificates"))
 	}
@@ -455,15 +627,12 @@ func setupCentralWithFakeConnection(localConfig localSensorConfig) (centralclien
 	}
 
 	initialMessages := []*central.MsgToSensor{
-		message.SensorHello("00000000-0000-4000-A000-000000000000"),
+		message.SensorHello("00000000-0000-4000-A000-000000000000", string(centralsensor.VirtualMachinesSupported)),
 		message.ClusterConfig(),
 		message.PolicySync(policies),
 		message.BaselineSync([]*storage.ProcessBaseline{}),
 		message.NetworkBaselineSync([]*storage.NetworkBaseline{}),
-	}
-
-	if features.SensorReconciliationOnReconnect.Enabled() {
-		initialMessages = append(initialMessages, message.DeduperState(nil, 1, 1))
+		message.DeduperState(nil, 1, 1),
 	}
 
 	fakeCentral := centralDebug.MakeFakeCentralWithInitialMessages(initialMessages...)
@@ -479,19 +648,4 @@ func setupCentralWithFakeConnection(localConfig localSensorConfig) (centralclien
 	fakeConnectionFactory := centralDebug.MakeFakeConnectionFactory(conn)
 
 	return fakeConnectionFactory, centralclient.EmptyCertLoader(), spyCentral
-}
-
-type sensorMessageJSONOutput struct {
-	ScenarioStart      string                   `json:"scenario_start"`
-	ScenarioEnd        string                   `json:"scenario_end"`
-	MessagesFromSensor []*central.MsgFromSensor `json:"messages_from_sensor"`
-}
-
-func dumpMessages(messages []*central.MsgFromSensor, start, end time.Time, outfile string, outputFormat string) {
-	log.Printf("Dumping all sensor messages to file: %s\n", outfile)
-	f, ok := validFormats[outputFormat]
-	if !ok {
-		log.Fatalf("invalid format '%s'", outputFormat)
-	}
-	f(messages, start, end, outfile)
 }

@@ -5,18 +5,13 @@ import (
 	"github.com/stackrox/rox/central/compliance/standards/index"
 	subjectMapping "github.com/stackrox/rox/central/rbac/service/mapping"
 	v1 "github.com/stackrox/rox/generated/api/v1"
+	"github.com/stackrox/rox/pkg/features"
 	"github.com/stackrox/rox/pkg/postgres/schema"
 	"github.com/stackrox/rox/pkg/search"
 )
 
 // GetEntityOptionsMap is a mapping from search categories to the options
 func GetEntityOptionsMap() map[v1.SearchCategory]search.OptionsMap {
-	// Note: with the dackbox graph split brought with the postgres migration, the concept
-	// of CVE was split into ClusterCVE, ImageCVE and NodeCVE. The old content seems to focus
-	// mostly on image CVEs.
-	// Note: with the dackbox graph split brought with the postgres migration, the concept
-	// of Component (ImageComponent) was split into ImageComponent and NodeComponent.
-	// The old content seems to focus mostly on image Components.
 	clusterToVulnerabilitySearchOptions := search.CombineOptionsMaps(
 		schema.ClusterCvesSchema.OptionsMap,
 		schema.ClusterCveEdgesSchema.OptionsMap,
@@ -29,13 +24,14 @@ func GetEntityOptionsMap() map[v1.SearchCategory]search.OptionsMap {
 		schema.ProcessIndicatorsSchema.OptionsMap,
 	)
 
-	imageToVulnerabilitySearchOptions := search.CombineOptionsMaps(
-		schema.ImageCvesSchema.OptionsMap,
-		schema.ImageCveEdgesSchema.OptionsMap,
-		schema.ImageComponentCveEdgesSchema.OptionsMap,
-		schema.ImageComponentsSchema.OptionsMap,
-		schema.ImageComponentEdgesSchema.OptionsMap,
-		schema.ImagesSchema.OptionsMap,
+	imageOptionsMap := schema.ImagesSchema.OptionsMap
+	if features.FlattenImageData.Enabled() {
+		imageOptionsMap = schema.ImagesV2Schema.OptionsMap
+	}
+	imageToVulnerabilityV2SearchOptions := search.CombineOptionsMaps(
+		schema.ImageCvesV2Schema.OptionsMap,
+		schema.ImageComponentV2Schema.OptionsMap,
+		imageOptionsMap,
 		schema.DeploymentsSchema.OptionsMap,
 	)
 
@@ -59,21 +55,14 @@ func GetEntityOptionsMap() map[v1.SearchCategory]search.OptionsMap {
 	// EntityOptionsMap is a mapping from search categories to the options map for that category.
 	// search document maps are also built off this map
 	entityOptionsMap := map[v1.SearchCategory]search.OptionsMap{
-		v1.SearchCategory_ACTIVE_COMPONENT:        schema.ActiveComponentsSchema.OptionsMap,
 		v1.SearchCategory_ALERTS:                  alertSearchOptions,
 		v1.SearchCategory_CLUSTER_VULN_EDGE:       clusterToVulnerabilitySearchOptions,
 		v1.SearchCategory_CLUSTER_VULNERABILITIES: clusterToVulnerabilitySearchOptions,
 		v1.SearchCategory_CLUSTERS:                schema.ClustersSchema.OptionsMap,
 		v1.SearchCategory_COMPLIANCE_STANDARD:     index.StandardOptions,
 		v1.SearchCategory_COMPLIANCE_CONTROL:      index.ControlOptions,
-		v1.SearchCategory_COMPONENT_VULN_EDGE:     imageToVulnerabilitySearchOptions,
 		v1.SearchCategory_DEPLOYMENTS:             deploymentsCustomSearchOptions,
-		v1.SearchCategory_IMAGE_COMPONENT_EDGE:    imageToVulnerabilitySearchOptions,
-		v1.SearchCategory_IMAGE_COMPONENTS:        imageToVulnerabilitySearchOptions,
 		v1.SearchCategory_IMAGE_INTEGRATIONS:      schema.ImageIntegrationsSchema.OptionsMap,
-		v1.SearchCategory_IMAGE_VULN_EDGE:         imageToVulnerabilitySearchOptions,
-		v1.SearchCategory_IMAGE_VULNERABILITIES:   imageToVulnerabilitySearchOptions,
-		v1.SearchCategory_IMAGES:                  imageToVulnerabilitySearchOptions,
 		v1.SearchCategory_NAMESPACES:              schema.NamespacesSchema.OptionsMap,
 		v1.SearchCategory_NODE_COMPONENT_EDGE:     nodeToVulnerabilitySearchOptions,
 		v1.SearchCategory_NODE_COMPONENTS:         nodeToVulnerabilitySearchOptions,
@@ -101,6 +90,15 @@ func GetEntityOptionsMap() map[v1.SearchCategory]search.OptionsMap {
 		schema.ReportSnapshotsSchema.OptionsMap,
 	)
 	entityOptionsMap[v1.SearchCategory_REPORT_CONFIGURATIONS] = reportConfigurationSearchOptions
+
+	entityOptionsMap[v1.SearchCategory_IMAGE_COMPONENTS_V2] = imageToVulnerabilityV2SearchOptions
+	entityOptionsMap[v1.SearchCategory_IMAGE_VULNERABILITIES_V2] = imageToVulnerabilityV2SearchOptions
+	if features.FlattenImageData.Enabled() {
+		entityOptionsMap[v1.SearchCategory_IMAGES_V2] = imageToVulnerabilityV2SearchOptions
+		entityOptionsMap[v1.SearchCategory_IMAGES] = imageToVulnerabilityV2SearchOptions
+	} else {
+		entityOptionsMap[v1.SearchCategory_IMAGES] = imageToVulnerabilityV2SearchOptions
+	}
 
 	return entityOptionsMap
 }

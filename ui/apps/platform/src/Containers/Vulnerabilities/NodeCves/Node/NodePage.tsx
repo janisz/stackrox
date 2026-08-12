@@ -1,15 +1,12 @@
-import React from 'react';
-import { useParams } from 'react-router-dom';
+import { useParams } from 'react-router-dom-v5-compat';
 import { gql, useQuery } from '@apollo/client';
 import {
-    PageSection,
     Breadcrumb,
-    Divider,
     BreadcrumbItem,
-    Skeleton,
     Bullseye,
+    PageSection,
+    Skeleton,
     Tab,
-    TabContent,
     Tabs,
 } from '@patternfly/react-core';
 import { ExclamationCircleIcon } from '@patternfly/react-icons';
@@ -23,12 +20,10 @@ import { getAxiosErrorMessage } from 'utils/responseErrorUtils';
 import { detailsTabValues } from '../../types';
 import { getOverviewPagePath } from '../../utils/searchUtils';
 
-import NodePageHeader, { NodeMetadata, nodeMetadataFragment } from './NodePageHeader';
+import NodePageHeader, { nodeMetadataFragment } from './NodePageHeader';
+import type { NodeMetadata } from './NodePageHeader';
 import NodePageVulnerabilities from './NodePageVulnerabilities';
 import NodePageDetails from './NodePageDetails';
-
-const idDetails = 'NodePageDetails';
-const idVulnerabilities = 'NodePageVulnerabilities';
 
 const nodeCveOverviewPath = getOverviewPagePath('Node', {
     entityTab: 'Node',
@@ -60,7 +55,7 @@ function NodePage() {
     return (
         <>
             <PageTitle title={`Node CVEs - Node ${nodeName}`} />
-            <PageSection variant="light" className="pf-v5-u-py-md">
+            <PageSection type="breadcrumb">
                 <Breadcrumb>
                     <BreadcrumbItemLink to={nodeCveOverviewPath}>Nodes</BreadcrumbItemLink>
                     <BreadcrumbItem isActive>
@@ -70,62 +65,40 @@ function NodePage() {
                     </BreadcrumbItem>
                 </Breadcrumb>
             </PageSection>
-            <Divider component="div" />
             {error ? (
-                <PageSection variant="light">
+                <PageSection>
                     <Bullseye>
                         <EmptyStateTemplate
                             title={getAxiosErrorMessage(error)}
                             headingLevel="h2"
                             icon={ExclamationCircleIcon}
-                            iconClassName="pf-v5-u-danger-color-100"
+                            status="danger"
                         />
                     </Bullseye>
                 </PageSection>
             ) : (
                 <>
-                    <PageSection variant="light">
+                    <PageSection>
                         <NodePageHeader data={data?.node} />
                     </PageSection>
-                    <PageSection padding={{ default: 'noPadding' }}>
+                    <PageSection type="tabs">
                         <Tabs
                             activeKey={activeTabKey}
                             onSelect={(e, key) => {
                                 setActiveTabKey(key);
                                 // pagination.setPage(1);
                             }}
-                            className="pf-v5-u-pl-md pf-v5-u-background-color-100"
+                            usePageInsets
+                            mountOnEnter
+                            unmountOnExit
                         >
-                            <Tab
-                                eventKey={vulnTabKey}
-                                tabContentId={idVulnerabilities}
-                                title={vulnTabKey}
-                            />
-                            <Tab
-                                eventKey={detailTabKey}
-                                tabContentId={idDetails}
-                                title={detailTabKey}
-                            />
-                        </Tabs>
-                    </PageSection>
-                    <PageSection
-                        isFilled
-                        padding={{ default: 'noPadding' }}
-                        className="pf-v5-u-display-flex pf-v5-u-flex-direction-column"
-                        aria-label={activeTabKey}
-                        role="tabpanel"
-                        tabIndex={0}
-                    >
-                        {activeTabKey === vulnTabKey && (
-                            <TabContent id={idVulnerabilities}>
+                            <Tab eventKey={vulnTabKey} title={vulnTabKey}>
                                 <NodePageVulnerabilities nodeId={nodeId} />
-                            </TabContent>
-                        )}
-                        {activeTabKey === detailTabKey && (
-                            <TabContent id={idDetails}>
+                            </Tab>
+                            <Tab eventKey={detailTabKey} title={detailTabKey}>
                                 <NodePageDetails nodeId={nodeId} />
-                            </TabContent>
-                        )}
+                            </Tab>
+                        </Tabs>
                     </PageSection>
                 </>
             )}

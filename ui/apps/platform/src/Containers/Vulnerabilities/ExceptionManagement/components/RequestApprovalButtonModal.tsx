@@ -1,14 +1,13 @@
-import React, { useState } from 'react';
-import { Alert, Button, Form, Modal, TextArea, pluralize } from '@patternfly/react-core';
+import { useState } from 'react';
+import { Alert, Button, Form, TextArea, pluralize } from '@patternfly/react-core';
+import { Modal } from '@patternfly/react-core/deprecated';
 import * as yup from 'yup';
 import { useFormik } from 'formik';
 import isEqual from 'lodash/isEqual';
 
 import useModal from 'hooks/useModal';
-import {
-    VulnerabilityException,
-    approveVulnerabilityException,
-} from 'services/VulnerabilityExceptionService';
+import { approveVulnerabilityException } from 'services/VulnerabilityExceptionService';
+import type { VulnerabilityException } from 'services/VulnerabilityExceptionService';
 import FormLabelGroup from 'Components/PatternFly/FormLabelGroup';
 import useRestMutation from 'hooks/useRestMutation';
 import { getAxiosErrorMessage } from 'utils/responseErrorUtils';

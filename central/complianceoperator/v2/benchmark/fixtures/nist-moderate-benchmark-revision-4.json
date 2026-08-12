@@ -1,0 +1,13 @@
+{
+  "name": "NIST 800-53 Moderate-Impact Baseline",
+  "provider": "NIST",
+  "shortName": "NIST-800-53",
+  "profiles": [
+    { "profileName": "ocp4-moderate" },
+    { "profileName": "ocp4-moderate-node" },
+    { "profileName": "rhcos4-moderate" },
+    { "profileName": "ocp4-moderate-rev-4" },
+    { "profileName": "ocp4-moderate-node-rev-4" },
+    { "profileName": "rhcos4-moderate-rev-4" }
+  ]
+}

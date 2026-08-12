@@ -1,18 +1,25 @@
 /* eslint-disable react/no-array-index-key */
-import React, { ReactElement, useState } from 'react';
-import { Button, Label, Toolbar, ToolbarContent, ToolbarItem } from '@patternfly/react-core';
-
+import { useState } from 'react';
+import type { ReactElement } from 'react';
 import {
+    Button,
+    Flex,
+    Label,
+    List,
+    ListItem,
+    Toolbar,
+    ToolbarContent,
+    ToolbarItem,
+} from '@patternfly/react-core';
+
+import type {
     LabelSelector,
     LabelSelectorRequirement,
     LabelSelectorsKey,
 } from 'services/AccessScopesService';
 
-import {
-    LabelSelectorsEditingState,
-    getIsEditingLabelSelectorOnTab,
-    getLabelSelectorActivity,
-} from './accessScopes.utils';
+import { getIsEditingLabelSelectorOnTab, getLabelSelectorActivity } from './accessScopes.utils';
+import type { LabelSelectorsEditingState } from './accessScopes.utils';
 import LabelSelectorCard from './LabelSelectorCard';
 
 export type LabelSelectorCardsProps = {
@@ -94,61 +101,63 @@ function LabelSelectorCards({
     }
 
     return (
-        <ul>
-            {labelSelectors.map((labelSelector, indexLabelSelector) => (
-                <li key={indexLabelSelector} className="pf-v5-u-pt-md">
-                    {indexLabelSelector !== 0 && (
-                        <div className="pf-v5-u-mb-md pf-v5-u-text-align-center">
-                            <Label variant="outline" className="pf-v5-u-px-md">
-                                or
-                            </Label>
-                        </div>
-                    )}
-                    <LabelSelectorCard
-                        requirements={labelSelector.requirements}
-                        labelSelectorsKey={labelSelectorsKey}
-                        hasAction={hasAction}
-                        indexRequirementActive={indexRequirementActive}
-                        setIndexRequirementActive={setIndexRequirementActive}
-                        activity={getLabelSelectorActivity(
-                            labelSelectorsEditingState,
-                            labelSelectorsKey,
-                            indexLabelSelector
+        <Flex direction={{ default: 'column' }} spaceItems={{ default: 'spaceItemsSm' }}>
+            <List isPlain>
+                {labelSelectors.map((labelSelector, indexLabelSelector) => (
+                    <ListItem key={indexLabelSelector} className="pf-v6-u-pt-sm">
+                        {indexLabelSelector !== 0 && (
+                            <div className="pf-v6-u-mb-md pf-v6-u-text-align-center">
+                                <Label variant="outline" className="pf-v6-u-px-md">
+                                    or
+                                </Label>
+                            </div>
                         )}
-                        handleLabelSelectorDelete={() =>
-                            handleLabelSelectorDelete(indexLabelSelector)
-                        }
-                        handleLabelSelectorEdit={() => handleLabelSelectorEdit(indexLabelSelector)}
-                        handleLabelSelectorOK={handleLabelSelectorOK}
-                        handleLabelSelectorCancel={handleLabelSelectorCancel}
-                        handleRequirementsChange={(requirements) =>
-                            handleRequirementsChange(indexLabelSelector, requirements)
-                        }
-                    />
-                </li>
-            ))}
+                        <LabelSelectorCard
+                            requirements={labelSelector.requirements}
+                            labelSelectorsKey={labelSelectorsKey}
+                            hasAction={hasAction}
+                            indexRequirementActive={indexRequirementActive}
+                            setIndexRequirementActive={setIndexRequirementActive}
+                            activity={getLabelSelectorActivity(
+                                labelSelectorsEditingState,
+                                labelSelectorsKey,
+                                indexLabelSelector
+                            )}
+                            handleLabelSelectorDelete={() =>
+                                handleLabelSelectorDelete(indexLabelSelector)
+                            }
+                            handleLabelSelectorEdit={() =>
+                                handleLabelSelectorEdit(indexLabelSelector)
+                            }
+                            handleLabelSelectorOK={handleLabelSelectorOK}
+                            handleLabelSelectorCancel={handleLabelSelectorCancel}
+                            handleRequirementsChange={(requirements) =>
+                                handleRequirementsChange(indexLabelSelector, requirements)
+                            }
+                        />
+                    </ListItem>
+                ))}
+            </List>
             {hasAction && (
-                <li>
-                    <Toolbar inset={{ default: 'insetNone' }}>
-                        <ToolbarContent>
-                            <ToolbarItem>
-                                <Button
-                                    variant="primary"
-                                    className="pf-m-smaller"
-                                    isDisabled={getIsEditingLabelSelectorOnTab(
-                                        labelSelectorsEditingState,
-                                        labelSelectorsKey
-                                    )}
-                                    onClick={onAddLabelSelector}
-                                >
-                                    Add label selector
-                                </Button>
-                            </ToolbarItem>
-                        </ToolbarContent>
-                    </Toolbar>
-                </li>
+                <Toolbar inset={{ default: 'insetNone' }}>
+                    <ToolbarContent>
+                        <ToolbarItem>
+                            <Button
+                                variant="primary"
+                                size="sm"
+                                isDisabled={getIsEditingLabelSelectorOnTab(
+                                    labelSelectorsEditingState,
+                                    labelSelectorsKey
+                                )}
+                                onClick={onAddLabelSelector}
+                            >
+                                Add label selector
+                            </Button>
+                        </ToolbarItem>
+                    </ToolbarContent>
+                </Toolbar>
             )}
-        </ul>
+        </Flex>
     );
 }
 

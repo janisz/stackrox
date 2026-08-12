@@ -1,5 +1,5 @@
-import React from 'react';
-import { Button, Flex, Modal, Text, Title } from '@patternfly/react-core';
+import { Button, Content, Flex, Title } from '@patternfly/react-core';
+import { Modal } from '@patternfly/react-core/deprecated';
 import NetworkPoliciesYAML from './NetworkPoliciesYAML';
 
 export type CompareYAMLModalProps = {
@@ -17,9 +17,9 @@ function CompareYAMLModal({ current, generated, isOpen, onClose }: CompareYAMLMo
             header={
                 <>
                     <Title headingLevel="h2">Compare with existing network policies</Title>
-                    <Text>
+                    <Content component="p">
                         Compare the generated network policies to the existing network policies.
-                    </Text>
+                    </Content>
                 </>
             }
             onClose={onClose}
@@ -30,17 +30,27 @@ function CompareYAMLModal({ current, generated, isOpen, onClose }: CompareYAMLMo
             ]}
         >
             <Flex
-                className="pf-v5-u-mt-md"
+                className="pf-v6-u-mt-md"
                 direction={{ default: 'column', md: 'row' }}
                 flexWrap={{ default: 'nowrap' }}
             >
                 <Flex direction={{ default: 'column' }} style={{ flex: '1' }}>
-                    <Text className="pf-v5-u-font-weight-bold">Existing network policies</Text>
-                    <NetworkPoliciesYAML yaml={current} height="400px" />
+                    <Content component="p" className="pf-v6-u-font-weight-bold">
+                        Existing network policies
+                    </Content>
+                    <NetworkPoliciesYAML
+                        yaml={current}
+                        style={{ '--pf-v6-u-max-height--MaxHeight': '400px' }}
+                    />
                 </Flex>
                 <Flex direction={{ default: 'column' }} style={{ flex: '1' }}>
-                    <Text className="pf-v5-u-font-weight-bold">Generated network policies</Text>
-                    <NetworkPoliciesYAML yaml={generated} height="400px" />
+                    <Content component="p" className="pf-v6-u-font-weight-bold">
+                        Generated network policies
+                    </Content>
+                    <NetworkPoliciesYAML
+                        yaml={generated}
+                        style={{ '--pf-v6-u-max-height--MaxHeight': '400px' }}
+                    />
                 </Flex>
             </Flex>
         </Modal>

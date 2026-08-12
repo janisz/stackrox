@@ -12,8 +12,8 @@ import (
 	"github.com/stackrox/rox/pkg/httputil"
 	"github.com/stackrox/rox/pkg/images/defaults"
 	"github.com/stackrox/rox/pkg/zip"
+	"go.yaml.in/yaml/v3"
 	"google.golang.org/grpc/codes"
-	"gopkg.in/yaml.v3"
 )
 
 // Handler returns a handler for the helm-config method.
@@ -62,7 +62,7 @@ func (h helmConfigHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		httputil.WriteGRPCStyleError(w, codes.Internal, errors.Wrap(err, "marshalling cluster configuration as YAML"))
 		return
 	}
-	configYamlBytes := []byte(configYaml)
+	configYamlBytes := configYaml
 
 	// Tell the browser this is a download.
 	w.Header().Add("Content-Disposition", fmt.Sprintf(`attachment; filename="values-%s.yaml"`, zip.GetSafeFilename(cluster.GetName())))

@@ -24,13 +24,15 @@ func AlertToListAlert(alert *storage.Alert) *storage.ListAlert {
 		EnforcementAction: alert.GetEnforcement().GetAction(),
 	}
 	if alert.GetState() == storage.ViolationState_ACTIVE {
-		listAlert.EnforcementCount = enforcementCount(alert)
+		listAlert.EnforcementCount = EnforcementCount(alert)
 	}
 
 	if alert.GetDeployment() != nil {
 		populateListAlertEntityInfoForDeployment(listAlert, alert.GetDeployment())
 	} else if alert.GetResource() != nil {
 		populateListAlertEntityInfoForResource(listAlert, alert.GetResource())
+	} else if alert.GetNode() != nil {
+		populateListAlertEntityInfoForNode(listAlert, alert)
 	}
 
 	return listAlert
@@ -63,7 +65,7 @@ func populateListAlertEntityInfoForDeployment(listAlert *storage.ListAlert, depl
 			Namespace:      deployment.GetNamespace(),
 			NamespaceId:    deployment.GetNamespaceId(),
 			Inactive:       deployment.GetInactive(),
-			DeploymentType: deployment.GetType(),
+			DeploymentType: deploymentTypeOrDefault(deployment.GetType()),
 		},
 	}
 	listAlert.CommonEntityInfo = &storage.ListAlert_CommonEntityInfo{
@@ -75,7 +77,30 @@ func populateListAlertEntityInfoForDeployment(listAlert *storage.ListAlert, depl
 	}
 }
 
-func enforcementCount(alert *storage.Alert) int32 {
+func deploymentTypeOrDefault(dt string) string {
+	if dt != "" {
+		return dt
+	}
+	return "Deployment"
+}
+
+func populateListAlertEntityInfoForNode(listAlert *storage.ListAlert, alert *storage.Alert) {
+	listAlert.Entity = &storage.ListAlert_Node{
+		Node: &storage.ListAlert_NodeEntity{
+			Name: alert.GetNode().GetName(),
+		},
+	}
+	listAlert.CommonEntityInfo = &storage.ListAlert_CommonEntityInfo{
+		ClusterName:  alert.GetClusterName(),
+		ClusterId:    alert.GetClusterId(),
+		ResourceType: storage.ListAlert_NODE,
+	}
+}
+
+// EnforcementCount computes the enforcement count for an alert based on its
+// lifecycle stage and enforcement action. For RUNTIME+KILL_POD alerts, it counts
+// unique pod IDs from ProcessViolation.Processes.
+func EnforcementCount(alert *storage.Alert) int32 {
 	if alert.GetEnforcement() == nil {
 		return 0
 	}
@@ -144,6 +169,16 @@ func ToAlertResource(kubeEvent *storage.KubernetesEvent) *storage.Alert_Resource
 			Name:         kubeEvent.GetObject().GetName(),
 			ClusterId:    kubeEvent.GetObject().GetClusterId(),
 			Namespace:    kubeEvent.GetObject().GetNamespace(),
+		},
+	}
+}
+
+// ToAlertNode converts a storage.Node to an Alert_Node_
+func ToAlertNode(node *storage.Node) *storage.Alert_Node_ {
+	return &storage.Alert_Node_{
+		Node: &storage.Alert_Node{
+			Id:   node.GetId(),
+			Name: node.GetName(),
 		},
 	}
 }

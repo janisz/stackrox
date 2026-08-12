@@ -1,13 +1,13 @@
-import React from 'react';
-import { Card, CardBody, CardProps, CardTitle, Progress } from '@patternfly/react-core';
+import { Card, CardBody, CardTitle, Progress } from '@patternfly/react-core';
+import type { CardProps } from '@patternfly/react-core';
 
-import { ComplianceRunStatusResponse } from './useComplianceRunStatuses';
+import type { ComplianceRunStatusResponse } from './useComplianceRunStatuses';
 
-export type ComplianceDashboardCurrentProps = {
+export type ComplianceScanProgressProps = {
     runs: ComplianceRunStatusResponse['complianceRunStatuses']['runs'];
 } & CardProps;
 
-function ComplianceScanProgress({ runs, ...props }: ComplianceDashboardCurrentProps) {
+function ComplianceScanProgress({ runs, ...props }: ComplianceScanProgressProps) {
     const unfinishedRunCount = runs.filter((run) => run.state !== 'FINISHED').length;
     const finishedRunCount = runs.length - unfinishedRunCount;
 

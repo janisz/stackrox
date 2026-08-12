@@ -23,6 +23,9 @@ NAMESPACE ?= stackrox
 # To re-generate a bundle for other specific channels without changing the standard setup, you can:
 # - use the CHANNELS as arg of the bundle target (e.g make bundle CHANNELS=candidate,fast,stable)
 # - use environment variables to overwrite this value (e.g export CHANNELS="candidate,fast,stable")
+# This channels value goes into bundle/metadata/annotations.yaml and does not play any role in our upstream builds or
+# FBC releases but there's a team that depends on it, see ROX-31301.
+CHANNELS ?= stable
 ifneq ($(origin CHANNELS), undefined)
 BUNDLE_CHANNELS := --channels=$(CHANNELS)
 endif
@@ -69,12 +72,20 @@ INSTALL_CHANNEL ?= latest
 # INDEX_IMG_BASE and INDEX_IMG_TAG define the image:tag used for the index (a.k.a. catalog) image.
 # These variables can be overridden when calling deploy*-via-olm targets,
 # e.g. to deploy catalogs from IIB or other externally-built indexes.
-INDEX_IMG_BASE = $(IMAGE_TAG_BASE)-index
+INDEX_IMG_BASE ?= $(IMAGE_TAG_BASE)-index
 INDEX_IMG_TAG ?= $(CSV_VERSION)
 INDEX_IMG ?= $(INDEX_IMG_BASE):$(INDEX_IMG_TAG)
 
 # Image URL to use all building/pushing image targets
 IMG ?= $(IMAGE_TAG_BASE):$(VERSION)
+
+# RELATED_IMAGES_MODE controls how container image references are handled in the operator bundle CSV.
+# Valid values:
+#   omit (default)   - No related images in CSV (upstream builds)
+#   downstream       - Inject RELATED_IMAGE_* env vars for Red Hat builds (no spec.relatedImages)
+#   konflux          - Add explicit spec.relatedImages section for Konflux builds
+# Used by bundle-post-process target to support image mirroring and disconnected environments.
+RELATED_IMAGES_MODE ?= omit
 
 # Set up the so-called "storage image" for executing scorecard test suite.
 # By default a busybox image is pulled from docker.io. In order to rule out timing issues related to rate limiting
@@ -102,14 +113,14 @@ SCORECARD_ARGS ?= --storage-image="$(SCORECARD_STORAGE_IMAGE)" --wait-time="$(SC
 PROJECT_DIR := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
 
 # TEST_NAMESPACE is where the operator is installed for e2e tests by CI.
-TEST_NAMESPACE ?= stackrox-operator
+TEST_NAMESPACE ?= stackrox-operator-system
 
 # TEST_E2E_ENV_IS_OPENSHIFT is "true" when the cluster to run e2e tests on is an
 # OpenShift one, and "false" otherwise.
 TEST_E2E_ENV_IS_OPENSHIFT ?= $(shell $(PROJECT_DIR)/hack/retry-kubectl.sh < /dev/null get scc > /dev/null 2>&1 && echo true || echo false)
 
-# KUTTL_TEST_RUN_LABELS_ARGS specifies what label set to use for kuttl tests.
-KUTTL_TEST_RUN_LABELS_ARGS ?= --test-run-labels openshift=$(TEST_E2E_ENV_IS_OPENSHIFT)
+# KUTTL_TEST_RUN_ARGS specifies what label set and templating vars to use for kuttl tests.
+KUTTL_TEST_RUN_ARGS ?= --test-run-labels openshift=$(TEST_E2E_ENV_IS_OPENSHIFT) --template-var operator_ns=$(TEST_NAMESPACE)
 
 # ROX_IMAGE_FLAVOR is an ARG used in Dockerfiles that defines the default registries for main, scanner, and collector images.
 # ROX_IMAGE_FLAVOR valid values are: development_build, opensource, rhacs.
@@ -156,6 +167,10 @@ help: ## Display this help.
 tag: ## Print the correct operator version (== image tag).
 	@echo $(VERSION)
 
+.PHONY: replaced-version
+replaced-version: ## Print the replaced operator version, without the v prefix.
+	@sed -E -n 's/^[[:space:]]*replaces:[[:space:]]*[^.]+\.v?(.*)$$/\1/p' build/bundle/manifests/rhacs-operator.clusterserviceversion.yaml
+
 .PHONY: image-flavor
 image-flavor: ## Print the current image flavor.
 	@echo $(ROX_IMAGE_FLAVOR)
@@ -177,21 +192,27 @@ everything: build bundle ## Build everything (local binary, operator image, bund
 	$(MAKE) docker-push-index
 
 ##@ Dependencies download
+include $(PROJECT_DIR)/../make/goproxy.mk
 include $(PROJECT_DIR)/../make/gotools.mk
 
 $(call go-tool, CONTROLLER_GEN, sigs.k8s.io/controller-tools/cmd/controller-gen, tools/controller-gen)
 $(call go-tool, ENVTEST, sigs.k8s.io/controller-runtime/tools/setup-envtest, tools/envtest)
 $(call go-tool, KUSTOMIZE, sigs.k8s.io/kustomize/kustomize/v5, tools/kustomize)
-$(call go-tool, OPERATOR_SDK, github.com/operator-framework/operator-sdk/cmd/operator-sdk, tools/operator-sdk)
-$(call go-tool, OLM, github.com/operator-framework/operator-lifecycle-manager/cmd/olm, tools/operator-sdk)
+$(call go-tool, KUBEBUILDER, sigs.k8s.io/kubebuilder/v4, tools/kubebuilder)
 $(call go-tool, KUTTL, github.com/kudobuilder/kuttl/cmd/kubectl-kuttl, tools/kuttl)
 $(call go-tool, YQ, github.com/mikefarah/yq/v4, tools/yq)
 
+# Build operator-sdk with containers_image_openpgp tag to avoid gpgme dependency
+# See: https://github.com/containers/image/blob/df7e80d2d19872b61f352a8a182ec934dc0c2346/README.md#buildtag-containers_image_openpgp
+$(call go-tool, OPERATOR_SDK, github.com/operator-framework/operator-sdk/cmd/operator-sdk, tools/operator-sdk, -tags=containers_image_openpgp)
+
 OPERATOR_SDK_VERSION = $(shell cd tools/operator-sdk; go list -m -f '{{ .Version }}' github.com/operator-framework/operator-sdk)
-OLM_VERSION = $(shell cd tools/operator-sdk; go list -m -f '{{ .Version }}' github.com/operator-framework/operator-lifecycle-manager)
 
 .PHONY: kustomize
 kustomize: $(KUSTOMIZE) ## Download kustomize locally if necessary.
+
+.PHONY: kubebuilder
+kubebuilder: $(KUBEBUILDER) ## Download kubebuilder locally if necessary.
 
 .PHONY: controller-gen
 controller-gen: $(CONTROLLER_GEN) ## Download controller-gen locally if necessary.
@@ -213,7 +234,7 @@ yq: $(YQ) ## Download yq.
 
 .PHONY: parent-proto-generate
 parent-proto-generate: ## Make sure ../generated directory has up-to-date content that this operator (transitively) depends upon.
-	$(MAKE) -C .. proto-generated-srcs
+	[[ $${ROX_OPERATOR_SKIP_PROTO_GENERATED_SRCS:-false} = true ]] || $(MAKE) -C .. proto-generated-srcs
 
 .PHONY: manifests
 manifests: parent-proto-generate controller-gen ## Generate WebhookConfiguration, ClusterRole and CustomResourceDefinition objects.
@@ -234,7 +255,9 @@ vet: ## Run go vet against code.
 	go vet ./...
 
 # ENVTEST_K8S_VERSION refers to the version of kubebuilder assets to be downloaded by envtest binary.
-ENVTEST_K8S_VERSION = 1.29
+# Dynamically derived from the k8s.io/api dependency version in go.mod (v0.X.Y -> 1.X),
+# since not all patch versions are re-published.
+ENVTEST_K8S_VERSION ?= $(shell go list -m -f '{{.Version}}' k8s.io/api | sed 's/^v0\.\([0-9]*\).*/1.\1/')
 
 .PHONY: test
 test: manifests generate fmt vet  ## Run go unit tests
@@ -242,6 +265,10 @@ test: manifests generate fmt vet  ## Run go unit tests
 
 test-integration: manifests generate fmt vet envtest ## Run go integration tests
 	KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path)" go test ./tests/... -coverprofile cover-integration.out
+
+test-helm: ## Run operator helm chart tests.
+	ROX_PRODUCT_BRANDING=RHACS_BRANDING $(MAKE) chart # Setting the env var to produce the rhacs- flavor assumed by the subsequent test.
+	go test -tags operator_helmtest -count=1 -v ./tests/chart/...
 
 .PHONY: validate-crs
 CRDS := centrals.platform.stackrox.io securedclusters.platform.stackrox.io
@@ -251,25 +278,19 @@ validate-crs: yq
 .PHONY: test-e2e
 test-e2e: build install validate-crs kuttl ensure-rox-main-image-exists ## Run e2e tests with local manager.
 	mkdir -p $(PROJECT_DIR)/build/kuttl-test-artifacts
-	KUTTL=$(KUTTL) PATH="$(PROJECT_DIR)/hack:$${PATH}" $(KUTTL) test $(KUTTL_TEST_RUN_LABELS_ARGS)
+	KUTTL=$(KUTTL) PATH="$(PROJECT_DIR)/hack:$${PATH}" $(KUTTL) test $(KUTTL_TEST_RUN_ARGS)
 
 .PHONY: test-e2e-deployed
 test-e2e-deployed: validate-crs kuttl ## Run e2e tests with manager deployed on cluster.
 	mkdir -p $(PROJECT_DIR)/build/kuttl-test-artifacts
-	KUTTL=$(KUTTL) PATH="$(PROJECT_DIR)/hack:$${PATH}" SKIP_MANAGER_START=1 $(KUTTL) test $(KUTTL_TEST_RUN_LABELS_ARGS)
+	KUTTL=$(KUTTL) PATH="$(PROJECT_DIR)/hack:$${PATH}" SKIP_MANAGER_START=1 $(KUTTL) test $(KUTTL_TEST_RUN_ARGS)
 
 .PHONY: test-upgrade
 test-upgrade: kuttl bundle-post-process ## Run OLM-based operator upgrade tests.
 	mkdir -p $(PROJECT_DIR)/build/kuttl-test-artifacts-upgrade
 	SKIP_MANAGER_START=1 \
 	NEW_PRODUCT_VERSION=$$(make --quiet --no-print-directory -C .. tag) \
-	KUTTL=$(KUTTL) PATH="$(PROJECT_DIR)/hack:$${PATH}" $(KUTTL) test --config kuttl-test.yaml --artifacts-dir build/kuttl-test-artifacts-upgrade $(KUTTL_TEST_RUN_LABELS_ARGS) tests/upgrade
-
-.PHONY: test-bundle-helpers
-test-bundle-helpers: ## Run Python unit tests against helper scripts.
-	set -euo pipefail ;\
-	$(ACTIVATE_PYTHON) ;\
-	pytest -v bundle_helpers
+	KUTTL=$(KUTTL) PATH="$(PROJECT_DIR)/hack:$${PATH}" $(KUTTL) test --config kuttl-test.yaml --artifacts-dir build/kuttl-test-artifacts-upgrade $(KUTTL_TEST_RUN_ARGS) tests/upgrade
 
 .PHONY: stackrox-image-pull-secret
 stackrox-image-pull-secret: ## Create default image pull secret for StackRox images on Quay.io. Used by Helm chart.
@@ -283,7 +304,17 @@ check-ci-setup: ## Make sure this target is not started in CI environment.
 	$(SILENT)if [ -n "$${CI:-}" ]; then echo "Setup error: operator should be installed and started by OLM." >&2; exit 1; fi
 
 .PHONY: run
-run: check-ci-setup manifests generate ensure-rox-main-image-exists fmt vet ## Run operator from your host without deploying it to a cluster.
+run: check-ci-setup manifests generate ensure-rox-main-image-exists fmt vet quick-run ## Run operator from your host without deploying it to a cluster.
+
+.PHONY: quick-run
+quick-run: ## Same as run, but without ensuring dependencies.
+	@if [[ -n "$$MAIN_IMAGE_TAG" ]]; then \
+		echo "MAIN_IMAGE_TAG=$$MAIN_IMAGE_TAG specified, using related images with this tag."; \
+		while read -r line; do \
+			echo " * $$line"; \
+			export "$$line"; \
+		done < <(IMAGE_REGISTRY=$(IMAGE_REPO) ./hack/related-images-with-main-tags.sh); \
+	fi ;\
 	../scripts/go-run.sh ./cmd/main.go
 
 .PHONY: ensure-rox-main-image-exists
@@ -294,9 +325,24 @@ ensure-rox-main-image-exists:
 
 .PHONY: build-installer
 build-installer: manifests generate kustomize ## Generate a consolidated YAML with CRDs and deployment.
+	mkdir -p build/dist
+	echo 'resources: [ "../../config/flavors/$(ROX_IMAGE_FLAVOR)" ]' > build/dist/kustomization.yaml
+	cd build/dist && $(KUSTOMIZE) edit set image controller=${IMG}
 	mkdir -p dist
-	cd config/manager && $(KUSTOMIZE) edit set image controller=${IMG}
-	$(KUSTOMIZE) build config/default > dist/install.yaml
+	$(KUSTOMIZE) build build/dist > dist/install.yaml
+
+.PHONY: chart
+chart: kubebuilder manifests ## Generate a helm chart with all necessary resources.
+# The dependency above makes sure protos are up to date, so we can skip this time-consuming process below
+# by specifying the SKIP env var. Otherwise each target that kubebuilder invokes (and there is a bunch) would regen protos.
+	rm -rf dist/chart
+# Run the sed and kubebuilder as a single command, propagating the VERSION from when the directory is still pristine, to prevent -dirty suffix while PROJECT is modified.
+	set -e; \
+	if [[ "$(ROX_IMAGE_FLAVOR)" = opensource ]]; then sed -i'.bak' -e 's,^projectName: rhacs-operator,projectName: stackrox-operator,' PROJECT; fi; \
+	VERSION=$(VERSION) ROX_OPERATOR_SKIP_PROTO_GENERATED_SRCS=true $(KUBEBUILDER) edit --plugins=helm/v2-alpha --force
+	if [[ "$(ROX_IMAGE_FLAVOR)" = opensource ]]; then mv PROJECT.bak PROJECT; fi
+	sed -i'.bak' -e 's,0.1.0,$(VERSION),g' dist/chart/Chart.yaml
+	rm -f dist/chart/Chart.yaml.bak
 
 .PHONY: build
 build: manifests generate fmt vet ## Build operator local binary.
@@ -320,6 +366,14 @@ smuggled-status-sh:
 		"$${smuggled_status_sh}" ;\
 	)
 
+.PHONY: ensure-third-party-notices
+ensure-third-party-notices:
+ifdef CI
+	$(SILENT)[ -d ../THIRD_PARTY_NOTICES ] || { echo "THIRD_PARTY_NOTICES dir not found! It is required for CI-built images."; exit 1; }
+else
+	$(SILENT)[ -d ../THIRD_PARTY_NOTICES ] || mkdir -p ../THIRD_PARTY_NOTICES
+endif
+
 # Force re-building the file to make sure the current environment is correctly reflected.
 .PHONY: build/Dockerfile.gen
 build/Dockerfile.gen: Dockerfile
@@ -327,9 +381,19 @@ build/Dockerfile.gen: Dockerfile
 	sed -e 's,$${ROX_IMAGE_FLAVOR},$(ROX_IMAGE_FLAVOR),g; s,$${BUILD_IMAGE_VERSION},$(shell sed 's/\s*\#.*//' ../BUILD_IMAGE_VERSION),' < $< > $@
 
 .PHONY: docker-build
-docker-build: build/Dockerfile.gen test smuggled-status-sh ## Build docker image with the operator.
-	DOCKER_BUILDKIT=1 BUILDKIT_PROGRESS=plain docker build \
+docker-build: build/Dockerfile.gen smuggled-status-sh ensure-third-party-notices ## Build docker image with the operator (build binary inside Docker).
+	BUILDKIT_PROGRESS=plain ../scripts/docker-build.sh \
 		-t ${IMG} \
+		$(if $(GOARCH),--build-arg TARGET_ARCH=$(GOARCH)) \
+		-f $< \
+		..
+
+.PHONY: docker-build-prebuilt
+docker-build-prebuilt: prebuilt.Dockerfile ensure-third-party-notices ## Build docker image with pre-built operator binary.
+	BUILDKIT_PROGRESS=plain ../scripts/docker-build.sh \
+		-t ${IMG} \
+		$(if $(GOARCH),--build-arg TARGET_ARCH=$(GOARCH)) \
+		--build-arg ROX_IMAGE_FLAVOR=$(ROX_IMAGE_FLAVOR) \
 		-f $< \
 		..
 
@@ -338,14 +402,6 @@ docker-build: build/Dockerfile.gen test smuggled-status-sh ## Build docker image
 ifndef ignore-not-found
   ignore-not-found = false
 endif
-
-.PHONY: olm-install
-olm-install: operator-sdk ## Install OLM on Kubernetes cluster
-	$(OPERATOR_SDK) olm install --version=$(OLM_VERSION)
-
-.PHONY: olm-uninstall
-olm-uninstall: operator-sdk ## Uninstall OLM previously installed on Kubernetes cluster
-	$(OPERATOR_SDK) olm uninstall
 
 .PHONY: install
 install: check-ci-setup manifests kustomize ## Install CRDs into the K8s cluster specified in ~/.kube/config.
@@ -361,7 +417,7 @@ deploy: check-ci-setup manifests kustomize ## Deploy operator image to the K8s c
 		mkdir config/local-deploy-versioned && \
 		cd config/local-deploy-versioned && \
 		$(KUSTOMIZE) create --resources ../default && \
-		$(KUSTOMIZE) edit set image quay.io/stackrox-io/stackrox-operator=$(IMG)
+		$(KUSTOMIZE) edit set image controller=$(IMG)
 	$(KUSTOMIZE) build config/local-deploy-versioned | $(PROJECT_DIR)/hack/retry-kubectl.sh apply -f -
 
 .PHONY: undeploy
@@ -387,6 +443,24 @@ deploy-previous-via-olm: kuttl bundle-post-process ## Deploy replaced version of
 	set -x ;\
 	KUTTL=$(KUTTL) PATH="$(PROJECT_DIR)/hack:$${PATH}" ./hack/olm-operator-install.sh $(TEST_NAMESPACE) $(INDEX_IMG_BASE) $(INDEX_IMG_TAG) $${replaced_version} $(INSTALL_CHANNEL)
 
+.PHONY: deploy-via-installer
+deploy-via-installer: ## Deploy current version of operator via distribution manifest file.
+	./hack/retry-kubectl.sh </dev/null apply -f dist/install.yaml
+# A hack for the NO_PROXY assertions in the e2e tests.
+	./hack/retry-kubectl.sh </dev/null set env -n $(TEST_NAMESPACE) deployment/rhacs-operator-controller-manager NO_PROXY=127.1.2.3/8
+# Need to hardcode the deployment name here and above, since kubectl barfs on the CRDs in the manifest when working on deployment:
+# $ oc rollout status  -f operator/dist/install.yaml --timeout=300s
+# deployment "rhacs-operator-controller-manager" successfully rolled out
+# unable to decode "operator/dist/install.yaml": no kind "CustomResourceDefinition" is registered for version "apiextensions.k8s.io/v1" in scheme "k8s.io/kubectl/pkg/scheme/scheme.go:28"
+# TODO(ROX-11901): work this around somehow to make it possible to deploy and e2e-test the community build
+	./hack/retry-kubectl.sh </dev/null rollout status deployment -n $(TEST_NAMESPACE) rhacs-operator-controller-manager --timeout=300s
+
+.PHONY: deploy-via-chart
+deploy-via-chart: ## Deploy current version of operator via helm chart produced by the chart target.
+	helm install --create-namespace --namespace $(TEST_NAMESPACE) --wait \
+		--set manager.envOverrides.NO_PROXY=127.1.2.3/8 `# A hack for the NO_PROXY assertions in the e2e tests.` \
+		rhacs-operator ./dist/chart
+
 .PHONY: upgrade-via-olm
 upgrade-via-olm: kuttl
 	KUTTL=$(KUTTL) PATH="$(PROJECT_DIR)/hack:$${PATH}" ./hack/olm-operator-upgrade.sh $(TEST_NAMESPACE) $(INSTALL_VERSION)
@@ -395,13 +469,14 @@ upgrade-via-olm: kuttl
 upgrade-dirty-tag-via-olm: kuttl
 	KUTTL=$(KUTTL) PATH="$(PROJECT_DIR)/hack:$${PATH}" ./hack/olm-operator-upgrade.sh --allow-dirty-tag $(TEST_NAMESPACE) $(INSTALL_VERSION)
 
-##@ Bundle and Index build
+.PHONY: upgrade-via-chart
+upgrade-via-chart:
+# TODO(ROX-33128): drop --take-ownership (and possibly replace with deploy-via-chart) after 4.11 release
+	helm install --take-ownership --namespace $(TEST_NAMESPACE) --wait \
+		--set manager.envOverrides.NO_PROXY=127.1.2.3/8 `# A hack for the NO_PROXY assertions in the e2e tests.` \
+		rhacs-operator ./dist/chart
 
-# Commands to enter local Python virtual environment and get needed dependencies there.
-ACTIVATE_PYTHON = python3 -m venv bundle_helpers/.venv ;\
-	. bundle_helpers/.venv/bin/activate ;\
-	pip3 install --upgrade pip==21.3.1 setuptools==59.6.0 ;\
-	pip3 install -r bundle_helpers/requirements-gha.txt
+##@ Bundle and Index build
 
 .PHONY: bundle
 bundle: yq manifests kustomize operator-sdk ## Generate bundle manifests and metadata, then validate generated files.
@@ -409,11 +484,11 @@ bundle: yq manifests kustomize operator-sdk ## Generate bundle manifests and met
 # The operator-sdk command both reads and writes config/manifests by default.
 # We re-generate it from scratch each time based on a minimal set of inputs, to be able to catch cases when operator-sdk stops working (ROX-25872)
 	rm -rf config/manifests/bases && $(OPERATOR_SDK) generate kustomize manifests --input-dir=config/ui-metadata
-# We hardcode the image reference to quay.io/stackrox-io/stackrox-operator. If this is overridden via
-# the IMG_REPO environment variable, the final reference will be injected in the bundle-post-process step.
-	cd config/manager && $(KUSTOMIZE) edit set image controller=quay.io/stackrox-io/stackrox-operator:0.0.1
 	cd config/scorecard-versioned && $(KUSTOMIZE) edit set image quay.io/operator-framework/scorecard-test=quay.io/operator-framework/scorecard-test:$(OPERATOR_SDK_VERSION)
-	$(KUSTOMIZE) build config/manifests | $(OPERATOR_SDK) generate bundle $(BUNDLE_GEN_FLAGS)
+	rm -rf build/manifests
+	mkdir -p build/manifests
+	echo 'resources: [ "../../config/flavors/$(ROX_IMAGE_FLAVOR)", "../../config/manifests" ]' > build/manifests/kustomization.yaml
+	$(KUSTOMIZE) build build/manifests | $(OPERATOR_SDK) generate bundle $(BUNDLE_GEN_FLAGS)
 # Fix the createdAt annotation
 	$(YQ) -i '.metadata.annotations.createdAt = ""' bundle/manifests/rhacs-operator.clusterserviceversion.yaml
 # Remove autogenerated operator channel LABEL from the bundle to avoid confusion because it's ignored anyways.
@@ -429,10 +504,9 @@ bundle: yq manifests kustomize operator-sdk ## Generate bundle manifests and met
 # Yet we want most of the contents autogenerated from the Makefile variables as a single source of truth.
 # Therefore we append ".extra" file to the end of bundle's dockerfile.
 	cat bundle.Dockerfile.extra >> bundle.Dockerfile
-# Run a python script to fix the orders in the specDescriptors (children must not appear before their parents).
+# Fix the orders in the specDescriptors (children must not appear before their parents).
 	set -euo pipefail ;\
-	$(ACTIVATE_PYTHON) ;\
-	bundle_helpers/fix-spec-descriptor-order.py \
+	go run ./bundle_helpers/main.go fix-spec-descriptor-order \
 	  <bundle/manifests/rhacs-operator.clusterserviceversion.yaml \
 	  >bundle/manifests/rhacs-operator.clusterserviceversion.yaml.fixed
 	mv bundle/manifests/rhacs-operator.clusterserviceversion.yaml.fixed \
@@ -440,44 +514,40 @@ bundle: yq manifests kustomize operator-sdk ## Generate bundle manifests and met
 	$(OPERATOR_SDK) bundle validate ./bundle --select-optional suite=operatorframework
 
 .PHONY: bundle-post-process
-bundle-post-process: test-bundle-helpers operator-sdk ## Post-process CSV file to include correct operator versions, etc.
-# Copy the original bundle to build/ directory.
-	mkdir -p build/
-	rm -rf build/bundle
-	cp -a bundle build/
-	cp -v ../config-controller/config/crd/bases/config.stackrox.io_securitypolicies.yaml build/bundle/manifests/
-# Run Python script to post-process necessary files in the build/bundle/. Configure Python dependencies if not done already.
+bundle-post-process: ## Post-process CSV file to include correct operator versions, etc.
 	set -euo pipefail ;\
-	$(ACTIVATE_PYTHON) ;\
 	first_version=3.62.0 `# 3.62.0 is the first operator version ever released` ;\
-	candidate_version=$$(./bundle_helpers/patch-csv.py \
+	candidate_version=$$(go run ./bundle_helpers/main.go patch-csv \
 		--use-version $(VERSION) \
 		--first-version $${first_version} \
 		--operator-image $(IMG) \
 		--echo-replaced-version-only \
 		< bundle/manifests/rhacs-operator.clusterserviceversion.yaml); \
-	if ! ../scripts/ci/lib.sh check_rhacs_eng_image_exists $(INDEX_IMG_BASE) v$${candidate_version}; then unreleased_opt="--unreleased=$${candidate_version}"; fi; \
-	./bundle_helpers/patch-csv.py \
-		--use-version $(VERSION) \
-		--first-version $${first_version} \
-		--operator-image $(IMG) \
-		$${unreleased_opt} \
-		--related-images-mode=omit \
-		--add-supported-arch amd64 \
-		--add-supported-arch arm64 \
-		--add-supported-arch ppc64le \
-		--add-supported-arch s390x \
-		< bundle/manifests/rhacs-operator.clusterserviceversion.yaml \
-		> build/bundle/manifests/rhacs-operator.clusterserviceversion.yaml
-# Check that the resulting bundle still passes validations.
+	echo "Candidate version: $$candidate_version"; \
+	index_img_base=$(INDEX_IMG_BASE); \
+	if ! ../scripts/ci/lib.sh check_rhacs_eng_image_exists $${index_img_base##*/} v$${candidate_version}; then \
+		echo "Operator index image for this version does not exist (yet)."; \
+		unreleased_opt="--unreleased=$${candidate_version}"; \
+	else \
+		echo "Operator index image for this version exists"; \
+	fi; \
+	./bundle_helpers/prepare-bundle-manifests.sh \
+		--use-version=$(VERSION) \
+		--first-version=$${first_version} \
+		--operator-image=$(IMG) \
+		--related-images-mode=$(RELATED_IMAGES_MODE) \
+		$${unreleased_opt:-}
+
+.PHONY: bundle-validate
+bundle-validate: operator-sdk ## Validate the bundle manifests in build/bundle/.
 	$(OPERATOR_SDK) bundle validate ./build/bundle --select-optional suite=operatorframework
 
 .PHONY: bundle-build
-bundle-build: bundle.Dockerfile bundle-post-process ## Build the bundle image.
-	docker build -f $< -t $(BUNDLE_IMG) .
+bundle-build: bundle.Dockerfile bundle-post-process bundle-validate ## Build the bundle image.
+	docker build $(if $(DOCKER_BUILD_LOAD),--load) -f $< -t $(BUNDLE_IMG) .
 
 .PHONY: bundle-test
-bundle-test: operator-sdk bundle-post-process ## Run scorecard tests against bundle files.
+bundle-test: operator-sdk bundle-post-process bundle-validate ## Run scorecard tests against bundle files.
 	$(OPERATOR_SDK) scorecard $(SCORECARD_ARGS) build/bundle/
 
 .PHONY: bundle-test-image
@@ -485,7 +555,7 @@ bundle-test-image: operator-sdk ## Run scorecard tests against bundle image in t
 	$(OPERATOR_SDK) scorecard $(SCORECARD_ARGS) $(BUNDLE_IMG)
 
 .PHONY: index-build
-index-build: bundle-post-process yq ## Build Index (a.k.a. Catalog) image with the bundles. Bundle image must be pushed beforehand.
+index-build: bundle-post-process bundle-validate yq ## Build Index (a.k.a. Catalog) image with the bundles. Bundle image must be pushed beforehand.
 # If the bundle has `replaces:` attribute in CSV, then the one it replaces has to already be in the index. Otherwise,
 # validation of the index fails because more than one version is identified as the head of the channel. An example of an
 # error: `multiple channel heads found in graph: rhacs-operator.v3.67.0, rhacs-operator.v3.69.0`

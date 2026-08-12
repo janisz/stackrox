@@ -41,10 +41,6 @@ func (s *ClusterHealthStatusesStoreSuite) SetupTest() {
 	s.NoError(err)
 }
 
-func (s *ClusterHealthStatusesStoreSuite) TearDownSuite() {
-	s.testDB.Teardown(s.T())
-}
-
 func (s *ClusterHealthStatusesStoreSuite) TestStore() {
 	ctx := sac.WithAllAccess(context.Background())
 
@@ -96,6 +92,11 @@ func (s *ClusterHealthStatusesStoreSuite) TestStore() {
 	}
 
 	s.NoError(store.UpsertMany(ctx, clusterHealthStatuss))
+
+	foundClusterHealthStatuss, missing, err := store.GetMany(ctx, clusterHealthStatusIDs)
+	s.NoError(err)
+	s.Empty(missing)
+	protoassert.ElementsMatch(s.T(), clusterHealthStatuss, foundClusterHealthStatuss)
 
 	clusterHealthStatusCount, err = store.Count(ctx, search.EmptyQuery())
 	s.NoError(err)

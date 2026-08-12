@@ -1,7 +1,6 @@
 package augmentedobjs
 
 import (
-	"fmt"
 	"slices"
 
 	"github.com/pkg/errors"
@@ -14,6 +13,21 @@ const (
 	// CompositeFieldCharSep is the separating character used when we create a composite field.
 	CompositeFieldCharSep = "\t"
 )
+
+// operationMapping maps storage-level file operations to their
+// detection-level names. Operations not in this map use their proto
+// enum name as-is. This allows multiple storage operations to be
+// collapsed into a single policy criterion value.
+var operationMapping = map[storage.FileAccess_Operation]string{
+	// An ACL change is a kind of permission change, so we collapse
+	// it so that a single "Permission changed" policy criterion
+	// matches both chmod-style and ACL changes.
+	storage.FileAccess_ACL_CHANGE: storage.FileAccess_PERMISSION_CHANGE.String(),
+	// Both XATTR_SET and XATTR_REMOVE are collapsed into a single
+	// "XATTR_CHANGE" so a single policy criterion matches both.
+	storage.FileAccess_XATTR_SET:    XattrChange,
+	storage.FileAccess_XATTR_REMOVE: XattrChange,
+}
 
 func findMatchingContainerIdxForProcess(deployment *storage.Deployment, process *storage.ProcessIndicator) (int, error) {
 	for i, container := range deployment.GetContainers() {
@@ -28,7 +42,7 @@ func findMatchingContainerIdxForProcess(deployment *storage.Deployment, process 
 
 // ConstructDeploymentWithProcess constructs an augmented deployment with process information.
 func ConstructDeploymentWithProcess(deployment *storage.Deployment, images []*storage.Image, applied *NetworkPoliciesApplied, process *storage.ProcessIndicator, processNotInBaseline bool) (*pathutil.AugmentedObj, error) {
-	obj, err := ConstructDeployment(deployment, images, applied)
+	obj, filtered, err := constructDeployment(deployment, images, applied)
 	if err != nil {
 		return nil, err
 	}
@@ -37,7 +51,7 @@ func ConstructDeploymentWithProcess(deployment *storage.Deployment, images []*st
 		return nil, err
 	}
 
-	matchingContainerIdx, err := findMatchingContainerIdxForProcess(deployment, process)
+	matchingContainerIdx, err := findMatchingContainerIdxForProcess(filtered, process)
 	if err != nil {
 		return nil, err
 	}
@@ -114,6 +128,89 @@ func ConstructNetworkFlow(flow *NetworkFlowDetails) (*pathutil.AugmentedObj, err
 	return augmentedFlow, nil
 }
 
+func ConstructNode(node *storage.Node) (*pathutil.AugmentedObj, error) {
+	details := NodeDetails{
+		Id:          node.GetId(),
+		Name:        node.GetName(),
+		ClusterName: node.GetClusterName(),
+		ClusterId:   node.GetClusterId(),
+	}
+
+	return pathutil.NewAugmentedObj(&details), nil
+}
+
+func ConstructNodeWithFileAccess(node *storage.Node, fileAccess *storage.FileAccess) (*pathutil.AugmentedObj, error) {
+	nodeObj, err := ConstructNode(node)
+	if err != nil {
+		return nil, err
+	}
+
+	err = nodeObj.AddAugmentedObjAt(
+		ConstructFileAccess(fileAccess),
+		pathutil.FieldStep(fileAccessKey),
+	)
+
+	if err != nil {
+		return nil, err
+	}
+
+	return nodeObj, nil
+}
+
+func ConstructDeploymentWithFileAccess(
+	deployment *storage.Deployment,
+	images []*storage.Image,
+	applied *NetworkPoliciesApplied,
+	fileAccess *storage.FileAccess,
+) (*pathutil.AugmentedObj, error) {
+	obj, err := ConstructDeployment(deployment, images, applied)
+	if err != nil {
+		return nil, err
+	}
+
+	err = obj.AddAugmentedObjAt(
+		ConstructFileAccess(fileAccess),
+		pathutil.FieldStep(fileAccessKey),
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	return obj, nil
+}
+
+func ConstructFileAccess(fileAccess *storage.FileAccess) *pathutil.AugmentedObj {
+	obj := pathutil.NewAugmentedObj(fileAccess)
+
+	// By combining the actual and effective paths into a single
+	// slice, we allow logical disjunction for a single policy
+	// criterion, avoiding the need for a path criterion for each
+	// type of path.
+	fileAccessPaths := &fileAccessPath{
+		Path: []string{
+			fileAccess.GetFile().GetActualPath(),
+			fileAccess.GetFile().GetEffectivePath(),
+			fileAccess.GetMoved().GetActualPath(),
+			fileAccess.GetMoved().GetEffectivePath(),
+		},
+	}
+
+	if err := obj.AddPlainObjAt(fileAccessPaths, pathutil.FieldStep(fileAccessPathKey)); err != nil {
+		return nil
+	}
+
+	opName := fileAccess.GetOperation().String()
+	if mapped, ok := operationMapping[fileAccess.GetOperation()]; ok {
+		opName = mapped
+	}
+
+	if err := obj.AddPlainObjAt(&fileAccessOperation{Operation: opName}, pathutil.FieldStep(fileAccessOperationKey)); err != nil {
+		return nil
+	}
+
+	return obj
+}
+
 // ConstructDeploymentWithNetworkFlowInfo constructs an augmented object with deployment and network flow.
 func ConstructDeploymentWithNetworkFlowInfo(
 	deployment *storage.Deployment,
@@ -142,15 +239,22 @@ func ConstructDeploymentWithNetworkFlowInfo(
 // It assumes that the given images are in the same order as the containers specified within the given deployment.
 // If there's a mismatch in the amount of containers on the deployment and the given images, an error will be returned.
 func ConstructDeployment(deployment *storage.Deployment, images []*storage.Image, applied *NetworkPoliciesApplied) (*pathutil.AugmentedObj, error) {
+	obj, _, err := constructDeployment(deployment, images, applied)
+	return obj, err
+}
+
+// constructDeployment is the internal implementation that also returns the deployment,
+// allowing callers like ConstructDeploymentWithProcess to use it for index lookups.
+func constructDeployment(deployment *storage.Deployment, images []*storage.Image, applied *NetworkPoliciesApplied) (*pathutil.AugmentedObj, *storage.Deployment, error) {
 	obj := pathutil.NewAugmentedObj(deployment)
 	if len(images) != len(deployment.GetContainers()) {
-		return nil, errors.Errorf("deployment %s/%s had %d containers, but got %d images",
+		return nil, nil, errors.Errorf("deployment %s/%s had %d containers, but got %d images",
 			deployment.GetNamespace(), deployment.GetName(), len(deployment.GetContainers()), len(images))
 	}
 
 	appliedPolicies := pathutil.NewAugmentedObj(applied)
 	if err := obj.AddAugmentedObjAt(appliedPolicies, pathutil.FieldStep(networkPoliciesAppliedKey)); err != nil {
-		return nil, utils.ShouldErr(err)
+		return nil, nil, utils.ShouldErr(err)
 	}
 
 	for i, image := range images {
@@ -159,20 +263,22 @@ func ConstructDeployment(deployment *storage.Deployment, images []*storage.Image
 		containerImageFullName := deployment.GetContainers()[i].GetImage().GetName().GetFullName()
 		augmentedImg, err := ConstructImage(image, containerImageFullName)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		err = obj.AddAugmentedObjAt(
 			augmentedImg,
 			pathutil.FieldStep("Containers"), pathutil.IndexStep(i), pathutil.FieldStep(imageAugmentKey),
 		)
 		if err != nil {
-			return nil, utils.ShouldErr(err)
+			return nil, nil, utils.ShouldErr(err)
 		}
 	}
 
 	for idx, container := range deployment.GetContainers() {
 		for i, env := range container.GetConfig().GetEnv() {
-			envVarObj := &envVar{EnvVar: fmt.Sprintf("%s%s%s%s%s", env.GetEnvVarSource(), CompositeFieldCharSep, env.GetKey(), CompositeFieldCharSep, env.GetValue())}
+			envVarObj := &envVar{
+				EnvVar: env.GetEnvVarSource().String() + CompositeFieldCharSep + env.GetKey() + CompositeFieldCharSep + env.GetValue(),
+			}
 			err := obj.AddPlainObjAt(
 				envVarObj,
 				pathutil.FieldStep("Containers"), pathutil.IndexStep(idx), pathutil.FieldStep("Config"),
@@ -180,12 +286,12 @@ func ConstructDeployment(deployment *storage.Deployment, images []*storage.Image
 			)
 
 			if err != nil {
-				return nil, utils.ShouldErr(err)
+				return nil, nil, utils.ShouldErr(err)
 			}
 		}
 	}
 
-	return obj, nil
+	return obj, deployment, nil
 }
 
 // ConstructImage constructs the augmented image object.
@@ -214,7 +320,9 @@ func ConstructImage(image *storage.Image, imageFullName string) (*pathutil.Augme
 	// Since policies query for Dockerfile Line as a single compound field, we simulate it by creating a "composite"
 	// dockerfile line under each layer.
 	for i, layer := range image.GetMetadata().GetV1().GetLayers() {
-		lineObj := &dockerfileLine{Line: fmt.Sprintf("%s%s%s", layer.GetInstruction(), CompositeFieldCharSep, layer.GetValue())}
+		lineObj := &dockerfileLine{
+			Line: layer.GetInstruction() + CompositeFieldCharSep + layer.GetValue(),
+		}
 		err := obj.AddPlainObjAt(
 			lineObj,
 			pathutil.FieldStep("Metadata"), pathutil.FieldStep("V1"), pathutil.FieldStep("Layers"),
@@ -229,7 +337,7 @@ func ConstructImage(image *storage.Image, imageFullName string) (*pathutil.Augme
 	// "composite" component and version field.
 	for i, component := range image.GetScan().GetComponents() {
 		compAndVersionObj := &componentAndVersion{
-			ComponentAndVersion: fmt.Sprintf("%s%s%s", component.GetName(), CompositeFieldCharSep, component.GetVersion()),
+			ComponentAndVersion: component.GetName() + CompositeFieldCharSep + component.GetVersion(),
 		}
 		err := obj.AddPlainObjAt(
 			compAndVersionObj,

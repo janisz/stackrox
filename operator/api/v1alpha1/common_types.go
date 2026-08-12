@@ -6,6 +6,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/pointer"
+	ctrlClient "sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 // MiscSpec defines miscellaneous settings for custom resources.
@@ -15,6 +16,43 @@ type MiscSpec struct {
 	// isn't usually needed, and may interfere with other workloads.
 	//+operator-sdk:csv:customresourcedefinitions:type=spec,order=1,displayName="Create SecurityContextConstraints for Operand",xDescriptors={"urn:alm:descriptor:com.tectonic.ui:hidden"}
 	CreateSCCs *bool `json:"createSCCs,omitempty"`
+}
+
+// PinToNodesPolicy defines preset node pinning configurations.
+// Use this for common scenarios like pinning to OpenShift infrastructure nodes.
+// +kubebuilder:validation:Enum=None;InfraRole
+type PinToNodesPolicy string
+
+const (
+	// PinToNodesNone does not apply any node scheduling constraints.
+	PinToNodesNone PinToNodesPolicy = "None"
+	// PinToNodesInfraRole pins deployments to OpenShift infrastructure nodes by setting
+	// nodeSelector to "node-role.kubernetes.io/infra" and adding the corresponding tolerations.
+	PinToNodesInfraRole PinToNodesPolicy = "InfraRole"
+)
+
+// DeploymentDefaultsSpec defines default scheduling constraints for Deployment-based components.
+type DeploymentDefaultsSpec struct {
+	// Pin all Deployment-based components to specific node types. This is a convenience setting
+	// that automatically configures both nodeSelector and tolerations with predefined values.
+	// Use this for common scenarios like running on OpenShift infrastructure nodes.
+	// For custom node selection, use the explicit nodeSelector and tolerations fields instead.
+	// Cannot be used together with nodeSelector or tolerations fields.
+	// The default is: None.
+	//+operator-sdk:csv:customresourcedefinitions:type=spec,order=1
+	PinToNodes *PinToNodesPolicy `json:"pinToNodes,omitempty"`
+
+	// Default nodeSelector applied to all Deployment-based components. Use this for custom node
+	// selection criteria.
+	// Cannot be used together with pinToNodes.
+	//+operator-sdk:csv:customresourcedefinitions:type=spec,displayName="Node Selector",order=2
+	NodeSelector map[string]string `json:"nodeSelector,omitempty"`
+
+	// Default tolerations applied to all Deployment-based components. Use this when your target
+	// nodes have custom taints that pods must tolerate.
+	// Cannot be used together with pinToNodes.
+	//+operator-sdk:csv:customresourcedefinitions:type=spec,order=3
+	Tolerations []*corev1.Toleration `json:"tolerations,omitempty"`
 }
 
 // CustomizeSpec defines customizations to apply.
@@ -29,6 +67,11 @@ type CustomizeSpec struct {
 	// Custom environment variables to set on managed pods' containers.
 	//+operator-sdk:csv:customresourcedefinitions:type=spec,order=3,displayName="Environment Variables"
 	EnvVars []corev1.EnvVar `json:"envVars,omitempty"`
+
+	// Global nodeSelector and tolerations for Deployment-based components. DaemonSets (Collector) are not affected.
+	// Component-level nodeSelector and tolerations settings override these defaults on a field-by-field basis.
+	//+operator-sdk:csv:customresourcedefinitions:type=spec,order=4,displayName="Deployment Defaults"
+	DeploymentDefaults *DeploymentDefaultsSpec `json:"deploymentDefaults,omitempty"`
 }
 
 // DeploymentSpec defines settings that affect a deployment.
@@ -39,10 +82,12 @@ type DeploymentSpec struct {
 	Resources *corev1.ResourceRequirements `json:"resources,omitempty"`
 
 	// If you want this component to only run on specific nodes, you can configure a node selector here.
+	// This setting overrides spec.customize.deploymentDefaults.nodeSelector.
 	//+operator-sdk:csv:customresourcedefinitions:type=spec,displayName="Node Selector",order=101
 	NodeSelector map[string]string `json:"nodeSelector,omitempty"`
 
 	// If you want this component to only run on specific nodes, you can configure tolerations of tainted nodes.
+	// This setting overrides spec.customize.deploymentDefaults.tolerations.
 	//+operator-sdk:csv:customresourcedefinitions:type=spec,xDescriptors={"urn:alm:descriptor:com.tectonic.ui:tolerations"},order=102
 	Tolerations []*corev1.Toleration `json:"tolerations,omitempty"`
 
@@ -77,6 +122,10 @@ const (
 	ConditionReleaseFailed  ConditionType = "ReleaseFailed"
 	ConditionIrreconcilable ConditionType = "Irreconcilable"
 
+	// These are specifically owned by the status controllers.
+	ConditionProgressing ConditionType = "Progressing"
+	ConditionAvailable   ConditionType = "Available"
+
 	StatusTrue    ConditionStatus = "True"
 	StatusFalse   ConditionStatus = "False"
 	StatusUnknown ConditionStatus = "Unknown"
@@ -105,6 +154,7 @@ type AdditionalCA struct {
 
 // TLSConfig defines common TLS-related settings for all components.
 type TLSConfig struct {
+	// Allows you to specify additional trusted Root CAs.
 	//+operator-sdk:csv:customresourcedefinitions:type=spec,displayName="Additional CAs"
 	AdditionalCAs []AdditionalCA `json:"additionalCAs,omitempty"`
 }
@@ -173,7 +223,7 @@ type ScannerV4Persistence struct {
 	//+operator-sdk:csv:customresourcedefinitions:type=spec,displayName="Persistent volume claim",order=1
 	PersistentVolumeClaim *ScannerV4PersistentVolumeClaim `json:"persistentVolumeClaim,omitempty"`
 
-	// Stores persistent data on a directory on the host. This is not recommended, and should only
+	// Stores persistent data in a directory on the host. This is not recommended, and should only
 	// be used together with a node selector (only available in YAML view).
 	//+operator-sdk:csv:customresourcedefinitions:type=spec,displayName="Host path",order=99
 	HostPath *HostPathSpec `json:"hostPath,omitempty"`
@@ -202,9 +252,9 @@ func (p *ScannerV4Persistence) GetHostPath() string {
 // ScannerV4PersistentVolumeClaim defines PVC-based persistence settings for Scanner V4 DB.
 type ScannerV4PersistentVolumeClaim struct {
 	// The name of the PVC to manage persistent data. If no PVC with the given name exists, it will be
-	// created. Defaults to "scanner-v4-db" if not set.
+	// created.
+	// The default is: scanner-v4-db.
 	//+operator-sdk:csv:customresourcedefinitions:type=spec,displayName="Claim Name",order=1
-	//+kubebuilder:default=scanner-v4-db
 	ClaimName *string `json:"claimName,omitempty"`
 
 	// The size of the persistent volume when created through the claim. If a claim was automatically created,
@@ -244,22 +294,22 @@ func (s *ScannerV4PersistentVolumeClaim) GetClaimName() string {
 type ScannerComponentScaling struct {
 	// When enabled, the number of component replicas is managed dynamically based on the load, within the limits
 	// specified below.
-	//+kubebuilder:default=Enabled
+	// The default is: Enabled.
 	//+operator-sdk:csv:customresourcedefinitions:type=spec,displayName="Autoscaling",order=1
 	AutoScaling *AutoScalingPolicy `json:"autoScaling,omitempty"`
 
 	// When autoscaling is disabled, the number of replicas will always be configured to match this value.
-	//+kubebuilder:default=3
+	// The default is: 3.
 	//+kubebuilder:validation:Minimum=1
 	//+operator-sdk:csv:customresourcedefinitions:type=spec,displayName="Default Replicas",order=2
 	Replicas *int32 `json:"replicas,omitempty"`
 
-	//+kubebuilder:default=2
+	// The default is: 2.
 	//+kubebuilder:validation:Minimum=1
 	//+operator-sdk:csv:customresourcedefinitions:type=spec,displayName="Autoscaling Minimum Replicas",order=3,xDescriptors={"urn:alm:descriptor:com.tectonic.ui:fieldDependency:.autoScaling:Enabled"}
 	MinReplicas *int32 `json:"minReplicas,omitempty"`
 
-	//+kubebuilder:default=5
+	// The default is: 5.
 	//+kubebuilder:validation:Minimum=1
 	//+operator-sdk:csv:customresourcedefinitions:type=spec,displayName="Autoscaling Maximum Replicas",order=4,xDescriptors={"urn:alm:descriptor:com.tectonic.ui:fieldDependency:.autoScaling:Enabled"}
 	MaxReplicas *int32 `json:"maxReplicas,omitempty"`
@@ -314,15 +364,15 @@ type GlobalMonitoring struct {
 
 // OpenShiftMonitoring defines settings related to OpenShift Monitoring
 type OpenShiftMonitoring struct {
-	//+kubebuilder:default=true
+	// The default is: true.
 	//+operator-sdk:csv:customresourcedefinitions:type=spec,order=1,xDescriptors={"urn:alm:descriptor:com.tectonic.ui:booleanSwitch"}
-	Enabled bool `json:"enabled"`
+	Enabled *bool `json:"enabled"`
 }
 
 // IsOpenShiftMonitoringDisabled returns true if OpenShiftMonitoring is disabled.
 // This function is nil safe.
 func (m *GlobalMonitoring) IsOpenShiftMonitoringDisabled() bool {
-	return m != nil && m.OpenShiftMonitoring != nil && !m.OpenShiftMonitoring.Enabled
+	return m != nil && m.OpenShiftMonitoring != nil && m.OpenShiftMonitoring.Enabled != nil && !*m.OpenShiftMonitoring.Enabled
 }
 
 // Set this to Disabled to prevent the operator from creating NetworkPolicy objects.
@@ -349,8 +399,47 @@ func (s *GlobalNetworkSpec) IsNetworkPoliciesEnabled() bool {
 // GlobalNetworkSpec defines settings related to Helm chart network parameters. The corresponding Helm flags
 // live in the global scope `.network`.
 type GlobalNetworkSpec struct {
-	// To provide security at the network level the ACS Operator creates NetworkPolicy resources by default. If you want to manage your own NetworkPolicy objects then set this to "Disabled".
-	//+kubebuilder:default=Enabled
+	// To provide security at the network level, the ACS Operator creates NetworkPolicy resources by default. If you want to manage your own NetworkPolicy objects then set this to "Disabled".
+	// The default is: Enabled.
 	//+operator-sdk:csv:customresourcedefinitions:type=spec,order=1,displayName="Network Policies"
 	Policies *NetworkPolicies `json:"policies,omitempty"`
+}
+
+// +kubebuilder:object:generate=false
+type ObjectForStatusController interface {
+	ctrlClient.Object
+	GetCondition(condType ConditionType) *StackRoxCondition
+	SetCondition(StackRoxCondition) bool
+	GetGeneration() int64
+	GetObservedGeneration() int64
+}
+
+// getCondition returns a specific condition by type, or nil if not found.
+func getCondition(conditions []StackRoxCondition, condType ConditionType) *StackRoxCondition {
+	for i := range conditions {
+		if conditions[i].Type == condType {
+			return &conditions[i]
+		}
+	}
+	return nil
+}
+
+// updateCondition updates or adds a condition. Returns the updated condition list alongside
+// a boolean indicating if the condition has changed.
+func updateCondition(conditions []StackRoxCondition, updatedCond StackRoxCondition) ([]StackRoxCondition, bool) {
+	for i, cond := range conditions {
+		if cond.Type == updatedCond.Type {
+			// Check if update is needed.
+			if cond.Status == updatedCond.Status &&
+				cond.Reason == updatedCond.Reason &&
+				cond.Message == updatedCond.Message {
+				return conditions, false
+			}
+			// Update existing condition.
+			conditions[i] = updatedCond
+			return conditions, true
+		}
+	}
+	// Condition doesn't exist, add it.
+	return append(conditions, updatedCond), true
 }

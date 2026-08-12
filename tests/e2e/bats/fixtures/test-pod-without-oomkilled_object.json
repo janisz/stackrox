@@ -84,17 +84,6 @@
                         "preference": {
                             "matchExpressions": [
                                 {
-                                    "key": "node-role.kubernetes.io/master",
-                                    "operator": "DoesNotExist"
-                                }
-                            ]
-                        },
-                        "weight": 100
-                    },
-                    {
-                        "preference": {
-                            "matchExpressions": [
-                                {
                                     "key": "node-role.kubernetes.io/control-plane",
                                     "operator": "DoesNotExist"
                                 }
@@ -143,7 +132,7 @@
                         "value": "central.stackrox:443"
                     },
                     {
-                        "name": "ROX_ADVERTISED_ENDPOINT",
+                        "name": "ROX_SENSOR_ENDPOINT",
                         "value": "sensor.stackrox.svc:443"
                     },
                     {

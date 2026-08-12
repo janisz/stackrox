@@ -1,5 +1,5 @@
-import React from 'react';
-import { Alert, Button, Flex, Modal, Text } from '@patternfly/react-core';
+import { Alert, Button, Content, Flex } from '@patternfly/react-core';
+import { Modal } from '@patternfly/react-core/deprecated';
 
 import { unwatchImage } from 'services/imageService';
 import useRestMutation from 'hooks/useRestMutation';
@@ -68,8 +68,10 @@ function UnwatchImageModal({
                         {getAxiosErrorMessage(unwatchImageMutation.error)}
                     </Alert>
                 )}
-                <Text>This will remove the following image from the watch list:</Text>
-                <Text>{unwatchImageName}</Text>
+                <Content component="p">
+                    This will remove the following image from the watch list:
+                </Content>
+                <Content component="p">{unwatchImageName}</Content>
             </Flex>
         </Modal>
     );

@@ -1,14 +1,12 @@
 import intersection from 'lodash/intersection';
 import sortBy from 'lodash/sortBy';
-import { ensureExhaustive, isNonEmptyArray, NonEmptyArray } from 'utils/type.utils';
-import { SortAggregate, SortOption } from 'types/table';
-import { FieldOption } from 'hooks/useURLSort';
-import { ApiSortOption, SearchFilter } from 'types/search';
-import {
-    vulnerabilitySeverityLabels,
-    VulnerabilitySeverityLabel,
-    WorkloadEntityTab,
-} from '../types';
+import { ensureExhaustive, isNonEmptyArray } from 'utils/type.utils';
+import type { NonEmptyArray } from 'utils/type.utils';
+import type { SortAggregate, SortOption } from 'types/table';
+import type { FieldOption } from 'hooks/useURLSort';
+import type { ApiSortOption, SearchFilter } from 'types/search';
+import { vulnerabilitySeverityLabels } from '../types';
+import type { VulnerabilitySeverityLabel, WorkloadEntityTab } from '../types';
 import { getAppliedSeverities } from './searchUtils';
 
 // ROX-27906 Image CVEs view cannot use search fields as sort options without providing aggregates
@@ -48,6 +46,7 @@ export function getWorkloadCveOverviewSortFields(
                     'Important Severity Count',
                     'Moderate Severity Count',
                     'Low Severity Count',
+                    'Unknown Severity Count',
                 ],
                 'CVSS',
                 'Image Sha',
@@ -61,13 +60,26 @@ export function getWorkloadCveOverviewSortFields(
                     'Important Severity Count',
                     'Moderate Severity Count',
                     'Low Severity Count',
+                    'Unknown Severity Count',
                 ],
                 'Image OS',
                 'Image Created Time',
                 'Image Scan Time',
             ];
         case 'Deployment':
-            return ['Deployment', 'Cluster', 'Namespace', 'Created'];
+            return [
+                'Deployment',
+                [
+                    'Critical Severity Count',
+                    'Important Severity Count',
+                    'Moderate Severity Count',
+                    'Low Severity Count',
+                    'Unknown Severity Count',
+                ],
+                'Cluster',
+                'Namespace',
+                'Created',
+            ];
         default:
             return ensureExhaustive(entityTab);
     }
@@ -175,6 +187,7 @@ export const severitySortMap = {
     Important: 'Important Severity Count',
     Moderate: 'Moderate Severity Count',
     Low: 'Low Severity Count',
+    Unknown: 'Unknown Severity Count',
 } as const;
 
 /**
@@ -200,6 +213,7 @@ export function getSeveritySortOptions(
         { field: 'Important Severity Count' },
         { field: 'Moderate Severity Count' },
         { field: 'Low Severity Count' },
+        { field: 'Unknown Severity Count' },
     ];
 }
 

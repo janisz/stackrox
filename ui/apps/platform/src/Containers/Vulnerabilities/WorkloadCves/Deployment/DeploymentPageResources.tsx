@@ -1,23 +1,23 @@
-import React, { CSSProperties } from 'react';
 import {
     Bullseye,
+    Content,
     Divider,
     ExpandableSection,
     PageSection,
     Pagination,
     Spinner,
-    Text,
 } from '@patternfly/react-core';
 import { gql, useQuery } from '@apollo/client';
-import { Pagination as PaginationParam } from 'services/types';
+import type { Pagination as PaginationParam } from 'services/types';
 
 import useURLSort from 'hooks/useURLSort';
 import useSelectToggle from 'hooks/patternfly/useSelectToggle';
-import { UseURLPaginationResult } from 'hooks/useURLPagination';
+import type { UseURLPaginationResult } from 'hooks/useURLPagination';
 import TableErrorComponent from 'Components/PatternFly/TableErrorComponent';
 
 import { getPaginationParams, getRequestQueryStringForSearchFilter } from 'utils/searchUtils';
-import ImageResourceTable, { ImageResources, imageResourcesFragment } from './ImageResourceTable';
+import ImageResourceTable, { imageResourcesFragment } from './ImageResourceTable';
+import type { ImageResources } from './ImageResourceTable';
 import useWorkloadCveViewContext from '../hooks/useWorkloadCveViewContext';
 
 export type DeploymentPageResourcesProps = {
@@ -62,14 +62,13 @@ function DeploymentPageResources({ deploymentId, pagination }: DeploymentPageRes
 
     return (
         <>
-            <PageSection component="div" variant="light" className="pf-v5-u-py-md pf-v5-u-px-xl">
-                <Text>Navigate to resources associated with this deployment</Text>
+            <PageSection component="div">
+                <Content component="p">
+                    Navigate to resources associated with this deployment
+                </Content>
             </PageSection>
             <Divider component="div" />
-            <PageSection
-                className="pf-v5-u-display-flex pf-v5-u-flex-direction-column pf-v5-u-flex-grow-1"
-                component="div"
-            >
+            <PageSection component="div">
                 {error && (
                     <TableErrorComponent
                         error={error}
@@ -86,28 +85,20 @@ function DeploymentPageResources({ deploymentId, pagination }: DeploymentPageRes
                         toggleText={`Images (${imageCount})`}
                         onToggle={() => imageTableToggle.onToggle(!imageTableToggle.isOpen)}
                         isExpanded={imageTableToggle.isOpen}
-                        style={
-                            {
-                                '--pf-v5-c-expandable-section__content--MarginTop':
-                                    'var(--pf-v5-global--spacer--xs)',
-                            } as CSSProperties
-                        }
                     >
-                        <div className="pf-v5-u-background-color-100 pf-v5-u-pt-sm">
-                            <Pagination
-                                itemCount={imageCount}
-                                page={page}
-                                perPage={perPage}
-                                onSetPage={(_, newPage) => setPage(newPage)}
-                                onPerPageSelect={(_, newPerPage) => {
-                                    setPerPage(newPerPage);
-                                }}
-                            />
-                            <ImageResourceTable
-                                data={deploymentResourcesData}
-                                getSortParams={getSortParams}
-                            />
-                        </div>
+                        <Pagination
+                            itemCount={imageCount}
+                            page={page}
+                            perPage={perPage}
+                            onSetPage={(_, newPage) => setPage(newPage)}
+                            onPerPageSelect={(_, newPerPage) => {
+                                setPerPage(newPerPage);
+                            }}
+                        />
+                        <ImageResourceTable
+                            data={deploymentResourcesData}
+                            getSortParams={getSortParams}
+                        />
                     </ExpandableSection>
                 )}
             </PageSection>

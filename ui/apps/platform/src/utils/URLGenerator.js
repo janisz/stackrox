@@ -1,18 +1,22 @@
 import qs from 'qs';
-import { generatePath } from 'react-router-dom';
+import { generatePath } from 'react-router-dom-v5-compat';
 
 import pageTypes from 'constants/pageTypes';
-import { searchParams, sortParams, pagingParams } from 'constants/searchParams';
+import { pagingParams, searchParams, sortParams } from 'constants/searchParams';
 import useCases from 'constants/useCaseTypes';
+
 import {
-    workflowPaths,
     clustersBasePath,
     clustersPathWithParam,
-    riskPath,
+    configManagementPath,
+    policiesPath,
+    policyManagementBasePath,
+    riskWorkloadPath,
+    riskWorkloadsBasePath,
     secretsPath,
     urlEntityListTypes,
     urlEntityTypes,
-    policiesPath,
+    workflowPaths,
 } from '../routePaths';
 
 const defaultPathMap = {
@@ -28,19 +32,19 @@ const legacyPathMap = {
         [pageTypes.DASHBOARD]: clustersBasePath,
     },
     [useCases.RISK]: {
-        [pageTypes.ENTITY]: riskPath,
-        [pageTypes.LIST]: '/main/risk',
-        [pageTypes.DASHBOARD]: '/main/risk',
+        [pageTypes.ENTITY]: riskWorkloadPath,
+        [pageTypes.LIST]: riskWorkloadsBasePath,
+        [pageTypes.DASHBOARD]: riskWorkloadsBasePath,
     },
     [useCases.SECRET]: {
         [pageTypes.ENTITY]: secretsPath,
-        [pageTypes.LIST]: '/main/configmanagement/secrets',
-        [pageTypes.DASHBOARD]: '/main/configmanagement/secrets',
+        [pageTypes.LIST]: `${configManagementPath}/secrets`,
+        [pageTypes.DASHBOARD]: `${configManagementPath}/secrets`,
     },
     [useCases.POLICY]: {
         [pageTypes.ENTITY]: policiesPath,
-        [pageTypes.LIST]: '/main/policies',
-        [pageTypes.DASHBOARD]: '/main/policies',
+        [pageTypes.LIST]: policyManagementBasePath,
+        [pageTypes.DASHBOARD]: policyManagementBasePath,
     },
 };
 function generateURL(workflowState) {
@@ -153,7 +157,14 @@ function generateURL(workflowState) {
               encodeValuesOnly: true,
           })
         : '';
-    const newPath = generatePath(path, params) + queryString;
+
+    const encodedParams = Object.fromEntries(
+        Object.entries(params).map(([key, value]) => [
+            key,
+            value !== undefined ? encodeURIComponent(value) : value,
+        ])
+    );
+    const newPath = generatePath(path, encodedParams) + queryString;
     return newPath;
 }
 

@@ -1,16 +1,16 @@
-import React, { ReactElement } from 'react';
-import { Alert, Checkbox, Form, PageSection, Text, TextInput } from '@patternfly/react-core';
+import type { ReactElement } from 'react';
+import { Alert, Checkbox, Content, Form, PageSection, TextInput } from '@patternfly/react-core';
 import * as yup from 'yup';
 import merge from 'lodash/merge';
 
-import { ImageIntegrationBase } from 'services/ImageIntegrationsService';
+import type { ImageIntegrationBase } from 'services/ImageIntegrationsService';
 
 import FormMessage from 'Components/PatternFly/FormMessage';
 import FormTestButton from 'Components/PatternFly/FormTestButton';
 import FormSaveButton from 'Components/PatternFly/FormSaveButton';
 import FormCancelButton from 'Components/PatternFly/FormCancelButton';
 import useIntegrationForm from '../useIntegrationForm';
-import { IntegrationFormProps } from '../integrationFormTypes';
+import type { IntegrationFormProps } from '../integrationFormTypes';
 
 import IntegrationFormActions from '../IntegrationFormActions';
 import FormLabelGroup from '../FormLabelGroup';
@@ -83,16 +83,18 @@ function ClairIntegrationForm({
 
     return (
         <>
-            <PageSection variant="light" isFilled hasOverflowScroll>
+            <PageSection isFilled hasOverflowScroll>
                 <Alert
                     title="Deprecation notice"
                     component="p"
                     variant={'warning'}
                     isInline
-                    className="pf-v5-u-mb-lg"
+                    className="pf-v6-u-mb-lg"
                 >
-                    <Text>CoreOS Clair integration will be removed in a future release.</Text>
-                    <Text>Use Clair v4 integration instead.</Text>
+                    <Content component="p">
+                        CoreOS Clair integration will be removed in a future release.
+                    </Content>
+                    <Content component="p">Use Clair v4 integration instead.</Content>
                 </Alert>
                 <FormMessage message={message} />
                 <Form isWidthLimited>

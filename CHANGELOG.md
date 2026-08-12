@@ -1,13 +1,295 @@
 
+
 # Changelog
 
-Entries in this file should be limited to:
+This file helps upstream users learn about what is new in a release.
 
+Put an entry in this file if your change is user-visible and you consider it _particularly noteworthy_. Especially:
 - Any changes that introduce a deprecation in functionality, OR
 - Obscure side-effects that are not obviously apparent based on the JIRA associated with the changes.
-Please avoid adding duplicate information across this changelog and JIRA/doc input pages.
+
+Changes should still be described appropriately in JIRA/doc input pages, for inclusion in downstream release notes.
 
 ## [NEXT RELEASE]
+
+### Added Features
+
+- ROX-34997: The Central CR now supports `spec.central.rolloutStrategy` (`Recreate` or `RollingUpdate`) to configure the central deployment rollout strategy. Default remains `Recreate`.
+- ROX-35181: Administrative events are now exposed as configurable custom Prometheus metrics (`rox_central_admin_event_*`), aggregated by Type, Level, Domain, ResourceType, and ResourceName. Requires permission to read Administration resource, globally scoped.
+- ROX-35545: Added ACL change as a file access operation for runtime policies.
+- ROX-35546: File access policies now detect extended attribute (xattr) changes.
+- ROX-32461: Red Hat OpenShift Data Foundation is now officially supported as an S3-compatible backup target.
+- ROX-35962: On OCP, central API is exposed via a new `central-ocp` service, signed and rotated by OCP.
+
+### Removed Features
+
+### Deprecated Features
+
+- ROX-26281: block creation of new GCR integrations. Users are directed to use Google Artifact Registry instead.
+- ROX-35079: installation of the `app.k8s.io/v1beta1/Application` resource when central is installed is deprecated. It will be removed in a future release.
+
+### Technical Changes
+- ROX-32969: The `roxctl-linux` symlink has been removed from the `/assets/downloads/cli/` directory inside the main container image. Only the architecture-specific binaries (`roxctl-linux-amd64`, `roxctl-linux-arm64`, etc.) remain. This change does not affect CLI downloads from the Central UI or any other supported download path.
+- ROX-33078: Fixed telemetry gatherer failing to report database size metrics when using an external database. The database name is now read from the connection config instead of using the hardcoded default.
+- ROX-35006: Go runtime upgraded to 1.26. Unbracketed IPv6 addresses (e.g. `2001:db8::1`) are no longer accepted; use bracketed format instead (e.g. `[2001:db8::1]:443`).
+- ROX-34804: The machine access configuration for `config-controller` now validates the audience (`aud` claim) of the service account token. The expected audience is `central.stackrox.io`. When users have added their own role bindings to this machine access configuration, the audience check is not enforced by default to keep backwards compatibility. It is recommended to set the expected audience to `central.stackrox.io` after ensuring that all exchange tokens are being created with this audience claim.
+
+- ROX-34535: Fixes an issue where if ScannerV2 is disabled or unavailable on initial startup the central deployment leaks GRPC connections until the scanner becomes available.
+
+## [4.11.0]
+
+### Added Features
+- The config-controller now periodically reconciles SecurityPolicy CRs (default: every 30 minutes), detecting drift if policies are modified or deleted directly in Central. The interval is configurable via the `ROX_CONFIG_CONTROLLER_RECONCILE_INTERVAL` environment variable.
+- ROX-26769: Central API for generating CRSs now supports specifying an upper bound for cluster
+  registrations using the new field "max_registrations".
+  roxctl's "central crs generate" supports specifying a maximum number of cluster registrations
+  using the new parameter "--max-clusters".
+- ROX-24311: Detection and enforcement for pods/attach Kubernetes event.
+- ROX-33099: New Operator Helm Chart is now the only recommended way to install on non-OpenShift clusters.
+- ROX-33098 (Tech Preview): Effective path and Actual Path have been combined into a single File Path policy criterion.
+- ROX-33156 (Tech Preview): A new default policy category called "File Activity Monitoring" is now available.
+- ROX-33673: A new default policy has been added to detect missing egress NetworkPolicy associated with deployments. The policy is disabled by default.
+- ROX-33336: The Operator now reads the cluster-wide TLS profile from `apiserver.config.openshift.io/cluster` on OpenShift and propagates it to all managed ACS components via environment variables. The Operator's own metrics server always honors the cluster TLS profile when running on OpenShift.
+- ROX-26033: Compliance now tracks tailored profiles and custom rules from the Compliance Operator. Tailored profiles can be included in scan configurations, and their check results are shown in the Coverage page and CSV reports.
+- ROX-34407: Deprecated fields to select optional columns NVD CVSS, EPSS Probability and Advisory from Vulnerability Reporting. These columns will be included by default next to similar columns. This change also affects column order in reports. 
+- ROX-33108: Added Component Version Column in Vulnerability Reporting.
+- ROX-32865: Images are now uniquely identified by the combination of name and digest, rather
+  than by digest alone. This new data model resolves several long-standing issues when multiple
+  images share the same digest but have different names (e.g., different registries or tags):
+  - Deployments now correctly distinguish images with the same digest but different names,
+    so each deployment shows its own image reference in VM dashboards and vice-versa.
+  - Vulnerability exceptions (deferrals, false positives) can now be correctly scoped to a
+    specific image name. Previously, a deferral/false-positive created for one image name
+    would leak to all images sharing the same digest.
+  - Policies now evaluate correctly per the deployed/checked image name and respect its
+    vulnerability exceptions, rather than being affected by shared-digest exception leakage.
+
+### Removed Features
+
+### Deprecated Features
+
+- The following `roxctl` commands related to manifest-based and Helm-based installation are now deprecated.
+  They will be removed in a future release. Please use the operator for deployment management instead.
+  - `roxctl sensor generate {k8s,openshift}`
+  - `roxctl sensor get-bundle`
+  - `roxctl sensor generate-certs`
+  - `roxctl central generate {interactive,k8s,openshift}`
+  - `roxctl helm output {central-services,secured-cluster-services}`
+  - `roxctl helm derive-local-values`
+- Deprecated gRPC endpoints for manifest-based and Helm-based installation: `GetCAConfig`,
+  `SensorUpgradeService` (all RPCs), `DeploymentFormat` enum, `PostCluster`, and
+  `PutCluster`. The REST endpoints `/api/extensions/clusters/zip`,
+  `/api/extensions/clusters/helm-config.yaml`, and `/api/extensions/helm-charts/`
+  are also deprecated.
+  They will be removed in a future release. Please use the operator for deployment management instead.
+- Plaintext (non-TLS) Central endpoints, configured via the `ROX_PLAINTEXT_ENDPOINTS` environment
+  variable, are deprecated and will be removed in a future release. Modern load balancers and
+  ingress controllers support TLS passthrough, making plaintext endpoints unnecessary.
+
+### Technical Changes
+
+- ROX-34351: ACS components now always prevent Istio sidecar injection, removing the need for the
+  `env.istio` Helm value and `--istio-support` CLI flag. Existing Istio service mesh deployments
+  continue to work without configuration changes.
+- OpenShift 3 support removed from all installation methods.
+- ROX-34524: Fixed proxy bypass for non-HTTP schemes (e.g., TLS checks) when only `HTTPS_PROXY`/`HTTP_PROXY` are configured without `ALL_PROXY`. Previously, sensor's lazy TLS registry initialization would fail in proxy-only environments.
+
+## [4.10.0]
+
+
+
+### Added Features
+
+- ROX-31443: Automatic HTTP to HTTPS redirection is now enabled for Central OpenShift routes (passthrough and reencrypt).
+- ROX-29582: A `kubectl get` on a Central CR now shows the following additional columns: Version, AdminPassword, Message, Available, Progressing.
+- ROX-32061: The `spec.configAsCode` field in the Central CR now supports `resources`, `nodeSelector`, `tolerations`, and `hostAliases` settings for the config-controller deployment.
+- ROX-31738: Added the `spec.customize.deploymentDefaults` field to Central and SecuredCluster CRDs, for configuring global default scheduling constraints for Deployments. This was previously possible on a per-component basis.
+- ROX-30094, ROX-30610, ROX-30740: Add new namespaces to Layered Products default config regex.
+- ROX-31960, ROX-32449: include and exclude filters for custom metrics.
+- ROX-33603: Switch to UBI9/rhel9 base images.
+- ROX-30641: Added a new policy criteria "Days Since CVE Fix Was Available".
+- ROX-32630: The OpenShift console plugin integrates the ACS vulnerability management view into OpenShift console. It is enabled by default for operator-deployed secured clusters.
+- Tech preview: operator-based installation available for community StackRox build. More information in [a separate README file](operator/install/README.md).
+- ROX-30585, ROX-30196 (Tech Preview): Added file activity monitoring, including new policy criteria for deployment or node file activity.
+
+### Removed Features
+- ROX-31727: `/v1/cve/requests` APIs (deprecated in 4.3.0) for managing vulnerability exceptions have been removed.
+  - The `/v2/vulnerability-exceptions/` APIs must be used.
+- ROX-31728: Active Vulnerability Management has been removed.
+- ROX-31531: Removed deprecated `/v1/imagecves/suppress` and `/v1/imagecves/unsuppress` APIs
+
+### Deprecated Features
+
+- ROX-32851: The `roxctl netpol generate`, `roxctl netpol connectivity map`, and `roxctl netpol connectivity diff` commands are deprecated because they rely on the unmaintained NP-Guard library and will be removed in a future release.
+- ROX-32867: The Compliance V1 feature has been deprecated, and it is planned to be removed in a future release. This includes:
+  - The Compliance Dashboard
+  - The Compliance V1 API endpoints
+  - The Compliance Configuration Management Board
+
+### Technical Changes
+- ROX-32239: Process indicator filtering is now configurable via environment variables. `ROX_PROCESS_FILTER_MAX_EXACT_PATH_MATCHES` is the maximum number of times an exact path (same deployment+container+process+args) can appear before being filtered. `ROX_PROCESS_FILTER_FAN_OUT_LEVELS` is the maximum number of unique process executable paths per container. `ROX_PROCESS_FILTER_MAX_PROCESS_PATHS` is an integer array where each value represents the number of distinct child arguments for that arg position.
+- ROX-32679: Added preset process filtering modes via `ROX_PROCESS_FILTER_MODE` environment variable. Available modes: `default`, `aggressive`, and `minimal`. Setting this environment variables controls the same parameters as the `ROX_PROCESS_FILTER_MAX_EXACT_PATH_MATCHES`, `ROX_PROCESS_FILTER_FAN_OUT_LEVELS`, and `ROX_PROCESS_FILTER_MAX_PROCESS_PATHS` environment variables. Individual filter settings can override preset values.
+- ROX-30769: Update Node.js requirement for ui folder to 22.13.0
+- ROX-31295: The lower limit for `ROX_MAX_PARALLEL_IMAGE_SCAN_INTERNAL` on Sensor has been reduced to one (from 10).
+- ROX-32125: The operator now adopts secrets that have the `app.stackrox.io/managed-by: operator` label but no `ownerReferences`. This fixes reconciliation failures after backup/restore operations that strip `ownerReferences` from secrets.
+- ROX-32394, ROX-32554: Remove init-tls-certs init container from all Secured Cluster services. The certificate initialization logic for Sensor is now performed at Sensor startup.
+- ROX-28352: Remove Sensor's certdistribution API, which was used by the admission controller to retrieve its TLS certificate from Sensor (no longer needed)
+- ROX-26374: Upgrading from a version prior to 4.6 is no longer supported. If upgrading from a version prior to 4.6, then you must upgrade to 4.6, 4.7, 4.8 or 4.9 first, before upgrading to 4.10. Similarly, once on 4.10 or higher, rollback to a version prior to 4.6 is no longer supported.  For example:
+	  - 4.5 -> 4.10 -- not supported must go to 4.6, 4.7, 4.8 or 4.9 first and then go to 4.10.
+	  - 4.6 -> 4.10 -- this upgrade is supported, as is the rollback.
+
+## [4.9.0]
+
+
+
+### Added Features
+
+- ROX-30645: Two new API endpoints are added for locking/unlocking process baselines given a cluster ID and an optional set of namespaces.
+- ROX-30279: The `admissionControl.enforcement` field has been added to the SecuredCluster CRD as a high-level way to toggle admission controller enforcement.
+- ROX-30279: The `admissionControl.enforcement` field defaults to Enabled for new installations.
+  [This is currently behind the ROX_ADMISSION_CONTROLLER_CONFIG feature flag, but the plan is to enable it for 4.9.]
+- ROX-30279: The `admissionControl.failurePolicy` field has been added to the SecuredCluster CRD for controlling admission controller's
+  failure policy. It defaults to `Ignore`.
+- ROX-27238: Central API for generating CRSs now supports custom expiration times, specified using the new fields "valid_until" or "valid_for".
+  roxctl's "central crs generate" now supports specifying custom expiration times using the new parameters "--valid-until" or "--valid-for".
+- ROX-30087: Implicit exchange of OIDC tokens, accessing the API, with a role mapping according to the M2M configuration that matches the token issuer.
+- ROX-30100: Incorrect defaults for admission controller related configuration options in "roxctl sensor generate" have been fixed. The admission controller will be deployed and configured
+for policy evaluation and enforcement as well as image scanning, out of the box - without requiring a user to specify command line
+options to "roxctl sensor generate".
+- ROX-30034,ROX-29995,ROX-29996: Support for two new admission controller configuration related options in roxctl sensor generate
+  - `--admission-controller-enforcement` defaults to true. If set to false, admission controller webhook will be
+  configured to not enforce policies on any admission review request.
+  - `--admission-controller-fail-on-error` defaults to false, which means admission controller webhook will fail open.
+  If set to true, the admission controller webhook will fail closed i.e. the review request will be blocked in case of timeouts or errors.
+- ROX-24956: Fix default timeout value for the --admission-controller-timeout flag to 0 (note: this flag has been marked for deprecation)
+- ROX-30035: On upgrade to 4.9, all secured clusters deployed using manifest install (roxctl sensor generate or via the Add Cluster legacy install UI workflow)
+will have the scan inline setting of the admission controller config set to true, and will have both
+enforce on creates and enforce on updates set to true, if either or both were true before upgrade. This implies that the admission
+controller webhooks will now be configured to 1) always scan images inline 2) either enforce on all admission review requests, or not.
+- ROX-19197: Policies with the "Allow Privilege Escalation" criterion will now fire violations for deployments with containers which do not have the allowPrivilegeEscalation defined in their security context.
+- ROX-29160: New default policy (disabled by default) and associated image signature integration to ensure Red Hat images are signed by Red Hat's Release Key 3 (see https://access.redhat.com/security/team/key) and serve as an example of using the Image Signature criterion. It applies to images from the following registries and remotes:
+
+  - `registry.redhat.io`
+  - `registry.access.redhat.com`
+  - `quay.io/openshift-release-dev/ocp-release`
+  - `quay.io/openshift-release-dev/ocp-v4.0-art-dev`
+
+- ROX-28326: Custom Prometheus metrics exposed on the `/metrics` path of the central API endpoint. Configured via the `/v1/config` service.
+  Disabled by default.
+- ROX-20262: Enable internal CA rotation for Operator-installed Centrals and Secured Clusters. Operator-installed Secured Clusters have full support, while Helm-installed Secured Clusters have partial support (can connect to Central with rotated CA but their certificates remain signed by the older CA).
+
+### Removed Features
+
+- ROX-30278: The `admissionControl.dynamic.timeout` configuration parameter of the secured-cluster-services Helm chart is not user-configurable anymore.
+  Its value is set to `10`.
+  [This is currently behind the ROX_ADMISSION_CONTROLLER_CONFIG feature flag, but the plan is to enable it for 4.9.]
+- ROX-30279: The `admissionControl.listenOn*` fields of the SecuredCluster CRD are deprecated.
+- ROX-30279: The `admissionControl.contactImageScanners` field of the SecuredCluster CRD is deprecated.
+- ROX-30279: The `admissionControl.timeoutSeconds` field of the SecuredCluster CRD is deprecated.
+- ROX-30278: The `admissionControl.dynamic.enforceOn*` configuration parameters of the secured-cluster-services Helm chart
+  are deprecated and are now ignored. Please use the high-level parameter `admissionControl.enforce` instead.
+  Enforce is now enabled by default.
+- ROX-29994: Removing the following roxctl sensor generate options that have been marked as deprecated
+since 4.7 and prior.
+  - --create-admission-controller
+  - --admission-controller-enabled
+  - --slim-collector
+- ROX-30278: The `admissionControl.listenOn*` configuration parameters of the secured-cluster-services Helm chart are not user-configurable anymore.
+  Their values are all set to `true` (except for OpenShift 3, where `listenOnEvents` remains disabled.)
+  [This is currently behind the ROX_ADMISSION_CONTROLLER_CONFIG feature flag, but the plan is to enable it for 4.9.]
+- ROX-30278: The `admissionControl.dynamic.scanInline` configuration parameter of the secured-cluster-services Helm chart is not user-configurable anymore.
+  Its value is set to `true`.
+  [This is currently behind the ROX_ADMISSION_CONTROLLER_CONFIG feature flag, but the plan is to enable it for 4.9.]
+
+### Deprecated Features
+- ROX-30170: The following roxctl sensor generate options have been marked as deprecated
+  - `--admission-controller-enforce-on-creates`
+  - `--admission-controller-enforce-on-updates`
+  - `--admission-controller-listen-on-creates`
+  - `--admission-controller-listen-on-updates`
+  - `--admission-controller-listen-on-events`
+  - `--admission-controller-timeout`
+  Using them has no effect.
+- The current hierarchical implementation for defining Collections is deprecated and will be replaced by a more comprehensive search-based definition in the future.
+- The manifest install method is now deprecated and will be removed in the future. Manifest install is currently done using the `roxctl {central,sensor,scanner} generate` command line utility, or by choosing the "Legacy installation method" in the UI. Users should switch to Operator or Helm installation.
+- All GraphQL endpoints are now deprecated and will be removed in the future.  The endpoints were created to support the ACS UI, all other uses are unsupported.
+
+### Technical Changes
+- ROX-29793: Accessing the Compliance menus (OpenShift Coverage and OpenShift Schedules) and API endpoints (`/v2/compliance/*`) now additionally requires read permissions for the `Cluster` resource.
+- ROX-30136: Autogenerated image integration TLS check results will now be cached to speed up Central event processing. The env var `ROX_SENSOR_REGISTRY_TLS_CHECK_CACHE_TTL` has been renamed to `ROX_REGISTRY_TLS_CHECK_CACHE_TTL` and can be applied to Central and/or Sensor to change the cache TTL. The 15 minute default remains the same.
+- ROX-30602: Enhanced sensor component message processing with asynchronous queuing system to improve reliability and performance of
+  sensor-central communication. Each sensor component now processes messages from Central in dedicated queues with configurable buffer
+  sizes. New environment variable `ROX_REQUESTS_CHANNEL_BUFFER_SIZE` controls the buffer size for messages from Central
+  before dropping occurs. New metrics have been added for monitoring sensor components:
+    - `rox_sensor_component_process_message_duration_seconds`: Tracks processing time for messages from Central in each sensor component
+    - `rox_sensor_component_queue_operations_total`: Tracks operations on component buffer queues
+    - `rox_sensor_component_process_message_errors_total`: Tracks processing errors in each sensor component (note: it will not be published until an error occurs)
+- ROX-30729: Allow to spin up a Sensitive File Activity monitoring agent via `ROX_SENSITIVE_FILE_ACTIVITY` env var. The agent itself is in dev preview and is not supposed to be used in production in this version.
+- ROX-31365: Fixed an issue that could cause DB connection exhaustion when many sensor try to reconnect at the same time
+
+## [4.8.0]
+
+**HELM USERS**: Please see ROX-27622 under "technical changes" to avoid upgrade failures!
+
+### Added Features
+
+- ROX-29152: When using the secured-cluster-services Helm chart for new installations StackRox Scanner and Scanner V4 will be installed unless explicitly disabled (opt-out).
+  For upgrades using the new chart version scanners continue to be not installed by default (opt-in).
+- ROX-13493: Support for scale subresource in the admission controller to enable policy detection and enforcement on admission review requests on the scale subresource.
+- RHPF-98: Log creation of API token. The token creation log message will trigger an administration event.
+- ROX-28716: New policy criterion "Days Since CVE Was Published" to allow creation of a policy that offers a grace period to teams to fix vulnerabilities within the number of days from when the CVE was published in the vulnerability feeds.
+- ROX-28296: Support for an OpenShift reencrypt route to expose Central (`central.exposure.route.reencrypt.enabled: true`).
+- ROX-28153: Support for Cosign keyless signing and verification of image signatures.
+- ROX-28306: When using the central-services Helm chart for new installations Scanner V4 will be installed unless explicitly disabled (opt-out).
+  For upgrades using the new chart version Scanner V4 continues to be not installed by default (opt-in).
+- ROX-28655: When managing a Central installation using the operator
+  * Scanner V4 will be installed for new installations unless explicitly disabled (opt-out) and
+  * Scanner V4 will remain not installed for upgrades unless explicitly enabled (opt-in).
+- ROX-29151: When managing a SecuredCluster installation using the operator
+  * Scanner V4 will be installed for new installations unless explicitly disabled (opt-out) and
+  * Scanner V4 will remain not installed for upgrades unless explicitly enabled (opt-in).
+- ROX-27443: Scanner V4 now has the ability to only show vulnerability data from Red Hat security data sources for official Red Hat container images
+  found in the [Red Hat Container Catalog](https://catalog.redhat.com/software/containers/explore) when the environment variable `ROX_SCANNER_V4_RED_HAT_LAYERS_RED_HAT_VULNS_ONLY` is set in Scanner V4 Matcher.
+  - Currently, those who use Scanner V4 will see vulnerability data from various sources for all layers in their images.
+    This may lead to confusion when users scan official Red Hat images or images based on official Red Hat images.
+Scanner V4 claims the images contain vulnerabilities which the official Red Hat CVE pages claim do not exist in the same image.
+  - This arises from non-RPM content in official Red Hat container images, such as Go binaries in OpenShift images.
+  - When the variable is set, Scanner V4 will continue to show non-RPM content in official Red Hat container images but will no longer
+    output vulnerabilities from non-Red Hat security data sources for these images.
+- ROX-25570: The data model for image based CVEs has been denormalized
+  - This will result in far more consistent results as 1 image scan will no longer overwrite CVE data of a previous image scan.
+  - `ROX_FLATTEN_CVE_DATA` can be set to false to use the old normalized data model
+- ROX-27696: ROX_EXTERNAL_IPS feature flag enabled by default. Note: Collector will still need to be configured for external IPs for this to have an effect.
+
+### Removed Features
+
+### Deprecated Features
+
+### Technical Changes
+
+- ROX-28263: New `roxctl` help formatting.
+- ROX-24500: Certificate validation failure in `roxctl` is now an error.
+- ROX-27885: Aligned data in old Compliance across tables and widgets
+- ROX-28574: Fixed a Sensor race condition that would occasionally disable delegated scanning when Sensor reconnected to Central.
+- ROX-27622: Move `SecurityPolicy` CRD to template directory in Helm chart. **All Helm users will need to take action!**
+  No action is needed for users that use the operator or `roxctl` to install StackRox.
+  This change makes the CRD simpler to maintain for users because it will now be automatically upgraded.
+  To avoid upgrade failure, Helm users need to apply the following changes to the CRD prior to upgrade:
+
+      kubectl annotate crd/securitypolicies.config.stackrox.io meta.helm.sh/release-name=stackrox-central-services
+      kubectl annotate crd/securitypolicies.config.stackrox.io meta.helm.sh/release-namespace=stackrox
+      kubectl label crd/securitypolicies.config.stackrox.io app.kubernetes.io/managed-by=Helm
+
+  The above values will need to be updated to match your release name (i.e. "stackrox-central-services") or namespace (i.e. "stackrox") in case you had used different ones.
+- ROX-29232: When reading docker config pull secrets from K8s, Sensor will ignore entries containing invalid UTF8 characters.
+- ROX-22597: The S3 backup integration is migrated to the AWS go SDK v2. GCS buckets are not supported anymore by the S3 integration type, as announced in 4.5.0, users should use dedicated GCS integrations for these.
+- The scoping of Google image integrations by project is now optional.
+- ROX-29074: The default output of `roxctl image scan` when using the `--output` flag will now include three new fields, by default: CVSS, Advisory, and Advisory Link (the exact names depend on the specific output format).
+  - CVSS represents the CVSS score of the vulnerability.
+  - The Advisory and Advisory Link fields represent the advisory related to the vulnerability, if it exists and is tracked by StackRox.
+    - A typical example is a CVE's associated RHSA (Red Hat Security Advisory), if the CVE is related to a Red Hat product.
+
+## [4.7.0]
 
 ### Added Features
 
@@ -44,6 +326,7 @@ Please avoid adding duplicate information across this changelog and JIRA/doc inp
   - ROX-27916 ROX-27985 ROX-27986: Replace links to docs in console UI
     - from docs dot openshift dot com
     - to docs dot redhat dot com
+- ROX-26763: identify defunct processes before they induce parsing errors in Collector.
 
 ## [4.6.0]
 
@@ -66,6 +349,7 @@ Please avoid adding duplicate information across this changelog and JIRA/doc inp
   - `roxctl central generate k8s hostpath` and `roxctl central generate openshift hostpath` no longer have the flags `--hostpath`, `--node-selector-key`, and `--node-selector-value`.
 
 ### Deprecated Features
+
 - ROX-25677: The format for specifying durations in JSON requests to
   `v1/nodecves/suppress`, `v1/clustercves/suppress` and `v1/imagecves/suppress`
   will be restricted to a [proto JSON format](https://protobuf.dev/programming-guides/proto3/#json:~:text=are%20also%20accepted.-,Duration,-string).
@@ -79,6 +363,7 @@ Please avoid adding duplicate information across this changelog and JIRA/doc inp
 - ROX-26670: Google Container Registry integration is now deprecated. Users should use Artifact Registry as a registry replacement and Scanner V4 as a scanner replacement.
 
 ### Technical Changes
+
 - ROX-24897: Sensor will now perform TLS checks lazily during delegated scanning instead of when secrets are first discovered, this should reduce Sensor startup time.
 - ROX-23343: The auto-sensing within the Helm charts for detecting OpenShift clusters has been changed to depend on the `project.openshift.io/v1` APIVersion.
 - ROX-22701: Prevent deleting default policies through the API
@@ -115,8 +400,6 @@ Please avoid adding duplicate information across this changelog and JIRA/doc inp
 - Alpine vulnerabilities will now have a link to https://security.alpinelinux.org instead of https://www.cve.org.
 
 ## [4.5.0]
-
-
 
 ### Added Features
 
@@ -294,7 +577,6 @@ Please avoid adding duplicate information across this changelog and JIRA/doc inp
 - The default policy "No resource requests or limits specified" has been renamed to "No CPU request or memory limit specified" and now no longer checks CPU limit or memory request. Rather it only detects that the CPU request and memory limits are set.
 - The `/v1/availableAuthProviders` endpoint will in a future release require authentication and at least READ permission on the `Access` resource.
   Ensure that any flow interacting with it is authenticated and has the proper permissions going forward.
-- The `/v1/tls-challenge` will  require authentication, ensure that all interactions with these endpoints include proper authentication going forward.
 
 ## [4.3.0]
 

@@ -1,55 +1,103 @@
-import { Snapshot } from 'types/reportJob';
-import { VulnerabilitySeverity } from '../types/cve.proto';
+import type { VulnerabilitySeverity } from 'types/cve.proto';
+import type { Snapshot } from 'types/reportJob';
 
-// Report configuration types
+// Core report types
 
-export type ReportConfiguration = {
+export type ReportType = 'VULNERABILITY' | 'NODE_VULNERABILITY';
+
+export type ReportConfigurationBase = {
     id: string;
     name: string;
     description: string;
-    type: ReportType;
-    vulnReportFilters: VulnerabilityReportFilters;
     notifiers: NotifierConfiguration[];
     schedule: Schedule | null;
-    resourceScope: ResourceScope;
 };
 
-export type ReportType = 'VULNERABILITY';
+export type GenericVulnerabilityReportConfiguration = {
+    type: 'NODE_VULNERABILITY';
+    vulnReportFilters: GenericVulnerabilityReportFilters;
+    resourceScope: {
+        entityScope: EntityScope;
+    };
+} & ReportConfigurationBase;
 
-export type VulnerabilityReportFiltersBase = {
-    fixability: Fixability;
-    severities: VulnerabilitySeverity[];
-    imageTypes: ImageType[];
-    includeEpssProbability: boolean;
-    includeNvdCvss: boolean;
-};
+// TODO temporary alias to limit changed files that might be superseded later anyway
+export type ReportConfiguration = ImageVulnerabilityReportConfiguration;
 
-export type VulnerabilityReportFilters =
-    | (VulnerabilityReportFiltersBase & {
-          allVuln: boolean;
-      })
-    | (VulnerabilityReportFiltersBase & {
-          sinceLastSentScheduledReport: boolean;
-      })
-    | (VulnerabilityReportFiltersBase & {
-          sinceStartDate: string; // in the format of google.protobuf.Timestamp};
-      });
+// After we remove ForCollection, ForEntity becomes the report configuration.
+export type ImageVulnerabilityReportConfiguration =
+    | ImageVulnerabilityReportConfigurationForEntity
+    | ImageVulnerabilityReportConfigurationForCollection;
+
+export type ImageVulnerabilityReportConfigurationForEntity = {
+    type: 'VULNERABILITY';
+    vulnReportFilters: ImageVulnerabilityReportFiltersForEntity;
+    resourceScope: {
+        entityScope: EntityScope;
+    };
+} & ReportConfigurationBase;
+
+export type ImageVulnerabilityReportConfigurationForCollection = {
+    type: 'VULNERABILITY';
+    vulnReportFilters: ImageVulnerabilityReportFiltersForCollection;
+    resourceScope: {
+        collectionScope: CollectionScope;
+    };
+} & ReportConfigurationBase;
+
+// Vulnerability report filters
 
 export type Fixability = 'BOTH' | 'FIXABLE' | 'NOT_FIXABLE';
 
 export const imageTypes = ['DEPLOYED', 'WATCHED'] as const;
-
 export type ImageType = (typeof imageTypes)[number];
 
-export type NotifierConfiguration = {
-    emailConfig: {
-        notifierId: string;
-        mailingLists: string[];
-        customSubject: string;
-        customBody: string;
-    };
-    notifierName: string;
+export type ImageVulnerabilityReportFiltersForEntity = {
+    imageTypes: ImageType[];
+    query: string;
+} & CvesSince;
+
+export type ImageVulnerabilityReportFiltersForCollection = {
+    fixability: Fixability;
+    severities: VulnerabilitySeverity[];
+    imageTypes: ImageType[];
+} & CvesSince;
+
+export type CvesSince =
+    | {
+          allVuln: boolean;
+      }
+    | {
+          sinceLastSentScheduledReport: boolean;
+      }
+    | {
+          sinceStartDate: string; // in the format of google.protobuf.Timestamp};
+      };
+
+export type GenericVulnerabilityReportFilters = {
+    query: string;
+} & CvesSince;
+
+export type ViewBasedVulnerabilityReportFilters = {
+    query: string;
 };
+
+// Scheduling types
+
+export const intervalTypes = ['WEEKLY', 'MONTHLY'] as const;
+export type IntervalType = (typeof intervalTypes)[number];
+
+// Sunday = 0, Monday = 1, .... Saturday =  6
+export type DaysOfWeek = {
+    days: number[]; // int32
+};
+
+// 1 for 1st, 2 for 2nd .... 31 for 31st
+export type DaysOfMonth = {
+    days: number[]; // int32
+};
+
+export type Interval = DaysOfWeek | DaysOfMonth;
 
 export type Schedule =
     | {
@@ -65,36 +113,83 @@ export type Schedule =
           daysOfMonth: DaysOfMonth;
       };
 
-export const intervalTypes = ['WEEKLY', 'MONTHLY'] as const;
+// Notification types
 
-export type IntervalType = (typeof intervalTypes)[number];
-
-export type Interval = DaysOfWeek | DaysOfMonth;
-
-// Sunday = 0, Monday = 1, .... Saturday =  6
-export type DaysOfWeek = {
-    days: number[]; // int32
+export type NotifierConfiguration = {
+    emailConfig: {
+        notifierId: string;
+        mailingLists: string[];
+        customSubject: string;
+        customBody: string;
+    };
+    notifierName: string;
 };
 
-// 1 for 1st, 2 for 2nd .... 31 for 31st
-export type DaysOfMonth = {
-    days: number[]; // int32
-};
+// Resource scope types
 
 export type ResourceScope = {
-    collectionScope: {
-        collectionId: string;
-        collectionName: string;
-    };
+    collectionScope: CollectionScope;
 };
 
-// Report history
+export type CollectionScope = {
+    collectionId: string;
+    collectionName: string;
+};
+
+export type EntityScope = {
+    rules: EntityScopeRule[];
+};
+
+export type MatchType = 'EXACT' | 'REGEX';
+
+export type RuleValue = {
+    value: string;
+    matchType: MatchType;
+};
+
+export type EntityScopeRule = {
+    entity: ScopeEntity;
+    field: ScopeField;
+    values: RuleValue[];
+};
+
+export type ScopeEntity =
+    | 'SCOPE_ENTITY_UNSET'
+    | 'SCOPE_ENTITY_DEPLOYMENT'
+    | 'SCOPE_ENTITY_NAMESPACE'
+    | 'SCOPE_ENTITY_CLUSTER';
+
+export type ScopeField =
+    | 'FIELD_UNSET'
+    | 'FIELD_ID'
+    | 'FIELD_NAME'
+    | 'FIELD_LABEL'
+    | 'FIELD_ANNOTATION';
+
+export type CollectionSnapshot = {
+    id: string;
+    name: string;
+};
+
+// Report history types
 
 export type ReportHistoryResponse = {
     reportSnapshots: ReportSnapshot[];
 };
 
-export type ReportSnapshot = Snapshot & {
+export type ViewBasedReportSnapshot = Snapshot & {
+    viewBasedVulnReportFilters: ViewBasedVulnerabilityReportFilters;
+    areaOfConcern: string;
+};
+
+// TODO temporary disjunction until snamshot has type property.
+type VulnerabilityReportFilters =
+    | GenericVulnerabilityReportFilters
+    | ImageVulnerabilityReportFiltersForCollection
+    | ImageVulnerabilityReportFiltersForEntity;
+
+// TODO distinguish configured versus view-based instead of combining them.
+export type ConfiguredReportSnapshot = Snapshot & {
     reportConfigId: string;
     vulnReportFilters: VulnerabilityReportFilters;
     collectionSnapshot: CollectionSnapshot;
@@ -102,14 +197,36 @@ export type ReportSnapshot = Snapshot & {
     notifiers: NotifierConfiguration[];
 };
 
-export type CollectionSnapshot = {
-    id: string;
-    name: string;
-};
+export type ReportSnapshot = ConfiguredReportSnapshot | ViewBasedReportSnapshot;
 
-// Misc types
+// Type guard functions
+
+export function isViewBasedReportSnapshot(
+    snapshot: ReportSnapshot
+): snapshot is ViewBasedReportSnapshot {
+    return 'viewBasedVulnReportFilters' in snapshot;
+}
+
+export function isConfiguredReportSnapshot(
+    snapshot: ReportSnapshot
+): snapshot is ConfiguredReportSnapshot {
+    return 'reportConfigId' in snapshot;
+}
+
+// API request/response types
 
 export type RunReportResponse = {
     reportConfigId: string;
     reportId: string;
+};
+
+export type ReportRequestViewBased = {
+    type: ReportType;
+    viewBasedVulnReportFilters: ViewBasedVulnerabilityReportFilters;
+    areaOfConcern: string;
+};
+
+export type RunReportResponseViewBased = {
+    reportID: string;
+    requestName: string;
 };

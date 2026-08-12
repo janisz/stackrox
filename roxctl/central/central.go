@@ -3,7 +3,6 @@ package central
 import (
 	"github.com/spf13/cobra"
 	"github.com/stackrox/rox/pkg/features"
-	"github.com/stackrox/rox/pkg/pointers"
 	"github.com/stackrox/rox/roxctl/central/backup"
 	"github.com/stackrox/rox/roxctl/central/cert"
 	"github.com/stackrox/rox/roxctl/central/crs"
@@ -14,6 +13,7 @@ import (
 	"github.com/stackrox/rox/roxctl/central/initbundles"
 	"github.com/stackrox/rox/roxctl/central/login"
 	"github.com/stackrox/rox/roxctl/central/m2m"
+	"github.com/stackrox/rox/roxctl/central/migratetooperator"
 	"github.com/stackrox/rox/roxctl/central/userpki"
 	"github.com/stackrox/rox/roxctl/central/whoami"
 	"github.com/stackrox/rox/roxctl/common/environment"
@@ -23,13 +23,13 @@ import (
 func Command(cliEnvironment environment.Environment) *cobra.Command {
 	c := &cobra.Command{
 		Use:   "central",
-		Short: "Commands related to the Central service.",
+		Short: "Commands related to the Central service",
 	}
 	c.AddCommand(
 		cert.Command(cliEnvironment),
 		generate.Command(cliEnvironment),
 		db.Command(cliEnvironment),
-		backup.Command(cliEnvironment, pointers.Bool(true)),
+		backup.Command(cliEnvironment, new(true)),
 		debug.Command(cliEnvironment),
 		userpki.Command(cliEnvironment),
 		whoami.Command(cliEnvironment),
@@ -37,6 +37,7 @@ func Command(cliEnvironment environment.Environment) *cobra.Command {
 		login.Command(cliEnvironment),
 		export.Command(cliEnvironment),
 		m2m.Command(cliEnvironment),
+		migratetooperator.Command(cliEnvironment),
 	)
 	if features.ClusterRegistrationSecrets.Enabled() {
 		c.AddCommand(crs.Command(cliEnvironment))

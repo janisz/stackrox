@@ -1,21 +1,20 @@
-import React from 'react';
+import { Link } from 'react-router-dom-v5-compat';
 import { gql, useQuery } from '@apollo/client';
-import { Flex, FlexItem, Title, Button, Divider, Stack, StackItem } from '@patternfly/react-core';
+import { Divider, Flex, FlexItem, Stack, StackItem, Title } from '@patternfly/react-core';
 
-import LinkShim from 'Components/PatternFly/LinkShim';
 import WidgetCard from 'Components/PatternFly/WidgetCard';
 import { filteredWorkflowViewKey } from 'Components/FilteredWorkflowViewSelector/useFilteredWorkflowViewURLState';
 import { fullWorkflowView } from 'Components/FilteredWorkflowViewSelector/types';
 import useURLSearch from 'hooks/useURLSearch';
 import { violationsBasePath } from 'routePaths';
-import { SearchFilter } from 'types/search';
-import { Alert } from 'types/alert.proto';
+import type { SearchFilter } from 'types/search';
+import type { Alert } from 'types/alert.proto';
 import { getQueryString } from 'utils/queryStringUtils';
 import { getRequestQueryStringForSearchFilter } from 'utils/searchUtils';
 
 import { severities } from 'constants/severities';
 import pluralize from 'pluralize';
-import { ValueOf } from 'utils/type.utils';
+import type { ValueOf } from 'utils/type.utils';
 import MostRecentViolations from './MostRecentViolations';
 import PolicyViolationTiles from './PolicyViolationTiles';
 
@@ -125,8 +124,12 @@ function ViolationsByPolicySeverity() {
             }
             error={alertCountError || recentAlertsError}
             header={
-                <Flex direction={{ default: 'row' }}>
-                    <FlexItem grow={{ default: 'grow' }}>
+                <Flex
+                    direction={{ default: 'row' }}
+                    alignItems={{ default: 'alignItemsCenter' }}
+                    justifyContent={{ default: 'justifyContentSpaceBetween' }}
+                >
+                    <FlexItem>
                         <Title headingLevel="h2">
                             {`${totalCount} policy ${pluralize(
                                 'violation',
@@ -135,13 +138,7 @@ function ViolationsByPolicySeverity() {
                         </Title>
                     </FlexItem>
                     <FlexItem>
-                        <Button
-                            variant="secondary"
-                            component={LinkShim}
-                            href={getViewAllLink(searchFilter)}
-                        >
-                            View all
-                        </Button>
+                        <Link to={getViewAllLink(searchFilter)}>View all</Link>
                     </FlexItem>
                 </Flex>
             }
@@ -149,7 +146,7 @@ function ViolationsByPolicySeverity() {
             {alertCountData && recentAlertsData && (
                 <Stack>
                     <PolicyViolationTiles searchFilter={searchFilter} counts={counts} />
-                    <Divider component="div" className="pf-v5-u-my-lg" />
+                    <Divider component="div" className="pf-v6-u-py-md" />
                     <StackItem isFilled>
                         <MostRecentViolations alerts={recentAlertsData.alerts} />
                     </StackItem>

@@ -1,34 +1,27 @@
-import React, { useEffect } from 'react';
-import {
-    Bullseye,
-    EmptyState,
-    Stack,
-    StackItem,
-    EmptyStateHeader,
-    DropEvent,
-} from '@patternfly/react-core';
-import { SelectOption } from '@patternfly/react-core/deprecated';
-import { NetworkPolicy } from 'types/networkPolicy.proto';
+import { useEffect, useState } from 'react';
+import { Bullseye, EmptyState, SelectOption, Stack, StackItem } from '@patternfly/react-core';
+import type { DropEvent } from '@patternfly/react-core';
+import type { NetworkPolicy } from 'types/networkPolicy.proto';
 import SelectSingle from 'Components/SelectSingle';
 import NetworkPoliciesYAML from './NetworkPoliciesYAML';
 import NetworkSimulatorActions from './NetworkSimulatorActions';
 
-type ViewActiveYamlsProps = {
+type ViewActiveYAMLsProps = {
     networkPolicies: NetworkPolicy[];
     generateNetworkPolicies: () => void;
     undoNetworkPolicies: () => void;
     onFileInputChange: (_event: DropEvent, file: File) => void;
 };
 
-function ViewActiveYamls({
+function ViewActiveYAMLs({
     networkPolicies,
     generateNetworkPolicies,
     undoNetworkPolicies,
     onFileInputChange,
-}: ViewActiveYamlsProps) {
-    const [selectedNetworkPolicy, setSelectedNetworkPolicy] = React.useState<
-        NetworkPolicy | undefined
-    >(networkPolicies?.[0]);
+}: ViewActiveYAMLsProps) {
+    const [selectedNetworkPolicy, setSelectedNetworkPolicy] = useState<NetworkPolicy | undefined>(
+        networkPolicies?.[0]
+    );
 
     useEffect(() => {
         if (networkPolicies?.length && !selectedNetworkPolicy) {
@@ -47,18 +40,20 @@ function ViewActiveYamls({
     if (networkPolicies.length === 0) {
         return (
             <Bullseye>
-                <EmptyState variant="xs">
-                    <EmptyStateHeader titleText="No network policies" headingLevel="h4" />
-                </EmptyState>
+                <EmptyState
+                    headingLevel="h4"
+                    titleText="No network policies"
+                    variant="xs"
+                ></EmptyState>
             </Bullseye>
         );
     }
 
     return (
-        <div className="pf-v5-u-h-100">
+        <div className="pf-v6-u-h-100">
             <Stack>
                 <StackItem>
-                    <div className="pf-v5-u-p-md">
+                    <div className="pf-v6-u-p-md">
                         <SelectSingle
                             id="search-filter-attributes-select"
                             value={selectedNetworkPolicy?.name || ''}
@@ -97,4 +92,4 @@ function ViewActiveYamls({
     );
 }
 
-export default ViewActiveYamls;
+export default ViewActiveYAMLs;

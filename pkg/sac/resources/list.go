@@ -52,6 +52,8 @@ var (
 	Detection = newResourceMetadata("Detection", permissions.GlobalScope)
 	Image     = newResourceMetadata("Image", permissions.NamespaceScope)
 
+	ImageAdministration = newResourceMetadata("ImageAdministration", permissions.GlobalScope)
+
 	// Integration groups all integration-related resources. It aims to cover
 	// integrations and their configuration. For instance, it has replaced:
 	// APIToken, BackupPlugins, ImageIntegration, Notifier, SignatureIntegration.
@@ -67,23 +69,27 @@ var (
 
 	Secret                           = newResourceMetadata("Secret", permissions.NamespaceScope)
 	ServiceAccount                   = newResourceMetadata("ServiceAccount", permissions.NamespaceScope)
+	VirtualMachine                   = newResourceMetadata("VirtualMachine", permissions.NamespaceScope)
 	VulnerabilityManagementApprovals = newResourceMetadata("VulnerabilityManagementApprovals",
 		permissions.GlobalScope)
 	VulnerabilityManagementRequests = newResourceMetadata("VulnerabilityManagementRequests",
 		permissions.GlobalScope)
 
-	WatchedImage = newResourceMetadata("WatchedImage", permissions.GlobalScope)
+	WatchedImage = newDeprecatedResourceMetadata("WatchedImage", permissions.GlobalScope, ImageAdministration)
 	// WorkflowAdministration groups all workflow-related resources. It aims to cover core workflows
 	// such as managing policies and vulnerability reports. For instance, it has replaced:
 	// Policy, VulnerabilityReports.
 	WorkflowAdministration = newResourceMetadata("WorkflowAdministration", permissions.GlobalScope)
 
 	// Internal Resources.
-	ComplianceOperator = newInternalResourceMetadata("ComplianceOperator", permissions.GlobalScope)
-	InstallationInfo   = newInternalResourceMetadata("InstallationInfo", permissions.GlobalScope)
-	Notifications      = newInternalResourceMetadata("Notifications", permissions.GlobalScope)
-	Version            = newInternalResourceMetadata("Version", permissions.GlobalScope)
-	Hash               = newInternalResourceMetadata("Hash", permissions.GlobalScope)
+	ComplianceOperator   = newInternalResourceMetadata("ComplianceOperator", permissions.GlobalScope)
+	Hash                 = newInternalResourceMetadata("Hash", permissions.GlobalScope)
+	InitBundleMeta       = newInternalResourceMetadata("InitBundleMeta", permissions.GlobalScope)
+	InstallationInfo     = newInternalResourceMetadata("InstallationInfo", permissions.GlobalScope)
+	Notifications        = newInternalResourceMetadata("Notifications", permissions.GlobalScope)
+	NetworkEntity        = newInternalResourceMetadata("NetworkEntity", permissions.GlobalScope)
+	Version              = newInternalResourceMetadata("Version", permissions.GlobalScope)
+	VulnerabilityRequest = newInternalResourceMetadata("VulnerabilityRequest", permissions.GlobalScope)
 
 	resourceToMetadata         = make(map[permissions.Resource]permissions.ResourceMetadata)
 	disabledResourceToMetadata = make(map[permissions.Resource]permissions.ResourceMetadata)
@@ -94,6 +100,20 @@ func newResourceMetadata(name permissions.Resource, scope permissions.ResourceSc
 	md := permissions.ResourceMetadata{
 		Resource: name,
 		Scope:    scope,
+	}
+	resourceToMetadata[name] = md
+	return md
+}
+
+func newDeprecatedResourceMetadata(
+	name permissions.Resource,
+	scope permissions.ResourceScope,
+	replacingResourceMD permissions.ResourceMetadata,
+) permissions.ResourceMetadata {
+	md := permissions.ResourceMetadata{
+		Resource:          name,
+		Scope:             scope,
+		ReplacingResource: &replacingResourceMD,
 	}
 	resourceToMetadata[name] = md
 	return md

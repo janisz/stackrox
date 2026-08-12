@@ -1,4 +1,5 @@
-import React, { useEffect, useMemo } from 'react';
+import { useEffect, useMemo, useState } from 'react';
+import type { ReactElement, ReactNode } from 'react';
 import {
     Alert,
     AlertGroup,
@@ -6,19 +7,17 @@ import {
     Button,
     Divider,
     EmptyState,
+    SelectOption,
     Spinner,
     Stack,
     StackItem,
-    EmptyStateHeader,
 } from '@patternfly/react-core';
-import { SelectOption } from '@patternfly/react-core/deprecated';
-import { CodeEditor, Language } from '@patternfly/react-code-editor';
 
 import download from 'utils/download';
+import CodeViewer from 'Components/CodeViewer';
 import SelectSingle from 'Components/SelectSingle';
 import useFetchNetworkPolicies from 'hooks/useFetchNetworkPolicies';
 import { getAxiosErrorMessage } from 'utils/responseErrorUtils';
-import CodeEditorDarkModeControl from 'Components/PatternFly/CodeEditorDarkModeControl';
 
 type NetworkPoliciesProps = {
     entityName: string;
@@ -32,10 +31,9 @@ type NetworkPolicyYAML = {
 
 const allNetworkPoliciesId = 'All network policies';
 
-function NetworkPolicies({ entityName, policyIds }: NetworkPoliciesProps): React.ReactElement {
+function NetworkPolicies({ entityName, policyIds }: NetworkPoliciesProps): ReactElement {
     const { networkPolicies, networkPolicyErrors, isLoading, error } =
         useFetchNetworkPolicies(policyIds);
-    const [customDarkMode, setCustomDarkMode] = React.useState(false);
 
     const allNetworkPoliciesYAML = useMemo(
         () => ({
@@ -45,17 +43,13 @@ function NetworkPolicies({ entityName, policyIds }: NetworkPoliciesProps): React
         [networkPolicies]
     );
 
-    const [selectedNetworkPolicy, setSelectedNetworkPolicy] = React.useState<
+    const [selectedNetworkPolicy, setSelectedNetworkPolicy] = useState<
         NetworkPolicyYAML | undefined
     >(allNetworkPoliciesYAML);
 
     useEffect(() => {
         setSelectedNetworkPolicy(allNetworkPoliciesYAML);
     }, [allNetworkPoliciesYAML]);
-
-    function onToggleDarkMode() {
-        setCustomDarkMode((prevValue) => !prevValue);
-    }
 
     function handleSelectedNetworkPolicy(_, value: string) {
         if (value !== allNetworkPoliciesId) {
@@ -94,16 +88,16 @@ function NetworkPolicies({ entityName, policyIds }: NetworkPoliciesProps): React
                 variant="danger"
                 title={getAxiosErrorMessage(error)}
                 component="p"
-                className="pf-v5-u-mb-lg"
+                className="pf-v6-u-mb-lg"
             />
         );
     }
 
-    let policyErrorBanner: React.ReactNode = null;
+    let policyErrorBanner: ReactNode = null;
 
     if (networkPolicyErrors.length > 0) {
         policyErrorBanner = (
-            <AlertGroup className="pf-v5-u-mb-lg">
+            <AlertGroup className="pf-v6-u-mb-lg">
                 {networkPolicyErrors.map((networkPolicyError) => (
                     <Alert
                         isInline
@@ -123,16 +117,18 @@ function NetworkPolicies({ entityName, policyIds }: NetworkPoliciesProps): React
             <>
                 {policyErrorBanner}
                 <Bullseye>
-                    <EmptyState variant="xs">
-                        <EmptyStateHeader titleText="No network policies" headingLevel="h4" />
-                    </EmptyState>
+                    <EmptyState
+                        headingLevel="h4"
+                        titleText="No network policies"
+                        variant="xs"
+                    ></EmptyState>
                 </Bullseye>
             </>
         );
     }
 
     return (
-        <div className="pf-v5-u-h-100 pf-v5-u-p-md">
+        <div className="pf-v6-u-h-100 pf-v6-u-p-md">
             {policyErrorBanner}
             <Stack hasGutter>
                 <StackItem>
@@ -142,7 +138,7 @@ function NetworkPolicies({ entityName, policyIds }: NetworkPoliciesProps): React
                         handleSelect={handleSelectedNetworkPolicy}
                         placeholderText="Select a network policy"
                     >
-                        <SelectOption value={allNetworkPoliciesId}>
+                        <SelectOption key={allNetworkPoliciesId} value={allNetworkPoliciesId}>
                             All network policies
                         </SelectOption>
                         <Divider component="li" />
@@ -163,22 +159,8 @@ function NetworkPolicies({ entityName, policyIds }: NetworkPoliciesProps): React
                 {!!selectedNetworkPolicy?.yaml && (
                     <>
                         <StackItem>
-                            <div className="pf-v5-u-h-100">
-                                <CodeEditor
-                                    isDarkTheme={customDarkMode}
-                                    customControls={
-                                        <CodeEditorDarkModeControl
-                                            isDarkMode={customDarkMode}
-                                            onToggleDarkMode={onToggleDarkMode}
-                                        />
-                                    }
-                                    isCopyEnabled
-                                    isLineNumbersVisible
-                                    isReadOnly
-                                    code={selectedNetworkPolicy.yaml}
-                                    language={Language.yaml}
-                                    height="300px"
-                                />
+                            <div className="pf-v6-u-h-100">
+                                <CodeViewer code={selectedNetworkPolicy.yaml} />
                             </div>
                         </StackItem>
                         <StackItem>

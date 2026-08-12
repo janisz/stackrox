@@ -1,6 +1,9 @@
 import static io.restassured.RestAssured.given
 import static util.Helpers.withRetry
 
+import java.time.LocalDateTime
+import java.time.Duration
+
 import io.grpc.StatusRuntimeException
 import io.restassured.response.Response
 import orchestratormanager.OrchestratorTypes
@@ -26,6 +29,7 @@ import services.ClusterService
 import services.DeploymentService
 import services.NetworkGraphService
 import services.NetworkPolicyService
+import util.CollectorUtil
 import util.Env
 import util.Helpers
 import util.NetworkGraphUtil
@@ -70,6 +74,7 @@ class NetworkFlowTest extends BaseSpecification {
         return [
             new Deployment()
                     .setName(UDPCONNECTIONTARGET)
+                    .setImagePrefetcherAffinity()
                     .setImage("quay.io/rhacs-eng/qa-multi-arch:socat")
                     .addPort(8080, "UDP")
                     .addLabel("app", UDPCONNECTIONTARGET)
@@ -78,6 +83,7 @@ class NetworkFlowTest extends BaseSpecification {
                     .setArgs(["socat "+SOCAT_DEBUG+" UDP-RECV:8080 STDOUT",]),
             new Deployment()
                     .setName(TCPCONNECTIONTARGET)
+                    .setImagePrefetcherAffinity()
                     .setImage("quay.io/rhacs-eng/qa-multi-arch:socat")
                     .addPort(80)
                     .addPort(8080)
@@ -88,6 +94,7 @@ class NetworkFlowTest extends BaseSpecification {
                                       "socat "+SOCAT_DEBUG+" TCP-LISTEN:8080,fork STDOUT)" as String,]),
             new Deployment()
                     .setName(NGINXCONNECTIONTARGET)
+                    .setImagePrefetcherAffinity()
                     .setImage("quay.io/rhacs-eng/qa-multi-arch:nginx")
                     .addPort(80)
                     .addLabel("app", NGINXCONNECTIONTARGET)
@@ -106,10 +113,12 @@ class NetworkFlowTest extends BaseSpecification {
         return [
             new Deployment()
                     .setName(NOCONNECTIONSOURCE)
+                    .setImagePrefetcherAffinity()
                     .setImage("quay.io/rhacs-eng/qa-multi-arch:nginx")
                     .addLabel("app", NOCONNECTIONSOURCE),
             new Deployment()
                     .setName(SHORTCONSISTENTSOURCE)
+                    .setImagePrefetcherAffinity()
                     .setImage("quay.io/rhacs-eng/qa-multi-arch:nginx-1-15-4-alpine")
                     .addLabel("app", SHORTCONSISTENTSOURCE)
                     .setCommand(["/bin/sh", "-c",])
@@ -118,6 +127,7 @@ class NetworkFlowTest extends BaseSpecification {
                                       "done" as String,]),
             new Deployment()
                     .setName(SINGLECONNECTIONSOURCE)
+                    .setImagePrefetcherAffinity()
                     .setImage("quay.io/rhacs-eng/qa-multi-arch:nginx-1-15-4-alpine")
                     .addLabel("app", SINGLECONNECTIONSOURCE)
                     .setCommand(["/bin/sh", "-c",])
@@ -125,6 +135,7 @@ class NetworkFlowTest extends BaseSpecification {
                                       "while sleep 30; do echo hello; done" as String,]),
             new Deployment()
                     .setName(UDPCONNECTIONSOURCE)
+                    .setImagePrefetcherAffinity()
                     .setImage("quay.io/rhacs-eng/qa-multi-arch:socat")
                     .addLabel("app", UDPCONNECTIONSOURCE)
                     .setCommand(["/bin/sh", "-c",])
@@ -134,6 +145,7 @@ class NetworkFlowTest extends BaseSpecification {
                                       "done" as String,]),
             new Deployment()
                     .setName(TCPCONNECTIONSOURCE)
+                    .setImagePrefetcherAffinity()
                     .setImage("quay.io/rhacs-eng/qa-multi-arch:socat")
                     .addLabel("app", TCPCONNECTIONSOURCE)
                     .setCommand(["/bin/sh", "-c",])
@@ -143,6 +155,7 @@ class NetworkFlowTest extends BaseSpecification {
                                       "done" as String,]),
             new Deployment()
                     .setName(MULTIPLEPORTSCONNECTION)
+                    .setImagePrefetcherAffinity()
                     .setImage("quay.io/rhacs-eng/qa-multi-arch:socat")
                     .addLabel("app", MULTIPLEPORTSCONNECTION)
                     .setCommand(["/bin/sh", "-c",])
@@ -154,6 +167,7 @@ class NetworkFlowTest extends BaseSpecification {
                                       "done" as String,]),
             new Deployment()
                     .setName(EXTERNALDESTINATION)
+                    .setImagePrefetcherAffinity()
                     .setImage("quay.io/rhacs-eng/qa-multi-arch:nginx-1-15-4-alpine")
                     .addLabel("app", EXTERNALDESTINATION)
                     .setCommand(["/bin/sh", "-c",])
@@ -163,6 +177,7 @@ class NetworkFlowTest extends BaseSpecification {
             new Deployment()
                     .setName("${TCPCONNECTIONSOURCE}-qa2")
                     .setNamespace(OTHER_NAMESPACE)
+                    .setImagePrefetcherAffinity()
                     .setImage("quay.io/rhacs-eng/qa-multi-arch:socat")
                     .addLabel("app", "${TCPCONNECTIONSOURCE}-qa2")
                     .setCommand(["/bin/sh", "-c",])
@@ -175,7 +190,7 @@ class NetworkFlowTest extends BaseSpecification {
     }
 
     @Shared
-    private List<Deployment> deployments
+    private Map<String, Deployment> deployments
 
     def createDeployments() {
         targetDeployments = buildTargetDeployments()
@@ -188,7 +203,7 @@ class NetworkFlowTest extends BaseSpecification {
         for (Deployment d : sourceDeployments) {
             assert Services.waitForDeployment(d)
         }
-        deployments = sourceDeployments + targetDeployments
+        deployments = (sourceDeployments + targetDeployments).collectEntries { [(it.name): it] }
         //
         // Commenting out ICMP test setup for now
         // See ROX-635
@@ -229,10 +244,10 @@ class NetworkFlowTest extends BaseSpecification {
     }
 
     def destroyDeployments() {
-        for (Deployment deployment : deployments) {
+        for (Deployment deployment : deployments.values()) {
             orchestrator.deleteDeployment(deployment)
         }
-        for (Deployment deployment : deployments) {
+        for (Deployment deployment : deployments.values()) {
             if (deployment.exposeAsService) {
                 orchestrator.waitForServiceDeletion(new Service(deployment.name, deployment.namespace))
             }
@@ -243,6 +258,7 @@ class NetworkFlowTest extends BaseSpecification {
 
     def cleanupSpec() {
         destroyDeployments()
+        CollectorUtil.deleteRuntimeConfig(orchestrator)
     }
 
     @Tag("NetworkFlowVisualization")
@@ -251,9 +267,9 @@ class NetworkFlowTest extends BaseSpecification {
     def "Verify one-time connections show at first and are closed after the afterglow period"() {
         given:
         "Two deployments, A and B, where B communicates to A a single time during initial deployment"
-        String targetUid = deployments.find { it.name == NGINXCONNECTIONTARGET }?.deploymentUid
+        String targetUid = deployments[NGINXCONNECTIONTARGET]?.deploymentUid
         assert targetUid != null
-        String sourceUid = deployments.find { it.name == SINGLECONNECTIONSOURCE }?.deploymentUid
+        String sourceUid = deployments[SINGLECONNECTIONSOURCE]?.deploymentUid
         assert sourceUid != null
 
         when:
@@ -330,9 +346,9 @@ class NetworkFlowTest extends BaseSpecification {
     def "Verify connections can be detected: #protocol"() {
         given:
         "Two deployments, A and B, where B communicates to A via #protocol"
-        String targetUid = deployments.find { it.name == targetDeployment }?.deploymentUid
+        String targetUid = deployments[targetDeployment]?.deploymentUid
         assert targetUid != null
-        String sourceUid = deployments.find { it.name == sourceDeployment }?.deploymentUid
+        String sourceUid = deployments[sourceDeployment]?.deploymentUid
         assert sourceUid != null
 
         expect:
@@ -342,7 +358,7 @@ class NetworkFlowTest extends BaseSpecification {
 
         assert edges
         assert edges.get(0).protocol == protocol
-        assert deployments.find { it.name == targetDeployment }?.ports?.keySet()?.contains(edges.get(0).port)
+        assert deployments[targetDeployment]?.ports?.keySet()?.contains(edges.get(0).port)
 
         where:
         "Data is:"
@@ -360,7 +376,7 @@ class NetworkFlowTest extends BaseSpecification {
     def "Verify listen port availability matches feature flag: #targetDeployment"() {
         given:
         "Deployment with listening port"
-        String targetUid = deployments.find { it.name == targetDeployment }?.deploymentUid
+        String targetUid = deployments[targetDeployment]?.deploymentUid
         assert targetUid
 
         expect:
@@ -385,9 +401,9 @@ class NetworkFlowTest extends BaseSpecification {
     def "Verify connections with short consistent intervals between 2 deployments"() {
         given:
         "Two deployments, A and B, where B communicates to A in short consistent intervals"
-        String targetUid = deployments.find { it.name == NGINXCONNECTIONTARGET }?.deploymentUid
+        String targetUid = deployments[NGINXCONNECTIONTARGET]?.deploymentUid
         assert targetUid != null
-        String sourceUid = deployments.find { it.name == SHORTCONSISTENTSOURCE }?.deploymentUid
+        String sourceUid = deployments[SHORTCONSISTENTSOURCE]?.deploymentUid
         assert sourceUid != null
 
         when:
@@ -450,9 +466,9 @@ class NetworkFlowTest extends BaseSpecification {
     def "Verify network flows with graph filtering"() {
         given:
         "Two deployments, A and B, where B communicates to A"
-        String sourceUid = deployments.find { it.name == TCPCONNECTIONSOURCE }?.deploymentUid
+        String sourceUid = deployments[TCPCONNECTIONSOURCE]?.deploymentUid
         assert sourceUid != null
-        String targetUid = deployments.find { it.name == TCPCONNECTIONTARGET }?.deploymentUid
+        String targetUid = deployments[TCPCONNECTIONTARGET]?.deploymentUid
         assert targetUid != null
 
         when:
@@ -469,34 +485,92 @@ class NetworkFlowTest extends BaseSpecification {
     @Tag("NetworkFlowVisualization")
     //ROX-21491 skipping test case for p/z
     @IgnoreIf({ Env.REMOTE_CLUSTER_ARCH == "ppc64le" || Env.REMOTE_CLUSTER_ARCH == "s390x" })
+    @Ignore("Skip test until ROX-29905 is complete. Relies on ROX_NETWORK_GRAPH_AGGREGATE_EXT_IPS feature flag")
     def "Verify connections to external sources"() {
         given:
         "Deployment A, where A communicates to an external target"
-        String deploymentUid = deployments.find { it.name == EXTERNALDESTINATION }?.deploymentUid
+        String deploymentUid = deployments[EXTERNALDESTINATION]?.deploymentUid
         assert deploymentUid != null
 
-        expect:
-        "Check for edge in network graph"
+        when: "External IPs is disabled"
+        // External IPs should be disabled at this point, but it is disabled again to be safe.
+        // Later external IPs is enabled and then disabled again.
+        CollectorUtil.disableExternalIps(orchestrator)
+
         log.info "Checking for edge from ${EXTERNALDESTINATION} to external target"
         List<Edge> edges = NetworkGraphUtil.checkForEdge(deploymentUid, Constants.INTERNET_EXTERNAL_SOURCE_ID)
+        // Get the current time, because the network graph was just updated and we need to know when
+        // other updates happen.
+        def updateTime = LocalDateTime.now()
+        def graph = NetworkGraphService.getNetworkGraph(null, null)
+        def node = NetworkGraphUtil.findDeploymentNode(graph, deploymentUid)
+        then:
+        "There should be an edge from A to external entities and it should be the only edge"
         assert edges
+        assert edges.size() == 1
+        assert node
+        assert node.outEdgesMap.size() == 1
+
+        when: "External IPs is enabled"
+        CollectorUtil.enableExternalIps(orchestrator)
+        sleep 30000 // Wait for the collector scrape interval
+        waitForUpdate(updateTime, 30) // Wait for a network graph update
+
+        edges = NetworkGraphUtil.checkForEdge(deploymentUid, Constants.INTERNET_EXTERNAL_SOURCE_ID)
+        graph = NetworkGraphService.getNetworkGraph()
+        node = NetworkGraphUtil.findDeploymentNode(graph, deploymentUid)
+        then:
+        "The edge should still be there and it should still be the only edge from A"
+        assert edges
+        // Enabling external IPs should not change the number of edges
+        assert edges.size() == 1
+        assert node
+        // There should only be one connection and it should be to the generic external entity.
+        assert node.outEdgesMap.size() == 1
+        // // Collector reports the normalized connection as being closed. There is no assert here
+        // // as we don't want this behavior long term.
+        // waitForEdgeToBeClosed(edges.get(0), 165)
+        // assert !waitForEdgeToBeClosed(edges.get(0), 165) // This assert was failing
+
+        when: "External IPs is disabled after being enabled"
+        // Disable external IPs at the end of the test and check the relevant edge
+        CollectorUtil.disableExternalIps(orchestrator)
+        sleep 30000 // Wait for the collector scrape interval
+        waitForUpdate(updateTime, 30) // Wait for a network graph update
+
+        edges = NetworkGraphUtil.checkForEdge(deploymentUid, Constants.INTERNET_EXTERNAL_SOURCE_ID)
+        graph = NetworkGraphService.getNetworkGraph()
+        node = NetworkGraphUtil.findDeploymentNode(graph, deploymentUid)
+        then:
+        "The edge should still be there and it should still be the only edge from A"
+        assert edges
+        // Disbling external IPs should not change the number of edges
+        assert edges.size() == 1
+        assert node
+        // There should only be one connection and it should be to the generic external entity.
+        assert node.outEdgesMap.size() == 1
+        // // Collector reports the unnormalized connection as being closed. There is no assert here
+        // // as we don't want this behavior long term.
+        // waitForEdgeToBeClosed(edges.get(0), 165)
     }
 
     @Tag("NetworkFlowVisualization")
     // TODO: additional handling may be needed for P/Z - see ROX-19615
-    @IgnoreIf({ Env.REMOTE_CLUSTER_ARCH == "ppc64le" || Env.REMOTE_CLUSTER_ARCH == "s390x" })
+    // TODO(ROX-24299): CI improvements 2025-02-12: Disabling for OCP.
+    @IgnoreIf({ Env.mustGetOrchestratorType() == OrchestratorTypes.OPENSHIFT ||
+            Env.REMOTE_CLUSTER_ARCH == "ppc64le" || Env.REMOTE_CLUSTER_ARCH == "s390x" })
     def "Verify connections from external sources"() {
         given:
         "Deployment A, where an external source communicates to A"
-        String deploymentUid = deployments.find { it.name == NGINXCONNECTIONTARGET }?.deploymentUid
+        String deploymentUid = deployments[NGINXCONNECTIONTARGET]?.deploymentUid
         assert deploymentUid != null
         String targetUrl
         if (Env.mustGetOrchestratorType() == OrchestratorTypes.K8S) {
-            String deploymentIP = deployments.find { it.name == NGINXCONNECTIONTARGET }?.loadBalancerIP
+            String deploymentIP = deployments[NGINXCONNECTIONTARGET]?.loadBalancerIP
             assert deploymentIP != null
             targetUrl = "http://${deploymentIP}"
         } else if (Env.mustGetOrchestratorType() == OrchestratorTypes.OPENSHIFT) {
-            String routeHost = deployments.find { it.name == NGINXCONNECTIONTARGET }?.routeHost
+            String routeHost = deployments[NGINXCONNECTIONTARGET]?.routeHost
             assert routeHost != null
             targetUrl = "http://${routeHost}"
         } else {
@@ -593,9 +667,9 @@ class NetworkFlowTest extends BaseSpecification {
         Assume.assumeFalse(Env.mustGetOrchestratorType() == OrchestratorTypes.OPENSHIFT)
         given:
         "Deployment A, exposed via LB"
-        String deploymentUid = deployments.find { it.name == NGINXCONNECTIONTARGET }?.deploymentUid
+        String deploymentUid = deployments[NGINXCONNECTIONTARGET]?.deploymentUid
         assert deploymentUid != null
-        String deploymentIP = deployments.find { it.name == NGINXCONNECTIONTARGET }?.loadBalancerIP
+        String deploymentIP = deployments[NGINXCONNECTIONTARGET]?.loadBalancerIP
         assert deploymentIP != null
 
         when:
@@ -632,9 +706,9 @@ class NetworkFlowTest extends BaseSpecification {
     def "Verify no connections between 2 deployments"() {
         given:
         "Two deployments, A and B, where neither communicates to the other"
-        String targetUid = deployments.find { it.name == NGINXCONNECTIONTARGET }?.deploymentUid
+        String targetUid = deployments[NGINXCONNECTIONTARGET]?.deploymentUid
         assert targetUid != null
-        String sourceUid = deployments.find { it.name == NOCONNECTIONSOURCE }?.deploymentUid
+        String sourceUid = deployments[NOCONNECTIONSOURCE]?.deploymentUid
         assert sourceUid != null
 
         expect:
@@ -647,9 +721,9 @@ class NetworkFlowTest extends BaseSpecification {
     def "Verify connections between two deployments on 2 separate ports shows both edges in the graph"() {
         given:
         "Two deployments, A and B, where B communicates to A on 2 different ports"
-        String targetUid = deployments.find { it.name == TCPCONNECTIONTARGET }?.deploymentUid
+        String targetUid = deployments[TCPCONNECTIONTARGET]?.deploymentUid
         assert targetUid != null
-        String sourceUid = deployments.find { it.name == MULTIPLEPORTSCONNECTION }?.deploymentUid
+        String sourceUid = deployments[MULTIPLEPORTSCONNECTION]?.deploymentUid
         assert sourceUid != null
 
         when:
@@ -674,9 +748,9 @@ class NetworkFlowTest extends BaseSpecification {
 
         given:
         "Two deployments, A and B, where B communicates to A"
-        String targetUid = deployments.find { it.name == NGINXCONNECTIONTARGET }?.deploymentUid
+        String targetUid = deployments[NGINXCONNECTIONTARGET]?.deploymentUid
         assert targetUid != null
-        String sourceUid = deployments.find { it.name == SHORTCONSISTENTSOURCE }?.deploymentUid
+        String sourceUid = deployments[SHORTCONSISTENTSOURCE]?.deploymentUid
         assert sourceUid != null
 
         and:
@@ -717,7 +791,7 @@ class NetworkFlowTest extends BaseSpecification {
     def "Verify edge timestamps are never in the future, or before start of flow tests"() {
         given:
         "Get current state of edges and current timestamp"
-        def queryString = "Deployment:" + deployments.name.join(",")
+        String queryString = "Deployment:" + deployments.keySet().join(",")
         NetworkGraph currentGraph = NetworkGraphService.getNetworkGraph(null, queryString)
         long currentTime = System.currentTimeMillis()
 
@@ -738,11 +812,11 @@ class NetworkFlowTest extends BaseSpecification {
 
         given:
         "Get current state of deployed namespaces"
-        List<String> deployedNamespaces = deployments*.namespace
+        List<String> deployedNamespaces = deployments.values()*.namespace
 
         and:
         "delete a deployment"
-        Deployment delete = deployments.find { it.name == NOCONNECTIONSOURCE }
+        Deployment delete = deployments[NOCONNECTIONSOURCE]
         orchestrator.deleteDeployment(delete)
         Services.waitForSRDeletion(delete)
 
@@ -767,7 +841,7 @@ class NetworkFlowTest extends BaseSpecification {
                 List<NetworkNode> outNodes = currentGraph.nodesList.findAll { node ->
                     node.outEdgesMap.containsKey(index)
                 }
-                def allowAllIngress = deployments.find { it.name == deploymentName }?.createLoadBalancer ||
+                boolean allowAllIngress = deployments[deploymentName]?.createLoadBalancer ||
                     currentGraph.nodesList.find { it.entity.type == Type.INTERNET }.outEdgesMap.containsKey(index)
                 if (allowAllIngress) {
                     log.info "${deploymentName} has LB/External incoming traffic - ensure All Ingress allowed"
@@ -806,7 +880,7 @@ class NetworkFlowTest extends BaseSpecification {
             assert yaml."metadata"."labels"."network-policy-generator.stackrox.io/generated"
             assert yaml."metadata"."namespace"
             def index = currentGraph.nodesList.findIndexOf { node -> node.deploymentName == deploymentName }
-            def allowAllIngress = deployments.find { it.name == deploymentName }?.createLoadBalancer ||
+            boolean allowAllIngress = deployments[deploymentName]?.createLoadBalancer ||
                 currentGraph.nodesList.find { it.entity.type == Type.INTERNET }.outEdgesMap.containsKey(index)
             List<NetworkNode> outNodes = currentGraph.nodesList.findAll { node ->
                 node.outEdgesMap.containsKey(index)
@@ -856,6 +930,7 @@ class NetworkFlowTest extends BaseSpecification {
     @IgnoreIf({ !Env.IN_CI })
     @Unroll
     @Tag("BAT")
+    @IgnoreIf({ Env.ORCHESTRATOR_FLAVOR == "openshift" })  // ROX-30001 - failing on OCP 4.20 EC's
     def "Verify network policy generator apply/undo with delete modes: #deleteMode #note"() {
         given:
         "apply network policies to the system"
@@ -991,6 +1066,16 @@ class NetworkFlowTest extends BaseSpecification {
         "Undo applied policies"
         NetworkPolicyService.applyGeneratedNetworkPolicy(
                 NetworkPolicyService.undoGeneratedNetworkPolicy().undoModification)
+    }
+
+    // Assuming that an update occurs at once every intervalSeconds and an update
+    // occured at updateTime, waits until the next update, with a safety margin.
+    private waitForUpdate(LocalDateTime updateTime, int intervalSeconds, int safetyMargin = 5) {
+        def now = LocalDateTime.now()
+        def duration = Duration.between(updateTime, now).seconds
+        def numIntervals = duration.intdiv(intervalSeconds) + 1
+        def waitTime = (numIntervals * intervalSeconds - duration + safetyMargin) * 1000
+        sleep waitTime
     }
 
     private static getNode(String deploymentId, boolean withListenPorts, int timeoutSeconds = 90) {

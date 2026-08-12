@@ -24,20 +24,35 @@ import (
 )
 
 {{- define "createTableStmt" }}
-{{- $schema := . }}
+{{- $singleton := .Singleton }}
+{{- $schema := .Schema }}
+{{- $obj := .Obj }}
 &postgres.CreateStmts{
     GormModel: (*{{$schema.Table|upperCamelCase}})(nil),
     Children: []*postgres.CreateStmts{
      {{- range $index, $child := $schema.Children }}
-        {{- template "createTableStmt" $child }},
+        {{- template "createTableStmt" dict "Schema" $child "Singleton" $singleton "Obj" $obj }},
     {{- end }}
     },
+    {{- if $singleton }}
+    PostStmts: []string{
+        "ALTER TABLE {{$schema.Table|lowerCase}} REPLICA IDENTITY FULL",
+    },
+    {{- end }}
+    {{- $indexes := collectIndexes $schema $obj }}
+    {{- if $indexes }}
+    Indexes: []*postgres.IndexDefinition{
+        {{- range $idx := $indexes }}
+        {Name: "{{$idx.Name}}", CreateSQL: "{{$idx.CreateSQL}}"},
+        {{- end }}
+    },
+    {{- end }}
 }
 {{- end}}
 
 var (
     // {{template "createTableStmtVar" .Schema }} holds the create statement for table `{{.Schema.Table|lowerCase}}`.
-    {{template "createTableStmtVar" .Schema }} = {{template "createTableStmt" .Schema }}
+    {{template "createTableStmtVar" .Schema }} = {{template "createTableStmt" dict "Schema" .Schema "Singleton" .Singleton "Obj" .Obj }}
 
     // {{template "schemaVar" .Schema.Table}} is the go schema for table `{{.Schema.Table|lowerCase}}`.
     {{template "schemaVar" .Schema.Table}} = func() *walker.Schema {
@@ -46,9 +61,9 @@ var (
         if schema != nil {
             return schema
         }
-        schema = walker.Walk(reflect.TypeOf(({{.Schema.Type}})(nil)), "{{.Schema.Table}}")
+        schema = walker.Walk(reflect.TypeOf(({{.Schema.Type}})(nil)), "{{.Schema.Table}}"{{- if .NoSerialized }}, walker.WithNoSerialized(){{- end }})
         {{- else}}
-        schema := walker.Walk(reflect.TypeOf(({{.Schema.Type}})(nil)), "{{.Schema.Table}}")
+        schema := walker.Walk(reflect.TypeOf(({{.Schema.Type}})(nil)), "{{.Schema.Table}}"{{- if .NoSerialized }}, walker.WithNoSerialized(){{- end }})
         {{- end}}
 
         {{- if gt (len .References) 0 }}
@@ -73,12 +88,7 @@ var (
             }...)
             {{- end }}
         {{- end }}
-
-        {{- if or (.Obj.IsGloballyScoped) (.Obj.IsDirectlyScoped) (.Obj.IsIndirectlyScoped) }}
-            schema.ScopingResource = resources.{{.Type | storageToResource}}
-        {{- else if .PermissionChecker }}
-            schema.PermissionChecker = {{ .PermissionChecker }}
-        {{- end }}
+            schema.ScopingResource = resources.{{.ScopingResource}}
         {{- if .RegisterSchema }}
         RegisterTable(schema, {{template "createTableStmtVar" .Schema }}{{ if .FeatureFlag }}, features.{{.FeatureFlag}}.Enabled {{ end }})
             {{- if .SearchCategory }}
@@ -99,14 +109,12 @@ var (
         column:{{$field.ColumnName|lowerCase}};{{- /**/ -}}
         type:{{$field.SQLType}}{{if $field.Options.Unique}};unique{{end}}{{if $field.Options.PrimaryKey}};primaryKey{{end}}{{- /**/ -}}
         {{if $field.Options.Index}}
-            {{- range $subindex, $indexconfig := $field.Options.Index -}};{{- /**/ -}}
-                {{- if eq $indexconfig.IndexCategory "unique"}}uniqueIndex{{else}}index{{end -}}:{{- /**/ -}}
+            {{- range $subindex, $indexconfig := $field.Options.Index -}}
+                {{- if eq $indexconfig.IndexCategory "unique" -}};{{- /**/ -}}
+                    uniqueIndex:{{- /**/ -}}
                     {{if gt (len $indexconfig.IndexName) 0}}{{$indexconfig.IndexName}}{{else}}{{$schema.Table|lowerCamelCase|lowerCase}}_{{$field.ColumnName|lowerCase}}{{end}}{{- /**/ -}}
-                {{- if ne $indexconfig.IndexCategory "unique"}},type:{{$indexconfig.IndexType}}{{end -}}{{- /**/ -}}
+                {{- end -}}
             {{- end -}}
-        {{end}}{{- /**/ -}}
-        {{if $field|isSacScoping }};{{- /**/ -}}
-            index:{{$schema.Table|lowerCamelCase|lowerCase}}_sac_filter,type:{{- if $obj.IsClusterScope }}hash{{else}}btree{{end}}{{- /**/ -}}
         {{end}}{{- /**/ -}}
         "`
     {{- end}}

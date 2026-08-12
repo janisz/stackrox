@@ -1,5 +1,6 @@
-import React, { ReactElement } from 'react';
-import { matchPath, useLocation } from 'react-router-dom';
+import type { ReactElement } from 'react';
+import { matchPath, useLocation } from 'react-router-dom-v5-compat';
+import type { Location } from 'react-router-dom-v5-compat';
 import {
     Nav,
     NavExpandable,
@@ -9,13 +10,14 @@ import {
     PageSidebarBody,
 } from '@patternfly/react-core';
 
-import { IsFeatureFlagEnabled } from 'hooks/useFeatureFlags';
-import { HasReadAccess } from 'hooks/usePermissions';
+import type { IsFeatureFlagEnabled } from 'hooks/useFeatureFlags';
+import type { HasReadAccess } from 'hooks/usePermissions';
 
 // Import path variables in alphabetical order to minimize merge conflicts when multiple people add routes.
 import {
     accessControlBasePath,
     administrationEventsBasePath,
+    baseImagesPath,
     clustersBasePath,
     collectionsBasePath,
     complianceBasePath,
@@ -29,7 +31,8 @@ import {
     listeningEndpointsBasePath,
     networkBasePath,
     policyManagementBasePath,
-    riskBasePath,
+    riskSecretsBasePath,
+    riskWorkloadsBasePath,
     systemConfigPath,
     systemHealthPath,
     violationsBasePath,
@@ -42,121 +45,73 @@ import {
     vulnerabilitiesPlatformPath,
     vulnerabilitiesUserWorkloadsPath,
     vulnerabilitiesViewPath,
-    vulnerabilitiesWorkloadCvesPath,
+    vulnerabilitiesVirtualMachineCvesPath,
     vulnerabilityReportsPath,
 } from 'routePaths';
 
 import NavigationContent from './NavigationContent';
 import NavigationItem from './NavigationItem';
-import { NavDescription, ChildDescription, isActiveLink, filterNavDescriptions } from './utils';
+import { filterNavDescriptions, isActiveLink } from './utils';
+import type { ChildDescription, NavDescription } from './utils';
 
 import './NavigationSidebar.css';
 
 // Child conditional title finds path to decide presence or absence of counterpart child.
 // Parent conditional title finds key to decide presence or absence of counterpart parent.
 const keyForNetwork = 'Network';
+const keyForRisk = 'Risk';
 const keyForPlatformConfiguration = 'Platform Configuration';
 const keyForCompliance = 'Compliance';
 const keyForVulnerabilities = 'Vulnerability Management';
 
 function getNavDescriptions(isFeatureFlagEnabled: IsFeatureFlagEnabled): NavDescription[] {
-    const isPlatformCveSplitEnabled = isFeatureFlagEnabled('ROX_PLATFORM_CVE_SPLIT');
+    const vulnerabilityManagementChildren: ChildDescription[] = [
+        {
+            type: 'link',
+            content: 'Results',
+            path: vulnerabilitiesUserWorkloadsPath,
+            routeKey: 'vulnerabilities/user-workloads',
+            isActive: (location: Location) => {
+                const pathsToMatch = [
+                    vulnerabilitiesNodeCvesPath,
+                    vulnerabilitiesUserWorkloadsPath,
+                    vulnerabilitiesPlatformPath,
+                    vulnerabilitiesAllImagesPath,
+                    vulnerabilitiesInactiveImagesPath,
+                    vulnerabilitiesImagesWithoutCvesPath,
+                    vulnerabilitiesViewPath,
+                    vulnerabilitiesPlatformCvesPath,
+                    vulnerabilitiesVirtualMachineCvesPath,
+                ];
 
-    const vulnerabilityManagementChildren: ChildDescription[] = isPlatformCveSplitEnabled
-        ? [
-              {
-                  type: 'link',
-                  content: 'Results',
-                  path: vulnerabilitiesUserWorkloadsPath,
-                  routeKey: 'vulnerabilities/user-workloads',
-                  isActive: (location) =>
-                      Boolean(
-                          matchPath(location.pathname, [
-                              vulnerabilitiesWorkloadCvesPath,
-                              vulnerabilitiesNodeCvesPath,
-                              vulnerabilitiesUserWorkloadsPath,
-                              vulnerabilitiesPlatformPath,
-                              vulnerabilitiesAllImagesPath,
-                              vulnerabilitiesInactiveImagesPath,
-                              vulnerabilitiesImagesWithoutCvesPath,
-                              vulnerabilitiesViewPath,
-                              vulnerabilitiesPlatformCvesPath,
-                          ])
-                      ),
-              },
-              {
-                  type: 'link',
-                  content: 'Exception Management',
-                  path: exceptionManagementPath,
-                  routeKey: 'vulnerabilities/exception-management',
-              },
-              {
-                  type: 'link',
-                  content: 'Vulnerability Reporting',
-                  path: vulnerabilityReportsPath,
-                  routeKey: 'vulnerabilities/reports',
-              },
-              {
-                  type: 'separator',
-                  key: 'following-workload-cves',
-              },
-              {
-                  type: 'link',
-                  content: <NavigationContent variant="Deprecated">Dashboard</NavigationContent>,
-                  path: vulnManagementPath,
-                  routeKey: 'vulnerability-management',
-                  isActive: (location) =>
-                      Boolean(matchPath(location.pathname, { vulnManagementPath, exact: true })),
-              },
-          ]
-        : [
-              {
-                  type: 'link',
-                  content: 'Workload CVEs',
-                  path: vulnerabilitiesWorkloadCvesPath,
-                  routeKey: 'vulnerabilities/workload-cves',
-              },
-              {
-                  type: 'link',
-                  content: 'Exception Management',
-                  path: exceptionManagementPath,
-                  routeKey: 'vulnerabilities/exception-management',
-              },
-              {
-                  type: 'link',
-                  content: 'Vulnerability Reporting',
-                  path: vulnerabilityReportsPath,
-                  routeKey: 'vulnerabilities/reports',
-              },
-              {
-                  type: 'separator',
-                  key: 'following-workload-cves',
-              },
-              {
-                  type: 'link',
-                  content: 'Platform CVEs',
-                  path: vulnerabilitiesPlatformCvesPath,
-                  routeKey: 'vulnerabilities/platform-cves',
-              },
-              {
-                  type: 'link',
-                  content: 'Node CVEs',
-                  path: vulnerabilitiesNodeCvesPath,
-                  routeKey: 'vulnerabilities/node-cves',
-              },
-              {
-                  type: 'separator',
-                  key: 'following-node-cves',
-              },
-              {
-                  type: 'link',
-                  content: <NavigationContent variant="Deprecated">Dashboard</NavigationContent>,
-                  path: vulnManagementPath,
-                  routeKey: 'vulnerability-management',
-                  isActive: (location) =>
-                      Boolean(matchPath(location.pathname, { vulnManagementPath, exact: true })),
-              },
-          ];
+                return pathsToMatch.some((path) =>
+                    matchPath({ path: `${path}/*` }, location.pathname)
+                );
+            },
+        },
+        {
+            type: 'link',
+            content: 'Exception Management',
+            path: exceptionManagementPath,
+            routeKey: 'vulnerabilities/exception-management',
+        },
+        {
+            type: 'link',
+            content: 'Reports',
+            path: vulnerabilityReportsPath,
+            routeKey: 'vulnerabilities/reports',
+        },
+        {
+            type: 'separator',
+            key: 'following-workload-cves',
+        },
+        {
+            type: 'link',
+            content: <NavigationContent variant="Deprecated">Dashboard</NavigationContent>,
+            path: vulnManagementPath,
+            routeKey: 'vulnerability-management',
+        },
+    ];
 
     return [
         {
@@ -197,15 +152,15 @@ function getNavDescriptions(isFeatureFlagEnabled: IsFeatureFlagEnabled): NavDesc
             children: [
                 {
                     type: 'link',
-                    content: <NavigationContent variant="TechPreview">Coverage</NavigationContent>,
+                    content: 'OpenShift Coverage',
                     path: complianceEnhancedCoveragePath,
-                    routeKey: 'compliance-enhanced',
+                    routeKey: 'compliance-coverage',
                 },
                 {
                     type: 'link',
-                    content: <NavigationContent variant="TechPreview">Schedules</NavigationContent>,
+                    content: 'OpenShift Schedules',
                     path: complianceEnhancedSchedulesPath,
-                    routeKey: 'compliance-enhanced',
+                    routeKey: 'compliance-schedules',
                 },
                 {
                     type: 'separator',
@@ -213,15 +168,21 @@ function getNavDescriptions(isFeatureFlagEnabled: IsFeatureFlagEnabled): NavDesc
                 },
                 {
                     type: 'link',
-                    content: 'Dashboard',
+                    content: <NavigationContent variant="Deprecated">Dashboard</NavigationContent>,
                     path: complianceBasePath,
                     routeKey: 'compliance',
                     isActive: (location) =>
-                        Boolean(matchPath(location.pathname, complianceBasePath)) &&
-                        !matchPath(location.pathname, [
-                            complianceEnhancedCoveragePath,
-                            complianceEnhancedSchedulesPath,
-                        ]),
+                        Boolean(
+                            matchPath({ path: `${complianceBasePath}/*` }, location.pathname)
+                        ) &&
+                        !matchPath(
+                            { path: `${complianceEnhancedCoveragePath}/*` },
+                            location.pathname
+                        ) &&
+                        !matchPath(
+                            { path: `${complianceEnhancedSchedulesPath}/*` },
+                            location.pathname
+                        ),
                 },
             ],
         },
@@ -237,16 +198,40 @@ function getNavDescriptions(isFeatureFlagEnabled: IsFeatureFlagEnabled): NavDesc
             path: configManagementPath,
             routeKey: 'configmanagement',
         },
-        {
-            type: 'link',
-            content: 'Risk',
-            path: riskBasePath,
-            routeKey: 'risk',
-        },
+        ...((isFeatureFlagEnabled('ROX_UI_SECRETS_PAGE_MIGRATION')
+            ? [
+                  {
+                      type: 'parent',
+                      title: 'Risk',
+                      key: keyForRisk,
+                      children: [
+                          {
+                              type: 'link',
+                              content: 'Workloads',
+                              path: riskWorkloadsBasePath,
+                              routeKey: 'risk/workloads',
+                          },
+                          {
+                              type: 'link',
+                              content: 'Secrets',
+                              path: riskSecretsBasePath,
+                              routeKey: 'risk/secrets',
+                          },
+                      ],
+                  },
+              ]
+            : [
+                  {
+                      type: 'link',
+                      content: 'Risk',
+                      path: riskWorkloadsBasePath,
+                      routeKey: 'risk/workloads',
+                  },
+              ]) satisfies NavDescription[]),
         {
             type: 'parent',
-            key: 'Platform Configuration',
-            title: keyForPlatformConfiguration,
+            title: 'Platform Configuration',
+            key: keyForPlatformConfiguration,
             children: [
                 {
                     type: 'link',
@@ -265,6 +250,12 @@ function getNavDescriptions(isFeatureFlagEnabled: IsFeatureFlagEnabled): NavDesc
                     content: 'Collections',
                     path: collectionsBasePath,
                     routeKey: 'collections',
+                },
+                {
+                    type: 'link',
+                    content: 'Base Images',
+                    path: baseImagesPath,
+                    routeKey: 'base-images',
                 },
                 {
                     type: 'link',
@@ -338,7 +329,12 @@ function NavigationSidebar({
                             const hasChildMatchPath = children.some(
                                 (childDescription) =>
                                     childDescription.type === 'link' &&
-                                    (Boolean(matchPath(location.pathname, childDescription.path)) ||
+                                    (Boolean(
+                                        matchPath(
+                                            { path: `${childDescription.path}/*` },
+                                            location.pathname
+                                        )
+                                    ) ||
                                         isActiveLink(location, childDescription))
                             );
                             return (
@@ -374,7 +370,7 @@ function NavigationSidebar({
                                         return (
                                             <NavItemSeparator
                                                 key={childDescription.key}
-                                                role="listitem"
+                                                role="separator"
                                             />
                                         );
                                     })}

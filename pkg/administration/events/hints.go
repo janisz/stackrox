@@ -15,9 +15,22 @@ var (
 	// In the future, we may extend this, and possibly also ensure hints are loaded externally (similar to
 	// vulnerability definitions).
 	hints = map[string]map[string]map[string]string{
-		authenticationDomain: {
+		AuthenticationDomain: {
+			adminResources.AuthProvider: {
+				codes.SAMLAssertionExpired: `A SAML assertion was rejected because it is expired or not yet valid. This may indicate:
+- A replay attack using a previously captured assertion.
+- Clock skew between the identity provider and StackRox Central.
+
+Verify that the system clocks on Central and the identity provider are synchronized. If this occurs during legitimate login attempts, check the identity provider's assertion lifetime configuration.`,
+				codes.SAMLAudienceMismatch: `The SAML assertion audience does not match the expected value. Ensure that:
+- The audience (Entity ID) configured in the identity provider matches the "Service Provider audience" in StackRox.
+- If no audience is configured, the identity provider audience should match the "Service Provider issuer".
+
+When no "Service Provider audience" is set, the mismatch is logged as a warning but authentication is allowed. Set the "Service Provider audience" field in the SAML auth provider configuration to enforce strict validation.`,
+			},
 			adminResources.APIToken: {
-				"": `An API token is about to expire. See the details on the expiration time within the event message.
+				codes.APITokenCreated: `An API token has been created.`,
+				codes.APITokenExpired: `An API token is about to expire. See the details on the expiration time within the event message.
 You cannot re-create the token. Instead, perform these steps:
 - Delete the expiring API token.
 - Create a new API token (you can choose the same name).
@@ -26,8 +39,8 @@ You can then use the newly-created API token.
 `,
 			},
 		},
-		defaultDomain: {},
-		imageScanningDomain: {
+		DefaultDomain: {},
+		ImageScanningDomain: {
 			// For now, this is an example string. We may want to revisit those together with UX / the docs team to get
 			// errors that are in-line with documentation guidelines.
 			adminResources.Image: {
@@ -37,7 +50,7 @@ You can then use the newly-created API token.
 - The scanned manifest exists within the registry or repository.`,
 			},
 		},
-		integrationDomain: {
+		IntegrationDomain: {
 			adminResources.Notifier: {
 				codes.AWSSHGeneric: `An issue occurred when using the AWS Security Hub notifier.
 Ensure that:

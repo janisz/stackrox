@@ -6,16 +6,21 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/graph-gophers/graphql-go"
 	"github.com/stackrox/rox/central/graphql/resolvers/loaders"
+	deploymentsView "github.com/stackrox/rox/central/views/deployments"
 	"github.com/stackrox/rox/central/views/imagecve"
+	"github.com/stackrox/rox/central/views/imagecveflat"
 	imagesView "github.com/stackrox/rox/central/views/images"
 	"github.com/stackrox/rox/generated/storage"
+	"github.com/stackrox/rox/pkg/features"
 	"github.com/stackrox/rox/pkg/fixtures/fixtureconsts"
 	"github.com/stackrox/rox/pkg/grpc/authz/allow"
-	"github.com/stackrox/rox/pkg/pointers"
+	imageUtils "github.com/stackrox/rox/pkg/images/utils"
 	"github.com/stackrox/rox/pkg/postgres/pgtest"
+	"github.com/stackrox/rox/pkg/protocompat"
 	"github.com/stackrox/rox/pkg/sac"
 	"github.com/stackrox/rox/pkg/sac/resources"
 	"github.com/stretchr/testify/assert"
@@ -43,15 +48,34 @@ func (s *ImageResolversTestSuite) SetupSuite() {
 	s.ctx = loaders.WithLoaderContext(sac.WithAllAccess(context.Background()))
 	mockCtrl := gomock.NewController(s.T())
 	s.testDB = SetupTestPostgresConn(s.T())
-	imgDataStore := CreateTestImageDatastore(s.T(), s.testDB, mockCtrl)
-	resolver, _ := SetupTestResolver(s.T(),
-		CreateTestDeploymentDatastore(s.T(), s.testDB, mockCtrl, imgDataStore),
-		imagesView.NewImageView(s.testDB.DB),
-		imgDataStore,
-		CreateTestImageComponentDatastore(s.T(), s.testDB, mockCtrl),
-		CreateTestImageCVEDatastore(s.T(), s.testDB),
-		imagecve.NewCVEView(s.testDB.DB),
-	)
+
+	// TODO(ROX-30117): Remove conditional when FlattenImageData feature flag is removed.
+	var resolver *Resolver
+	if features.FlattenImageData.Enabled() {
+		imgV2DataStore := CreateTestImageV2Datastore(s.T(), s.testDB, mockCtrl)
+		resolver, _ = SetupTestResolver(s.T(),
+			CreateTestDeploymentDatastoreWithImageV2(s.T(), s.testDB, mockCtrl, imgV2DataStore),
+			deploymentsView.NewDeploymentView(s.testDB.DB),
+			imagesView.NewImageView(s.testDB.DB),
+			imgV2DataStore,
+			CreateTestImageComponentV2Datastore(s.T(), s.testDB, mockCtrl),
+			CreateTestImageCVEV2Datastore(s.T(), s.testDB),
+			imagecve.NewCVEView(s.testDB.DB),
+			imagecveflat.NewCVEFlatView(s.testDB.DB),
+		)
+	} else {
+		imgDataStore := CreateTestImageDatastore(s.T(), s.testDB, mockCtrl)
+		resolver, _ = SetupTestResolver(s.T(),
+			CreateTestDeploymentDatastore(s.T(), s.testDB, mockCtrl, imgDataStore),
+			deploymentsView.NewDeploymentView(s.testDB.DB),
+			imagesView.NewImageView(s.testDB.DB),
+			imgDataStore,
+			CreateTestImageComponentV2Datastore(s.T(), s.testDB, mockCtrl),
+			CreateTestImageCVEV2Datastore(s.T(), s.testDB),
+			imagecve.NewCVEView(s.testDB.DB),
+			imagecveflat.NewCVEFlatView(s.testDB.DB),
+		)
+	}
 	s.resolver = resolver
 
 	// Add Test Data.
@@ -60,13 +84,16 @@ func (s *ImageResolversTestSuite) SetupSuite() {
 		s.NoError(s.resolver.DeploymentDataStore.UpsertDeployment(s.ctx, deployment))
 	}
 	s.testImages = testImages()
-	for _, image := range testImages() {
-		s.NoError(s.resolver.ImageDataStore.UpsertImage(s.ctx, image))
+	// TODO(ROX-30117): Remove conditional when FlattenImageData feature flag is removed.
+	if features.FlattenImageData.Enabled() {
+		for _, image := range s.testImages {
+			s.NoError(s.resolver.ImageV2DataStore.UpsertImage(s.ctx, imageUtils.ConvertToV2(image)))
+		}
+	} else {
+		for _, image := range s.testImages {
+			s.NoError(s.resolver.ImageDataStore.UpsertImage(s.ctx, image))
+		}
 	}
-}
-
-func (s *ImageResolversTestSuite) TearDownSuite() {
-	s.testDB.Teardown(s.T())
 }
 
 func sacAllowOnlyCluster2Namespace2(ctx context.Context) context.Context {
@@ -104,7 +131,7 @@ func (s *ImageResolversTestSuite) TestDeployments() {
 		{
 			desc: "filter by namespace",
 			ctx:  ctx,
-			q:    PaginatedQuery{Query: pointers.String("Namespace:namespace1name")},
+			q:    PaginatedQuery{Query: new("Namespace:namespace1name")},
 			deploymentFiler: func(d *storage.Deployment) bool {
 				return strings.HasPrefix(d.GetNamespace(), "namespace1name")
 			},
@@ -114,7 +141,7 @@ func (s *ImageResolversTestSuite) TestDeployments() {
 		{
 			desc: "filter by deployment",
 			ctx:  ctx,
-			q:    PaginatedQuery{Query: pointers.String("Deployment:" + dep1name)},
+			q:    PaginatedQuery{Query: new("Deployment:" + dep1name)},
 			deploymentFiler: func(d *storage.Deployment) bool {
 				return d.GetName() == dep1name
 			},
@@ -124,7 +151,7 @@ func (s *ImageResolversTestSuite) TestDeployments() {
 		{
 			desc:            "filter by image",
 			ctx:             ctx,
-			q:               PaginatedQuery{Query: pointers.String("Image:reg1/img1")},
+			q:               PaginatedQuery{Query: new("Image:reg1/img1")},
 			deploymentFiler: func(d *storage.Deployment) bool { return true },
 			imageFilter: func(img *storage.Image) bool {
 				return strings.HasPrefix(img.GetName().GetFullName(), "reg1/img1")
@@ -134,7 +161,7 @@ func (s *ImageResolversTestSuite) TestDeployments() {
 		{
 			desc:            "filter by cve",
 			ctx:             ctx,
-			q:               PaginatedQuery{Query: pointers.String("CVE:cve-2019-2")},
+			q:               PaginatedQuery{Query: new("CVE:cve-2019-2")},
 			deploymentFiler: func(d *storage.Deployment) bool { return true },
 			imageFilter: func(img *storage.Image) bool {
 				for _, component := range img.GetScan().GetComponents() {
@@ -153,7 +180,7 @@ func (s *ImageResolversTestSuite) TestDeployments() {
 		{
 			desc: "filter by deployment+cve",
 			ctx:  ctx,
-			q:    PaginatedQuery{Query: pointers.String("Deployment:dep2name+CVE:cve-2019-2")},
+			q:    PaginatedQuery{Query: new("Deployment:dep2name+CVE:cve-2019-2")},
 			deploymentFiler: func(d *storage.Deployment) bool {
 				return strings.HasPrefix(d.GetName(), "dep2name")
 			},
@@ -174,7 +201,7 @@ func (s *ImageResolversTestSuite) TestDeployments() {
 		{
 			desc:            "filter by severity",
 			ctx:             ctx,
-			q:               PaginatedQuery{Query: pointers.String("Severity:CRITICAL_VULNERABILITY_SEVERITY")},
+			q:               PaginatedQuery{Query: new("Severity:CRITICAL_VULNERABILITY_SEVERITY")},
 			deploymentFiler: func(d *storage.Deployment) bool { return true },
 			imageFilter: func(img *storage.Image) bool {
 				for _, component := range img.GetScan().GetComponents() {
@@ -193,7 +220,7 @@ func (s *ImageResolversTestSuite) TestDeployments() {
 		{
 			desc:            "filter by severity+fixable",
 			ctx:             ctx,
-			q:               PaginatedQuery{Query: pointers.String("Severity:UNSET_VULNERABILITY_SEVERITY+Fixable:true")},
+			q:               PaginatedQuery{Query: new("Severity:UNSET_VULNERABILITY_SEVERITY+Fixable:true")},
 			deploymentFiler: func(d *storage.Deployment) bool { return true },
 			imageFilter: func(img *storage.Image) bool {
 				for _, component := range img.GetScan().GetComponents() {
@@ -235,8 +262,8 @@ func (s *ImageResolversTestSuite) TestDeployments() {
 			actualImages, err := s.resolver.Images(testCtx, paginatedQ)
 			require.NoError(t, err)
 			var expectedIDs []string
-			for _, dep := range expectedImages {
-				expectedIDs = append(expectedIDs, dep.GetId())
+			for imgID := range expectedImages {
+				expectedIDs = append(expectedIDs, imgID)
 			}
 			assert.ElementsMatch(t, expectedIDs, getIDList(testCtx, actualImages))
 
@@ -267,6 +294,40 @@ func (s *ImageResolversTestSuite) TestDeployments() {
 				assert.Equal(t, int32(expectedCVESevCount.moderate), moderate.Total(testCtx))
 				assert.Equal(t, int32(expectedCVESevCount.low), low.Total(testCtx))
 
+				// Test BaseImage field
+				actualBaseImage, err := image.BaseImage(testCtx)
+				assert.NoError(t, err)
+
+				expectedImage, exists := expectedImages[imageID]
+				require.True(t, exists, "Expected image %s not found in expectedImages map", imageID)
+				baseImageInfos := expectedImage.GetBaseImageInfo()
+				if len(baseImageInfos) == 0 {
+					assert.Nil(t, actualBaseImage)
+				} else {
+					require.NotNil(t, actualBaseImage)
+
+					// Test imageSha (should be the digest from the first base image info)
+					expectedSha := baseImageInfos[0].GetBaseImageDigest()
+					assert.Equal(t, expectedSha, actualBaseImage.ImageSha(testCtx))
+
+					// Test name array
+					expectedNames := []string{
+						baseImageInfos[1].GetBaseImageFullName(),
+						baseImageInfos[0].GetBaseImageFullName(),
+					}
+					assert.Equal(t, expectedNames, actualBaseImage.Names(testCtx))
+
+					// Test created timestamp
+					actualCreated, err := actualBaseImage.Created(testCtx)
+					assert.NoError(t, err)
+					assert.NotNil(t, actualCreated)
+					expectedTimestamp, err := protocompat.ConvertTimeToTimestampOrError(time.Unix(0, 3000))
+					assert.NoError(t, err)
+					expectedCreated, err := protocompat.ConvertTimestampToGraphqlTimeOrError(expectedTimestamp)
+					assert.NoError(t, err)
+					assert.Equal(t, expectedCreated, actualCreated)
+				}
+
 				// Test image -> deployments -> images
 				imageDeployments, err := image.Deployments(testCtx, paginatedQ)
 				assert.NoError(t, err)
@@ -283,7 +344,7 @@ func (s *ImageResolversTestSuite) TestDeployments() {
 					}
 				}
 				for _, d := range expectedDeployments {
-					expectedDeploymentIDs = append(expectedDeploymentIDs, graphql.ID(d.Id))
+					expectedDeploymentIDs = append(expectedDeploymentIDs, graphql.ID(d.GetId()))
 				}
 				assert.ElementsMatch(t, expectedDeploymentIDs, retrievedDeploymentIDs)
 
@@ -301,6 +362,14 @@ func (s *ImageResolversTestSuite) TestDeployments() {
 			}
 		})
 	}
+}
+
+// TODO(ROX-30117): Remove conditional when FlattenImageData feature flag is removed.
+func getImageIDForTest(image *storage.Image) string {
+	if features.FlattenImageData.Enabled() {
+		return imageUtils.ConvertToV2(image).GetId()
+	}
+	return image.GetId()
 }
 
 func compileExpectedForImageGraphQL(deployments []*storage.Deployment, images []*storage.Image,
@@ -321,6 +390,7 @@ func compileExpectedForImageGraphQL(deployments []*storage.Deployment, images []
 			continue
 		}
 
+		imageID := getImageIDForTest(image)
 		var deploymentFilterPassed bool
 		for _, deployment := range imageToDeploymentsMap[image.GetName().GetFullName()] {
 			if deployment == nil {
@@ -330,11 +400,11 @@ func compileExpectedForImageGraphQL(deployments []*storage.Deployment, images []
 				continue
 			}
 			deploymentFilterPassed = true
-			matchedDeploymentsPerImage[image.GetId()] = append(matchedDeploymentsPerImage[image.GetId()], deployment)
+			matchedDeploymentsPerImage[imageID] = append(matchedDeploymentsPerImage[imageID], deployment)
 		}
 
 		if deploymentFilterPassed {
-			matchedImages[image.GetId()] = image
+			matchedImages[imageID] = image
 		}
 	}
 

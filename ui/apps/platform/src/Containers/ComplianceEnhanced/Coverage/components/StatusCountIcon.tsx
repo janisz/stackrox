@@ -1,9 +1,9 @@
-import React from 'react';
 import { Icon } from '@patternfly/react-core';
 import { BarsIcon, CheckCircleIcon, SecurityIcon, WrenchIcon } from '@patternfly/react-icons';
 import pluralize from 'pluralize';
 
 import IconText from 'Components/PatternFly/IconText/IconText';
+import { ensureExhaustive } from 'utils/type.utils';
 
 import {
     FAILING_VAR_COLOR,
@@ -22,7 +22,7 @@ type StatusCountIconProps = {
 };
 
 function getStatusIcon(status: Status, count: number, disabled: boolean) {
-    let color = 'var(--pf-v5-global--disabled-color--100)';
+    let color = 'var(--pf-t--global--icon--color--disabled)';
     if (!disabled && count > 0) {
         switch (status) {
             case 'fail':
@@ -38,6 +38,7 @@ function getStatusIcon(status: Status, count: number, disabled: boolean) {
                 color = OTHER_VAR_COLOR;
                 break;
             default:
+                ensureExhaustive(status);
                 break;
         }
     }
@@ -59,7 +60,7 @@ function getStatusIcon(status: Status, count: number, disabled: boolean) {
                 />
             );
         default:
-            return null;
+            return ensureExhaustive(status);
     }
 }
 

@@ -1,5 +1,6 @@
 import navSelectors from '../selectors/navigation';
-import { visitMainDashboard } from './main';
+import pf6 from '../selectors/pf6';
+import { visitConsoleMainDashboard, visitMainDashboard } from './main';
 import { interactAndWaitForResponses } from './request';
 
 /**
@@ -29,7 +30,7 @@ export function visitFromLeftNavExpandable(
     expandableTitle: string,
     itemText: string,
     routeMatcherMap: Record<string, { method: string; url: string }>,
-    staticResponseMap: Record<string, { body: unknown } | { fixture: string }>
+    staticResponseMap?: Record<string, { body: unknown } | { fixture: string }>
 ) {
     visitMainDashboard();
 
@@ -45,15 +46,37 @@ export function visitFromLeftNavExpandable(
     );
 }
 
+export function visitFromConsoleLeftNavExpandable(
+    expandableTitle: string,
+    itemText: string,
+    routeMatcherMap?: Record<string, { method: string; url: string }>,
+    staticResponseMap?: Record<string, { body: unknown } | { fixture: string }>
+) {
+    visitConsoleMainDashboard();
+
+    interactAndWaitForResponses(
+        () => {
+            cy.get(`${pf6.navExpandable}:contains("${expandableTitle}")`).click();
+            // The console nav has a "fade in" effect, so we need to wait for the list to be visible to prevent flakiness
+            cy.get(`${pf6.navExpandable}:contains("${expandableTitle}") ul[role="list"]`).should(
+                'be.visible'
+            );
+            cy.get(
+                `${pf6.navExpandable}:contains("${expandableTitle}") ${pf6.navItem}:contains("${itemText}")`
+            ).click();
+        },
+        routeMatcherMap,
+        staticResponseMap
+    );
+}
+
 export function visitFromHorizontalNav(linkTitle: string) {
     cy.get(`${navSelectors.horizontalNavLinks}:contains("${linkTitle}")`).click();
 }
 
 export function visitFromHorizontalNavExpandable(expandableItemTitle: string) {
     return (linkTitle: string) => {
-        cy.get(`nav.pf-m-horizontal-subnav button:contains("${expandableItemTitle}")`).click();
-        cy.get(
-            `nav.pf-m-horizontal-subnav .pf-v5-c-menu a[role="menuitem"]:contains("${linkTitle}")`
-        ).click();
+        cy.get(`nav.pf-m-horizontal.pf-m-subnav button:contains("${expandableItemTitle}")`).click();
+        cy.get(`${pf6.dropdown} a[role="menuitem"]:contains("${linkTitle}")`).click();
     };
 }

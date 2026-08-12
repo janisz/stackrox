@@ -1,7 +1,8 @@
 import qs from 'qs';
-import { SearchEntry } from 'types/search';
+import type { SearchEntry } from 'types/search';
 import axios from './instance';
-import { CancellableRequest, makeCancellableAxiosRequest } from './cancellationUtils';
+import { makeCancellableAxiosRequest } from './cancellationUtils';
+import type { CancellableRequest } from './cancellationUtils';
 
 const baseUrl = '/v1/search';
 const autoCompleteURL = `${baseUrl}/autocomplete`;
@@ -11,7 +12,6 @@ const autoCompleteURL = `${baseUrl}/autocomplete`;
 // prettier-ignore
 export type SearchCategory =
     | 'SEARCH_UNSET'
-    | 'ACTIVE_COMPONENT'
     | 'ALERTS'
     | 'CLUSTER_HEALTH'
     | 'CLUSTER_VULN_EDGE'
@@ -26,10 +26,10 @@ export type SearchCategory =
     | 'COMPLIANCE_STANDARD'
     | 'COMPONENT_VULN_EDGE'
     | 'DEPLOYMENTS'
-    | 'IMAGE_COMPONENTS'
+    | 'IMAGE_COMPONENTS_V2' // flat CVE data model
     | 'IMAGE_COMPONENT_EDGE'
     | 'IMAGE_VULN_EDGE'
-    | 'IMAGE_VULNERABILITIES'
+    | 'IMAGE_VULNERABILITIES_V2' // flat CVE data model
     | 'IMAGES'
     | 'NAMESPACES'
     | 'NETWORK_BASELINE'
@@ -54,6 +54,7 @@ export type SearchCategory =
     | 'SECRETS'
     | 'SERVICE_ACCOUNTS'
     | 'SUBJECTS'
+    | 'VIRTUAL_MACHINES'
     | 'VULN_REQUEST'
     | 'VULNERABILITIES'
     ;
@@ -156,5 +157,5 @@ export function fetchAutoCompleteResults(rawSearchRequest: RawSearchRequest): Pr
     const params = qs.stringify(rawSearchRequest, { arrayFormat: 'repeat' });
     return axios
         .get<AutocompleteResponse>(`${autoCompleteURL}?${params}`)
-        .then((response) => response?.data?.values || []);
+        .then((response) => response?.data?.values ?? []);
 }

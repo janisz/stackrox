@@ -1,24 +1,19 @@
-import React, { useState } from 'react';
-import { useHistory } from 'react-router-dom';
-import {
-    Chart,
-    ChartAxis,
-    ChartBar,
-    ChartContainer,
-    ChartLabelProps,
-} from '@patternfly/react-charts';
+import { useState } from 'react';
+import { useNavigate } from 'react-router-dom-v5-compat';
+import { Chart, ChartAxis, ChartBar, ChartContainer } from '@patternfly/react-charts/victory';
+import type { ChartLabelProps } from '@patternfly/react-charts/victory';
 
 import useResizeObserver from 'hooks/useResizeObserver';
 import {
-    defaultChartHeight,
     defaultChartBarWidth,
-    patternflySeverityTheme,
+    defaultChartHeight,
     navigateOnClickEvent,
+    patternflySeverityTheme,
     severityColorScale,
 } from 'utils/chartUtils';
 import { LinkableChartLabel } from 'Components/PatternFly/Charts/LinkableChartLabel';
-import { SearchFilter } from 'types/search';
-import { vulnManagementImagesPath } from 'routePaths';
+import type { SearchFilter } from 'types/search';
+import { vulnerabilitiesAllImagesPath } from 'routePaths';
 import { getQueryString } from 'utils/queryStringUtils';
 import isResourceScoped from '../utils';
 
@@ -41,22 +36,35 @@ export type AgingImagesChartProps = {
     searchFilter: SearchFilter;
     timeRanges: TimeRangeTuple;
     timeRangeCounts: TimeRangeCounts;
+    onBucketClick?: (bucket: string) => void;
 };
 
 export function getTimeFilterOption(ageRange: number, nextAgeRange?: number) {
     return typeof nextAgeRange === 'number' ? `${ageRange}d-${nextAgeRange}d` : `>${ageRange}d`;
 }
 
-function linkForAgingImages(searchFilter: SearchFilter, ageRange: number, nextAgeRange?: number) {
-    const timeFilter = getTimeFilterOption(ageRange, nextAgeRange);
+/**
+ * Builds a link to the VM 2.0 images list view, sorted by image age (oldest first).
+ */
+export function getAgingImagesListLink(searchFilter: SearchFilter) {
     const queryString = getQueryString({
-        s: {
-            ...searchFilter,
-            'Image Created Time': timeFilter,
-        },
-        sort: [{ id: 'Image Created Time', desc: 'false' }],
+        s: searchFilter,
+        sortOption: { field: 'Image Created Time', direction: 'asc' },
+        entityTab: 'Image',
     });
-    return `${vulnManagementImagesPath}${queryString}`;
+    return `${vulnerabilitiesAllImagesPath}${queryString}`;
+}
+
+function linkForAgingImages(
+    searchFilter: SearchFilter,
+    ageRange: number,
+    nextAgeRange: number | undefined
+) {
+    const timeFilter = getTimeFilterOption(ageRange, nextAgeRange);
+    return getAgingImagesListLink({
+        ...searchFilter,
+        'Image Created Time': timeFilter,
+    });
 }
 
 function yAxisTitle(searchFilter: SearchFilter) {
@@ -114,8 +122,13 @@ function makeChartData(
     return chartData;
 }
 
-function AgingImagesChart({ searchFilter, timeRanges, timeRangeCounts }: AgingImagesChartProps) {
-    const history = useHistory();
+function AgingImagesChart({
+    searchFilter,
+    timeRanges,
+    timeRangeCounts,
+    onBucketClick,
+}: AgingImagesChartProps) {
+    const navigate = useNavigate();
     const [widgetContainer, setWidgetContainer] = useState<HTMLDivElement | null>(null);
     const widgetContainerResizeEntry = useResizeObserver(widgetContainer);
     const chartData = makeChartData(searchFilter, timeRanges, timeRangeCounts);
@@ -143,6 +156,14 @@ function AgingImagesChart({ searchFilter, timeRanges, timeRangeCounts }: AgingIm
                         <LinkableChartLabel
                             linkWith={(props) => labelLinkCallback(props, chartData)}
                             text={(props) => labelTextCallback(props, chartData)}
+                            onClick={({ datum }) => {
+                                if (typeof datum === 'number') {
+                                    const label = chartData[datum - 1]?.labelText;
+                                    if (label) {
+                                        onBucketClick?.(label);
+                                    }
+                                }
+                            }}
                         />
                     }
                 />
@@ -155,18 +176,21 @@ function AgingImagesChart({ searchFilter, timeRanges, timeRangeCounts }: AgingIm
                     dependentAxis
                     showGrid
                 />
-                {chartData.map(({ barData, fill, labelLink }) => {
-                    return (
-                        <ChartBar
-                            key={fill}
-                            barWidth={defaultChartBarWidth}
-                            data={barData}
-                            labels={({ datum }) => `${Math.round(parseInt(datum.y, 10))}`}
-                            style={{ data: { fill } }}
-                            events={[navigateOnClickEvent(history, () => labelLink)]}
-                        />
-                    );
-                })}
+                {chartData.map(({ barData, fill, labelLink, labelText }) => (
+                    <ChartBar
+                        key={fill}
+                        barWidth={defaultChartBarWidth}
+                        data={barData}
+                        labels={({ datum }) => `${Math.round(parseInt(datum.y, 10))}`}
+                        style={{ data: { fill } }}
+                        events={[
+                            navigateOnClickEvent(navigate, () => {
+                                onBucketClick?.(labelText);
+                                return labelLink;
+                            }),
+                        ]}
+                    />
+                ))}
             </Chart>
         </div>
     );

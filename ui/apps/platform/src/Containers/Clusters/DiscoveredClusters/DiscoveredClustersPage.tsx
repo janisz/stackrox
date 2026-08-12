@@ -1,13 +1,13 @@
-import React, { ReactElement, useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
+import type { ReactElement } from 'react';
 import {
     Alert,
     Breadcrumb,
     BreadcrumbItem,
     Bullseye,
-    Flex,
+    Content,
     PageSection,
     Spinner,
-    Text,
     Title,
 } from '@patternfly/react-core';
 
@@ -19,13 +19,13 @@ import useURLSearch from 'hooks/useURLSearch';
 import useURLSort from 'hooks/useURLSort';
 import { fetchCloudSources } from 'services/CloudSourceService';
 import {
-    DiscoveredCluster,
     countDiscoveredClusters,
     defaultSortOption,
     getListDiscoveredClustersArg,
     listDiscoveredClusters,
     sortFields,
 } from 'services/DiscoveredClusterService';
+import type { DiscoveredCluster } from 'services/DiscoveredClusterService';
 import { getAxiosErrorMessage } from 'utils/responseErrorUtils';
 import { clustersBasePath } from 'routePaths';
 
@@ -53,7 +53,7 @@ function DiscoveredClustersPage(): ReactElement {
     useEffect(() => {
         if (hasReadAccessForIntegration) {
             fetchCloudSources()
-                .then(({ response: { cloudSources } }) => {
+                .then(({ cloudSources }) => {
                     setSourceNameMap(new Map(cloudSources.map(({ id, name }) => [id, name])));
                 })
                 .catch(() => {
@@ -84,28 +84,22 @@ function DiscoveredClustersPage(): ReactElement {
             });
     }, [page, perPage, searchFilter, sortOption]);
 
-    /* eslint-disable no-nested-ternary */
     return (
         <>
-            <PageSection component="div" variant="light">
-                <PageTitle title={title} />
-                <Flex direction={{ default: 'column' }}>
-                    <Breadcrumb>
-                        <BreadcrumbItemLink to={clustersBasePath}>Clusters</BreadcrumbItemLink>
-                        <BreadcrumbItem isActive>{title}</BreadcrumbItem>
-                    </Breadcrumb>
-                    <Flex
-                        direction={{ default: 'column' }}
-                        spaceItems={{ default: 'spaceItemsSm' }}
-                    >
-                        <Title headingLevel="h1">{title}</Title>
-                        <Text>
-                            Discovered clusters might not yet have secured cluster services.
-                        </Text>
-                    </Flex>
-                </Flex>
+            <PageTitle title={title} />
+            <PageSection type="breadcrumb">
+                <Breadcrumb>
+                    <BreadcrumbItemLink to={clustersBasePath}>Clusters</BreadcrumbItemLink>
+                    <BreadcrumbItem isActive>{title}</BreadcrumbItem>
+                </Breadcrumb>
             </PageSection>
-            <PageSection component="div">
+            <PageSection>
+                <Title headingLevel="h1">{title}</Title>
+                <Content component="p">
+                    Discovered clusters might not yet have secured cluster services.
+                </Content>
+            </PageSection>
+            <PageSection>
                 {currentDatetime === null ? (
                     <Bullseye>
                         <Spinner />
@@ -143,7 +137,6 @@ function DiscoveredClustersPage(): ReactElement {
             </PageSection>
         </>
     );
-    /* eslint-enable no-nested-ternary */
 }
 
 export default DiscoveredClustersPage;

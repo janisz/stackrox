@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/stackrox/rox/generated/storage"
+	"github.com/stackrox/rox/pkg/postgres"
 	"github.com/stackrox/rox/pkg/postgres/pgtest"
 	"github.com/stackrox/rox/pkg/protoassert"
 	"github.com/stackrox/rox/pkg/sac"
@@ -29,10 +30,6 @@ func TestInstallationInfosStore(t *testing.T) {
 func (s *InstallationInfosStoreSuite) SetupTest() {
 	s.testDB = pgtest.ForT(s.T())
 	s.store = New(s.testDB.DB)
-}
-
-func (s *InstallationInfosStoreSuite) TearDownTest() {
-	s.testDB.Teardown(s.T())
 }
 
 func (s *InstallationInfosStoreSuite) TestStore() {
@@ -81,4 +78,26 @@ func (s *InstallationInfosStoreSuite) TestStore() {
 	s.NoError(err)
 	s.True(exists)
 	protoassert.Equal(s.T(), installationInfo, foundInstallationInfo)
+}
+
+func (s *InstallationInfosStoreSuite) TestGetWithTransactionContext() {
+	ctx := sac.WithAllAccess(context.Background())
+	store := s.store
+
+	installationInfo := &storage.InstallationInfo{}
+	s.NoError(testutils.FullInit(installationInfo, testutils.SimpleInitializer(), testutils.JSONFieldsFilter))
+	s.NoError(store.Upsert(ctx, installationInfo))
+
+	// Create explicit transaction
+	tx, err := s.testDB.DB.Begin(ctx)
+	s.NoError(err)
+	defer tx.Rollback(ctx)
+
+	// Pass transaction context to Get
+	txCtx := postgres.ContextWithTx(ctx, tx)
+	retrieved, exists, err := store.Get(txCtx)
+
+	s.NoError(err)
+	s.True(exists)
+	protoassert.Equal(s.T(), installationInfo, retrieved)
 }

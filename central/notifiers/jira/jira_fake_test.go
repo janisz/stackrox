@@ -49,7 +49,7 @@ func (j *fakeJira) Handler() http.Handler {
 		return mux
 	}
 
-	basicAuthHeader := fmt.Sprintf("Basic %s", base64.StdEncoding.EncodeToString([]byte(fmt.Sprintf("%s:%s", j.username, j.password))))
+	basicAuthHeader := fmt.Sprintf("Basic %s", base64.StdEncoding.EncodeToString(fmt.Appendf(nil, "%s:%s", j.username, j.password)))
 	tokenAuthHeader := fmt.Sprintf("Bearer %s", j.token)
 	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		if req.Header.Get("Authorization") != basicAuthHeader && req.Header.Get("Authorization") != tokenAuthHeader {
@@ -61,7 +61,7 @@ func (j *fakeJira) Handler() http.Handler {
 }
 
 func (j *fakeJira) handleConfiguration(w http.ResponseWriter, _ *http.Request) {
-	w.WriteHeader(200)
+	w.WriteHeader(http.StatusOK)
 }
 
 func (j *fakeJira) handleIssueTypeFields(w http.ResponseWriter, _ *http.Request) {
@@ -86,7 +86,7 @@ func (j *fakeJira) handleIssueTypeFields(w http.ResponseWriter, _ *http.Request)
 
 func (j *fakeJira) handleMyPermissions(w http.ResponseWriter, r *http.Request) {
 	if projectKey := r.URL.Query().Get("projectKey"); projectKey == "" {
-		w.WriteHeader(404)
+		w.WriteHeader(http.StatusNotFound)
 		return
 	}
 
@@ -310,4 +310,12 @@ func testWithFakeJira(t *testing.T, cloud bool) {
 	assert.Contains(t, issue.Fields.Description, "myDeploymentID")
 	assert.Contains(t, issue.Fields.Description, "Fake policy")
 	assert.Equal(t, "P1", issue.Fields.Priority.Name)
+
+	assert.NoError(t, j.NetworkPolicyYAMLNotify(context.Background(), "apiVersion: networking.k8s.io/v1\nkind: NetworkPolicy", "test-cluster"))
+	require.Len(t, fj.createdIssues, 3)
+
+	issue = fj.createdIssues[2]
+	assert.Contains(t, issue.Fields.Summary, "test-cluster")
+	assert.Contains(t, issue.Fields.Description, "NetworkPolicy")
+	assert.Equal(t, "P2", issue.Fields.Priority.Name)
 }

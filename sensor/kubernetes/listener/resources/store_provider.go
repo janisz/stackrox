@@ -2,10 +2,13 @@ package resources
 
 import (
 	"github.com/stackrox/rox/pkg/registrymirror"
+	"github.com/stackrox/rox/pkg/scopecomp"
 	"github.com/stackrox/rox/sensor/common/clusterentities"
+	"github.com/stackrox/rox/sensor/common/clusterlabels"
 	"github.com/stackrox/rox/sensor/common/registry"
 	"github.com/stackrox/rox/sensor/common/store"
 	"github.com/stackrox/rox/sensor/kubernetes/listener/resources/rbac"
+	vmStore "github.com/stackrox/rox/sensor/kubernetes/listener/resources/virtualmachine/store"
 	"github.com/stackrox/rox/sensor/kubernetes/orchestratornamespaces"
 )
 
@@ -24,6 +27,8 @@ type StoreProvider struct {
 	registryStore          *registry.Store
 	registryMirrorStore    registrymirror.Store
 	nsStore                *namespaceStore
+	vmStore                *vmStore.VirtualMachineStore
+	clusterLabelsStore     *clusterlabels.Store
 
 	cleanableStores []CleanableStore
 }
@@ -34,7 +39,7 @@ type CleanableStore interface {
 }
 
 // InitializeStore creates the store instances
-func InitializeStore() *StoreProvider {
+func InitializeStore(hm clusterentities.HeritageManager) *StoreProvider {
 	memSizeSetting := pastClusterEntitiesMemorySize.IntegerSetting()
 	if memSizeSetting < 0 {
 		memSizeSetting = pastClusterEntitiesMemorySize.DefaultValue()
@@ -44,7 +49,7 @@ func InitializeStore() *StoreProvider {
 	podStore := newPodStore()
 	svcStore := newServiceStore()
 	nodeStore := newNodeStore()
-	entityStore := clusterentities.NewStoreWithMemory(uint16(memSizeSetting), debugClusterEntitiesStore.BooleanSetting())
+	entityStore := clusterentities.NewStore(uint16(memSizeSetting), hm, debugClusterEntitiesStore.BooleanSetting())
 	if debugClusterEntitiesStore.BooleanSetting() {
 		go entityStore.StartDebugServer()
 	}
@@ -64,6 +69,8 @@ func InitializeStore() *StoreProvider {
 		registryStore:          registry.NewRegistryStore(nil),
 		registryMirrorStore:    registrymirror.NewFileStore(),
 		nsStore:                newNamespaceStore(),
+		vmStore:                vmStore.NewVirtualMachineStore(),
+		clusterLabelsStore:     clusterlabels.NewStore(),
 	}
 
 	p.cleanableStores = []CleanableStore{
@@ -79,6 +86,7 @@ func InitializeStore() *StoreProvider {
 		p.registryStore,
 		p.registryMirrorStore,
 		p.nsStore,
+		p.vmStore,
 	}
 
 	return p
@@ -144,4 +152,24 @@ func (p *StoreProvider) Nodes() store.NodeStore {
 // RegistryMirrors returns the RegistryMirror store public interface.
 func (p *StoreProvider) RegistryMirrors() registrymirror.Store {
 	return p.registryMirrorStore
+}
+
+// VirtualMachines returns the VirtualMachine store
+func (p *StoreProvider) VirtualMachines() *vmStore.VirtualMachineStore {
+	return p.vmStore
+}
+
+// ClusterLabels returns the cluster labels store
+func (p *StoreProvider) ClusterLabels() *clusterlabels.Store {
+	return p.clusterLabelsStore
+}
+
+// NamespaceLabels returns the namespace store as a NamespaceLabelProvider
+func (p *StoreProvider) NamespaceLabels() scopecomp.NamespaceLabelProvider {
+	return p.nsStore
+}
+
+// Namespaces returns the namespace store public interface
+func (p *StoreProvider) Namespaces() store.NamespaceStore {
+	return p.nsStore
 }

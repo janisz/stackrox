@@ -1,5 +1,6 @@
-import React, { useEffect, useState, ReactElement } from 'react';
-import { useHistory, useLocation } from 'react-router-dom';
+import { useEffect, useState } from 'react';
+import type { ReactElement } from 'react';
+import { useLocation, useNavigate } from 'react-router-dom-v5-compat';
 import {
     Alert,
     Bullseye,
@@ -12,13 +13,9 @@ import {
 
 import PageTitle from 'Components/PageTitle';
 import SearchFilterInput from 'Components/SearchFilterInput';
-import {
-    SearchResponse,
-    fetchGlobalSearchResults,
-    getSearchOptionsForCategory,
-} from 'services/SearchService';
-import { SearchFilter } from 'types/search';
-import { ORCHESTRATOR_COMPONENTS_KEY } from 'utils/orchestratorComponents';
+import { fetchGlobalSearchResults, getSearchOptionsForCategory } from 'services/SearchService';
+import type { SearchResponse } from 'services/SearchService';
+import type { SearchFilter } from 'types/search';
 import { getAxiosErrorMessage } from 'utils/responseErrorUtils';
 import { getRequestQueryStringForSearchFilter } from 'utils/searchUtils';
 import { searchPath } from 'routePaths';
@@ -34,7 +31,7 @@ import {
 import './SearchPage.css';
 
 function SearchPage(): ReactElement {
-    const history = useHistory();
+    const navigate = useNavigate();
     const { search } = useLocation();
 
     /*
@@ -81,11 +78,7 @@ function SearchPage(): ReactElement {
             setSeachResponseErrorMessage(null);
 
             const parsedSearchFilter = parseSearchFilter(stringifiedSearchFilter);
-            const query = getRequestQueryStringForSearchFilter(
-                localStorage.getItem(ORCHESTRATOR_COMPONENTS_KEY) !== 'true'
-                    ? { ...parsedSearchFilter, 'Orchestrator Component': 'false' }
-                    : parsedSearchFilter
-            );
+            const query = getRequestQueryStringForSearchFilter(parsedSearchFilter);
 
             fetchGlobalSearchResults({ query })
                 .then(setSearchResponse)
@@ -114,9 +107,9 @@ function SearchPage(): ReactElement {
 
             // If the current search filter is empty, then replace, else push.
             if (stringifiedSearchFilter.length === 0) {
-                history.replace(searchPathWithQueryString);
+                navigate(searchPathWithQueryString, { replace: true });
             } else {
-                history.push(searchPathWithQueryString);
+                navigate(searchPathWithQueryString);
             }
         }
 
@@ -182,11 +175,11 @@ function SearchPage(): ReactElement {
     });
 
     return (
-        <PageSection variant="light" id="search-page">
+        <PageSection hasBodyWrapper={false} id="search-page">
             <PageTitle title={pageTitleItems.join(' - ')} />
             <Stack hasGutter>
                 <StackItem>
-                    <Title headingLevel="h1" className="pf-v5-u-mb-md">
+                    <Title headingLevel="h1" className="pf-v6-u-mb-md">
                         Search
                     </Title>
                     {typeof searchOptionsErrorMessage === 'string' ? (
@@ -200,7 +193,7 @@ function SearchPage(): ReactElement {
                         </Alert>
                     ) : (
                         <SearchFilterInput
-                            className="theme-light pf-search-shim z-xs-101"
+                            className="pf-search-shim z-sm-201"
                             handleChangeSearchFilter={handleChangeSearchFilter}
                             isDisabled={isLoadingSearchOptions || isLoadingSearchResponse}
                             placeholder="Filter resources"

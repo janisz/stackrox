@@ -6,52 +6,25 @@ import (
 	"context"
 	"fmt"
 	"math/rand"
-	"os"
 	"testing"
 	"time"
 
 	v1 "github.com/stackrox/rox/generated/api/v1"
 	"github.com/stackrox/rox/generated/storage"
-	"github.com/stackrox/rox/pkg/protocompat"
 	"github.com/stackrox/rox/pkg/search"
 	"github.com/stackrox/rox/pkg/testutils/centralgrpc"
 	"github.com/stretchr/testify/require"
 )
 
 func TestExcludedScopes(t *testing.T) {
-	if os.Getenv("ORCHESTRATOR_FLAVOR") == "openshift" {
-		t.Skip("temporarily skipped on OCP. TODO(ROX-25171)")
-	}
 	deploymentName := fmt.Sprintf("test-excluded-scopes-%d", rand.Intn(10000))
 
-	setupDeployment(t, "nginx", deploymentName)
-	defer teardownDeploymentWithoutCheck(t, deploymentName)
-	waitForDeployment(t, deploymentName)
+	setupDeploymentInNamespace(t, "quay.io/rhacs-eng/qa-multi-arch-nginx:latest", deploymentName, "default")
+	defer teardownDeploymentWithoutCheck(t, deploymentName, "default")
+	waitForDeploymentInCentral(t, deploymentName)
 
 	verifyNoAlertForExcludedScopes(t, deploymentName)
 	verifyAlertForExcludedScopesRemoval(t, deploymentName)
-}
-
-func waitForAlert(t *testing.T, service v1.AlertServiceClient, req *v1.ListAlertsRequest, desired int) {
-	var alerts []*storage.ListAlert
-	// Retry until desired alert count is reached when sensor(s) resync
-	for i := 0; i < 45; i++ {
-		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
-		resp, err := service.ListAlerts(ctx, req)
-		cancel()
-		require.NoError(t, err)
-		alerts = resp.GetAlerts()
-		if len(alerts) == desired {
-			return
-		}
-		time.Sleep(2 * time.Second)
-	}
-	alertStrings := ""
-	for _, alert := range alerts {
-		alertStrings = fmt.Sprintf("%s%s\n", alertStrings, protocompat.MarshalTextString(alert))
-	}
-	log.Infof("Received alerts:\n%s", alertStrings)
-	require.Fail(t, fmt.Sprintf("Failed to have %d alerts, instead received %d alerts", desired, len(alerts)))
 }
 
 func verifyNoAlertForExcludedScopes(t *testing.T, deploymentName string) {
@@ -65,7 +38,7 @@ func verifyNoAlertForExcludedScopes(t *testing.T, deploymentName string) {
 	})
 	cancel()
 	require.NoError(t, err)
-	require.Len(t, resp.Policies, 1)
+	require.Len(t, resp.GetPolicies(), 1)
 
 	ctx, cancel = context.WithTimeout(context.Background(), time.Minute)
 	latestPolicy, err := service.GetPolicy(ctx, &v1.ResourceByID{
@@ -105,7 +78,7 @@ func verifyAlertForExcludedScopesRemoval(t *testing.T, deploymentName string) {
 	})
 	cancel()
 	require.NoError(t, err)
-	require.Len(t, resp.Policies, 1)
+	require.Len(t, resp.GetPolicies(), 1)
 
 	ctx, cancel = context.WithTimeout(context.Background(), time.Minute)
 	latestPolicy, err := service.GetPolicy(ctx, &v1.ResourceByID{

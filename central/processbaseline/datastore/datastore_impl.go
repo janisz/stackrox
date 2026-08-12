@@ -5,7 +5,6 @@ import (
 	"time"
 
 	"github.com/pkg/errors"
-	"github.com/stackrox/rox/central/processbaseline/search"
 	"github.com/stackrox/rox/central/processbaseline/store"
 	processBaselineResultsStore "github.com/stackrox/rox/central/processbaselineresults/datastore"
 	processIndicatorDatastore "github.com/stackrox/rox/central/processindicator/datastore"
@@ -29,7 +28,6 @@ var (
 
 type datastoreImpl struct {
 	storage      store.Store
-	searcher     search.Searcher
 	baselineLock *concurrency.KeyedMutex
 
 	processBaselineResults processBaselineResultsStore.DataStore
@@ -37,11 +35,21 @@ type datastoreImpl struct {
 }
 
 func (ds *datastoreImpl) SearchRawProcessBaselines(ctx context.Context, q *v1.Query) ([]*storage.ProcessBaseline, error) {
-	return ds.searcher.SearchRawProcessBaselines(ctx, q)
+	var baselines []*storage.ProcessBaseline
+	// The number of process baselines could be large.  So using WalkByQuery
+	err := ds.storage.WalkByQuery(ctx, q, func(baseline *storage.ProcessBaseline) error {
+		baselines = append(baselines, baseline)
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return baselines, nil
 }
 
 func (ds *datastoreImpl) Search(ctx context.Context, q *v1.Query) ([]pkgSearch.Result, error) {
-	return ds.searcher.Search(ctx, q)
+	return ds.storage.Search(ctx, q)
 }
 
 func (ds *datastoreImpl) GetProcessBaseline(ctx context.Context, key *storage.ProcessBaselineKey) (*storage.ProcessBaseline, bool, error) {
@@ -124,7 +132,7 @@ func (ds *datastoreImpl) RemoveProcessBaseline(ctx context.Context, key *storage
 	// Delete process baseline results if this is the last process baseline with the given deploymentID
 	deploymentID := key.GetDeploymentId()
 	q := pkgSearch.NewQueryBuilder().AddExactMatches(pkgSearch.DeploymentID, deploymentID).ProtoQuery()
-	results, err := ds.searcher.Search(ctx, q)
+	results, err := ds.Search(ctx, q)
 	if err != nil {
 		return errors.Wrapf(err, "failed to query for deployment %s during process baseline deletion", deploymentID)
 	}
@@ -142,7 +150,7 @@ func (ds *datastoreImpl) RemoveProcessBaselinesByDeployment(ctx context.Context,
 	}
 
 	query := pkgSearch.NewQueryBuilder().AddExactMatches(pkgSearch.DeploymentID, deploymentID).ProtoQuery()
-	results, err := ds.searcher.Search(ctx, query)
+	results, err := ds.Search(ctx, query)
 	if err != nil {
 		return err
 	}
@@ -208,7 +216,7 @@ func (ds *datastoreImpl) updateProcessBaselineElements(ctx context.Context, base
 			continue
 		}
 		existing, ok := baselineMap[element.GetProcessName()]
-		if !ok || existing.Auto {
+		if !ok || existing.GetAuto() {
 			delete(graveyardMap, element.GetProcessName())
 			baselineMap[element.GetProcessName()] = &storage.BaselineElement{
 				Element: element,
@@ -220,7 +228,7 @@ func (ds *datastoreImpl) updateProcessBaselineElements(ctx context.Context, base
 	for _, removeElement := range removeElements {
 		delete(baselineMap, removeElement.GetProcessName())
 		existing, ok := graveyardMap[removeElement.GetProcessName()]
-		if !ok || existing.Auto {
+		if !ok || existing.GetAuto() {
 			graveyardMap[removeElement.GetProcessName()] = &storage.BaselineElement{
 				Element: removeElement,
 				Auto:    auto,
@@ -359,21 +367,26 @@ func (ds *datastoreImpl) CreateUnlockedProcessBaseline(ctx context.Context, key 
 		return baseline, nil
 	}
 
-	// Get the list of processes
-	baselineList, err := ds.getProcessList(ctx, key)
-	if err != nil {
-		return nil, err
-	}
-
 	// Build the de-duped elements for the baseline
-	elements := make(map[string]*storage.BaselineItem, len(baselineList))
+	elements := make(map[string]*storage.BaselineItem)
 
-	for _, indicator := range baselineList {
+	fn := func(indicator *storage.ProcessIndicator) error {
 		baselineItem := processBaselinePkg.BaselineItemFromProcess(indicator)
 
 		insertableElement := &storage.BaselineItem{Item: &storage.BaselineItem_ProcessName{ProcessName: baselineItem}}
 
 		elements[baselineItem] = insertableElement
+		return nil
+	}
+
+	query := pkgSearch.NewQueryBuilder().
+		AddExactMatches(pkgSearch.DeploymentID, key.GetDeploymentId()).
+		AddExactMatches(pkgSearch.ContainerName, key.GetContainerName()).
+		ProtoQuery()
+
+	err = ds.processesDataStore.GetByQueryFn(ctx, query, fn)
+	if err != nil {
+		return nil, err
 	}
 
 	baseElements := make([]*storage.BaselineElement, 0, len(elements))
@@ -395,17 +408,6 @@ func (ds *datastoreImpl) CreateUnlockedProcessBaseline(ctx context.Context, key 
 	_, err = ds.addProcessBaselineUnlocked(ctx, id, baseline)
 
 	return baseline, err
-}
-
-func (ds *datastoreImpl) getProcessList(ctx context.Context, key *storage.ProcessBaselineKey) ([]*storage.ProcessIndicator, error) {
-	// Simply use search to find the process indicators for the baseline key
-	return ds.processesDataStore.SearchRawProcessIndicators(
-		ctx,
-		pkgSearch.NewQueryBuilder().
-			AddExactMatches(pkgSearch.DeploymentID, key.GetDeploymentId()).
-			AddExactMatches(pkgSearch.ContainerName, key.GetContainerName()).
-			ProtoQuery(),
-	)
 }
 
 func (ds *datastoreImpl) WalkAll(ctx context.Context, fn func(baseline *storage.ProcessBaseline) error) error {
@@ -443,7 +445,7 @@ func (ds *datastoreImpl) ClearProcessBaselines(ctx context.Context, ids []string
 
 	// Go through the baselines and clear them out
 	for _, baseline := range baselines {
-		if !deploymentExtensionSAC.ScopeChecker(ctx, storage.Access_READ_WRITE_ACCESS).ForNamespaceScopedObject(baseline.Key).IsAllowed() {
+		if !deploymentExtensionSAC.ScopeChecker(ctx, storage.Access_READ_WRITE_ACCESS).ForNamespaceScopedObject(baseline.GetKey()).IsAllowed() {
 			return sac.ErrResourceAccessDenied
 		}
 

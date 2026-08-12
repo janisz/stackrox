@@ -18,7 +18,7 @@ var allowAllPodsAllNS = &storage.NetworkPolicyIngressRule{
 }
 
 func generateIngressRules(node *node, namespacesByName map[string]*storage.NamespaceMetadata) []*storage.NetworkPolicyIngressRule {
-	var rules []*storage.NetworkPolicyIngressRule
+	rules := make([]*storage.NetworkPolicyIngressRule, 0, len(node.incoming))
 
 	for port := range node.incoming {
 		rules = append(rules, generateIngressRule(node, port, namespacesByName))
@@ -58,8 +58,8 @@ func generateIngressRule(node *node, port portDesc, namespacesByName map[string]
 			PodSelector: labelSelectorForDeployment(srcNode.deployment),
 		}
 		// If netPolPeer namespace is not visible, this will generate 'allow all namespaces' selector
-		if node.deployment.Namespace != srcNode.deployment.Namespace {
-			nsInfo, nsVisible := namespacesByName[srcNode.deployment.Namespace]
+		if node.deployment.GetNamespace() != srcNode.deployment.GetNamespace() {
+			nsInfo, nsVisible := namespacesByName[srcNode.deployment.GetNamespace()]
 			if !nsVisible {
 				log.Infof("insufficient permissions to netPolPeer namespace(s) of node %s; generating allow all namespaces selector", node.entity.ID)
 				// Note that we intentionally continue - nsInfo is nil in this case, which in alignment with the

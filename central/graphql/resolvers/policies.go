@@ -13,7 +13,6 @@ import (
 	mitreUtils "github.com/stackrox/rox/pkg/mitre/utils"
 	"github.com/stackrox/rox/pkg/policyutils"
 	"github.com/stackrox/rox/pkg/search"
-	"github.com/stackrox/rox/pkg/search/paginated"
 	"github.com/stackrox/rox/pkg/search/scoped"
 	"github.com/stackrox/rox/pkg/utils"
 )
@@ -116,7 +115,7 @@ func (resolver *policyResolver) Deployments(ctx context.Context, args PaginatedQ
 	deploymentFilterQuery := search.EmptyQuery()
 	if scope, hasScope := scoped.GetScope(ctx); hasScope {
 		if field, ok := idField[scope.Level]; ok {
-			deploymentFilterQuery = search.NewQueryBuilder().AddExactMatches(field, scope.ID).ProtoQuery()
+			deploymentFilterQuery = search.NewQueryBuilder().AddExactMatches(field, scope.IDs...).ProtoQuery()
 		}
 	} else {
 		if deploymentFilterQuery, err = args.AsV1QueryOrEmpty(); err != nil {
@@ -155,7 +154,7 @@ func (resolver *policyResolver) Deployments(ctx context.Context, args PaginatedQ
 	for _, deploymentResolver := range deploymentResolvers {
 		deploymentResolver.ctx = scoped.Context(ctx, scoped.Scope{
 			Level: v1.SearchCategory_POLICIES,
-			ID:    resolver.data.GetId(),
+			IDs:   []string{resolver.data.GetId()},
 		})
 	}
 	return deploymentResolvers, nil
@@ -184,15 +183,9 @@ func (resolver *policyResolver) failingDeployments(ctx context.Context, q *v1.Qu
 	alertsQuery := search.ConjunctionQuery(resolver.getPolicyQuery(),
 		search.NewQueryBuilder().AddExactMatches(search.ViolationState, storage.ViolationState_ACTIVE.String()).ProtoQuery())
 
-	alertsQuery = paginated.FillDefaultSortOption(alertsQuery, paginated.GetViolationTimeSortOption())
-	listAlerts, err := resolver.root.ViolationsDataStore.SearchListAlerts(ctx, alertsQuery, true)
+	deploymentIDs, err := resolver.root.ViolationsDataStore.SearchAlertDeploymentIDs(ctx, alertsQuery, true)
 	if err != nil {
 		return nil, err
-	}
-
-	deploymentIDs := make([]string, 0, len(listAlerts))
-	for _, alert := range listAlerts {
-		deploymentIDs = append(deploymentIDs, alert.GetDeployment().GetId())
 	}
 
 	deploymentQuery := search.ConjunctionQuery(q, search.NewQueryBuilder().AddDocIDs(deploymentIDs...).ProtoQuery())
@@ -210,7 +203,7 @@ func (resolver *policyResolver) failingDeployments(ctx context.Context, q *v1.Qu
 	for _, deploymentResolver := range deploymentResolvers {
 		deploymentResolver.ctx = scoped.Context(ctx, scoped.Scope{
 			Level: v1.SearchCategory_POLICIES,
-			ID:    resolver.data.GetId(),
+			IDs:   []string{resolver.data.GetId()},
 		})
 	}
 	return deploymentResolvers, nil
@@ -264,7 +257,7 @@ func (resolver *policyResolver) PolicyStatus(ctx context.Context, args RawQuery)
 	q := search.EmptyQuery()
 	if scope, hasScope := scoped.GetScope(resolver.ctx); hasScope {
 		if field, ok := idField[scope.Level]; ok {
-			q = search.NewQueryBuilder().AddExactMatches(field, scope.ID).ProtoQuery()
+			q = search.NewQueryBuilder().AddExactMatches(field, scope.IDs...).ProtoQuery()
 		}
 	} else {
 		if q, err = args.AsV1QueryOrEmpty(); err != nil {
@@ -312,7 +305,7 @@ func (resolver *policyResolver) LatestViolation(ctx context.Context, args RawQue
 	q := search.EmptyQuery()
 	if scope, hasScope := scoped.GetScope(resolver.ctx); hasScope {
 		if field, ok := idField[scope.Level]; ok {
-			q = search.NewQueryBuilder().AddExactMatches(field, scope.ID).ProtoQuery()
+			q = search.NewQueryBuilder().AddExactMatches(field, scope.IDs...).ProtoQuery()
 		}
 	} else {
 		if q, err = args.AsV1QueryOrEmpty(); err != nil {
@@ -360,7 +353,7 @@ func inverseFilterFailingDeploymentsQuery(q *v1.Query) (*v1.Query, bool) {
 		return true
 	})
 	if filtered != nil {
-		filtered.Pagination = q.Pagination
+		filtered.Pagination = q.GetPagination()
 	}
 	return filtered, isFailingDeploymentsQuery
 }

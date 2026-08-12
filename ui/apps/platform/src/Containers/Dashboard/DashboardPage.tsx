@@ -1,6 +1,15 @@
-import React, { CSSProperties } from 'react';
-import { Divider, Flex, FlexItem, Gallery, PageSection, Text, Title } from '@patternfly/react-core';
+import type { CSSProperties } from 'react';
+import {
+    Content,
+    Divider,
+    Flex,
+    FlexItem,
+    Gallery,
+    PageSection,
+    Title,
+} from '@patternfly/react-core';
 
+import useFeatureFlags from 'hooks/useFeatureFlags';
 import usePermissions from 'hooks/usePermissions';
 
 import SummaryCounts from './SummaryCounts';
@@ -28,6 +37,13 @@ function DashboardPage() {
     const hasReadAccessForNode = hasReadAccess('Node');
     const hasReadAccessForSecret = hasReadAccess('Secret');
 
+    const { isFeatureFlagEnabled } = useFeatureFlags();
+    const isDeprecatedComplianceDashboardEnabled = isFeatureFlagEnabled(
+        'ROX_DEPRECATED_COMPLIANCE_DASHBOARD'
+    );
+    const hasComplianceLevelsByStandard =
+        isDeprecatedComplianceDashboardEnabled && hasReadAccessForCompliance;
+
     const hasReadAccessForSummaryCounts =
         hasReadAccessForAlert ||
         hasReadAccessForCluster ||
@@ -40,7 +56,7 @@ function DashboardPage() {
         <>
             {hasReadAccessForSummaryCounts && (
                 <>
-                    <PageSection variant="light" padding={{ default: 'noPadding' }}>
+                    <PageSection hasBodyWrapper={false} padding={{ default: 'noPadding' }}>
                         <SummaryCounts
                             hasReadAccessForResource={{
                                 Alert: hasReadAccessForAlert,
@@ -55,19 +71,21 @@ function DashboardPage() {
                     <Divider component="div" />
                 </>
             )}
-            <PageSection variant="light">
+            <PageSection hasBodyWrapper={false}>
                 <Flex
                     direction={{ default: 'column', lg: 'row' }}
                     alignItems={{ default: 'alignItemsFlexStart', lg: 'alignItemsCenter' }}
                 >
                     <FlexItem>
                         <Title headingLevel="h1">Dashboard</Title>
-                        <Text>Review security metrics across all or select resources</Text>
+                        <Content component="p">
+                            Review security metrics across all or select resources
+                        </Content>
                     </FlexItem>
                     {hasReadAccessForCluster && hasReadAccessForNamespace && (
                         <FlexItem
                             grow={{ default: 'grow' }}
-                            className="pf-v5-u-display-flex pf-v5-u-justify-content-flex-end"
+                            className="pf-v6-u-display-flex pf-v6-u-justify-content-flex-end"
                         >
                             <ScopeBar />
                         </FlexItem>
@@ -75,15 +93,13 @@ function DashboardPage() {
                 </Flex>
             </PageSection>
             <Divider component="div" />
-            <PageSection>
+            <PageSection hasBodyWrapper={false}>
                 <Gallery
+                    id="main-dashboard-widget-gallery"
                     style={
                         {
                             // Ensure the grid has never grows large enough to show 4 columns
-                            maxWidth: `calc(calc(${minWidgetWidth}px * 4) + calc(var(--pf-v5-l-gallery--m-gutter--GridGap) * 3) - 1px)`,
-                            // Ensure the grid gap matches that of the outside padding of the containing PageSection
-                            '--pf-v5-l-gallery--m-gutter--GridGap':
-                                'var(--pf-v5-c-page__main-section--PaddingTop)',
+                            maxWidth: `calc(calc(${minWidgetWidth}px * 4) + calc(var(--pf-v6-l-gallery--m-gutter--GridGap) * 3) - 1px)`,
                         } as CSSProperties
                     }
                     hasGutter
@@ -94,7 +110,7 @@ function DashboardPage() {
                     {hasReadAccessForDeployment && <DeploymentsAtMostRisk />}
                     {hasReadAccessForImage && <AgingImages />}
                     {hasReadAccessForAlert && <ViolationsByPolicyCategory />}
-                    {hasReadAccessForCompliance && <ComplianceLevelsByStandard />}
+                    {hasComplianceLevelsByStandard && <ComplianceLevelsByStandard />}
                 </Gallery>
             </PageSection>
         </>

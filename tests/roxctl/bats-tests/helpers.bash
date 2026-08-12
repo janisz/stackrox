@@ -9,9 +9,25 @@ fi
 load "${bats_helpers_root}/bats-support/load.bash"
 load "${bats_helpers_root}/bats-assert/load.bash"
 
+# yq_multidoc runs yq and strips --- document separators from output.
+# yq 4.x adds separators between multi-doc results which shift assert_line indices.
+yq_multidoc() {
+  local output
+  output=$(yq "$@") || return $?
+  sed '/^---$/d' <<< "$output"
+}
+
 # luname outputs uname in lowercase
 luname() {
   uname | tr '[:upper:]' '[:lower:]'
+}
+
+strip_deprecation_notice() {
+  if [[ $# -gt 0 ]]; then
+    printf '%s\n' "$1" | sed -e '/^Command ".*" is deprecated,/d'
+    return
+  fi
+  sed -e '/^Command ".*" is deprecated,/d'
 }
 
 tmp_roxctl="tmp/roxctl-bats/bin"
@@ -21,7 +37,7 @@ any_version='[0-9]+\.[0-9]+\.'
 
 delete-outdated-binaries() {
     local roxctl_ver="${1}"
-    current_tag="$(git describe --tags --abbrev=10 --dirty --long --exclude '*-nightly-*')"
+    current_tag="$(make --quiet --no-print-directory tag)"
     echo "Roxctl version='${roxctl_ver}'" >&3
     echo "Current tag   ='${current_tag}'" >&3
     if [[ "${current_tag}" != "${roxctl_ver}" ]]; then
@@ -39,32 +55,34 @@ delete-outdated-binaries() {
 roxctl-development-cmd() {
   if [[ ! -x "${tmp_roxctl}/roxctl-dev" ]]; then
     _uname="$(luname)"
+    _goarch="$(go env GOARCH)"
     mkdir -p "$tmp_roxctl"
-    make -s "cli-${_uname}" GOTAGS='' 2>&3
-    mv "bin/${_uname}_amd64/roxctl" "${tmp_roxctl}/roxctl-dev"
+    make -s "roxctl_${_uname}-${_goarch}" GOTAGS='' 2>&3
+    mv "bin/${_uname}_${_goarch}/roxctl" "${tmp_roxctl}/roxctl-dev"
   fi
   echo "${tmp_roxctl}/roxctl-dev"
 }
 
 # roxctl-development runs roxctl built with GOTAGS=''. It builds the binary if needed
 roxctl-development() {
-   "$(roxctl-development-cmd)" "$@"
+   "$(roxctl-development-cmd)" --ca "" --insecure-skip-tls-verify "$@"
 }
 
 # roxctl-release-cmd prints the path to roxctl built with GOTAGS='release'. It builds the binary if needed
 roxctl-release-cmd() {
   if [[ ! -x "${tmp_roxctl}/roxctl-release" ]]; then
     _uname="$(luname)"
+    _goarch="$(go env GOARCH)"
     mkdir -p "$tmp_roxctl"
-    make -s "cli-${_uname}" GOTAGS='release' 2>&3
-    mv "bin/${_uname}_amd64/roxctl" "${tmp_roxctl}/roxctl-release"
+    make -s "roxctl_${_uname}-${_goarch}" GOTAGS='release' 2>&3
+    mv "bin/${_uname}_${_goarch}/roxctl" "${tmp_roxctl}/roxctl-release"
   fi
   echo "${tmp_roxctl}/roxctl-release"
 }
 
 # roxctl-release runs roxctl built with GOTAGS='release'. It builds the binary if needed
 roxctl-release() {
-  "$(roxctl-release-cmd)" "$@"
+  "$(roxctl-release-cmd)" --ca "" --insecure-skip-tls-verify "$@"
 }
 
 helm_template_central() {
@@ -251,7 +269,7 @@ image_reference_regex() {
       echo "quay\.io/stackrox-io/$component:$version"
       ;;
     registry.redhat.io)
-      echo "registry\.redhat\.io/advanced-cluster-security/rhacs-$component-rhel8:$version"
+      echo "registry\.redhat\.io/advanced-cluster-security/rhacs-$component-rhel9:$version"
       ;;
     example.com)
       echo "example\.com/$component:$version"
@@ -343,7 +361,7 @@ has_flag_collision_warning() {
 }
 
 roxctl_authenticated() {
-  roxctl-development --insecure-skip-tls-verify -e "$API_ENDPOINT" "$@"
+  roxctl-development -e "$API_ENDPOINT" "$@"
 }
 
 yaml_valid() {

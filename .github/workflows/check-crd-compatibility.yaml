@@ -1,0 +1,106 @@
+name: Check CRD Compatibility
+on:
+  push:
+    tags:
+    - '*'
+    branches:
+    - master
+    - release-*
+  pull_request:
+    types:
+    - opened
+    - reopened
+    - synchronize
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  detect-changes:
+    uses: ./.github/workflows/detect-changes.yml
+
+  check-crd-compatibility:
+    needs: detect-changes
+    if: ${{ !needs.detect-changes.outputs.ui_only }}
+    runs-on: ubuntu-latest
+    container:
+      image: quay.io/stackrox-io/apollo-ci:stackrox-test-0.5.11@sha256:df3459cf038e73775314b3a5d36d14dda41e6df438a0273c9efa8d23e0f2358a # ratchet:quay.io/stackrox-io/apollo-ci:stackrox-test-0.5.11
+    outputs:
+      released_version: ${{ steps.get_previous_released_version.outputs.released_version }}
+    steps:
+    - name: Checkout stackrox/stackrox
+      uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # ratchet:actions/checkout@v7.0.0
+      with:
+        fetch-depth: 0
+        ref: ${{ github.event.pull_request.head.sha }}
+
+    - uses: ./.github/actions/job-preamble
+      with:
+        gcp-account: ${{ secrets.GCP_SERVICE_ACCOUNT_STACKROX_CI }}
+
+    - name: Checkout crd-schema-checker
+      uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # ratchet:actions/checkout@v7.0.0
+      with:
+        repository: openshift/crd-schema-checker
+        path: .crd-schema-checker
+        ref: c313b6407231f6d1aabfb602f0823708f8c6b9fb # 2025-09-05
+
+    - name: Build crd-schema-checker
+      run: |
+        make -C .crd-schema-checker
+
+    - name: Get previous released version
+      id: get_previous_released_version
+      run: |
+        make -C operator bundle-post-process
+        released_version="$(make --no-print-directory -C operator replaced-version)"
+        echo "released_version=$released_version" >> "$GITHUB_OUTPUT"
+
+    - name: Checkout previous released version
+      uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # ratchet:actions/checkout@v7.0.0
+      with:
+        fetch-depth: 0
+        ref: ${{ steps.get_previous_released_version.outputs.released_version }}
+        path: .old-stackrox
+
+    - name: Run crd-schema-checker for platform operator
+      run: |
+        set -e
+        old_path=.old-stackrox/operator/config/crd/bases
+        new_path=operator/config/crd/bases
+        sc_file=platform.stackrox.io_securedclusters.yaml
+        central_file=platform.stackrox.io_centrals.yaml
+        args="--disabled-validators=ConditionsMustHaveProperSSATags,ListsMustHaveSSATags,NoBools,NoMaps"
+        set -x
+        .crd-schema-checker/crd-schema-checker check-manifests $args --existing-crd-filename=$old_path/$sc_file --new-crd-filename=$new_path/$sc_file
+        .crd-schema-checker/crd-schema-checker check-manifests $args --existing-crd-filename=$old_path/$central_file --new-crd-filename=$new_path/$central_file
+
+    - name: Run crd-schema-checker for config operator
+      run: |
+        set -e
+        old_path=.old-stackrox/config-controller/config/crd/bases
+        new_path=config-controller/config/crd/bases
+        policy_file=config.stackrox.io_securitypolicies.yaml
+        args="--disabled-validators=ConditionsMustHaveProperSSATags,ListsMustHaveSSATags,NoBools,NoMaps"
+        set -x
+        .crd-schema-checker/crd-schema-checker check-manifests $args --existing-crd-filename=$old_path/$policy_file --new-crd-filename=$new_path/$policy_file
+
+    - name: Run crdify for platform operator
+      run: |
+        set -e
+        old_path="$PWD/.old-stackrox/operator/config/crd/bases"
+        new_path="$PWD/operator/config/crd/bases"
+        crdify="go run -C operator/tools/crdify sigs.k8s.io/crdify --config=config.yaml"
+        set -x
+        $crdify "file://${old_path}/platform.stackrox.io_securedclusters.yaml" "file://${new_path}/platform.stackrox.io_securedclusters.yaml"
+        $crdify "file://${old_path}/platform.stackrox.io_centrals.yaml" "file://${new_path}/platform.stackrox.io_centrals.yaml"
+
+    - name: Run crdify for config operator
+      run: |
+        set -e
+        old_path="$PWD/.old-stackrox/config-controller/config/crd/bases"
+        new_path="$PWD/config-controller/config/crd/bases"
+        crdify="go run -C operator/tools/crdify sigs.k8s.io/crdify --config=config.yaml"
+        set -x
+        $crdify "file://${old_path}/config.stackrox.io_securitypolicies.yaml" "file://${new_path}/config.stackrox.io_securitypolicies.yaml"

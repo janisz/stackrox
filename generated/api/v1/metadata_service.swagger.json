@@ -29,7 +29,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/googlerpcStatus"
+              "$ref": "#/definitions/googleRpcStatus"
             }
           }
         },
@@ -51,7 +51,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/googlerpcStatus"
+              "$ref": "#/definitions/googleRpcStatus"
             }
           }
         },
@@ -73,7 +73,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/googlerpcStatus"
+              "$ref": "#/definitions/googleRpcStatus"
             }
           }
         },
@@ -95,7 +95,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/googlerpcStatus"
+              "$ref": "#/definitions/googleRpcStatus"
             }
           }
         },
@@ -119,7 +119,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/googlerpcStatus"
+              "$ref": "#/definitions/googleRpcStatus"
             }
           }
         },
@@ -168,7 +168,7 @@
       ],
       "default": "NONE"
     },
-    "googlerpcStatus": {
+    "googleRpcStatus": {
       "type": "object",
       "properties": {
         "code": {
@@ -280,6 +280,9 @@
         "databaseVersion": {
           "type": "string",
           "title": "version of the database"
+        },
+        "databaseIsExternal": {
+          "type": "boolean"
         }
       }
     },
@@ -298,6 +301,13 @@
         "licenseStatus": {
           "$ref": "#/definitions/MetadataLicenseStatus",
           "title": "Do not use this field. It will always contain \"VALID\""
+        },
+        "compatibleSensorVersions": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Sorted list of X.Y sensor versions that are compatible with this central,\naccording to the version skew policy known to central."
         }
       }
     },
@@ -311,7 +321,13 @@
         },
         "signature": {
           "type": "string",
-          "format": "byte"
+          "format": "byte",
+          "title": "primary signature (by key from TrustInfo.cert_chain[0])"
+        },
+        "signatureSecondaryCa": {
+          "type": "string",
+          "format": "byte",
+          "description": "optional signature by key from TrustInfo.secondary_cert_chain[0]."
         }
       }
     }

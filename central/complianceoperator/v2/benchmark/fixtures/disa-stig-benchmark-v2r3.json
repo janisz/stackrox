@@ -1,0 +1,13 @@
+{
+  "name": "Defense Information Systems Agency Security Technical Implementation Guide",
+  "provider": "DISA",
+  "shortName": "STIG",
+  "profiles": [
+    { "profileName": "ocp4-stig" },
+    { "profileName": "ocp4-stig-node" },
+    { "profileName": "rhcos4-stig" },
+    { "profileName": "ocp4-stig-v2r3" },
+    { "profileName": "ocp4-stig-node-v2r3" },
+    { "profileName": "rhcos4-stig-v2r3" }
+  ]
+}

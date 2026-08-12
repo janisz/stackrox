@@ -16,7 +16,6 @@ import (
 )
 
 func TestConfigDataStore(t *testing.T) {
-	t.Parallel()
 	suite.Run(t, new(configDataStoreTestSuite))
 }
 
@@ -92,6 +91,14 @@ var (
 			DecommissionedClusterRetention:      nil,
 			ReportRetentionConfig:               nil,
 			VulnerabilityExceptionConfig:        &storage.VulnerabilityExceptionConfig{},
+		},
+	}
+
+	samplePlatformConfig = &storage.PlatformComponentConfig{
+		NeedsReevaluation: true,
+		Rules: []*storage.PlatformComponentConfig_Rule{
+			defaultPlatformConfigSystemRule,
+			defaultPlatformConfigLayeredProductsRule,
 		},
 	}
 )
@@ -209,6 +216,153 @@ func (s *configDataStoreTestSuite) TestAllowsUpdate() {
 	s.NotNil(updatedPublicConfig)
 }
 
+func (s *configDataStoreTestSuite) TestGetPlatformComponentConfig() {
+	s.storage.EXPECT().Get(gomock.Any()).Return(&storage.Config{
+		PublicConfig:  sampleConfig.GetPublicConfig(),
+		PrivateConfig: sampleConfig.GetPrivateConfig(),
+		PlatformComponentConfig: &storage.PlatformComponentConfig{
+			NeedsReevaluation: true,
+			Rules: []*storage.PlatformComponentConfig_Rule{
+				defaultPlatformConfigSystemRule,
+				defaultPlatformConfigLayeredProductsRule,
+			},
+		},
+	}, true, nil).Times(1)
+
+	platformConfig, _, err := s.dataStore.GetPlatformComponentConfig(s.hasReadCtx)
+	s.NoError(err, "expected no error trying to read with permissions")
+	s.NotNil(platformConfig)
+	s.True(platformConfig.GetNeedsReevaluation())
+	s.Equal(2, len(platformConfig.GetRules()))
+}
+
+func (s *configDataStoreTestSuite) TestUpsertPlatformComponentConfig() {
+	// Test when no update is required
+	s.storage.EXPECT().Get(gomock.Any()).Return(&storage.Config{
+		PublicConfig:  sampleConfig.GetPublicConfig(),
+		PrivateConfig: sampleConfig.GetPrivateConfig(),
+		PlatformComponentConfig: &storage.PlatformComponentConfig{
+			NeedsReevaluation: false,
+			Rules: []*storage.PlatformComponentConfig_Rule{
+				defaultPlatformConfigSystemRule,
+				defaultPlatformConfigLayeredProductsRule,
+			},
+		},
+	}, true, nil).Times(1)
+	s.storage.EXPECT().Upsert(gomock.Any(), gomock.Any()).Return(nil).Times(1)
+
+	config, err := s.dataStore.UpsertPlatformComponentConfigRules(s.hasWriteCtx, []*storage.PlatformComponentConfig_Rule{
+		defaultPlatformConfigSystemRule,
+		defaultPlatformConfigLayeredProductsRule,
+	})
+	s.NoError(err, "expected no error trying to upsert basic config")
+	s.NotNil(config)
+	s.False(config.GetNeedsReevaluation())
+	s.Equal(2, len(config.GetRules()))
+
+	// Test when a re-evaluation should be triggered
+	s.storage.EXPECT().Get(gomock.Any()).Return(&storage.Config{
+		PublicConfig:  sampleConfig.GetPublicConfig(),
+		PrivateConfig: sampleConfig.GetPrivateConfig(),
+		PlatformComponentConfig: &storage.PlatformComponentConfig{
+			NeedsReevaluation: false,
+			Rules: []*storage.PlatformComponentConfig_Rule{
+				defaultPlatformConfigSystemRule,
+				defaultPlatformConfigLayeredProductsRule,
+			},
+		},
+	}, true, nil).Times(1)
+	s.storage.EXPECT().Upsert(gomock.Any(), gomock.Any()).Return(nil).Times(1)
+	config, err = s.dataStore.UpsertPlatformComponentConfigRules(s.hasWriteCtx, []*storage.PlatformComponentConfig_Rule{
+		defaultPlatformConfigSystemRule,
+		defaultPlatformConfigLayeredProductsRule,
+		{
+			Name: "new rule",
+			NamespaceRule: &storage.PlatformComponentConfig_Rule_NamespaceRule{
+				Regex: ".*",
+			},
+		},
+	})
+	s.NoError(err, "expected no error when upserting new rule")
+	s.NotNil(config)
+	s.True(config.GetNeedsReevaluation())
+	s.Equal(3, len(config.GetRules()))
+
+	// Test updating a system rule a couple ways
+	s.storage.EXPECT().Get(gomock.Any()).Return(&storage.Config{
+		PublicConfig:  sampleConfig.GetPublicConfig(),
+		PrivateConfig: sampleConfig.GetPrivateConfig(),
+		PlatformComponentConfig: &storage.PlatformComponentConfig{
+			NeedsReevaluation: false,
+			Rules: []*storage.PlatformComponentConfig_Rule{
+				defaultPlatformConfigSystemRule,
+				defaultPlatformConfigLayeredProductsRule,
+			},
+		},
+	}, true, nil).Times(1)
+	config, err = s.dataStore.UpsertPlatformComponentConfigRules(s.hasWriteCtx, []*storage.PlatformComponentConfig_Rule{
+		defaultPlatformConfigSystemRule,
+		defaultPlatformConfigLayeredProductsRule,
+		{
+			Name: "system rule",
+			NamespaceRule: &storage.PlatformComponentConfig_Rule_NamespaceRule{
+				Regex: "not the system regex",
+			},
+		},
+	})
+	s.Error(err, "expected an error when trying to override the system regex")
+	s.Nil(config)
+
+	s.storage.EXPECT().Get(gomock.Any()).Return(&storage.Config{
+		PublicConfig:  sampleConfig.GetPublicConfig(),
+		PrivateConfig: sampleConfig.GetPrivateConfig(),
+		PlatformComponentConfig: &storage.PlatformComponentConfig{
+			NeedsReevaluation: false,
+			Rules: []*storage.PlatformComponentConfig_Rule{
+				defaultPlatformConfigSystemRule,
+				defaultPlatformConfigLayeredProductsRule,
+			},
+		},
+	}, true, nil).Times(1)
+	s.storage.EXPECT().Upsert(gomock.Any(), gomock.Any()).Return(nil).Times(1)
+	config, err = s.dataStore.UpsertPlatformComponentConfigRules(s.hasWriteCtx, []*storage.PlatformComponentConfig_Rule{
+		defaultPlatformConfigSystemRule,
+		defaultPlatformConfigLayeredProductsRule,
+		defaultPlatformConfigSystemRule,
+	})
+	s.NoError(err, "expected no error trying to add duplicate system rule")
+	s.NotNil(config)
+	s.False(config.GetNeedsReevaluation())
+	s.Equal(2, len(config.GetRules()))
+
+	// Test duplicating the layered products rule
+	s.storage.EXPECT().Get(gomock.Any()).Return(&storage.Config{
+		PublicConfig:  sampleConfig.GetPublicConfig(),
+		PrivateConfig: sampleConfig.GetPrivateConfig(),
+		PlatformComponentConfig: &storage.PlatformComponentConfig{
+			NeedsReevaluation: false,
+			Rules: []*storage.PlatformComponentConfig_Rule{
+				defaultPlatformConfigSystemRule,
+				defaultPlatformConfigLayeredProductsRule,
+			},
+		},
+	}, true, nil).Times(1)
+	s.storage.EXPECT().Upsert(gomock.Any(), gomock.Any()).Return(nil).Times(1)
+	config, err = s.dataStore.UpsertPlatformComponentConfigRules(s.hasWriteCtx, []*storage.PlatformComponentConfig_Rule{
+		defaultPlatformConfigSystemRule,
+		defaultPlatformConfigLayeredProductsRule,
+		{
+			Name: defaultPlatformConfigLayeredProductsRule.GetName(),
+			NamespaceRule: &storage.PlatformComponentConfig_Rule_NamespaceRule{
+				Regex: ".*",
+			},
+		},
+	})
+	s.NoError(err, "expected no error trying to add duplicate system rule")
+	s.NotNil(config)
+	s.Equal(2, len(config.GetRules()))
+}
+
 var (
 	customAlertRetention = &storage.PrivateConfig_AlertConfig{
 		AlertConfig: &storage.AlertRetentionConfig{
@@ -283,16 +437,17 @@ func TestValidateConfigAndPopulateMissingDefaults(t *testing.T) {
 	}{
 		"No Update for fully set config": {
 			initialConfig: &storage.Config{
-				PublicConfig:  samplePublicConfig,
-				PrivateConfig: customPrivateConfig,
+				PublicConfig:            samplePublicConfig,
+				PrivateConfig:           customPrivateConfig,
+				PlatformComponentConfig: samplePlatformConfig,
 			},
 			upsertedConfig: nil,
 		},
 		"Missing private config gets fully configured when Features activated": {
-			enabledFlags: []string{features.UnifiedCVEDeferral.EnvVar()},
 			initialConfig: &storage.Config{
-				PublicConfig:  samplePublicConfig,
-				PrivateConfig: nil,
+				PublicConfig:            samplePublicConfig,
+				PlatformComponentConfig: samplePlatformConfig,
+				PrivateConfig:           nil,
 			},
 			upsertedConfig: &storage.Config{
 				PublicConfig: samplePublicConfig,
@@ -305,25 +460,7 @@ func TestValidateConfigAndPopulateMissingDefaults(t *testing.T) {
 					VulnerabilityExceptionConfig:        defaultVulnerabilityDeferralConfig,
 					AdministrationEventsConfig:          defaultAdministrationEventsConfig,
 				},
-			},
-		},
-		"Missing private config gets partially configured when Features deactivated": {
-			disabledFlags: []string{features.UnifiedCVEDeferral.EnvVar()},
-			initialConfig: &storage.Config{
-				PublicConfig:  samplePublicConfig,
-				PrivateConfig: nil,
-			},
-			upsertedConfig: &storage.Config{
-				PublicConfig: samplePublicConfig,
-				PrivateConfig: &storage.PrivateConfig{
-					AlertRetention:                      defaultAlertRetention,
-					ImageRetentionDurationDays:          DefaultImageRetention,
-					ExpiredVulnReqRetentionDurationDays: DefaultExpiredVulnReqRetention,
-					DecommissionedClusterRetention:      defaultDecommissionedClusterRetention,
-					ReportRetentionConfig:               defaultReportRetentionConfig,
-					VulnerabilityExceptionConfig:        nil,
-					AdministrationEventsConfig:          defaultAdministrationEventsConfig,
-				},
+				PlatformComponentConfig: samplePlatformConfig,
 			},
 		},
 		"Configure decommissioned cluster retention when missing": {
@@ -350,6 +487,7 @@ func TestValidateConfigAndPopulateMissingDefaults(t *testing.T) {
 					VulnerabilityExceptionConfig:        customVulnerabilityDeferralConfig,
 					AdministrationEventsConfig:          customAdministrationEventsConfig,
 				},
+				PlatformComponentConfig: samplePlatformConfig,
 			},
 		},
 		"Configure report retention when missing": {
@@ -376,10 +514,10 @@ func TestValidateConfigAndPopulateMissingDefaults(t *testing.T) {
 					VulnerabilityExceptionConfig:        customVulnerabilityDeferralConfig,
 					AdministrationEventsConfig:          customAdministrationEventsConfig,
 				},
+				PlatformComponentConfig: samplePlatformConfig,
 			},
 		},
 		"Configure vulnerability exception management when missing and Feature activated": {
-			enabledFlags: []string{features.UnifiedCVEDeferral.EnvVar()},
 			initialConfig: &storage.Config{
 				PublicConfig: samplePublicConfig,
 				PrivateConfig: &storage.PrivateConfig{
@@ -391,6 +529,7 @@ func TestValidateConfigAndPopulateMissingDefaults(t *testing.T) {
 					VulnerabilityExceptionConfig:        nil,
 					AdministrationEventsConfig:          customAdministrationEventsConfig,
 				},
+				PlatformComponentConfig: samplePlatformConfig,
 			},
 			upsertedConfig: &storage.Config{
 				PublicConfig: samplePublicConfig,
@@ -403,26 +542,11 @@ func TestValidateConfigAndPopulateMissingDefaults(t *testing.T) {
 					VulnerabilityExceptionConfig:        defaultVulnerabilityDeferralConfig,
 					AdministrationEventsConfig:          customAdministrationEventsConfig,
 				},
+				PlatformComponentConfig: samplePlatformConfig,
 			},
-		},
-		"No update when vulnerability exception management is missing and Feature deactivated": {
-			disabledFlags: []string{features.UnifiedCVEDeferral.EnvVar()},
-			initialConfig: &storage.Config{
-				PublicConfig: samplePublicConfig,
-				PrivateConfig: &storage.PrivateConfig{
-					AlertRetention:                      customAlertRetention,
-					ImageRetentionDurationDays:          DefaultImageRetention + 1,
-					ExpiredVulnReqRetentionDurationDays: DefaultExpiredVulnReqRetention + 1,
-					DecommissionedClusterRetention:      customDecommissionedClusterRetention,
-					ReportRetentionConfig:               customReportRetentionConfig,
-					VulnerabilityExceptionConfig:        nil,
-					AdministrationEventsConfig:          customAdministrationEventsConfig,
-				},
-			},
-			upsertedConfig: nil,
 		},
 		"Configure administration event management when missing": {
-			enabledFlags: []string{features.UnifiedCVEDeferral.EnvVar()},
+			enabledFlags: []string{features.PlatformComponents.EnvVar()},
 			initialConfig: &storage.Config{
 				PublicConfig: samplePublicConfig,
 				PrivateConfig: &storage.PrivateConfig{
@@ -446,6 +570,7 @@ func TestValidateConfigAndPopulateMissingDefaults(t *testing.T) {
 					VulnerabilityExceptionConfig:        customVulnerabilityDeferralConfig,
 					AdministrationEventsConfig:          defaultAdministrationEventsConfig,
 				},
+				PlatformComponentConfig: samplePlatformConfig,
 			},
 		},
 	}

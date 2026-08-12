@@ -41,10 +41,6 @@ func (s *ClusterInitBundlesStoreSuite) SetupTest() {
 	s.NoError(err)
 }
 
-func (s *ClusterInitBundlesStoreSuite) TearDownSuite() {
-	s.testDB.Teardown(s.T())
-}
-
 func (s *ClusterInitBundlesStoreSuite) TestStore() {
 	ctx := sac.WithAllAccess(context.Background())
 
@@ -96,6 +92,11 @@ func (s *ClusterInitBundlesStoreSuite) TestStore() {
 	}
 
 	s.NoError(store.UpsertMany(ctx, initBundleMetas))
+
+	foundInitBundleMetas, missing, err := store.GetMany(ctx, initBundleMetaIDs)
+	s.NoError(err)
+	s.Empty(missing)
+	protoassert.ElementsMatch(s.T(), initBundleMetas, foundInitBundleMetas)
 
 	initBundleMetaCount, err = store.Count(ctx, search.EmptyQuery())
 	s.NoError(err)

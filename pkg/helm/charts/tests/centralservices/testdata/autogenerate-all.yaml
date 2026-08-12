@@ -5,7 +5,6 @@ additionalCAs:
 env:
   platform: gke
   openshift: 4
-  istio: true
   proxyConfig: "proxy config"
 imagePullSecrets:
   username: myuser
@@ -19,6 +18,8 @@ central:
       enabled: true
   db:
     enabled: true
+centralWorker:
+  enabled: true
 monitoring:
   openshift:
     enabled: true

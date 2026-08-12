@@ -1,23 +1,24 @@
-import React from 'react';
 import {
     Button,
     ClipboardCopy,
+    Content,
     DescriptionList,
     DescriptionListDescription,
     DescriptionListGroup,
     DescriptionListTerm,
     Flex,
-    Modal,
-    Text,
     pluralize,
 } from '@patternfly/react-core';
+import { Modal } from '@patternfly/react-core/deprecated';
 import differenceInCalendarDays from 'date-fns/difference_in_calendar_days';
 
 import {
-    BaseVulnerabilityException,
-    VulnerabilityDeferralException,
     isDeferralException,
     isFalsePositiveException,
+} from 'services/VulnerabilityExceptionService';
+import type {
+    BaseVulnerabilityException,
+    VulnerabilityDeferralException,
 } from 'services/VulnerabilityExceptionService';
 import { getDate } from 'utils/dateUtils';
 import { ensureExhaustive } from 'utils/type.utils';
@@ -101,11 +102,13 @@ function CompletedExceptionRequestModal({
             ]}
         >
             <Flex direction={{ default: 'column' }}>
-                <Text>Use this link to share and discuss your request with your approver.</Text>
+                <Content component="p">
+                    Use this link to share and discuss your request with your approver.
+                </Content>
                 <ClipboardCopy isReadOnly hoverTip="Copy" clickTip="Copied">
                     {exceptionRequestURL}
                 </ClipboardCopy>
-                <DescriptionList columnModifier={{ default: '2Col' }} className="pf-v5-u-pt-md">
+                <DescriptionList columnModifier={{ default: '2Col' }} className="pf-v6-u-pt-md">
                     <DescriptionListGroup>
                         <DescriptionListTerm>Requested action</DescriptionListTerm>
                         <DescriptionListDescription>{requestedAction}</DescriptionListDescription>

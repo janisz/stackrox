@@ -1,8 +1,10 @@
-FROM quay.io/sclorg/postgresql-13-c8s:latest AS final
+ARG PG_VERSION=15
+FROM quay.io/sclorg/postgresql-${PG_VERSION}-c9s:latest AS final
 
 USER root
 
 ARG MAIN_IMAGE_TAG
+ARG QUAY_TAG_EXPIRATION
 
 LABEL \
     com.redhat.component="rhacs-central-db-container" \
@@ -11,16 +13,19 @@ LABEL \
     io.k8s.display-name="central-db" \
     io.openshift.tags="rhacs,central-db,stackrox" \
     maintainer="Red Hat, Inc." \
-    name="rhacs-central-db-rhel8" \
+    name="rhacs-central-db-rhel9" \
     source-location="https://github.com/stackrox/stackrox" \
     summary="Central DB for Red Hat Advanced Cluster Security for Kubernetes" \
     # We must set version label to prevent inheriting value set in the base stage.
     version="${MAIN_IMAGE_TAG}" \
     # Release label is required by EC although has no practical semantics.
     # We also set it to not inherit one from a base stage in case it's RHEL or UBI.
-    release="1"
+    release="1" \
+    quay.expires-after="${QUAY_TAG_EXPIRATION}"
 
-RUN dnf upgrade -y --nobest && \
+RUN --mount=type=cache,target=/var/cache/dnf,sharing=locked \
+    --mount=type=cache,target=/var/cache/yum,sharing=locked \
+    dnf upgrade -y --nobest && \
     localedef -f UTF-8 -i en_US en_US.UTF-8 && \
     mkdir -p /var/lib/postgresql && \
     groupmod -g 70 postgres && \
@@ -30,13 +35,11 @@ RUN dnf upgrade -y --nobest && \
     # Change ownership of directories that are owned by the original postgres uid.
     # Detect these with `find / -uid 26` in the original container.
     chown -R postgres /var/lib/pgsql && chown -R postgres /opt/app-root && \
-    # Cleanup
-    dnf clean all && \
+    # Cleanup - cache mounts are automatically unmounted, no need to clean
     rpm --verbose -e --nodeps $(rpm -qa curl '*rpm*' '*dnf*' '*libsolv*' '*hawkey*' 'yum*') && \
-    rm -rf /var/cache/dnf /var/cache/yum && \
     mkdir /docker-entrypoint-initdb.d
 
-COPY scripts \
+COPY --link scripts \
     /usr/local/bin/
 
 ENV LANG="en_US.utf8"

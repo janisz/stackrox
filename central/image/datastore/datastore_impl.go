@@ -2,18 +2,17 @@ package datastore
 
 import (
 	"context"
+	"strings"
 	"time"
 
 	"github.com/pkg/errors"
-	"github.com/stackrox/rox/central/globaldb"
-	"github.com/stackrox/rox/central/image/datastore/search"
 	"github.com/stackrox/rox/central/image/datastore/store"
+	"github.com/stackrox/rox/central/image/views"
 	"github.com/stackrox/rox/central/metrics"
 	"github.com/stackrox/rox/central/ranking"
 	riskDS "github.com/stackrox/rox/central/risk/datastore"
 	v1 "github.com/stackrox/rox/generated/api/v1"
 	"github.com/stackrox/rox/generated/storage"
-	"github.com/stackrox/rox/pkg/concurrency"
 	"github.com/stackrox/rox/pkg/errorhelpers"
 	"github.com/stackrox/rox/pkg/images/enricher"
 	imageTypes "github.com/stackrox/rox/pkg/images/types"
@@ -27,15 +26,11 @@ import (
 var (
 	log = logging.LoggerForModule()
 
-	imagesSAC    = sac.ForResource(resources.Image)
-	allAccessCtx = sac.WithAllAccess(context.Background())
+	imagesSAC = sac.ForResource(resources.Image)
 )
 
 type datastoreImpl struct {
-	keyedMutex *concurrency.KeyedMutex
-
-	storage  store.Store
-	searcher search.Searcher
+	storage store.Store
 
 	risks riskDS.DataStore
 
@@ -43,18 +38,15 @@ type datastoreImpl struct {
 	imageComponentRanker *ranking.Ranker
 }
 
-func newDatastoreImpl(storage store.Store, searcher search.Searcher, risks riskDS.DataStore,
+func newDatastoreImpl(storage store.Store, risks riskDS.DataStore,
 	imageRanker *ranking.Ranker, imageComponentRanker *ranking.Ranker) *datastoreImpl {
 	ds := &datastoreImpl{
-		storage:  storage,
-		searcher: searcher,
+		storage: storage,
 
 		risks: risks,
 
 		imageRanker:          imageRanker,
 		imageComponentRanker: imageComponentRanker,
-
-		keyedMutex: concurrency.NewKeyedMutex(globaldb.DefaultDataStorePoolSize),
 	}
 	return ds
 }
@@ -62,27 +54,52 @@ func newDatastoreImpl(storage store.Store, searcher search.Searcher, risks riskD
 func (ds *datastoreImpl) Search(ctx context.Context, q *v1.Query) ([]pkgSearch.Result, error) {
 	defer metrics.SetDatastoreFunctionDuration(time.Now(), "Image", "Search")
 
-	return ds.searcher.Search(ctx, q)
+	return ds.storage.Search(ctx, q)
 }
 
 // Count returns the number of search results from the query
 func (ds *datastoreImpl) Count(ctx context.Context, q *v1.Query) (int, error) {
 	defer metrics.SetDatastoreFunctionDuration(time.Now(), "Image", "Count")
 
-	return ds.searcher.Count(ctx, q)
+	return ds.storage.Count(ctx, q)
 }
 
 func (ds *datastoreImpl) SearchImages(ctx context.Context, q *v1.Query) ([]*v1.SearchResult, error) {
 	defer metrics.SetDatastoreFunctionDuration(time.Now(), "Image", "SearchImages")
 
-	return ds.searcher.SearchImages(ctx, q)
+	if q == nil {
+		q = pkgSearch.EmptyQuery()
+	}
+
+	// Clone the query and add select fields for SearchResult construction
+	clonedQuery := q.CloneVT()
+	clonedQuery.Selects = append(q.GetSelects(), pkgSearch.NewQuerySelect(pkgSearch.ImageName).Proto())
+
+	results, err := ds.Search(ctx, clonedQuery)
+	if err != nil {
+		return nil, err
+	}
+	for i := range results {
+		if results[i].FieldValues != nil {
+			if nameVal, ok := results[i].FieldValues[strings.ToLower(pkgSearch.ImageName.String())]; ok {
+				results[i].Name = nameVal
+			}
+		}
+		results[i].ID = imageTypes.NewDigest(results[i].ID).Digest()
+	}
+
+	return pkgSearch.ResultsToSearchResultProtos(results, &ImageSearchResultConverter{}), nil
 }
 
 // SearchRawImages delegates to the underlying searcher.
 func (ds *datastoreImpl) SearchRawImages(ctx context.Context, q *v1.Query) ([]*storage.Image, error) {
 	defer metrics.SetDatastoreFunctionDuration(time.Now(), "Image", "SearchRawImages")
 
-	imgs, err := ds.searcher.SearchRawImages(ctx, q)
+	var imgs []*storage.Image
+	err := ds.storage.WalkByQuery(ctx, q, func(img *storage.Image) error {
+		imgs = append(imgs, img)
+		return nil
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -95,7 +112,11 @@ func (ds *datastoreImpl) SearchRawImages(ctx context.Context, q *v1.Query) ([]*s
 func (ds *datastoreImpl) SearchListImages(ctx context.Context, q *v1.Query) ([]*storage.ListImage, error) {
 	defer metrics.SetDatastoreFunctionDuration(time.Now(), "Image", "SearchListImages")
 
-	imgs, err := ds.searcher.SearchListImages(ctx, q)
+	var imgs []*storage.ListImage
+	err := ds.storage.WalkMetadataByQuery(ctx, q, func(img *storage.Image) error {
+		imgs = append(imgs, imageTypes.ConvertImageToListImage(img))
+		return nil
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -145,7 +166,7 @@ func (ds *datastoreImpl) canReadImage(ctx context.Context, sha string) (bool, er
 	}
 
 	queryForImage := pkgSearch.NewQueryBuilder().AddExactMatches(pkgSearch.ImageSHA, sha).ProtoQuery()
-	if results, err := ds.searcher.Search(ctx, queryForImage); err != nil {
+	if results, err := ds.Search(ctx, queryForImage); err != nil {
 		return false, err
 	} else if len(results) > 0 {
 		return true, nil
@@ -156,12 +177,12 @@ func (ds *datastoreImpl) canReadImage(ctx context.Context, sha string) (bool, er
 
 // GetManyImageMetadata gets the image data without the scan.
 func (ds *datastoreImpl) GetManyImageMetadata(ctx context.Context, ids []string) ([]*storage.Image, error) {
-	imgs, missingIdx, err := ds.storage.GetManyImageMetadata(ctx, ids)
+	imgs, err := ds.storage.GetManyImageMetadata(ctx, ids)
 	if err != nil {
 		return nil, err
 	}
-	if len(missingIdx) > 0 {
-		log.Errorf("Could not fetch %d/%d some images", len(missingIdx), len(ids))
+	if len(imgs) != len(ids) {
+		log.Errorf("Could not fetch %d/%d some images", len(ids)-len(imgs), len(ids))
 	}
 	for _, img := range imgs {
 		ds.updateImagePriority(img)
@@ -204,7 +225,7 @@ func (ds *datastoreImpl) GetImagesBatch(ctx context.Context, shas []string) ([]*
 	if ok, err := imagesSAC.ReadAllowed(ctx); err != nil {
 		return nil, err
 	} else if ok {
-		imgs, _, err = ds.storage.GetMany(ctx, shas)
+		imgs, err = ds.storage.GetByIDs(ctx, shas)
 		if err != nil {
 			return nil, err
 		}
@@ -234,9 +255,6 @@ func (ds *datastoreImpl) UpsertImage(ctx context.Context, image *storage.Image) 
 	} else if !ok {
 		return sac.ErrResourceAccessDenied
 	}
-
-	ds.keyedMutex.Lock(image.GetId())
-	defer ds.keyedMutex.Unlock(image.GetId())
 
 	ds.updateComponentRisk(image)
 	enricher.FillScanStats(image)
@@ -271,7 +289,7 @@ func (ds *datastoreImpl) DeleteImages(ctx context.Context, ids ...string) error 
 			return err
 		}
 	}
-	// removing component risk handled by pruning
+	// Component risks are not stored in the risk datastore (only embedded in components).
 	return errorList.ToError()
 }
 
@@ -302,23 +320,22 @@ func (ds *datastoreImpl) initializeRankers() {
 		sac.AllowFixedScopes(
 			sac.AccessModeScopeKeys(storage.Access_READ_ACCESS), sac.ResourceScopeKeys(resources.Image)))
 
-	results, err := ds.searcher.Search(readCtx, pkgSearch.EmptyQuery())
+	query := pkgSearch.NewQueryBuilder().AddSelectFields(pkgSearch.NewQuerySelect(pkgSearch.ImageSHA),
+		pkgSearch.NewQuerySelect(pkgSearch.ImageRiskScore)).ProtoQuery()
+
+	// The entire image is not needed to initialize the ranker.  We only need the image id and risk score.
+	var results []*views.ImageRiskView
+	results, err := ds.storage.GetImagesRiskView(readCtx, query)
 	if err != nil {
-		log.Error(err)
+		log.Errorf("unable to initialize image ranking: %v", err)
 		return
 	}
 
-	for _, id := range pkgSearch.ResultsToIDs(results) {
-		image, found, err := ds.storage.GetImageMetadata(allAccessCtx, id)
-		if err != nil {
-			log.Error(err)
-			continue
-		} else if !found {
-			continue
-		}
-
-		ds.imageRanker.Add(id, image.GetRiskScore())
+	for _, result := range results {
+		ds.imageRanker.Add(result.ImageID, result.ImageRiskScore)
 	}
+
+	log.Infof("Initialized image ranking with %d images", len(results))
 }
 
 func (ds *datastoreImpl) updateListImagePriority(images ...*storage.ListImage) {
@@ -330,14 +347,33 @@ func (ds *datastoreImpl) updateListImagePriority(images ...*storage.ListImage) {
 func (ds *datastoreImpl) updateImagePriority(images ...*storage.Image) {
 	for _, image := range images {
 		image.Priority = ds.imageRanker.GetRankForID(image.GetId())
-		for _, component := range image.GetScan().GetComponents() {
-			component.Priority = ds.imageComponentRanker.GetRankForID(scancomponent.ComponentID(component.GetName(), component.GetVersion(), image.GetScan().GetOperatingSystem()))
+		for index, component := range image.GetScan().GetComponents() {
+			componentID := scancomponent.ComponentIDV2(component, image.GetId(), index)
+			component.Priority = ds.imageComponentRanker.GetRankForID(componentID)
 		}
 	}
 }
 
 func (ds *datastoreImpl) updateComponentRisk(image *storage.Image) {
-	for _, component := range image.GetScan().GetComponents() {
-		component.RiskScore = ds.imageComponentRanker.GetScoreForID(scancomponent.ComponentID(component.GetName(), component.GetVersion(), image.GetScan().GetOperatingSystem()))
+	for index, component := range image.GetScan().GetComponents() {
+		componentID := scancomponent.ComponentIDV2(component, image.GetId(), index)
+		component.RiskScore = ds.imageComponentRanker.GetScoreForID(componentID)
 	}
+}
+
+// ImageSearchResultConverter converts image search results to proto search results
+type ImageSearchResultConverter struct{}
+
+func (c *ImageSearchResultConverter) BuildName(result *pkgSearch.Result) string {
+
+	return result.Name
+}
+
+func (c *ImageSearchResultConverter) BuildLocation(result *pkgSearch.Result) string {
+	// Images do not have a location
+	return ""
+}
+
+func (c *ImageSearchResultConverter) GetCategory() v1.SearchCategory {
+	return v1.SearchCategory_IMAGES
 }

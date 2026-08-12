@@ -1,91 +1,23 @@
-import React from 'react';
-import { Toolbar, ToolbarGroup, ToolbarContent, ToolbarItem } from '@patternfly/react-core';
+import { Toolbar, ToolbarContent, ToolbarGroup } from '@patternfly/react-core';
 
-import { SearchFilter } from 'types/search';
+import type { SearchFilter } from 'types/search';
 import useAnalytics from 'hooks/useAnalytics';
+import useFeatureFlags from 'hooks/useFeatureFlags';
 import { createFilterTracker } from 'utils/analyticsEventTracking';
-import { makeFilterChipDescriptors } from 'Components/CompoundSearchFilter/utils/utils';
-import {
-    CompoundSearchFilterConfig,
-    OnSearchCallback,
-    OnSearchPayload,
-} from 'Components/CompoundSearchFilter/types';
-import SearchFilterChips from 'Components/PatternFly/SearchFilterChips';
+import type { OnSearchCallback } from 'Components/CompoundSearchFilter/types';
 import CompoundSearchFilter from 'Components/CompoundSearchFilter/components/CompoundSearchFilter';
-import {
-    Category as PolicyCategory,
-    Name as PolicyName,
-    LifecycleStage as PolicyLifecycleStage,
-    Severity as PolicySeverity,
-} from 'Components/CompoundSearchFilter/attributes/policy';
-import {
-    ViolationTime as AlertViolationTime,
-    EntityType as AlertEntityType,
-} from 'Components/CompoundSearchFilter/attributes/alert';
-import {
-    Name as ClusterName,
-    ID as ClusterID,
-    Label as ClusterLabel,
-} from 'Components/CompoundSearchFilter/attributes/cluster';
-import {
-    ID as NamespaceID,
-    Name as NamespaceName,
-    Label as NamespaceLabel,
-    Annotation as NamespaceAnnotation,
-} from 'Components/CompoundSearchFilter/attributes/namespace';
-import {
-    ID as DeploymentID,
-    Name as DeploymentName,
-    Inactive as DeploymentInactive,
-    Label as DeploymentLabel,
-    Annotation as DeploymentAnnotation,
-} from 'Components/CompoundSearchFilter/attributes/deployment';
-import { Name as ResourceName } from 'Components/CompoundSearchFilter/attributes/resource';
+import CompoundSearchFilterLabels from 'Components/CompoundSearchFilter/components/CompoundSearchFilterLabels';
+import { getSearchFilterConfigWithFeatureFlagDependency } from 'Components/CompoundSearchFilter/utils/utils';
+import type { FilteredWorkflowView } from 'Components/FilteredWorkflowViewSelector/types';
 
-const searchFilterConfig: CompoundSearchFilterConfig = [
-    {
-        displayName: 'Policy',
-        searchCategory: 'ALERTS',
-        attributes: [PolicyName, PolicyCategory, PolicySeverity, PolicyLifecycleStage],
-    },
-    {
-        displayName: 'Policy violation',
-        searchCategory: 'ALERTS',
-        attributes: [AlertViolationTime, AlertEntityType],
-    },
-    {
-        displayName: 'Cluster',
-        searchCategory: 'ALERTS',
-        attributes: [ClusterName, ClusterID, ClusterLabel],
-    },
-    {
-        displayName: 'Namespace',
-        searchCategory: 'ALERTS',
-        attributes: [NamespaceName, NamespaceID, NamespaceLabel, NamespaceAnnotation],
-    },
-    {
-        displayName: 'Deployment',
-        searchCategory: 'ALERTS',
-        attributes: [
-            DeploymentName,
-            DeploymentID,
-            DeploymentLabel,
-            DeploymentAnnotation,
-            DeploymentInactive,
-        ],
-    },
-    {
-        displayName: 'Resource',
-        searchCategory: 'ALERTS',
-        attributes: [ResourceName],
-    },
-];
+import { getSearchFilterConfig } from './ViolationsTableSearchFilter.utils';
 
 export type ViolationsTableSearchFilterProps = {
     searchFilter: SearchFilter;
     onFilterChange: (newFilter: SearchFilter) => void;
     onSearch: OnSearchCallback;
     additionalContextFilter: SearchFilter;
+    filteredWorkflowView: FilteredWorkflowView;
 };
 
 function ViolationsTableSearchFilter({
@@ -93,35 +25,38 @@ function ViolationsTableSearchFilter({
     onFilterChange,
     onSearch,
     additionalContextFilter,
+    filteredWorkflowView,
 }: ViolationsTableSearchFilterProps) {
     const { analyticsTrack } = useAnalytics();
     const trackAppliedFilter = createFilterTracker(analyticsTrack);
+    const { isFeatureFlagEnabled } = useFeatureFlags();
 
-    const filterChipGroupDescriptors = makeFilterChipDescriptors(searchFilterConfig);
+    const searchFilterConfig = getSearchFilterConfigWithFeatureFlagDependency(
+        isFeatureFlagEnabled,
+        getSearchFilterConfig(filteredWorkflowView)
+    );
 
-    function onSearchHandler(payload: OnSearchPayload) {
+    const onSearchHandler: OnSearchCallback = (payload) => {
         onSearch(payload);
         trackAppliedFilter('Policy Violations Filter Applied', payload);
-    }
+    };
 
     return (
         <Toolbar>
             <ToolbarContent>
-                <ToolbarGroup className="pf-v5-u-w-100">
-                    <ToolbarItem className="pf-v5-u-flex-1">
-                        <CompoundSearchFilter
-                            config={searchFilterConfig}
-                            searchFilter={searchFilter}
-                            onSearch={onSearchHandler}
-                            additionalContextFilter={additionalContextFilter}
-                        />
-                    </ToolbarItem>
-                </ToolbarGroup>
-                <ToolbarGroup className="pf-v5-u-w-100">
-                    <SearchFilterChips
-                        searchFilter={searchFilter}
+                <CompoundSearchFilter
+                    config={searchFilterConfig}
+                    defaultEntity="Policy"
+                    searchFilter={searchFilter}
+                    onSearch={onSearchHandler}
+                    additionalContextFilter={additionalContextFilter}
+                />
+                <ToolbarGroup className="pf-v6-u-w-100">
+                    <CompoundSearchFilterLabels
+                        attributesSeparateFromConfig={[]}
+                        config={searchFilterConfig}
                         onFilterChange={onFilterChange}
-                        filterChipGroupDescriptors={filterChipGroupDescriptors}
+                        searchFilter={searchFilter}
                     />
                 </ToolbarGroup>
             </ToolbarContent>

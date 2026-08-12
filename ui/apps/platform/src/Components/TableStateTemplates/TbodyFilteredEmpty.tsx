@@ -1,9 +1,9 @@
-import React from 'react';
-import { Button, ButtonProps, Text } from '@patternfly/react-core';
+import { Button, Content } from '@patternfly/react-core';
+import type { ButtonProps } from '@patternfly/react-core';
 import { SearchIcon } from '@patternfly/react-icons';
 
 import EmptyStateTemplate from 'Components/EmptyStateTemplate';
-import { EmptyStateTemplateProps } from 'Components/EmptyStateTemplate/EmptyStateTemplate';
+import type { EmptyStateTemplateProps } from 'Components/EmptyStateTemplate/EmptyStateTemplate';
 
 import { TbodyFullCentered } from './TbodyFullCentered';
 
@@ -25,7 +25,7 @@ export function TbodyFilteredEmpty({
     return (
         <TbodyFullCentered colSpan={colSpan}>
             <EmptyStateTemplate title={title} headingLevel={headingLevel} icon={SearchIcon}>
-                <Text>{message}</Text>
+                <Content component="p">{message}</Content>
                 <Button variant="link" onClick={onClearFilters}>
                     Clear filters
                 </Button>

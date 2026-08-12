@@ -1,5 +1,5 @@
-import { ConditionTextFilterAttribute } from '../types';
-import { ConditionEntries } from '../components/ConditionText';
+import type { ConditionTextFilterAttribute } from '../types';
+import type { ConditionEntries } from '../components/SearchFilterConditionText';
 
 const conditionEntries: ConditionEntries = [
     ['>', 'Is greater than'],
@@ -47,7 +47,7 @@ export const EPSSProbability: ConditionTextFilterAttribute = {
     filterChipLabel: 'EPSS probability',
     searchTerm: 'EPSS Probability',
     inputType: 'condition-text',
-    featureFlagDependency: ['ROX_SCANNER_V4', 'ROX_EPSS_SCORE'],
+    featureFlagDependency: ['ROX_SCANNER_V4'],
     inputProps: {
         conditionProps: {
             conditionEntries,

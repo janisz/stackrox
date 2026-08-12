@@ -1,4 +1,5 @@
-import React, { ReactElement, ReactNode, useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
+import type { ReactElement, ReactNode } from 'react';
 import {
     Alert,
     Bullseye,
@@ -14,8 +15,12 @@ import {
 import { clustersBasePath, getIsRoutePathRendered } from 'routePaths';
 */
 import usePermissions from 'hooks/usePermissions';
-import { fetchSystemConfig } from 'services/SystemConfigService';
-import { SystemConfig } from 'types/config.proto';
+import useRestQuery from 'hooks/useRestQuery';
+import {
+    fetchDefaultRedHatLayeredProductsRule,
+    fetchSystemConfig,
+} from 'services/SystemConfigService';
+import type { SystemConfig } from 'types/config.proto';
 import { getAxiosErrorMessage } from 'utils/responseErrorUtils';
 
 import SystemConfigDetails from './Details/SystemConfigDetails';
@@ -36,6 +41,11 @@ const SystemConfigPage = (): ReactElement => {
     const isClustersRoutePathRendered = true; // TODO replace with the preceding after #2105 has been merged
 
     const [isEditing, setIsEditing] = useState(false);
+
+    const {
+        data: defaultRedHatLayeredProductsRule,
+        isLoading: defaultRedHatLayeredProductsRuleIsLoading,
+    } = useRestQuery(fetchDefaultRedHatLayeredProductsRule);
 
     const [systemConfig, setSystemConfig] = useState<SystemConfig | null>(null);
     const [isLoading, setIsLoading] = useState(false);
@@ -67,7 +77,7 @@ const SystemConfigPage = (): ReactElement => {
 
     let content: ReactNode = null;
 
-    if (isLoading) {
+    if (isLoading || defaultRedHatLayeredProductsRuleIsLoading) {
         content = (
             <Bullseye>
                 <Spinner />
@@ -75,17 +85,18 @@ const SystemConfigPage = (): ReactElement => {
         );
     } else if (systemConfig) {
         content = isEditing ? (
-            <PageSection variant="light">
+            <PageSection hasBodyWrapper={false} padding={{ default: 'noPadding' }}>
                 <SystemConfigForm
                     systemConfig={systemConfig}
                     setSystemConfig={setSystemConfig}
                     setIsNotEditing={setIsNotEditing}
+                    defaultRedHatLayeredProductsRule={defaultRedHatLayeredProductsRule || ''}
                 />
             </PageSection>
         ) : (
             <SystemConfigDetails
-                isClustersRoutePathRendered={isClustersRoutePathRendered}
                 systemConfig={systemConfig}
+                isClustersRoutePathRendered={isClustersRoutePathRendered}
             />
         );
     } else {
@@ -103,7 +114,7 @@ const SystemConfigPage = (): ReactElement => {
 
     return (
         <>
-            <PageSection variant="light">
+            <PageSection>
                 <Flex>
                     <FlexItem flex={{ default: 'flex_1' }}>
                         <Title headingLevel="h1">System Configuration</Title>

@@ -1,9 +1,9 @@
 /* eslint-disable react/no-array-index-key */
-import React, { ReactElement } from 'react';
-import { useHistory, Link } from 'react-router-dom';
-import { useSelector, useDispatch } from 'react-redux';
+import type { FormEvent, ReactElement } from 'react';
+import { Link, useNavigate } from 'react-router-dom-v5-compat';
+import { useDispatch, useSelector } from 'react-redux';
 import { createStructuredSelector } from 'reselect';
-import { useFormik, FormikProvider, FieldArray } from 'formik';
+import { FieldArray, FormikProvider, useFormik } from 'formik';
 import * as yup from 'yup';
 import {
     Alert,
@@ -18,6 +18,7 @@ import {
     GridItem,
     HelperText,
     HelperTextItem,
+    SelectOption,
     TextInput,
     Title,
     Toolbar,
@@ -27,27 +28,30 @@ import {
     Tooltip,
     ValidatedOptions,
 } from '@patternfly/react-core';
-import { SelectOption } from '@patternfly/react-core/deprecated';
 import { InfoCircleIcon, PlusCircleIcon, TrashIcon } from '@patternfly/react-icons';
 
 import SelectSingle from 'Components/SelectSingle'; // TODO import from where?
+import TraitsOriginLabel from 'Components/TraitsOriginLabel';
 import { selectors } from 'reducers';
 import { actions as authActions } from 'reducers/auth';
+import { accessControlBasePath } from 'routePaths';
+import type { Role } from 'services/RolesService';
+import { getIsAuthProviderImmutable } from 'services/AuthService';
+import type { AuthProvider, AuthProviderInfo, Group } from 'services/AuthService';
+import { isUserResource } from 'utils/traits.utils';
 
-import { AuthProvider, getIsAuthProviderImmutable } from 'services/AuthService';
 import ConfigurationFormFields from './ConfigurationFormFields';
-import RuleGroups, { RuleGroupErrors } from './RuleGroups';
+import RuleGroups from './RuleGroups';
+import type { RuleGroupErrors } from './RuleGroups';
 import {
+    getDefaultRoleByAuthProviderId,
+    getGroupsByAuthProviderId,
     getInitialAuthProviderValues,
+    isDefaultGroupModifiable,
     transformInitialValues,
     transformValuesBeforeSaving,
-    getGroupsByAuthProviderId,
-    getDefaultRoleByAuthProviderId,
-    isDefaultGroupModifiable,
 } from './authProviders.utils';
-import { AccessControlQueryAction } from '../accessControlPaths';
-import { TraitsOriginLabel } from '../TraitsOriginLabel';
-import { isUserResource } from '../traits';
+import type { AccessControlQueryAction } from '../accessControlPaths';
 
 export type AuthProviderFormProps = {
     isActionable: boolean;
@@ -57,7 +61,14 @@ export type AuthProviderFormProps = {
     onClickEdit: () => void;
 };
 
-const authProviderState = createStructuredSelector({
+type AuthProviderState = {
+    roles: Role[];
+    groups: Group[];
+    saveAuthProviderStatus: { status: string; message: string } | null;
+    availableProviderTypes: AuthProviderInfo[];
+};
+
+const authProviderState = createStructuredSelector<AuthProviderState>({
     roles: selectors.getRoles,
     groups: selectors.getRuleGroups,
     saveAuthProviderStatus: selectors.getSaveAuthProviderStatus,
@@ -72,7 +83,7 @@ function getNewAuthProviderTitle(type, availableProviderTypes) {
 
 function getRuleAttributes(type, availableProviderTypes) {
     return (
-        (availableProviderTypes.find(({ value }) => value === type)?.ruleAttributes as string[]) ||
+        (availableProviderTypes.find(({ value }) => value === type)?.ruleAttributes as string[]) ??
         []
     );
 }
@@ -93,7 +104,7 @@ function AuthProviderForm({
     onClickCancel,
     onClickEdit,
 }: AuthProviderFormProps): ReactElement {
-    const history = useHistory();
+    const navigate = useNavigate();
     const { groups, roles, saveAuthProviderStatus, availableProviderTypes } =
         useSelector(authProviderState);
     const dispatch = useDispatch();
@@ -179,6 +190,7 @@ function AuthProviderForm({
                     configSchema.shape({
                         configurationType: yup.string().required(), // selected from a list where one is always selected
                         sp_issuer: yup.string().required('A service provider issuer is required.'),
+                        sp_audience: yup.string(),
                         idp_metadata_url: yup.string().when('configurationType', {
                             is: (value) => value === 'dynamic',
                             then: (schema) =>
@@ -235,7 +247,7 @@ function AuthProviderForm({
     const { dirty, handleChange, isValid, setFieldValue, handleBlur, values, errors, touched } =
         formik;
 
-    function onChange(event: React.FormEvent) {
+    function onChange(event: FormEvent) {
         handleChange(event);
     }
 
@@ -268,7 +280,7 @@ function AuthProviderForm({
         dispatch(authActions.setSaveAuthProviderStatus(null));
 
         // Go back from action=create to list.
-        history.goBack();
+        navigate(-1);
     }
     const isSaving = saveAuthProviderStatus?.status === 'saving';
 
@@ -286,7 +298,7 @@ function AuthProviderForm({
 
     return (
         <Form>
-            <Toolbar inset={{ default: 'insetNone' }} className="pf-v5-u-pt-0">
+            <Toolbar>
                 <ToolbarContent>
                     <ToolbarItem>
                         <Title headingLevel="h1">{formTitle}</Title>
@@ -297,12 +309,9 @@ function AuthProviderForm({
                         </ToolbarItem>
                     )}
                     {isActionable && (
-                        <ToolbarGroup
-                            align={{ default: 'alignRight' }}
-                            spaceItems={{ default: 'spaceItemsLg' }}
-                        >
+                        <ToolbarGroup align={{ default: 'alignEnd' }}>
                             {hasAction ? (
-                                <ToolbarGroup variant="button-group">
+                                <ToolbarGroup variant="action-group">
                                     <ToolbarItem>
                                         <Button
                                             variant="primary"
@@ -326,12 +335,12 @@ function AuthProviderForm({
                                     </ToolbarItem>
                                 </ToolbarGroup>
                             ) : (
-                                <ToolbarGroup variant="button-group">
+                                <ToolbarGroup variant="action-group">
                                     <ToolbarItem>
                                         <Link
-                                            to="/main/access-control/auth-providers"
+                                            to={`${accessControlBasePath}/auth-providers`}
                                             aria-current="page"
-                                            className="pf-v5-u-font-size-sm"
+                                            className="pf-v6-u-font-size-sm"
                                         >
                                             Return to auth providers list
                                         </Link>
@@ -416,7 +425,7 @@ function AuthProviderForm({
                 />
             )}
             <FormikProvider value={formik}>
-                <FormSection title="Configuration" titleElement="h2" className="pf-v5-u-mt-0">
+                <FormSection title="Configuration" titleElement="h2" className="pf-v6-u-mt-0">
                     <Grid hasGutter>
                         <GridItem span={12} lg={6}>
                             <FormGroup label="Name" fieldId="name" isRequired>
@@ -478,7 +487,7 @@ function AuthProviderForm({
                     titleElement="h2"
                 >
                     <FormGroup
-                        className="pf-v5-u-w-100 pf-v5-u-w-75-on-md pf-v5-u-w-50-on-lg"
+                        className="pf-v6-u-w-100 pf-v6-u-w-75-on-md pf-v6-u-w-50-on-lg"
                         label="Minimum access role"
                         fieldId="minimumAccessRole"
                         isRequired
@@ -490,7 +499,9 @@ function AuthProviderForm({
                             isDisabled={isViewing || !canChangeDefaultRole}
                         >
                             {roles.map(({ name }) => (
-                                <SelectOption key={name} value={name} />
+                                <SelectOption key={name} value={name}>
+                                    {name}
+                                </SelectOption>
                             ))}
                         </SelectSingle>
                     </FormGroup>
@@ -569,6 +580,7 @@ function AuthProviderForm({
                                                         {!isDisabled && (
                                                             <FlexItem>
                                                                 <Button
+                                                                    icon={<TrashIcon />}
                                                                     variant="plain"
                                                                     aria-label="Delete required attribute"
                                                                     style={{
@@ -578,9 +590,7 @@ function AuthProviderForm({
                                                                     onClick={() =>
                                                                         arrayHelpers.remove(index)
                                                                     }
-                                                                >
-                                                                    <TrashIcon />
-                                                                </Button>
+                                                                />
                                                             </FlexItem>
                                                         )}
                                                         {!isUserResource(
@@ -589,15 +599,14 @@ function AuthProviderForm({
                                                             <FlexItem>
                                                                 <Tooltip content="Auth provider is managed declaratively and can only be edited declaratively.">
                                                                     <Button
+                                                                        icon={<InfoCircleIcon />}
                                                                         variant="plain"
                                                                         aria-label="Information button"
                                                                         style={{
                                                                             transform:
                                                                                 'translate(0, 42px)',
                                                                         }}
-                                                                    >
-                                                                        <InfoCircleIcon />
-                                                                    </Button>
+                                                                    />
                                                                 </Tooltip>
                                                             </FlexItem>
                                                         )}
@@ -611,7 +620,7 @@ function AuthProviderForm({
                                                         variant="link"
                                                         isInline
                                                         icon={
-                                                            <PlusCircleIcon className="pf-v5-u-mr-sm" />
+                                                            <PlusCircleIcon className="pf-v6-u-mr-sm" />
                                                         }
                                                         onClick={() =>
                                                             arrayHelpers.push({
@@ -684,6 +693,7 @@ function AuthProviderForm({
                                                     {!isDisabled && (
                                                         <FlexItem>
                                                             <Button
+                                                                icon={<TrashIcon />}
                                                                 variant="plain"
                                                                 aria-label="Delete claim mapping"
                                                                 style={{
@@ -692,9 +702,7 @@ function AuthProviderForm({
                                                                 onClick={() =>
                                                                     arrayHelpers.remove(index)
                                                                 }
-                                                            >
-                                                                <TrashIcon />
-                                                            </Button>
+                                                            />
                                                         </FlexItem>
                                                     )}
                                                     {!isUserResource(
@@ -703,15 +711,14 @@ function AuthProviderForm({
                                                         <FlexItem>
                                                             <Tooltip content="Auth provider is managed declaratively and can only be edited declaratively.">
                                                                 <Button
+                                                                    icon={<InfoCircleIcon />}
                                                                     variant="plain"
                                                                     aria-label="Information button"
                                                                     style={{
                                                                         transform:
                                                                             'translate(0, 42px)',
                                                                     }}
-                                                                >
-                                                                    <InfoCircleIcon />
-                                                                </Button>
+                                                                />
                                                             </Tooltip>
                                                         </FlexItem>
                                                     )}
@@ -724,7 +731,7 @@ function AuthProviderForm({
                                                         variant="link"
                                                         isInline
                                                         icon={
-                                                            <PlusCircleIcon className="pf-v5-u-mr-sm" />
+                                                            <PlusCircleIcon className="pf-v6-u-mr-sm" />
                                                         }
                                                         onClick={() => arrayHelpers.push(['', ''])}
                                                     >
@@ -738,7 +745,7 @@ function AuthProviderForm({
                             />
                         </FormSection>
                     )}
-                    <FormSection title="Rules" titleElement="h2" className="pf-v5-u-mt-0">
+                    <FormSection title="Rules" titleElement="h2" className="pf-v6-u-mt-0">
                         <RuleGroups
                             authProviderId={selectedAuthProvider.id}
                             groups={values.groups}

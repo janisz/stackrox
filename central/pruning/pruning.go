@@ -2,6 +2,8 @@ package pruning
 
 import (
 	"context"
+	"sync/atomic"
+	"testing"
 	"time"
 
 	"github.com/pkg/errors"
@@ -13,7 +15,7 @@ import (
 	deploymentDatastore "github.com/stackrox/rox/central/deployment/datastore"
 	"github.com/stackrox/rox/central/globaldb"
 	imageDatastore "github.com/stackrox/rox/central/image/datastore"
-	imageComponentDatastore "github.com/stackrox/rox/central/imagecomponent/datastore"
+	imageV2Datastore "github.com/stackrox/rox/central/imagev2/datastore"
 	logimbueDataStore "github.com/stackrox/rox/central/logimbue/store"
 	"github.com/stackrox/rox/central/metrics"
 	networkFlowDatastore "github.com/stackrox/rox/central/networkgraph/flow/datastore"
@@ -28,13 +30,16 @@ import (
 	"github.com/stackrox/rox/central/reports/common"
 	snapshotDS "github.com/stackrox/rox/central/reports/snapshot/datastore"
 	riskDataStore "github.com/stackrox/rox/central/risk/datastore"
+	roleDataStore "github.com/stackrox/rox/central/role/datastore"
 	serviceAccountDataStore "github.com/stackrox/rox/central/serviceaccount/datastore"
 	vulnReqDataStore "github.com/stackrox/rox/central/vulnmgmt/vulnerabilityrequest/datastore"
 	v1 "github.com/stackrox/rox/generated/api/v1"
 	"github.com/stackrox/rox/generated/storage"
 	"github.com/stackrox/rox/pkg/concurrency"
 	"github.com/stackrox/rox/pkg/contextutil"
+	"github.com/stackrox/rox/pkg/dblock"
 	"github.com/stackrox/rox/pkg/env"
+	"github.com/stackrox/rox/pkg/features"
 	"github.com/stackrox/rox/pkg/logging"
 	"github.com/stackrox/rox/pkg/maputil"
 	pgPkg "github.com/stackrox/rox/pkg/postgres"
@@ -67,15 +72,32 @@ const (
 )
 
 var (
-	log                   = logging.LoggerForModule()
-	pruningCtx            = sac.WithAllAccess(context.Background())
-	lastClusterPruneTime  time.Time
-	lastLogImbuePruneTime time.Time
-	pruningTimeout        = env.PostgresDefaultPruningStatementTimeout.DurationSetting()
+	log                       = logging.LoggerForModule()
+	pruningCtx                = sac.WithAllAccess(context.Background())
+	lastClusterPruneTime      time.Time
+	lastLogImbuePruneTime     time.Time
+	pruningTimeout            = env.PostgresDefaultPruningStatementTimeout.DurationSetting()
+	prunedPLOPsWithoutPodUIDs = false
 
 	pruneInterval = env.PruneInterval.DurationSetting()
 	orphanWindow  = env.PruneOrphanedWindow.DurationSetting()
+
+	// dynamicRBACPruningEnabled controls whether expired dynamic RBAC objects should be pruned.
+	// It is disabled by default and enabled on the first call to the internaltoken API service.
+	dynamicRBACPruningEnabled atomic.Bool
 )
+
+// EnableDynamicRBACPruning enables pruning of expired dynamic RBAC objects.
+// This should be called on requests to the internaltoken API service.
+func EnableDynamicRBACPruning() {
+	dynamicRBACPruningEnabled.Store(true)
+}
+
+// disableDynamicRBACPruningForTest disables pruning of expired dynamic RBAC objects.
+// This is for testing purposes only.
+func disableDynamicRBACPruningForTest(*testing.T) {
+	dynamicRBACPruningEnabled.Store(false)
+}
 
 // GarbageCollector implements a generic garbage collection mechanism.
 type GarbageCollector interface {
@@ -86,6 +108,7 @@ type GarbageCollector interface {
 func newGarbageCollector(alerts alertDatastore.DataStore,
 	nodes nodeDatastore.DataStore,
 	images imageDatastore.DataStore,
+	imagesV2 imageV2Datastore.DataStore,
 	clusters clusterDatastore.DataStore,
 	deployments deploymentDatastore.DataStore,
 	pods podDatastore.DataStore,
@@ -93,7 +116,6 @@ func newGarbageCollector(alerts alertDatastore.DataStore,
 	processbaseline processBaselineDatastore.DataStore,
 	networkflows networkFlowDatastore.ClusterDataStore,
 	config configDatastore.DataStore,
-	imageComponents imageComponentDatastore.DataStore,
 	risks riskDataStore.DataStore,
 	vulnReqs vulnReqDataStore.DataStore,
 	serviceAccts serviceAccountDataStore.DataStore,
@@ -104,13 +126,14 @@ func newGarbageCollector(alerts alertDatastore.DataStore,
 	plops plopDataStore.DataStore,
 	blobStore blobDatastore.Datastore,
 	nodeCVEStore nodeCVEDS.DataStore,
+	roleStore roleDataStore.DataStore,
 ) GarbageCollector {
 	return &garbageCollectorImpl{
 		alerts:          alerts,
 		clusters:        clusters,
 		nodes:           nodes,
 		images:          images,
-		imageComponents: imageComponents,
+		imagesV2:        imagesV2,
 		deployments:     deployments,
 		pods:            pods,
 		processes:       processes,
@@ -129,6 +152,7 @@ func newGarbageCollector(alerts alertDatastore.DataStore,
 		plops:           plops,
 		blobStore:       blobStore,
 		nodeCVEStore:    nodeCVEStore,
+		roleStore:       roleStore,
 	}
 }
 
@@ -139,7 +163,7 @@ type garbageCollectorImpl struct {
 	clusters        clusterDatastore.DataStore
 	nodes           nodeDatastore.DataStore
 	images          imageDatastore.DataStore
-	imageComponents imageComponentDatastore.DataStore
+	imagesV2        imageV2Datastore.DataStore
 	deployments     deploymentDatastore.DataStore
 	pods            podDatastore.DataStore
 	processes       processDatastore.DataStore
@@ -157,6 +181,7 @@ type garbageCollectorImpl struct {
 	plops           plopDataStore.DataStore
 	blobStore       blobDatastore.Datastore
 	nodeCVEStore    nodeCVEDS.DataStore
+	roleStore       roleDataStore.DataStore
 }
 
 func (g *garbageCollectorImpl) Start() {
@@ -164,6 +189,17 @@ func (g *garbageCollectorImpl) Start() {
 }
 
 func (g *garbageCollectorImpl) pruneBasedOnConfig() {
+	acquired, release, err := dblock.TryAcquireAdvisoryLock(pruningCtx, g.postgres, dblock.PruningGCLockID)
+	if err != nil {
+		log.Errorf("[Pruning] Failed to acquire advisory lock: %v", err)
+		return
+	}
+	if !acquired {
+		log.Info("[Pruning] Skipping cycle: advisory lock held by another process")
+		return
+	}
+	defer release()
+
 	pvtConfig, err := g.config.GetPrivateConfig(pruningCtx)
 	if err != nil {
 		log.Error(err)
@@ -185,7 +221,8 @@ func (g *garbageCollectorImpl) pruneBasedOnConfig() {
 	g.removeOldReportBlobs(pvtConfig)
 	g.removeExpiredAdministrationEvents(pvtConfig)
 	g.removeExpiredDiscoveredClusters()
-	postgres.PruneActiveComponents(pruningCtx, g.postgres)
+	g.removeInvalidAPITokens()
+	g.removeExpiredDynamicRBACObjects()
 	postgres.PruneClusterHealthStatuses(pruningCtx, g.postgres)
 
 	g.pruneLogImbues()
@@ -401,7 +438,7 @@ func (g *garbageCollectorImpl) removeOrphanedProcesses() {
 		return
 	}
 
-	deploymentIndicatorCount, err := g.removeProcesses(processesToRemove, "deployment")
+	deploymentIndicatorCount, err := g.removeProcesses(processesToRemove, processDatastore.PruneReasonOrphanedByDeployment, "deployment")
 	if err != nil {
 		log.Errorf("[Pruning] Error removing processes orphaned by deployment: %v", err)
 	}
@@ -412,7 +449,7 @@ func (g *garbageCollectorImpl) removeOrphanedProcesses() {
 		return
 	}
 
-	podIndicatorCount, err := g.removeProcesses(processesToRemove, "pod")
+	podIndicatorCount, err := g.removeProcesses(processesToRemove, processDatastore.PruneReasonOrphanedByPod, "pod")
 	if err != nil {
 		log.Errorf("[Pruning] Error removing processes orphaned by pod: %v", err)
 	}
@@ -421,18 +458,18 @@ func (g *garbageCollectorImpl) removeOrphanedProcesses() {
 		deploymentIndicatorCount+podIndicatorCount, deploymentIndicatorCount, podIndicatorCount)
 }
 
-func (g *garbageCollectorImpl) removeProcesses(processesToRemove []string, processParent string) (int, error) {
+func (g *garbageCollectorImpl) removeProcesses(processesToRemove []string, reason, displayName string) (int, error) {
 	if len(processesToRemove) == 0 {
-		log.Infof("[Pruning] Found no processes orphaned by %s...", processParent)
+		log.Infof("[Pruning] Found no processes orphaned by %s...", displayName)
 		return 0, nil
 	}
 	log.Infof("[Pruning] Found %d orphaned processes (from formerly deleted %s). Deleting...",
-		len(processesToRemove), processParent)
+		len(processesToRemove), displayName)
 
 	pruneCtxWithTimeout, cancel := contextutil.ContextWithTimeoutIfNotExists(pruningCtx, pruningTimeout)
 	defer cancel()
 
-	return g.processes.PruneProcessIndicators(pruneCtxWithTimeout, processesToRemove)
+	return g.processes.PruneProcessIndicators(pruneCtxWithTimeout, processesToRemove, reason)
 }
 
 func (g *garbageCollectorImpl) removeOrphanedProcessBaselines(deployments set.FrozenStringSet) {
@@ -495,7 +532,8 @@ func (g *garbageCollectorImpl) removeOrphanedProcessBaselines(deployments set.Fr
 }
 
 // removeOrphanedPLOPs: cleans up ProcessListeningOnPort objects that are expired
-// or have a PodUid and belong to a deployment or pod that does not exist.
+// or have a PodUid and belong to a deployment or pod that does not exist or have
+// no PodUid.
 func (g *garbageCollectorImpl) removeOrphanedPLOPs() {
 	defer metrics.SetPruningDuration(time.Now(), "PLOPs")
 	prunedCount := g.plops.PruneOrphanedPLOPs(pruningCtx, orphanWindow)
@@ -507,6 +545,15 @@ func (g *garbageCollectorImpl) removeOrphanedPLOPs() {
 		log.Errorf("error removing PLOPs with no matching process indicator or process information: %v", err)
 	}
 	log.Infof("[PLOP pruning] Pruning of %d orphaned PLOPs with no matching process indicator or process information complete", prunedCount)
+
+	// Only run once since we don't expect any new PLOPs without poduids.
+	if !prunedPLOPsWithoutPodUIDs {
+		prunedCount, err = g.plops.RemovePLOPsWithoutPodUID(pruningCtx)
+		if err != nil {
+			log.Errorf("error removing PLOPs without poduid: %v", err)
+		}
+		log.Infof("[PLOP pruning] Prunned %d orphaned PLOPs with no poduid", prunedCount)
+	}
 }
 
 func (g *garbageCollectorImpl) removeExpiredAdministrationEvents(config *storage.PrivateConfig) {
@@ -518,6 +565,11 @@ func (g *garbageCollectorImpl) removeExpiredAdministrationEvents(config *storage
 func (g *garbageCollectorImpl) removeExpiredDiscoveredClusters() {
 	defer metrics.SetPruningDuration(time.Now(), "DiscoveredClusters")
 	postgres.PruneDiscoveredClusters(pruningCtx, g.postgres, env.DiscoveredClustersRetentionTime.DurationSetting())
+}
+
+func (g *garbageCollectorImpl) removeInvalidAPITokens() {
+	defer metrics.SetPruningDuration(time.Now(), "InvalidAPITokens")
+	postgres.PruneInvalidAPITokens(pruningCtx, g.postgres, env.APITokenInvalidRetentionTime.DurationSetting())
 }
 
 func (g *garbageCollectorImpl) getOrphanedAlerts(ctx context.Context) ([]string, error) {
@@ -547,7 +599,7 @@ func (g *garbageCollectorImpl) removeOrphanedNetworkFlows(clusters set.FrozenStr
 
 	// Each cluster has a separate store thus we can take advantage of doing these deletions concurrently.  If we don't
 	// the entire prune job will be stuck waiting on processing the network flows deletions in cluster sequence.
-	for _, c := range clusters.AsSlice() {
+	for c := range clusters.All() {
 		if err := sema.Acquire(pruningCtx, 1); err != nil {
 			log.Errorf("context cancelled via stop: %v", err)
 			return
@@ -589,44 +641,118 @@ func (g *garbageCollectorImpl) removeOrphanedNetworkFlows(clusters set.FrozenStr
 func (g *garbageCollectorImpl) collectImages(config *storage.PrivateConfig) {
 	defer metrics.SetPruningDuration(time.Now(), "Images")
 	pruneImageAfterDays := config.GetImageRetentionDurationDays()
-	qb := search.NewQueryBuilder().AddDays(search.LastUpdatedTime, int64(pruneImageAfterDays)).ProtoQuery()
-	imageResults, err := g.images.Search(pruningCtx, qb)
-	if err != nil {
-		log.Error(err)
+	if pruneImageAfterDays == 0 {
+		log.Info("[Image Pruning] pruning is disabled.")
 		return
 	}
-	log.Infof("[Image pruning] Found %d image search results", len(imageResults))
-
-	imagesToPrune := make([]string, 0, len(imageResults))
-	for _, result := range imageResults {
-		q1 := search.NewQueryBuilder().AddExactMatches(search.ImageSHA, result.ID).ProtoQuery()
-		deploymentResults, err := g.deployments.Search(pruningCtx, q1)
+	if features.FlattenImageData.Enabled() {
+		imageResults, err := postgres.GetInactiveImageIdentifiers(pruningCtx, g.postgres, int(pruneImageAfterDays))
 		if err != nil {
-			log.Errorf("[Image pruning] searching deployments: %v", err)
-			continue
-		}
-		if len(deploymentResults) != 0 {
-			continue
-		}
-
-		q2 := search.NewQueryBuilder().AddExactMatches(search.ContainerImageDigest, result.ID).ProtoQuery()
-		podResults, err := g.pods.Search(pruningCtx, q2)
-		if err != nil {
-			log.Errorf("[Image pruning] searching pods: %v", err)
-			continue
-		}
-		if len(podResults) != 0 {
-			continue
-		}
-		imagesToPrune = append(imagesToPrune, result.ID)
-	}
-	if len(imagesToPrune) > 0 {
-		log.Infof("[Image Pruning] Removing %d images", len(imagesToPrune))
-		log.Debugf("[Image Pruning] Removing images %+v", imagesToPrune)
-		if err := g.images.DeleteImages(pruningCtx, imagesToPrune...); err != nil {
 			log.Error(err)
+			return
+		}
+		log.Infof("[Image pruning] Found %d inactive images", len(imageResults))
+
+		imagesToPrune := make([]string, 0, len(imageResults))
+		for _, result := range imageResults {
+			// TODO(ROX-34650): This would be simpler if we stored image full name and IdV2 in
+			// pods_live_instances. Then we could just look up pods running the same image IdV2.
+			// But we don't have that right now, so this is a temporary workaround.
+			//
+			// Check if the image is still running in any terminating pods. This can happen if the deployment was updated
+			// to run a different image but the pods running the old image are not yet terminated.
+			// We should keep the image around in this case. There is an issue with this appraoch too.
+			// If there is one stuck image, then all images with the same digest will be kept. But it is still
+			// better than not pruning an image at all when there are pods running an image with the
+			// same digest - even though none are stuck.
+			if g.anyTerminatingPodsWithDigest(result) {
+				continue
+			}
+			imagesToPrune = append(imagesToPrune, result.ID)
+		}
+		if len(imagesToPrune) > 0 {
+			log.Infof("[Image Pruning] Removing %d images", len(imagesToPrune))
+			log.Debugf("[Image Pruning] Removing images %+v", imagesToPrune)
+			if err := g.imagesV2.DeleteImages(pruningCtx, imagesToPrune...); err != nil {
+				log.Error(err)
+			}
+		}
+	} else {
+		qb := search.NewQueryBuilder().AddDays(search.LastUpdatedTime, int64(pruneImageAfterDays)).ProtoQuery()
+		imageResults, err := g.images.Search(pruningCtx, qb)
+		if err != nil {
+			log.Error(err)
+			return
+		}
+		log.Infof("[Image pruning] Found %d image search results", len(imageResults))
+
+		imagesToPrune := make([]string, 0, len(imageResults))
+		for _, result := range imageResults {
+			q1 := search.NewQueryBuilder().AddExactMatches(search.ImageSHA, result.ID).ProtoQuery()
+			deploymentResults, err := g.deployments.Search(pruningCtx, q1)
+			if err != nil {
+				log.Errorf("[Image pruning] searching deployments: %v", err)
+				continue
+			}
+			if len(deploymentResults) != 0 {
+				continue
+			}
+
+			q2 := search.NewQueryBuilder().AddExactMatches(search.ContainerImageDigest, result.ID).ProtoQuery()
+			podResults, err := g.pods.Search(pruningCtx, q2)
+			if err != nil {
+				log.Errorf("[Image pruning] searching pods: %v", err)
+				continue
+			}
+			if len(podResults) != 0 {
+				continue
+			}
+			imagesToPrune = append(imagesToPrune, result.ID)
+		}
+		if len(imagesToPrune) > 0 {
+			log.Infof("[Image Pruning] Removing %d images", len(imagesToPrune))
+			log.Debugf("[Image Pruning] Removing images %+v", imagesToPrune)
+			if err := g.images.DeleteImages(pruningCtx, imagesToPrune...); err != nil {
+				log.Error(err)
+			}
 		}
 	}
+}
+
+// anyTerminatingPodsWithDigest checks if a pod is still running an image with this digest while its
+// deployment has moved on to a different image. Returns true if a stuck/terminating pod is found,
+// meaning the image should be kept until the pod terminates.
+//
+// TODO(ROX-34650): Rename this to isImageActiveInPods and use IDV2 to look up pods directly.
+func (g *garbageCollectorImpl) anyTerminatingPodsWithDigest(img *postgres.ImageIdentifier) bool {
+	// Step 1: Get deployment IDs from pods running images with this digest.
+	depIDsFromPods, err := g.pods.GetDeploymentIDsByDigest(pruningCtx, img.Digest)
+	if err != nil {
+		log.Errorf("[Image pruning] getting deployment IDs by digest: %v", err)
+		return true
+	}
+	if len(depIDsFromPods) == 0 {
+		return false
+	}
+
+	// Step 2: Get deployment IDs whose container specs reference this digest
+	// but with a different image name. This will give us deploymentIDs running an image with the
+	// same digest but a different name. If there is a stuck pod whose deployment spec is updated with a
+	// different image, then this will not return that deployment ID.
+	depQ := search.NewQueryBuilder().
+		AddExactMatches(search.ImageSHA, img.Digest).
+		AddStrings(search.ImageName, search.NegateQueryString(search.ExactMatchString(img.FullName))).
+		ProtoQuery()
+	depResults, err := g.deployments.Search(pruningCtx, depQ)
+	if err != nil {
+		log.Errorf("[Image pruning] searching deployments by digest: %v", err)
+		return true
+	}
+	depIDsWithDigest := search.ResultsToIDSet(depResults)
+
+	// Step 3: If there is a stuck pod, its deploymentID will not be in depIDsWithDigest.
+	podDepIDSet := set.NewStringSet(depIDsFromPods...)
+	return !podDepIDSet.IsSubsetOf(depIDsWithDigest)
 }
 
 func (g *garbageCollectorImpl) removeOldReportHistory(config *storage.PrivateConfig) {
@@ -943,7 +1069,6 @@ func (g *garbageCollectorImpl) getAlertsToPrune(query *v1.Query) ([]string, erro
 func (g *garbageCollectorImpl) removeOrphanedRisks() {
 	g.removeOrphanedDeploymentRisks()
 	g.removeOrphanedImageRisks()
-	g.removeOrphanedImageComponentRisks()
 	g.removeOrphanedNodeRisks()
 }
 
@@ -964,7 +1089,13 @@ func (g *garbageCollectorImpl) removeOrphanedDeploymentRisks() {
 func (g *garbageCollectorImpl) removeOrphanedImageRisks() {
 	defer metrics.SetPruningDuration(time.Now(), "ImageRisks")
 	imagesWithRisk := g.getRisks(storage.RiskSubjectType_IMAGE)
-	results, err := g.images.Search(pruningCtx, search.EmptyQuery())
+	var results []search.Result
+	var err error
+	if features.FlattenImageData.Enabled() {
+		results, err = g.imagesV2.Search(pruningCtx, search.EmptyQuery())
+	} else {
+		results, err = g.images.Search(pruningCtx, search.EmptyQuery())
+	}
 	if err != nil {
 		log.Errorf("[Risk pruning] Searching images: %v", err)
 		return
@@ -973,20 +1104,6 @@ func (g *garbageCollectorImpl) removeOrphanedImageRisks() {
 	prunable := imagesWithRisk.Difference(search.ResultsToIDSet(results)).AsSlice()
 	log.Infof("[Risk pruning] Removing %d image risks", len(prunable))
 	g.removeRisks(storage.RiskSubjectType_IMAGE, prunable...)
-}
-
-func (g *garbageCollectorImpl) removeOrphanedImageComponentRisks() {
-	defer metrics.SetPruningDuration(time.Now(), "ImageCompositionRisks")
-	componentsWithRisk := g.getRisks(storage.RiskSubjectType_IMAGE_COMPONENT)
-	results, err := g.imageComponents.Search(pruningCtx, search.EmptyQuery())
-	if err != nil {
-		log.Errorf("[Risk pruning] Searching image components: %v", err)
-		return
-	}
-
-	prunable := componentsWithRisk.Difference(search.ResultsToIDSet(results)).AsSlice()
-	log.Infof("[Risk pruning] Removing %d image component risks", len(prunable))
-	g.removeRisks(storage.RiskSubjectType_IMAGE_COMPONENT, prunable...)
 }
 
 func (g *garbageCollectorImpl) removeOrphanedNodeRisks() {
@@ -1071,6 +1188,65 @@ func (g *garbageCollectorImpl) pruneOrphanedNodeCVEs() {
 	err = g.nodeCVEStore.PruneNodeCVEs(pruningCtx, ids)
 	if err != nil {
 		log.Error(errors.Wrap(err, "Pruning orphaned node CVEs"))
+	}
+}
+
+// traitsHolder is an interface for objects that have traits.
+type traitsHolder interface {
+	GetTraits() *storage.Traits
+}
+
+// withTraitsFilter creates a filter function that applies a traits-based predicate to objects.
+func withTraitsFilter[T traitsHolder](traitsPredicate func(*storage.Traits) bool) func(T) bool {
+	return func(obj T) bool {
+		return traitsPredicate(obj.GetTraits())
+	}
+}
+
+// isExpired returns true if the traits have a non-nil expires_at timestamp in the past.
+func isExpired(traits *storage.Traits, now time.Time) bool {
+	expiresAt := traits.GetExpiresAt()
+	return expiresAt != nil && now.After(expiresAt.AsTime())
+}
+
+// removeExpiredDynamicRBACObjects removes roles, permission sets, and access scopes
+// that have an expiry timestamp in the past and have IMPERATIVE origin.
+// These objects are created dynamically by the internal token API for sensors.
+func (g *garbageCollectorImpl) removeExpiredDynamicRBACObjects() {
+	// Check if dynamic RBAC pruning is enabled.
+	if !dynamicRBACPruningEnabled.Load() {
+		return
+	}
+
+	defer metrics.SetPruningDuration(time.Now(), "DynamicRBACObjects")
+
+	now := time.Now()
+	expiredFilter := func(traits *storage.Traits) bool {
+		return isExpired(traits, now)
+	}
+
+	// First, remove expired roles (must be done before permission sets/access scopes
+	// because roles reference them and deletion will fail if still referenced).
+	expiredRoleCount, err := g.roleStore.RemoveFilteredRoles(pruningCtx, withTraitsFilter[*storage.Role](expiredFilter))
+	if err != nil {
+		log.Error("Failed to remove expired roles: ", err)
+	}
+
+	// Then remove expired permission sets that are no longer referenced.
+	expiredPSCount, err := g.roleStore.RemoveFilteredPermissionSets(pruningCtx, withTraitsFilter[*storage.PermissionSet](expiredFilter))
+	if err != nil {
+		log.Error("Failed to remove expired permission sets: ", err)
+	}
+
+	// Finally remove expired access scopes that are no longer referenced.
+	expiredASCount, err := g.roleStore.RemoveFilteredAccessScopes(pruningCtx, withTraitsFilter[*storage.SimpleAccessScope](expiredFilter))
+	if err != nil {
+		log.Error("Failed to remove expired access scopes: ", err)
+	}
+
+	if expiredRoleCount+expiredPSCount+expiredASCount > 0 {
+		log.Infof("[Expired objects pruning] Removed %d roles, %d permission sets, %d access scopes",
+			expiredRoleCount, expiredPSCount, expiredASCount)
 	}
 }
 

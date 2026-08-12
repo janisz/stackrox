@@ -10,6 +10,7 @@ export type ListPolicy = {
     eventSource: PolicyEventSource;
     readonly isDefault: boolean; // Indicates the policy is a default policy if true and a custom policy if false.
     readonly source: 'IMPERATIVE' | 'DECLARATIVE';
+    evaluationFilter: EvaluationFilter | null;
 };
 
 export const policySeverities = [
@@ -22,7 +23,14 @@ export type PolicySeverity = (typeof policySeverities)[number];
 
 export type LifecycleStage = 'DEPLOY' | 'BUILD' | 'RUNTIME';
 
-export type PolicyEventSource = 'NOT_APPLICABLE' | 'DEPLOYMENT_EVENT' | 'AUDIT_LOG_EVENT';
+export const policyEventSources = [
+    'NOT_APPLICABLE',
+    'DEPLOYMENT_EVENT',
+    'AUDIT_LOG_EVENT',
+    'NODE_EVENT',
+] as const;
+
+export type PolicyEventSource = (typeof policyEventSources)[number];
 
 export type BasePolicy = {
     rationale: string;
@@ -80,9 +88,11 @@ export type PolicyBaseExclusion = {
 
 // TODO prefer initial values instead of optional properties while adding a new policy?
 export type PolicyScope = {
-    cluster?: string;
-    namespace?: string;
-    label?: PolicyScopeLabel | null;
+    cluster: string;
+    clusterLabel: PolicyScopeLabel | null;
+    namespace: string;
+    namespaceLabel: PolicyScopeLabel | null;
+    label: PolicyScopeLabel | null;
 };
 
 export type PolicyScopeLabel = {
@@ -104,16 +114,16 @@ export type EnforcementAction =
     | 'FAIL_DEPLOYMENT_UPDATE_ENFORCEMENT';
 
 export type PolicySection = {
-    sectionName: string;
+    sectionName?: string;
     policyGroups: PolicyGroup[];
 };
 
-type ClientPolicySection = {
-    sectionName: string;
+export type ClientPolicySection = {
+    sectionName?: string;
     policyGroups: ClientPolicyGroup[];
 };
 
-type ClientPolicyGroup = {
+export type ClientPolicyGroup = {
     fieldName: string;
     booleanOperator: PolicyBooleanOperator;
     negate: boolean;
@@ -147,6 +157,16 @@ export type ClientPolicyValue = {
 export type PolicyMitreAttackVector = {
     tactic: string; // tactic id
     techniques: string[]; // technique ids
+};
+
+export type ContainerType = 'INIT';
+
+export type SkipImageLayers = 'SKIP_NONE' | 'SKIP_BASE' | 'SKIP_APP';
+
+export type EvaluationFilter = {
+    skipContainerTypes: ContainerType[];
+    // TODO: reimplement once backend support is available - demo code was deleted at the same time this comment was added
+    // skipImageLayers: SkipImageLayers;
 };
 
 export type PolicyCategory = {

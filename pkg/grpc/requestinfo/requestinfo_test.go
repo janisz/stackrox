@@ -29,7 +29,7 @@ var insecureSkipVerify = credentials.NewTLS(insecureTLSConfig)
 const userAgentKey = "User-Agent"
 
 func makeTestRequest(url string) *http.Request {
-	req, _ := http.NewRequest("GET", url, nil)
+	req, _ := http.NewRequest(http.MethodGet, url, nil)
 	req.Header.Add("test-key", "test value")
 	req.Header.Add(userAgentKey, "test agent")
 	return req
@@ -75,7 +75,7 @@ func Test_PureGRPC(t *testing.T) {
 	c := pb.NewPingServiceClient(conn)
 	resp, err := c.Ping(context.Background(), &pb.Empty{})
 	require.NoError(t, err)
-	require.Equal(t, "pong", resp.Status)
+	require.Equal(t, "pong", resp.GetStatus())
 
 	ri := serviceInstance.ri
 	require.NotNil(t, ri)
@@ -146,11 +146,27 @@ func Test_gRPCGateway(t *testing.T) {
 	assert.Equal(t, "test agent", receivedRI.HTTPRequest.Headers.Get(userAgentKey))
 	assert.Equal(t, "test value", receivedRI.HTTPRequest.Headers.Get("test-key"))
 
+	// Verify that metadata contains both the gateway's own User-Agent
+	// (from grpc.WithUserAgent) and the original HTTP User-Agent
+	// (forwarded by the grpc-gateway under a prefixed key).
 	assert.NotNil(t, receivedRI.Metadata)
 	assert.Equal(t, []string{"application/grpc"}, receivedRI.Metadata.Get("content-type"))
-	assert.Contains(t, receivedRI.Metadata.Get(userAgentKey)[0], "gateway agent")
+
+	// The gRPC transport User-Agent (gateway + grpc-go version).
+	mdUserAgents := receivedRI.Metadata.Get(userAgentKey)
+	require.Len(t, mdUserAgents, 1)
+	assert.Contains(t, mdUserAgents[0], "gateway agent")
+
+	// The original HTTP User-Agent is forwarded under the grpc-gateway
+	// prefixed key, not under "user-agent" directly.
 	prefixedUserAgentKey, _ := runtime.DefaultHeaderMatcher(userAgentKey)
-	assert.Contains(t, receivedRI.Metadata.Get(prefixedUserAgentKey)[0], "test agent")
+	gwUserAgents := receivedRI.Metadata.Get(prefixedUserAgentKey)
+	require.Len(t, gwUserAgents, 1)
+	assert.Equal(t, "test agent", gwUserAgents[0])
+
+	// The original HTTP User-Agent is also preserved in the embedded
+	// HTTP request (via AnnotateMD/RequestInfo).
+	assert.Equal(t, "test agent", receivedRI.HTTPRequest.Headers.Get(userAgentKey))
 }
 
 func Test_Conversions(t *testing.T) {

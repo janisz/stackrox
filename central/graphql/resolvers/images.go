@@ -2,6 +2,7 @@ package resolvers
 
 import (
 	"context"
+	"slices"
 	"time"
 
 	"github.com/graph-gophers/graphql-go"
@@ -11,6 +12,7 @@ import (
 	v1 "github.com/stackrox/rox/generated/api/v1"
 	"github.com/stackrox/rox/generated/storage"
 	"github.com/stackrox/rox/pkg/errox"
+	"github.com/stackrox/rox/pkg/features"
 	pkgMetrics "github.com/stackrox/rox/pkg/metrics"
 	"github.com/stackrox/rox/pkg/protocompat"
 	"github.com/stackrox/rox/pkg/sac"
@@ -18,6 +20,60 @@ import (
 	"github.com/stackrox/rox/pkg/search/scoped"
 	"github.com/stackrox/rox/pkg/utils"
 )
+
+// ImageResolver defines the interface for image resolvers
+type ImageResolver interface {
+	ComponentCount(ctx context.Context) int32
+	CriticalCveCount(ctx context.Context) int32
+	CveCount(ctx context.Context) int32
+	FixableCriticalCveCount(ctx context.Context) int32
+	FixableCveCount(ctx context.Context) int32
+	FixableImportantCveCount(ctx context.Context) int32
+	FixableLowCveCount(ctx context.Context) int32
+	FixableModerateCveCount(ctx context.Context) int32
+	FixableUnknownCveCount(ctx context.Context) int32
+	Id(ctx context.Context) graphql.ID
+	ImportantCveCount(ctx context.Context) int32
+	IsClusterLocal(ctx context.Context) bool
+	LastUpdated(ctx context.Context) (*graphql.Time, error)
+	LowCveCount(ctx context.Context) int32
+	Metadata(ctx context.Context) (*imageMetadataResolver, error)
+	ModerateCveCount(ctx context.Context) int32
+	Name(ctx context.Context) (*imageNameResolver, error)
+	Names(ctx context.Context) ([]*imageNameResolver, error)
+	NotPullable(ctx context.Context) bool
+	Notes(ctx context.Context) []string
+	Priority(ctx context.Context) int32
+	RiskScore(ctx context.Context) float64
+	Digest(ctx context.Context) string
+	Signature(ctx context.Context) (*imageSignatureResolver, error)
+	SignatureVerificationData(ctx context.Context) (*imageSignatureVerificationDataResolver, error)
+	TopCvss(ctx context.Context) float64
+	UnknownCveCount(ctx context.Context) int32
+
+	BaseImage(ctx context.Context) (*baseImageResolver, error)
+	Deployments(ctx context.Context, args PaginatedQuery) ([]*deploymentResolver, error)
+	DeploymentCount(ctx context.Context, args RawQuery) (int32, error)
+	TopImageVulnerability(ctx context.Context, args RawQuery) (ImageVulnerabilityResolver, error)
+	ImageVulnerabilities(ctx context.Context, args PaginatedQuery) ([]ImageVulnerabilityResolver, error)
+	ImageVulnerabilityCount(ctx context.Context, args RawQuery) (int32, error)
+	ImageVulnerabilityCounter(ctx context.Context, args RawQuery) (*VulnerabilityCounterResolver, error)
+	ImageCVECountBySeverity(ctx context.Context, q RawQuery) (*resourceCountBySeverityResolver, error)
+	ImageComponents(ctx context.Context, args PaginatedQuery) ([]ImageComponentResolver, error)
+	ImageComponentCount(ctx context.Context, args RawQuery) (int32, error)
+	PlottedImageVulnerabilities(ctx context.Context, args RawQuery) (*PlottedImageVulnerabilitiesResolver, error)
+	Scan(ctx context.Context) (*imageScanResolver, error)
+	WatchStatus(ctx context.Context) (string, error)
+	UnusedVarSink(ctx context.Context, args RawQuery) *int32
+	DataSource(ctx context.Context) (*dataSourceResolver, error)
+	ScanNotes(ctx context.Context) []string
+	OperatingSystem(ctx context.Context) string
+	ScanTime(ctx context.Context) (*graphql.Time, error)
+	ScannerVersion(ctx context.Context) string
+	SignatureCount(ctx context.Context) (int32, error)
+}
+
+var _ ImageResolver = (*imageResolver)(nil)
 
 var (
 	imageWatchStatuses []string
@@ -35,8 +91,14 @@ func registerImageWatchStatus(s string) string {
 func init() {
 	schema := getBuilder()
 	utils.Must(
+		schema.AddType("BaseImage", []string{
+			"imageSha: String!",
+			"names: [String!]!",
+			"created: Time",
+		}),
 		// NOTE: This list is and should remain alphabetically ordered
 		schema.AddExtraResolvers("Image", []string{
+			"baseImage: BaseImage",
 			"deploymentCount(query: String): Int!",
 			"deployments(query: String, pagination: Pagination): [Deployment!]!",
 			"imageComponentCount(query: String): Int!",
@@ -57,6 +119,13 @@ func init() {
 			"operatingSystem: String!",
 			"scanTime: Time",
 			"scannerVersion: String!",
+
+			// Image digest (SHA). For V1 images this equals the image ID;
+			// for V2 images this is the separate SHA digest.
+			"digest: String!",
+
+			// Image signature-related fields.
+			"signatureCount: Int!",
 		}),
 		schema.AddQuery("image(id: ID!): Image"),
 		schema.AddQuery("fullImage(id: ID!): Image"),
@@ -67,7 +136,10 @@ func init() {
 }
 
 // Images returns GraphQL resolvers for all images
-func (resolver *Resolver) Images(ctx context.Context, args PaginatedQuery) ([]*imageResolver, error) {
+func (resolver *Resolver) Images(ctx context.Context, args PaginatedQuery) ([]ImageResolver, error) {
+	if features.FlattenImageData.Enabled() {
+		return resolver.ImageV2s(ctx, args)
+	}
 	defer metrics.SetGraphQLOperationDurationTime(time.Now(), pkgMetrics.Root, "Images")
 	if err := readImages(ctx); err != nil {
 		return nil, err
@@ -81,11 +153,23 @@ func (resolver *Resolver) Images(ctx context.Context, args PaginatedQuery) ([]*i
 		return nil, err
 	}
 	images, err := imageLoader.FromQuery(ctx, q)
-	return resolver.wrapImagesWithContext(ctx, images, err)
+	if err != nil {
+		log.Error(err)
+		return nil, err
+	}
+	resolvers, err := resolver.wrapImagesWithContext(ctx, images, err)
+	res := make([]ImageResolver, 0, len(resolvers))
+	for _, resolver := range resolvers {
+		res = append(res, resolver)
+	}
+	return res, err
 }
 
 // ImageCount returns count of all images across deployments
 func (resolver *Resolver) ImageCount(ctx context.Context, args RawQuery) (int32, error) {
+	if features.FlattenImageData.Enabled() {
+		return resolver.ImageV2Count(ctx, args)
+	}
 	defer metrics.SetGraphQLOperationDurationTime(time.Now(), pkgMetrics.Root, "ImageCount")
 	if err := readImages(ctx); err != nil {
 		return 0, err
@@ -103,7 +187,10 @@ func (resolver *Resolver) ImageCount(ctx context.Context, args RawQuery) (int32,
 }
 
 // Image returns a graphql resolver for the identified image, if it exists
-func (resolver *Resolver) Image(ctx context.Context, args struct{ ID graphql.ID }) (*imageResolver, error) {
+func (resolver *Resolver) Image(ctx context.Context, args struct{ ID graphql.ID }) (ImageResolver, error) {
+	if features.FlattenImageData.Enabled() {
+		return resolver.ImageV2(ctx, args)
+	}
 	defer metrics.SetGraphQLOperationDurationTime(time.Now(), pkgMetrics.Root, "Image")
 	if err := readImages(ctx); err != nil {
 		return nil, err
@@ -118,7 +205,10 @@ func (resolver *Resolver) Image(ctx context.Context, args struct{ ID graphql.ID 
 }
 
 // FullImage returns a graphql resolver for the identified image, if it exists
-func (resolver *Resolver) FullImage(ctx context.Context, args struct{ ID graphql.ID }) (*imageResolver, error) {
+func (resolver *Resolver) FullImage(ctx context.Context, args struct{ ID graphql.ID }) (ImageResolver, error) {
+	if features.FlattenImageData.Enabled() {
+		return resolver.FullImageV2(ctx, args)
+	}
 	defer metrics.SetGraphQLOperationDurationTime(time.Now(), pkgMetrics.Root, "FullImage")
 	if err := readImages(ctx); err != nil {
 		return nil, err
@@ -190,7 +280,12 @@ func (resolver *imageResolver) ImageCVECountBySeverity(ctx context.Context, q Ra
 
 func (resolver *imageResolver) ImageComponents(ctx context.Context, args PaginatedQuery) ([]ImageComponentResolver, error) {
 	defer metrics.SetGraphQLOperationDurationTime(time.Now(), pkgMetrics.Images, "ImageComponents")
-	return resolver.root.ImageComponents(resolver.withImageScopeContext(ctx), args)
+	imgResolver, err := resolver.root.ImageComponents(resolver.withImageScopeContext(ctx), args)
+	if err != nil {
+		log.Error(err)
+		return nil, err
+	}
+	return imgResolver, nil
 }
 
 func (resolver *imageResolver) ImageComponentCount(ctx context.Context, args RawQuery) (int32, error) {
@@ -210,7 +305,7 @@ func (resolver *imageResolver) withImageScopeContext(ctx context.Context) contex
 	}
 	return scoped.Context(resolver.ctx, scoped.Scope{
 		Level: v1.SearchCategory_IMAGES,
-		ID:    resolver.data.GetId(),
+		IDs:   []string{resolver.data.GetId()},
 	})
 }
 
@@ -245,18 +340,34 @@ func (resolver *imageResolver) PlottedImageVulnerabilities(ctx context.Context, 
 func (resolver *imageResolver) Scan(ctx context.Context) (*imageScanResolver, error) {
 	resolver.ensureData(ctx)
 
-	// If scan is pulled, it is most likely to fetch all components and vulns contained in image.
-	// Therefore, load the image again with full scan.
-	imageLoader, err := loaders.GetImageLoader(ctx)
-	if err != nil {
-		return nil, err
-	}
+	var scan *storage.ImageScan
+	if features.FlattenImageData.Enabled() {
+		// If scan is pulled, it is most likely to fetch all components and vulns contained in image.
+		// Therefore, load the image again with full scan.
+		imageLoader, err := loaders.GetImageV2Loader(ctx)
+		if err != nil {
+			return nil, err
+		}
 
-	image, err := imageLoader.FullImageWithID(ctx, resolver.data.GetId())
-	if err != nil {
-		return nil, err
+		image, err := imageLoader.FullImageWithID(ctx, resolver.data.GetId())
+		if err != nil {
+			return nil, err
+		}
+		scan = image.GetScan()
+	} else {
+		// If scan is pulled, it is most likely to fetch all components and vulns contained in image.
+		// Therefore, load the image again with full scan.
+		imageLoader, err := loaders.GetImageLoader(ctx)
+		if err != nil {
+			return nil, err
+		}
+
+		image, err := imageLoader.FullImageWithID(ctx, resolver.data.GetId())
+		if err != nil {
+			return nil, err
+		}
+		scan = image.GetScan()
 	}
-	scan := image.GetScan()
 
 	res, err := resolver.root.wrapImageScan(scan, true, nil)
 	if err != nil || res == nil {
@@ -313,4 +424,170 @@ func (resolver *imageResolver) ScanTime(_ context.Context) (*graphql.Time, error
 func (resolver *imageResolver) ScannerVersion(_ context.Context) string {
 	value := resolver.data.GetScan().GetScannerVersion()
 	return value
+}
+
+func (resolver *imageResolver) SignatureCount(ctx context.Context) (int32, error) {
+	resolver.ensureData(ctx)
+
+	imageLoader, err := loaders.GetImageLoader(ctx)
+	if err != nil {
+		return 0, err
+	}
+
+	image, err := imageLoader.FullImageWithID(ctx, resolver.data.GetId())
+	if err != nil {
+		return 0, err
+	}
+	return int32(len(image.GetSignature().GetSignatures())), nil
+}
+
+func (resolver *imageResolver) ComponentCount(_ context.Context) int32 {
+	value := resolver.data.GetComponents()
+	if resolver.data == nil {
+		value = resolver.list.GetComponents()
+	}
+	return value
+}
+
+func (resolver *imageResolver) CriticalCveCount(_ context.Context) int32 {
+	// This only exists for conformity to the common interface, these counts do not exist in the original image data model, and thus return 0
+	return 0
+}
+
+func (resolver *imageResolver) CveCount(_ context.Context) int32 {
+	value := resolver.data.GetCves()
+	if resolver.data == nil {
+		value = resolver.list.GetCves()
+	}
+	return value
+}
+
+func (resolver *imageResolver) FixableCriticalCveCount(_ context.Context) int32 {
+	// This only exists for conformity to the common interface, these counts do not exist in the original image data model, and thus return 0
+	return 0
+}
+
+func (resolver *imageResolver) FixableCveCount(_ context.Context) int32 {
+	value := resolver.data.GetFixableCves()
+	if resolver.data == nil {
+		value = resolver.list.GetFixableCves()
+	}
+	return value
+}
+
+func (resolver *imageResolver) FixableImportantCveCount(_ context.Context) int32 {
+	// This only exists for conformity to the common interface, these counts do not exist in the original image data model, and thus return 0
+	return 0
+}
+
+func (resolver *imageResolver) FixableLowCveCount(_ context.Context) int32 {
+	// This only exists for conformity to the common interface, these counts do not exist in the original image data model, and thus return 0
+	return 0
+}
+
+func (resolver *imageResolver) FixableModerateCveCount(_ context.Context) int32 {
+	// This only exists for conformity to the common interface, these counts do not exist in the original image data model, and thus return 0
+	return 0
+}
+
+func (resolver *imageResolver) FixableUnknownCveCount(_ context.Context) int32 {
+	// This only exists for conformity to the common interface, these counts do not exist in the original image data model, and thus return 0
+	return 0
+}
+
+func (resolver *imageResolver) ImportantCveCount(_ context.Context) int32 {
+	// This only exists for conformity to the common interface, these counts do not exist in the original image data model, and thus return 0
+	return 0
+}
+
+func (resolver *imageResolver) LowCveCount(_ context.Context) int32 {
+	// This only exists for conformity to the common interface, these counts do not exist in the original image data model, and thus return 0
+	return 0
+}
+
+func (resolver *imageResolver) ModerateCveCount(_ context.Context) int32 {
+	// This only exists for conformity to the common interface, these counts do not exist in the original image data model, and thus return 0
+	return 0
+}
+
+func (resolver *imageResolver) UnknownCveCount(_ context.Context) int32 {
+	// This only exists for conformity to the common interface, these counts do not exist in the original image data model, and thus return 0
+	return 0
+}
+
+func (resolver *imageResolver) Digest(ctx context.Context) string {
+	resolver.ensureData(ctx)
+	return resolver.data.GetId()
+}
+
+func (resolver *imageResolver) TopCvss(_ context.Context) float64 {
+	value := resolver.data.GetTopCvss()
+	if resolver.data == nil {
+		// ListImage doesn't have TopCvss field, return zero value
+		value = 0
+	}
+	return float64(value)
+}
+
+func (resolver *imageResolver) BaseImage(ctx context.Context) (*baseImageResolver, error) {
+	resolver.ensureData(ctx)
+	baseImageInfos := resolver.data.GetBaseImageInfo()
+	return resolver.root.wrapBaseImage(baseImageInfos)
+}
+
+// baseImageResolver resolves base image information
+type baseImageResolver struct {
+	root *Resolver
+	data *baseImageData
+}
+
+type baseImageData struct {
+	imageSha string
+	names    []string
+	created  *graphql.Time
+}
+
+func (resolver *Resolver) wrapBaseImage(baseImageInfos []*storage.BaseImageInfo) (*baseImageResolver, error) {
+	if len(baseImageInfos) == 0 {
+		return nil, nil
+	}
+
+	// All entries should have the same digest and create time, take the first one
+	imageSha := baseImageInfos[0].GetBaseImageDigest()
+	createTimestamp := baseImageInfos[0].GetCreated()
+	created, err := protocompat.ConvertTimestampToGraphqlTimeOrError(createTimestamp)
+	if err != nil {
+		return nil, err
+	}
+
+	// Collect all full names
+	names := make([]string, 0, len(baseImageInfos))
+	for _, info := range baseImageInfos {
+		names = append(names, info.GetBaseImageFullName())
+	}
+
+	// Stablize the names
+	slices.Sort(names)
+	data := &baseImageData{
+		imageSha: imageSha,
+		names:    names,
+		created:  created,
+	}
+
+	return &baseImageResolver{
+		root: resolver,
+		data: data,
+	}, nil
+}
+
+func (resolver *baseImageResolver) ImageSha(_ context.Context) string {
+	return resolver.data.imageSha
+}
+
+func (resolver *baseImageResolver) Names(_ context.Context) []string {
+	return resolver.data.names
+}
+
+func (resolver *baseImageResolver) Created(_ context.Context) (*graphql.Time, error) {
+	return resolver.data.created, nil
 }

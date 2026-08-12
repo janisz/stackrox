@@ -1,53 +1,94 @@
-import React, { ReactElement } from 'react';
-import { Redirect, Route, Switch } from 'react-router-dom';
+import type { ReactElement } from 'react';
+import { Navigate, Route, Routes } from 'react-router-dom-v5-compat';
 
-import {
-    clustersInitBundlesPath,
-    integrationsPath,
-    integrationsListPath,
-    integrationCreatePath,
-    integrationEditPath,
-    integrationDetailsPath,
-} from 'routePaths';
+import useCentralCapabilities from 'hooks/useCentralCapabilities';
+import useFeatureFlags from 'hooks/useFeatureFlags';
+import type { IntegrationSource } from 'types/integration';
 
 import IntegrationsNotFoundPage from './IntegrationsNotFoundPage';
-import IntegrationTilesPage from './IntegrationTiles/IntegrationTilesPage';
 import IntegrationsListPage from './IntegrationsListPage';
 import CreateIntegrationPage from './CreateIntegrationPage';
 import EditIntegrationPage from './EditIntegrationPage';
 import IntegrationDetailsPage from './IntegrationDetailsPage';
 
-const Page = (): ReactElement => {
-    // Redirect from list or view page to cluster init bundles list.
+import ApiClientIntegrationsTab from './IntegrationTiles/ApiClientIntegrationsTab';
+import AuthenticationIntegrationsTab from './IntegrationTiles/AuthenticationIntegrationsTab';
+import BackupIntegrationsTab from './IntegrationTiles/BackupIntegrationsTab';
+import CloudSourceIntegrationsTab from './IntegrationTiles/CloudSourceIntegrationsTab';
+import ImageIntegrationsTab from './IntegrationTiles/ImageIntegrationsTab';
+import NotifierIntegrationsTab from './IntegrationTiles/NotifierIntegrationsTab';
+import SignatureIntegrationsTab from './IntegrationTiles/SignatureIntegrationsTab';
+import type { IntegrationsTabElement } from './IntegrationTiles/IntegrationsTab.types';
+
+import { getSourcesEnabled, getTypesEnabled } from './utils/integrationsList';
+import type { IntegrationsRoutePredicates } from './utils/integrationsList';
+
+// Adapted from routeComponentMap from Body.tsx file.
+
+const integrationsTabElementMap: Record<IntegrationSource, IntegrationsTabElement> = {
+    imageIntegrations: ImageIntegrationsTab,
+    signatureIntegrations: SignatureIntegrationsTab,
+    notifiers: NotifierIntegrationsTab,
+    backups: BackupIntegrationsTab,
+    cloudSources: CloudSourceIntegrationsTab,
+    authProviders: AuthenticationIntegrationsTab,
+    apiClients: ApiClientIntegrationsTab,
+};
+
+const IntegrationsPage = (): ReactElement => {
+    const { isCentralCapabilityAvailable } = useCentralCapabilities();
+    const { isFeatureFlagEnabled } = useFeatureFlags();
+    const predicates: IntegrationsRoutePredicates = {
+        isCentralCapabilityAvailable,
+        isFeatureFlagEnabled,
+    };
+    const sourcesEnabled = getSourcesEnabled(predicates);
+
     return (
-        <Switch>
-            <Route exact path={integrationsPath}>
-                <IntegrationTilesPage />
-            </Route>
-            <Route
-                path={[
-                    `${integrationsPath}/authProviders/clusterInitBundle`,
-                    `${integrationsPath}/authProviders/clusterInitBundle/:action/:id`,
-                ]}
-                render={() => <Redirect to={clustersInitBundlesPath} />}
-            />
-            <Route exact path={integrationsListPath}>
-                <IntegrationsListPage />
-            </Route>
-            <Route path={integrationCreatePath}>
-                <CreateIntegrationPage />
-            </Route>
-            <Route path={integrationEditPath}>
-                <EditIntegrationPage />
-            </Route>
-            <Route path={integrationDetailsPath}>
-                <IntegrationDetailsPage />
-            </Route>
-            <Route>
-                <IntegrationsNotFoundPage />
-            </Route>
-        </Switch>
+        <Routes>
+            <Route index element={<Navigate to={sourcesEnabled[0]} replace />} />
+            {sourcesEnabled.flatMap((source) => {
+                const Element = integrationsTabElementMap[source];
+                const sourceRoute = Element ? (
+                    <Route
+                        key={source}
+                        path={source}
+                        element={<Element sourcesEnabled={sourcesEnabled} />}
+                    />
+                ) : null; // just in case
+                const typeRoutes = getTypesEnabled(predicates, source).flatMap((type) => {
+                    const pathSourceType = `${source}/${type}`;
+                    const pathSourceTypeCreate = `${pathSourceType}/create`;
+                    const pathSourceTypeEdit = `${pathSourceType}/edit/:id`;
+                    const pathSourceTypeView = `${pathSourceType}/view/:id`;
+                    return [
+                        <Route
+                            key={pathSourceType}
+                            path={pathSourceType}
+                            element={<IntegrationsListPage source={source} type={type} />}
+                        />,
+                        <Route
+                            key={pathSourceTypeCreate}
+                            path={pathSourceTypeCreate}
+                            element={<CreateIntegrationPage source={source} type={type} />}
+                        />,
+                        <Route
+                            key={pathSourceTypeEdit}
+                            path={pathSourceTypeEdit}
+                            element={<EditIntegrationPage source={source} type={type} />}
+                        />,
+                        <Route
+                            key={pathSourceTypeView}
+                            path={pathSourceTypeView}
+                            element={<IntegrationDetailsPage source={source} type={type} />}
+                        />,
+                    ];
+                });
+                return [sourceRoute, ...typeRoutes];
+            })}
+            <Route path="*" element={<IntegrationsNotFoundPage />} />
+        </Routes>
     );
 };
 
-export default Page;
+export default IntegrationsPage;

@@ -94,17 +94,47 @@ func ValidateGetSBOMRequest(req *v4.GetSBOMRequest) error {
 	return nil
 }
 
+var supportedSBOMMediaTypes = map[string]bool{
+	"application/spdx+json": true,
+	"text/spdx+json":        true,
+}
+
+func ValidateScanSBOMRequest(req *v4.ScanSBOMRequest) error {
+	if req == nil {
+		return errox.InvalidArgs.New("empty request")
+	}
+	if len(req.GetSbom()) == 0 {
+		return errox.InvalidArgs.New("sbom is required")
+	}
+	if req.GetMediaType() == "" {
+		return errox.InvalidArgs.New("media type is required")
+	}
+	if !supportedSBOMMediaTypes[req.GetMediaType()] {
+		return errox.InvalidArgs.Newf("unsupported media type %q", req.GetMediaType())
+	}
+	return nil
+}
+
 func validateContents(contents *v4.Contents) error {
 	if contents == nil {
 		return nil
 	}
-	if err := validateList(contents.GetPackages(), "Contents.Packages", validatePackage); err != nil {
+	if err := validateMap(contents.GetPackages(), "Contents.Packages", validatePackage); err != nil {
 		return err
 	}
-	if err := validateList(contents.GetDistributions(), "Contents.Distributions", validateDistribution); err != nil {
+	if err := validateList(contents.GetPackagesDEPRECATED(), "Contents.PackagesDEPRECATED", validatePackage); err != nil {
 		return err
 	}
-	if err := validateList(contents.GetRepositories(), "Contents.Repositories", validateRepository); err != nil {
+	if err := validateMap(contents.GetDistributions(), "Contents.Distributions", validateDistribution); err != nil {
+		return err
+	}
+	if err := validateList(contents.GetDistributionsDEPRECATED(), "Contents.DistributionsDEPRECATED", validateDistribution); err != nil {
+		return err
+	}
+	if err := validateMap(contents.GetRepositories(), "Contents.Repositories", validateRepository); err != nil {
+		return err
+	}
+	if err := validateList(contents.GetRepositoriesDEPRECATED(), "Contents.RepositoriesDEPRECATED", validateRepository); err != nil {
 		return err
 	}
 	for k, envs := range contents.GetEnvironments() {
@@ -112,6 +142,32 @@ func validateContents(contents *v4.Contents) error {
 			if env == nil {
 				return fmt.Errorf("Contents.Environments[%q] element #%d is empty", k, idx+1)
 			}
+		}
+	}
+	for k, envs := range contents.GetEnvironmentsDEPRECATED() {
+		for idx, env := range envs.GetEnvironments() {
+			if env == nil {
+				return fmt.Errorf("Contents.EnvironmentsDEPRECATED[%q] element #%d is empty", k, idx+1)
+			}
+		}
+	}
+	return nil
+}
+
+func validateMap[T hasIDAndCPE](m map[string]T, fieldName string, validateF func(T) error) error {
+	for k, v := range m {
+		if reflect.ValueOf(v).IsZero() {
+			return fmt.Errorf("%s element %q is empty", fieldName, k)
+		}
+		if v.GetId() == "" {
+			return fmt.Errorf("%s element %q: ID is empty", fieldName, k)
+		}
+		_, err := cpe.Unbind(v.GetCpe())
+		if err != nil {
+			return fmt.Errorf("%s element %q: invalid CPE: %w", fieldName, k, err)
+		}
+		if err := validateF(v); err != nil {
+			return fmt.Errorf("%s element %q: %w", fieldName, k, err)
 		}
 	}
 	return nil

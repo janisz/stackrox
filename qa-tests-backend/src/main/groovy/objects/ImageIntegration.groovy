@@ -2,19 +2,28 @@ package objects
 
 import common.Constants
 import io.stackrox.proto.storage.ImageIntegrationOuterClass
+import services.FeatureFlagService
 import services.ImageIntegrationService
 import util.Env
 
 trait ImageIntegration {
     abstract static ImageIntegrationOuterClass.ImageIntegration.Builder getCustomBuilder(Map customArgs)
 
-    static ImageIntegrationOuterClass.ImageIntegration.Builder getDefaultBuilder() {
-        getCustomBuilder()
+    // Returns true for integrations that can be deleted, false otherwise.
+    static boolean isDeletable() { true }
+}
+
+class StackroxScannerIntegration implements ImageIntegration {
+
+    static String name() { Constants.AUTO_REGISTERED_STACKROX_SCANNER_INTEGRATION }
+
+    static Boolean isTestable() {
+        return !FeatureFlagService.isFeatureFlagEnabled("ROX_SCANNER_V4")
     }
 
     static String createDefaultIntegration() {
         ImageIntegrationService.createImageIntegration(
-                getDefaultBuilder().build()
+                getCustomBuilder([:]).build()
         )
     }
 
@@ -23,15 +32,6 @@ trait ImageIntegration {
                 getCustomBuilder(customArgs).build(),
                 customArgs.containsKey("skipTestIntegration") && customArgs.skipTestIntegration
         )
-    }
-}
-
-class StackroxScannerIntegration implements ImageIntegration {
-
-    static String name() { Constants.AUTO_REGISTERED_STACKROX_SCANNER_INTEGRATION }
-
-    static Boolean isTestable() {
-        return true
     }
 
     static ImageIntegrationOuterClass.ImageIntegration.Builder getCustomBuilder(Map customArgs = [:]) {
@@ -67,6 +67,19 @@ class ClairScannerIntegration implements ImageIntegration {
         return Env.get("CLAIR_ENDPOINT") != null
     }
 
+    static String createDefaultIntegration() {
+        ImageIntegrationService.createImageIntegration(
+                getCustomBuilder([:]).build()
+        )
+    }
+
+    static String createCustomIntegration(Map customArgs = [:]) {
+        ImageIntegrationService.createImageIntegration(
+                getCustomBuilder(customArgs).build(),
+                customArgs.containsKey("skipTestIntegration") && customArgs.skipTestIntegration
+        )
+    }
+
     static ImageIntegrationOuterClass.ImageIntegration.Builder getCustomBuilder(Map customArgs = [:]) {
         Map defaultArgs = [
                 name: "clair",
@@ -93,6 +106,19 @@ class ClairV4ScannerIntegration implements ImageIntegration {
 
     static Boolean isTestable() {
         return Env.get("CLAIR_V4_ENDPOINT") != null
+    }
+
+    static String createDefaultIntegration() {
+        ImageIntegrationService.createImageIntegration(
+                getCustomBuilder([:]).build()
+        )
+    }
+
+    static String createCustomIntegration(Map customArgs = [:]) {
+        ImageIntegrationService.createImageIntegration(
+                getCustomBuilder(customArgs).build(),
+                customArgs.containsKey("skipTestIntegration") && customArgs.skipTestIntegration
+        )
     }
 
     static ImageIntegrationOuterClass.ImageIntegration.Builder getCustomBuilder(Map customArgs = [:]) {
@@ -123,6 +149,19 @@ class ECRRegistryIntegration implements ImageIntegration {
 
     static Boolean isTestable() {
         return true
+    }
+
+    static String createDefaultIntegration() {
+        ImageIntegrationService.createImageIntegration(
+                getCustomBuilder([:]).build()
+        )
+    }
+
+    static String createCustomIntegration(Map customArgs = [:]) {
+        ImageIntegrationService.createImageIntegration(
+                getCustomBuilder(customArgs).build(),
+                customArgs.containsKey("skipTestIntegration") && customArgs.skipTestIntegration
+        )
     }
 
     static ImageIntegrationOuterClass.ImageIntegration.Builder getCustomBuilder(Map customArgs = [:]) {
@@ -188,6 +227,19 @@ class AzureRegistryIntegration implements ImageIntegration {
         return true
     }
 
+    static String createDefaultIntegration() {
+        ImageIntegrationService.createImageIntegration(
+                getCustomBuilder([:]).build()
+        )
+    }
+
+    static String createCustomIntegration(Map customArgs = [:]) {
+        ImageIntegrationService.createImageIntegration(
+                getCustomBuilder(customArgs).build(),
+                customArgs.containsKey("skipTestIntegration") && customArgs.skipTestIntegration
+        )
+    }
+
     static ImageIntegrationOuterClass.ImageIntegration.Builder getCustomBuilder(Map customArgs = [:]) {
         Map defaultArgs = [
             configSchema: "AzureConfig",
@@ -236,6 +288,19 @@ class QuayImageIntegration implements ImageIntegration {
         return true
     }
 
+    static String createDefaultIntegration() {
+        ImageIntegrationService.createImageIntegration(
+                getCustomBuilder([:]).build()
+        )
+    }
+
+    static String createCustomIntegration(Map customArgs = [:]) {
+        ImageIntegrationService.createImageIntegration(
+                getCustomBuilder(customArgs).build(),
+                customArgs.containsKey("skipTestIntegration") && customArgs.skipTestIntegration
+        )
+    }
+
     static ImageIntegrationOuterClass.ImageIntegration.Builder getCustomBuilder(Map customArgs = [:]) {
         Map defaultArgs = [
                 name: "quay",
@@ -277,6 +342,19 @@ class GHCRImageIntegration implements ImageIntegration {
         return true
     }
 
+    static String createDefaultIntegration() {
+        ImageIntegrationService.createImageIntegration(
+                getCustomBuilder([:]).build()
+        )
+    }
+
+    static String createCustomIntegration(Map customArgs = [:]) {
+        ImageIntegrationService.createImageIntegration(
+                getCustomBuilder(customArgs).build(),
+                customArgs.containsKey("skipTestIntegration") && customArgs.skipTestIntegration
+        )
+    }
+
     static ImageIntegrationOuterClass.ImageIntegration.Builder getCustomBuilder(Map customArgs = [:]) {
         Map defaultArgs = [
                 name: "ghcr",
@@ -307,6 +385,19 @@ class GoogleArtifactRegistry implements ImageIntegration {
 
     static Boolean isTestable() {
         return true
+    }
+
+    static String createDefaultIntegration() {
+        ImageIntegrationService.createImageIntegration(
+                getCustomBuilder([:]).build()
+        )
+    }
+
+    static String createCustomIntegration(Map customArgs = [:]) {
+        ImageIntegrationService.createImageIntegration(
+                getCustomBuilder(customArgs).build(),
+                customArgs.containsKey("skipTestIntegration") && customArgs.skipTestIntegration
+        )
     }
 
     static ImageIntegrationOuterClass.ImageIntegration.Builder getCustomBuilder(Map customArgs = [:]) {
@@ -341,12 +432,47 @@ class GoogleArtifactRegistry implements ImageIntegration {
     }
 }
 
+class ScannerV4Integration implements ImageIntegration {
+
+    static String name() { "Scanner V4" }
+
+    static Boolean isTestable() {
+        return FeatureFlagService.isFeatureFlagEnabled("ROX_SCANNER_V4")
+    }
+
+    static boolean isDeletable() { false }
+
+    // The Scanner V4 integration is auto-registered and cannot be deleted.
+    // createDefaultIntegration() looks up the existing integration rather than creating one.
+    static String createDefaultIntegration() {
+        ImageIntegrationOuterClass.ImageIntegration existing =
+                ImageIntegrationService.getImageIntegrationByName(name())
+        if (!existing) {
+            return ""
+        }
+        return existing.id
+    }
+}
+
 class GCRImageIntegration implements ImageIntegration {
 
     static String name() { "GCR Registry+Scanner" }
 
     static Boolean isTestable() {
         return true
+    }
+
+    static String createDefaultIntegration() {
+        ImageIntegrationService.createImageIntegration(
+                getCustomBuilder([:]).build()
+        )
+    }
+
+    static String createCustomIntegration(Map customArgs = [:]) {
+        ImageIntegrationService.createImageIntegration(
+                getCustomBuilder(customArgs).build(),
+                customArgs.containsKey("skipTestIntegration") && customArgs.skipTestIntegration
+        )
     }
 
     static ImageIntegrationOuterClass.ImageIntegration.Builder getCustomBuilder(Map customArgs = [:]) {

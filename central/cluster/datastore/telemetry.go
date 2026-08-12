@@ -7,6 +7,7 @@ import (
 	"github.com/stackrox/rox/central/telemetry/centralclient"
 	"github.com/stackrox/rox/generated/internalapi/central"
 	"github.com/stackrox/rox/generated/storage"
+	clusterPkg "github.com/stackrox/rox/pkg/cluster"
 	"github.com/stackrox/rox/pkg/sac"
 	"github.com/stackrox/rox/pkg/sac/resources"
 	"github.com/stackrox/rox/pkg/telemetry/phonehome"
@@ -16,48 +17,52 @@ import (
 const securedClusterClient = "Secured Cluster"
 
 func trackClusterRegistered(cluster *storage.Cluster) {
-	if cfg := centralclient.InstanceConfig(); cfg.Enabled() {
-		props := map[string]any{
-			"Cluster Type": cluster.GetType().String(),
-			"Cluster ID":   cluster.GetId(),
-			"Managed By":   cluster.GetManagedBy().String(),
-		}
-		groups := telemeter.WithGroups(cfg.GroupType, cfg.GroupID)
-
-		cfg.Telemeter().Track("Secured Cluster Registered", props, groups)
-
-		// Update the secured cluster identity from its name and add the secured
-		// cluster 'user' to the Tenant group:
-		cfg.Telemeter().Track("Secured Cluster Static Properties", nil,
-			telemeter.WithTraits(makeClusterProperties(cluster)),
-			telemeter.WithClient(cluster.GetId(), securedClusterClient, cluster.GetMainImage()),
-			groups)
+	props := map[string]any{
+		"Cluster Type": cluster.GetType().String(),
+		"Cluster ID":   cluster.GetId(),
+		"Managed By":   cluster.GetManagedBy().String(),
 	}
+
+	c := centralclient.Singleton()
+	groups := c.WithGroups()
+
+	// Reported as the Central client.
+	go c.Track("Secured Cluster Registered", props, groups...)
+
+	// Update the secured cluster identity from its name and add the secured
+	// cluster 'user' to the Tenant group:
+	go c.Track("Secured Cluster Static Properties", nil,
+		append(groups,
+			telemeter.WithTraits(makeClusterProperties(cluster)),
+			telemeter.WithClient(cluster.GetId(),
+				securedClusterClient, cluster.GetMainImage()),
+		)...)
 }
 
 func makeClusterProperties(cluster *storage.Cluster) map[string]any {
 	return map[string]any{
-		"Main Image":           cluster.GetMainImage(),
-		"Admission Controller": cluster.GetAdmissionController(),
-		"Collection Method":    cluster.GetCollectionMethod().String(),
-		"Collector Image":      cluster.GetCollectorImage(),
-		"Managed By":           cluster.GetManagedBy().String(),
-		"Priority":             cluster.GetPriority(),
-		"Cluster Type":         cluster.GetType().String(),
-		"Slim Collector":       cluster.GetSlimCollector(),
+		"Main Image":                  cluster.GetMainImage(),
+		"Admission Controller":        cluster.GetAdmissionController(),
+		"Collection Method":           cluster.GetCollectionMethod().String(),
+		"Collector Image":             cluster.GetCollectorImage(),
+		"Managed By":                  cluster.GetManagedBy().String(),
+		"Priority":                    cluster.GetPriority(),
+		"Cluster Type":                cluster.GetType().String(),
+		"Slim Collector":              cluster.GetSlimCollector(),
+		"Auto Lock Process Baselines": clusterPkg.GetAutoLockProcessBaselinesEnabled(cluster),
 	}
 }
 
 func trackClusterInitialized(cluster *storage.Cluster) {
-	if cfg := centralclient.InstanceConfig(); cfg.Enabled() {
-		// Issue an event that makes the secured cluster identity effective:
-		cfg.Telemeter().
-			Track("Secured Cluster Initialized", map[string]any{
-				"Health": cluster.GetHealthStatus().GetOverallHealthStatus().String(),
-			},
-				telemeter.WithClient(cluster.GetId(), securedClusterClient, cluster.GetMainImage()),
-				telemeter.WithGroups(cfg.GroupType, cfg.GroupID))
-	}
+	c := centralclient.Singleton()
+	// Issue an event that makes the secured cluster identity effective:
+	go c.Track("Secured Cluster Initialized", map[string]any{
+		"Health": cluster.GetHealthStatus().GetOverallHealthStatus().String(),
+	},
+		append(c.WithGroups(),
+			telemeter.WithClient(cluster.GetId(), securedClusterClient, cluster.GetMainImage()),
+		)...)
+
 }
 
 // Gather the number of clusters.
@@ -77,8 +82,12 @@ var Gather phonehome.GatherFunc = func(ctx context.Context) (map[string]any, err
 // UpdateSecuredClusterIdentity is called by the clustermetrics pipeline on
 // the reception of the cluster metrics from a sensor.
 func UpdateSecuredClusterIdentity(ctx context.Context, clusterID string, metrics *central.ClusterMetrics) {
-	cfg := centralclient.InstanceConfig()
-	if !cfg.Enabled() {
+	c := centralclient.Singleton()
+	// This is a shortcut to avoid calling the cluster datastore in case
+	// telemetry is for sure not enabled.
+	// This call will block until the telemetry configuration is read from the
+	// database.
+	if !c.IsActive() {
 		return
 	}
 
@@ -92,8 +101,9 @@ func UpdateSecuredClusterIdentity(ctx context.Context, clusterID string, metrics
 		return
 	}
 	props := makeClusterProperties(cluster)
-	props["Total Nodes"] = metrics.NodeCount
-	props["CPU Capacity"] = metrics.CpuCapacity
+	props["Total Nodes"] = metrics.GetNodeCount()
+	props["CPU Capacity"] = metrics.GetCpuCapacity()
+	props["Compliance Operator Version"] = metrics.GetComplianceOperatorVersion()
 
 	if pmd := cluster.GetStatus().GetProviderMetadata(); pmd.GetProvider() != nil {
 		switch pmd.GetProvider().(type) {
@@ -117,11 +127,10 @@ func UpdateSecuredClusterIdentity(ctx context.Context, clusterID string, metrics
 	}
 	props["Orchestrator Version"] = omd.GetVersion()
 
-	opts := []telemeter.Option{
+	c.Track("Updated Secured Cluster Identity", nil, append(
+		c.WithGroups(),
 		telemeter.WithClient(clusterID, securedClusterClient, cluster.GetMainImage()),
-		telemeter.WithGroups(cfg.GroupType, cfg.GroupID),
 		telemeter.WithTraits(props),
 		telemeter.WithNoDuplicates(time.Now().Format(time.DateOnly)),
-	}
-	cfg.Telemeter().Track("Updated Secured Cluster Identity", nil, opts...)
+	)...)
 }

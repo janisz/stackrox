@@ -4,6 +4,7 @@ package postgres_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -83,11 +84,9 @@ type Struct5 struct {
 }
 
 func TestSelectQuery(t *testing.T) {
-	t.Parallel()
 
 	ctx := sac.WithAllAccess(context.Background())
 	testDB := pgtest.ForT(t)
-	defer testDB.Teardown(t)
 
 	store := postgres.New(testDB.DB)
 
@@ -515,11 +514,9 @@ type DerivedStruct9 struct {
 }
 
 func TestSelectDerivedFieldQuery(t *testing.T) {
-	t.Parallel()
 
 	ctx := sac.WithAllAccess(context.Background())
 	testDB := pgtest.ForT(t)
-	defer testDB.Teardown(t)
 
 	store := postgres.New(testDB.DB)
 
@@ -822,7 +819,7 @@ func TestSelectDerivedFieldQuery(t *testing.T) {
 			expectedQuery: "select count(test_structs.Key1) filter (where test_structs.Enum = $1) as test_string_affected_by_enum1, " +
 				"count(test_structs.Key1) filter (where test_structs.Enum = $2) as test_string_affected_by_enum2, " +
 				"test_structs.Bool as test_bool from test_structs " +
-				"group by test_structs.Bool order by test_string_affected_by_enum1 asc, test_string_affected_by_enum2 desc",
+				"group by test_structs.Bool order by test_string_affected_by_enum1 asc nulls last, test_string_affected_by_enum2 desc nulls last",
 			expectedResult: []*DerivedStruct8{
 				{1, 1, false},
 				{1, 1, true},
@@ -878,7 +875,7 @@ func TestSelectDerivedFieldQuery(t *testing.T) {
 				"test_structs_nesteds.Nested as test_nested_string " +
 				"from test_structs inner join test_structs_nesteds " +
 				"on test_structs.Key1 = test_structs_nesteds.test_structs_Key1 " +
-				"group by test_structs_nesteds.Nested order by test_structs_nesteds.Nested desc",
+				"group by test_structs_nesteds.Nested order by test_structs_nesteds.Nested desc nulls last",
 			expectedResult: []*DerivedStruct3{
 				{1, 1, "nested_bcs_2"},
 				{2, 2, "nested_bcs_1"},
@@ -905,7 +902,7 @@ func TestSelectDerivedFieldQuery(t *testing.T) {
 				"test_structs_nesteds.Nested as test_nested_string " +
 				"from test_structs inner join test_structs_nesteds " +
 				"on test_structs.Key1 = test_structs_nesteds.test_structs_Key1 " +
-				"group by test_structs_nesteds.Nested order by count(test_structs_nesteds.Nested) desc LIMIT 1",
+				"group by test_structs_nesteds.Nested order by count(test_structs_nesteds.Nested) desc nulls last LIMIT 1",
 			expectedResult: []*DerivedStruct3{
 				{2, 2, "nested_bcs_1"},
 			},
@@ -927,7 +924,7 @@ func TestSelectDerivedFieldQuery(t *testing.T) {
 				"jsonb_agg(test_structs.String_) as test_string " +
 				"from test_structs inner join test_structs_nesteds " +
 				"on test_structs.Key1 = test_structs_nesteds.test_structs_Key1 " +
-				"group by test_structs_nesteds.Nested order by test_structs.String_ asc",
+				"group by test_structs_nesteds.Nested order by test_structs.String_ asc nulls last",
 			expectedError: "column \"test_structs.string_\" must appear in the GROUP BY clause or be used in an aggregate function",
 		},
 		{
@@ -954,7 +951,7 @@ func TestSelectDerivedFieldQuery(t *testing.T) {
 				"from test_structs inner join test_structs_nesteds " +
 				"on test_structs.Key1 = test_structs_nesteds.test_structs_Key1 " +
 				"group by test_structs_nesteds.Nested " +
-				"order by count(test_structs.String_) desc, test_structs_nesteds.Nested asc",
+				"order by count(test_structs.String_) desc nulls last, test_structs_nesteds.Nested asc nulls last",
 			expectedResult: []*DerivedStruct9{
 				{2, []string{"bcs", "bcs"}, 2, "nested_bcs_1"},
 				{1, []string{"acs"}, 1, "nested_acs"},
@@ -1033,45 +1030,145 @@ func runTest(ctx context.Context, t *testing.T, testDB *pgtest.TestPostgres, tc 
 	var err error
 	switch tc.resultStruct.(type) {
 	case Struct1:
-		results, err = pgSearch.RunSelectRequestForSchema[Struct1](ctx, testDB.DB, schema.TestStructsSchema, tc.q)
+		var structs []*Struct1
+		err = pgSearch.RunSelectRequestForSchemaFn[Struct1](ctx, testDB.DB, schema.TestStructsSchema, tc.q, func(r *Struct1) error {
+			structs = append(structs, r)
+			return nil
+		})
+		results = structs
 	case Struct2:
-		results, err = pgSearch.RunSelectRequestForSchema[Struct2](ctx, testDB.DB, schema.TestStructsSchema, tc.q)
+		var structs []*Struct2
+		err = pgSearch.RunSelectRequestForSchemaFn[Struct2](ctx, testDB.DB, schema.TestStructsSchema, tc.q, func(r *Struct2) error {
+			structs = append(structs, r)
+			return nil
+		})
+		results = structs
 	case Struct2GrpBy1:
-		results, err = pgSearch.RunSelectRequestForSchema[Struct2GrpBy1](ctx, testDB.DB, schema.TestStructsSchema, tc.q)
+		var structs []*Struct2GrpBy1
+		err = pgSearch.RunSelectRequestForSchemaFn[Struct2GrpBy1](ctx, testDB.DB, schema.TestStructsSchema, tc.q, func(r *Struct2GrpBy1) error {
+			structs = append(structs, r)
+			return nil
+		})
+		results = structs
 	case Struct2GrpBy2:
-		results, err = pgSearch.RunSelectRequestForSchema[Struct2GrpBy2](ctx, testDB.DB, schema.TestStructsSchema, tc.q)
+		var structs []*Struct2GrpBy2
+		err = pgSearch.RunSelectRequestForSchemaFn[Struct2GrpBy2](ctx, testDB.DB, schema.TestStructsSchema, tc.q, func(r *Struct2GrpBy2) error {
+			structs = append(structs, r)
+			return nil
+		})
+		results = structs
 	case Struct2GrpBy3:
-		results, err = pgSearch.RunSelectRequestForSchema[Struct2GrpBy3](ctx, testDB.DB, schema.TestStructsSchema, tc.q)
+		var structs []*Struct2GrpBy3
+		err = pgSearch.RunSelectRequestForSchemaFn[Struct2GrpBy3](ctx, testDB.DB, schema.TestStructsSchema, tc.q, func(r *Struct2GrpBy3) error {
+			structs = append(structs, r)
+			return nil
+		})
+		results = structs
 	case Struct2GrpBy4:
-		results, err = pgSearch.RunSelectRequestForSchema[Struct2GrpBy4](ctx, testDB.DB, schema.TestStructsSchema, tc.q)
+		var structs []*Struct2GrpBy4
+		err = pgSearch.RunSelectRequestForSchemaFn[Struct2GrpBy4](ctx, testDB.DB, schema.TestStructsSchema, tc.q, func(r *Struct2GrpBy4) error {
+			structs = append(structs, r)
+			return nil
+		})
+		results = structs
 	case Struct2GrpBy5:
-		results, err = pgSearch.RunSelectRequestForSchema[Struct2GrpBy5](ctx, testDB.DB, schema.TestStructsSchema, tc.q)
+		var structs []*Struct2GrpBy5
+		err = pgSearch.RunSelectRequestForSchemaFn[Struct2GrpBy5](ctx, testDB.DB, schema.TestStructsSchema, tc.q, func(r *Struct2GrpBy5) error {
+			structs = append(structs, r)
+			return nil
+		})
+		results = structs
 	case Struct3:
-		results, err = pgSearch.RunSelectRequestForSchema[Struct3](ctx, testDB.DB, schema.TestStructsSchema, tc.q)
+		var structs []*Struct3
+		err = pgSearch.RunSelectRequestForSchemaFn[Struct3](ctx, testDB.DB, schema.TestStructsSchema, tc.q, func(r *Struct3) error {
+			structs = append(structs, r)
+			return nil
+		})
+		results = structs
 	case Struct4:
-		results, err = pgSearch.RunSelectRequestForSchema[Struct4](ctx, testDB.DB, schema.TestStructsSchema, tc.q)
+		var structs []*Struct4
+		err = pgSearch.RunSelectRequestForSchemaFn[Struct4](ctx, testDB.DB, schema.TestStructsSchema, tc.q, func(r *Struct4) error {
+			structs = append(structs, r)
+			return nil
+		})
+		results = structs
 	case Struct5:
-		results, err = pgSearch.RunSelectRequestForSchema[Struct5](ctx, testDB.DB, schema.TestStructsSchema, tc.q)
+		var structs []*Struct5
+		err = pgSearch.RunSelectRequestForSchemaFn[Struct5](ctx, testDB.DB, schema.TestStructsSchema, tc.q, func(r *Struct5) error {
+			structs = append(structs, r)
+			return nil
+		})
+		results = structs
 	case DerivedStruct1:
-		results, err = pgSearch.RunSelectRequestForSchema[DerivedStruct1](ctx, testDB.DB, schema.TestStructsSchema, tc.q)
+		var structs []*DerivedStruct1
+		err = pgSearch.RunSelectRequestForSchemaFn[DerivedStruct1](ctx, testDB.DB, schema.TestStructsSchema, tc.q, func(r *DerivedStruct1) error {
+			structs = append(structs, r)
+			return nil
+		})
+		results = structs
 	case DerivedStruct2:
-		results, err = pgSearch.RunSelectRequestForSchema[DerivedStruct2](ctx, testDB.DB, schema.TestStructsSchema, tc.q)
+		var structs []*DerivedStruct2
+		err = pgSearch.RunSelectRequestForSchemaFn[DerivedStruct2](ctx, testDB.DB, schema.TestStructsSchema, tc.q, func(r *DerivedStruct2) error {
+			structs = append(structs, r)
+			return nil
+		})
+		results = structs
 	case DerivedStruct22:
-		results, err = pgSearch.RunSelectRequestForSchema[DerivedStruct22](ctx, testDB.DB, schema.TestStructsSchema, tc.q)
+		var structs []*DerivedStruct22
+		err = pgSearch.RunSelectRequestForSchemaFn[DerivedStruct22](ctx, testDB.DB, schema.TestStructsSchema, tc.q, func(r *DerivedStruct22) error {
+			structs = append(structs, r)
+			return nil
+		})
+		results = structs
 	case DerivedStruct3:
-		results, err = pgSearch.RunSelectRequestForSchema[DerivedStruct3](ctx, testDB.DB, schema.TestStructsSchema, tc.q)
+		var structs []*DerivedStruct3
+		err = pgSearch.RunSelectRequestForSchemaFn[DerivedStruct3](ctx, testDB.DB, schema.TestStructsSchema, tc.q, func(r *DerivedStruct3) error {
+			structs = append(structs, r)
+			return nil
+		})
+		results = structs
 	case DerivedStruct4:
-		results, err = pgSearch.RunSelectRequestForSchema[DerivedStruct4](ctx, testDB.DB, schema.TestStructsSchema, tc.q)
+		var structs []*DerivedStruct4
+		err = pgSearch.RunSelectRequestForSchemaFn[DerivedStruct4](ctx, testDB.DB, schema.TestStructsSchema, tc.q, func(r *DerivedStruct4) error {
+			structs = append(structs, r)
+			return nil
+		})
+		results = structs
 	case DerivedStruct5:
-		results, err = pgSearch.RunSelectRequestForSchema[DerivedStruct5](ctx, testDB.DB, schema.TestStructsSchema, tc.q)
+		var structs []*DerivedStruct5
+		err = pgSearch.RunSelectRequestForSchemaFn[DerivedStruct5](ctx, testDB.DB, schema.TestStructsSchema, tc.q, func(r *DerivedStruct5) error {
+			structs = append(structs, r)
+			return nil
+		})
+		results = structs
 	case DerivedStruct6:
-		results, err = pgSearch.RunSelectRequestForSchema[DerivedStruct6](ctx, testDB.DB, schema.TestStructsSchema, tc.q)
+		var structs []*DerivedStruct6
+		err = pgSearch.RunSelectRequestForSchemaFn[DerivedStruct6](ctx, testDB.DB, schema.TestStructsSchema, tc.q, func(r *DerivedStruct6) error {
+			structs = append(structs, r)
+			return nil
+		})
+		results = structs
 	case DerivedStruct7:
-		results, err = pgSearch.RunSelectRequestForSchema[DerivedStruct7](ctx, testDB.DB, schema.TestStructsSchema, tc.q)
+		var structs []*DerivedStruct7
+		err = pgSearch.RunSelectRequestForSchemaFn[DerivedStruct7](ctx, testDB.DB, schema.TestStructsSchema, tc.q, func(r *DerivedStruct7) error {
+			structs = append(structs, r)
+			return nil
+		})
+		results = structs
 	case DerivedStruct8:
-		results, err = pgSearch.RunSelectRequestForSchema[DerivedStruct8](ctx, testDB.DB, schema.TestStructsSchema, tc.q)
+		var structs []*DerivedStruct8
+		err = pgSearch.RunSelectRequestForSchemaFn[DerivedStruct8](ctx, testDB.DB, schema.TestStructsSchema, tc.q, func(r *DerivedStruct8) error {
+			structs = append(structs, r)
+			return nil
+		})
+		results = structs
 	case DerivedStruct9:
-		results, err = pgSearch.RunSelectRequestForSchema[DerivedStruct9](ctx, testDB.DB, schema.TestStructsSchema, tc.q)
+		var structs []*DerivedStruct9
+		err = pgSearch.RunSelectRequestForSchemaFn[DerivedStruct9](ctx, testDB.DB, schema.TestStructsSchema, tc.q, func(r *DerivedStruct9) error {
+			structs = append(structs, r)
+			return nil
+		})
+		results = structs
 	}
 	if tc.expectedError != "" {
 		assert.Error(t, err, tc.expectedError)
@@ -1089,4 +1186,205 @@ func runTest(ctx context.Context, t *testing.T, testDB *pgtest.TestPostgres, tc 
 	} else {
 		assert.ElementsMatch(t, tc.expectedResult, results)
 	}
+}
+
+// TestRunSelectDirectFn verifies that RunSelectDirectFn produces the same
+// results as RunSelectRequestForSchemaFn for parent-table selects. This tests
+// the direct pgx scanning path (no scany reflection).
+func TestRunSelectDirectFn(t *testing.T) {
+	ctx := sac.WithAllAccess(context.Background())
+	testDB := pgtest.ForT(t)
+
+	store := postgres.New(testDB.DB)
+	for _, s := range getTestStructs() {
+		require.NoError(t, store.Upsert(ctx, s))
+	}
+
+	t.Run("select single field", func(t *testing.T) {
+		q := search.NewQueryBuilder().
+			AddSelectFields(search.NewQuerySelect(search.TestString)).
+			ProtoQuery()
+
+		// Get expected results via scany path.
+		var expected []string
+		err := pgSearch.RunSelectRequestForSchemaFn[Struct1](ctx, testDB.DB, schema.TestStructsSchema, q, func(r *Struct1) error {
+			expected = append(expected, r.TestString)
+			return nil
+		})
+		require.NoError(t, err)
+		require.NotEmpty(t, expected)
+
+		// Get results via direct scan path.
+		var testString string
+		dests := []any{&testString}
+
+		var actual []string
+		err = pgSearch.RunSelectDirectFn(ctx, testDB.DB, schema.TestStructsSchema, q, nil,
+			&pgSearch.DirectScanConfig{
+				ScanDests: func() []any { return dests },
+				OnRow: func() error {
+					actual = append(actual, testString)
+					return nil
+				},
+			})
+		require.NoError(t, err)
+		assert.ElementsMatch(t, expected, actual)
+	})
+
+	t.Run("select with where clause", func(t *testing.T) {
+		q := search.NewQueryBuilder().
+			AddSelectFields(search.NewQuerySelect(search.TestString)).
+			AddExactMatches(search.TestString, "acs").
+			ProtoQuery()
+
+		var testString string
+		dests := []any{&testString}
+
+		var actual []string
+		err := pgSearch.RunSelectDirectFn(ctx, testDB.DB, schema.TestStructsSchema, q, nil,
+			&pgSearch.DirectScanConfig{
+				ScanDests: func() []any { return dests },
+				OnRow: func() error {
+					actual = append(actual, testString)
+					return nil
+				},
+			})
+		require.NoError(t, err)
+		assert.Equal(t, []string{"acs", "acs"}, actual)
+	})
+
+	t.Run("select multiple fields with pagination", func(t *testing.T) {
+		q := search.NewQueryBuilder().
+			AddSelectFields(
+				search.NewQuerySelect(search.TestString),
+				search.NewQuerySelect(search.TestBool),
+			).
+			WithPagination(
+				search.NewPagination().
+					AddSortOption(search.NewSortOption(search.TestString)),
+			).
+			ProtoQuery()
+
+		// Get expected via scany.
+		type stringBool struct {
+			S string
+			B bool
+		}
+		type scanyResult struct {
+			TestString string `db:"test_string"`
+			TestBool   bool   `db:"test_bool"`
+		}
+		var expected []stringBool
+		err := pgSearch.RunSelectRequestForSchemaFn[scanyResult](ctx, testDB.DB, schema.TestStructsSchema, q, func(r *scanyResult) error {
+			expected = append(expected, stringBool{r.TestString, r.TestBool})
+			return nil
+		})
+		require.NoError(t, err)
+		require.NotEmpty(t, expected)
+
+		// Get results via direct scan.
+		var s string
+		var b bool
+		dests := []any{&s, &b}
+
+		var actual []stringBool
+		err = pgSearch.RunSelectDirectFn(ctx, testDB.DB, schema.TestStructsSchema, q, nil,
+			&pgSearch.DirectScanConfig{
+				ScanDests: func() []any { return dests },
+				OnRow: func() error {
+					actual = append(actual, stringBool{s, b})
+					return nil
+				},
+			})
+		require.NoError(t, err)
+		assert.Equal(t, expected, actual)
+	})
+
+	t.Run("nil query returns no results", func(t *testing.T) {
+		called := false
+		err := pgSearch.RunSelectDirectFn(ctx, testDB.DB, schema.TestStructsSchema, nil, nil,
+			&pgSearch.DirectScanConfig{
+				ScanDests: func() []any { return nil },
+				OnRow: func() error {
+					called = true
+					return nil
+				},
+			})
+		require.NoError(t, err)
+		assert.False(t, called)
+	})
+
+	t.Run("sort by non-selected field with distinct adds extra column", func(t *testing.T) {
+		q := search.NewQueryBuilder().
+			AddSelectFields(search.NewQuerySelect(search.TestString).Distinct()).
+			WithPagination(
+				search.NewPagination().
+					AddSortOption(search.NewSortOption(search.TestBool)),
+			).
+			ProtoQuery()
+
+		// With DISTINCT + ORDER BY on a non-selected field, the query builder
+		// injects the sort column into the SELECT list via ExtraSelectedFieldPaths.
+		// A caller that only provides destinations for the explicit selects will
+		// get a column count mismatch error from the runtime guard.
+		var testString string
+		wrongDests := []any{&testString}
+
+		err := pgSearch.RunSelectDirectFn(ctx, testDB.DB, schema.TestStructsSchema, q, nil,
+			&pgSearch.DirectScanConfig{
+				ScanDests: func() []any { return wrongDests },
+				OnRow: func() error {
+					return nil
+				},
+			})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "scan destination count")
+	})
+
+	t.Run("sort by non-selected field with correct dest count succeeds", func(t *testing.T) {
+		q := search.NewQueryBuilder().
+			AddSelectFields(search.NewQuerySelect(search.TestString).Distinct()).
+			WithPagination(
+				search.NewPagination().
+					AddSortOption(search.NewSortOption(search.TestBool)),
+			).
+			ProtoQuery()
+
+		// Caller accounts for the extra sort column injected by the query builder.
+		var testString string
+		var extraBool bool
+		correctDests := []any{&testString, &extraBool}
+
+		var actual []string
+		err := pgSearch.RunSelectDirectFn(ctx, testDB.DB, schema.TestStructsSchema, q, nil,
+			&pgSearch.DirectScanConfig{
+				ScanDests: func() []any { return correctDests },
+				OnRow: func() error {
+					actual = append(actual, testString)
+					return nil
+				},
+			})
+		require.NoError(t, err)
+		assert.NotEmpty(t, actual)
+	})
+
+	t.Run("OnRow error propagates", func(t *testing.T) {
+		q := search.NewQueryBuilder().
+			AddSelectFields(search.NewQuerySelect(search.TestString)).
+			ProtoQuery()
+
+		expectedErr := errors.New("callback failed")
+		var testString string
+		dests := []any{&testString}
+
+		err := pgSearch.RunSelectDirectFn(ctx, testDB.DB, schema.TestStructsSchema, q, nil,
+			&pgSearch.DirectScanConfig{
+				ScanDests: func() []any { return dests },
+				OnRow: func() error {
+					return expectedErr
+				},
+			})
+		require.Error(t, err)
+		assert.ErrorIs(t, err, expectedErr)
+	})
 }

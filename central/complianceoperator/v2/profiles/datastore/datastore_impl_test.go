@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"testing"
 
-	profileSearch "github.com/stackrox/rox/central/complianceoperator/v2/profiles/datastore/search"
 	profileStorage "github.com/stackrox/rox/central/complianceoperator/v2/profiles/store/postgres"
 	apiV1 "github.com/stackrox/rox/generated/api/v1"
 	"github.com/stackrox/rox/generated/storage"
@@ -77,12 +76,7 @@ func (s *complianceProfileDataStoreTestSuite) SetupTest() {
 	s.db = pgtest.ForT(s.T())
 
 	s.storage = profileStorage.New(s.db)
-	searcher := profileSearch.New(s.storage)
-	s.dataStore = GetTestPostgresDataStore(s.T(), s.db, searcher)
-}
-
-func (s *complianceProfileDataStoreTestSuite) TearDownTest() {
-	s.db.Teardown(s.T())
+	s.dataStore = GetTestPostgresDataStore(s.T(), s.db)
 }
 
 func (s *complianceProfileDataStoreTestSuite) TestUpsertProfile() {
@@ -167,7 +161,7 @@ func (s *complianceProfileDataStoreTestSuite) TestDeleteProfileForCluster() {
 	profiles, err = s.dataStore.GetProfilesByClusters(s.hasReadCtx, []string{testconsts.Cluster2})
 	s.Require().NoError(err)
 	s.Require().Equal(1, len(profiles))
-	s.Require().Equal(profileUID2, profiles[0].Id)
+	s.Require().Equal(profileUID2, profiles[0].GetId())
 
 	// Without write access
 	s.Require().Error(s.dataStore.DeleteProfileForCluster(s.noAccessCtx, profileUID1, testconsts.Cluster1))
@@ -406,7 +400,7 @@ func getTestProfile(profileUID string, profileName string, version string, clust
 
 	if ruleCount > 0 {
 		rules = make([]*storage.ComplianceOperatorProfileV2_Rule, 0, ruleCount)
-		for i := 0; i < ruleCount; i++ {
+		for i := range ruleCount {
 			rules = append(rules, &storage.ComplianceOperatorProfileV2_Rule{
 				RuleName: fmt.Sprintf("name-%d", i),
 			})

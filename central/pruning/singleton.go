@@ -8,7 +8,7 @@ import (
 	nodeCVEDS "github.com/stackrox/rox/central/cve/node/datastore"
 	deploymentDatastore "github.com/stackrox/rox/central/deployment/datastore"
 	imagesDatastore "github.com/stackrox/rox/central/image/datastore"
-	imageComponentDatastore "github.com/stackrox/rox/central/imagecomponent/datastore"
+	imageV2Datastore "github.com/stackrox/rox/central/imagev2/datastore"
 	logimbueStore "github.com/stackrox/rox/central/logimbue/store"
 	networkFlowsDataStore "github.com/stackrox/rox/central/networkgraph/flow/datastore"
 	nodeDatastore "github.com/stackrox/rox/central/node/datastore"
@@ -20,6 +20,7 @@ import (
 	k8srolebindingStore "github.com/stackrox/rox/central/rbac/k8srolebinding/datastore"
 	snapshotDataStore "github.com/stackrox/rox/central/reports/snapshot/datastore"
 	riskDataStore "github.com/stackrox/rox/central/risk/datastore"
+	roleDataStore "github.com/stackrox/rox/central/role/datastore"
 	serviceAccountDataStore "github.com/stackrox/rox/central/serviceaccount/datastore"
 	vulnReqDataStore "github.com/stackrox/rox/central/vulnmgmt/vulnerabilityrequest/datastore"
 	"github.com/stackrox/rox/pkg/sync"
@@ -36,6 +37,7 @@ func Singleton() GarbageCollector {
 		gc = newGarbageCollector(alertDatastore.Singleton(),
 			nodeDatastore.Singleton(),
 			imagesDatastore.Singleton(),
+			imageV2Datastore.Singleton(),
 			clusterDatastore.Singleton(),
 			deploymentDatastore.Singleton(),
 			podDatastore.Singleton(),
@@ -43,7 +45,6 @@ func Singleton() GarbageCollector {
 			processBaselineDatastore.Singleton(),
 			networkFlowsDataStore.Singleton(),
 			configDatastore.Singleton(),
-			imageComponentDatastore.Singleton(),
 			riskDataStore.Singleton(),
 			vulnReqDataStore.Singleton(),
 			serviceAccountDataStore.Singleton(),
@@ -54,6 +55,7 @@ func Singleton() GarbageCollector {
 			plopDataStore.Singleton(),
 			blobDS.Singleton(),
 			nodeCVEDS.Singleton(),
+			roleDataStore.Singleton(),
 		)
 	})
 	return gc

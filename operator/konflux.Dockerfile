@@ -1,6 +1,4 @@
-# TODO(ROX-20312): we can't pin image tag or digest because currently there's no mechanism to auto-update that.
-# We're targeting a floating tag here which should be reasonably safe to do as both RHEL major 8 and Go major.minor 1.20 should provide enough stability.
-FROM brew.registry.redhat.io/rh-osbs/openshift-golang-builder:rhel_8_1.23 AS builder
+FROM brew.registry.redhat.io/rh-osbs/openshift-golang-builder:rhel_9_golang_1.26@sha256:3ca2c34c83e6563fa574b7c7ecda92a5fdae2ec7a5f37a408e5e383947fb1957 AS builder
 
 WORKDIR /go/src/github.com/stackrox/rox/app
 
@@ -19,8 +17,33 @@ ENV CI=1 GOFLAGS="" CGO_ENABLED=1
 RUN GOOS=linux GOARCH=$(go env GOARCH) scripts/go-build-file.sh operator/cmd/main.go image/bin/operator
 
 
-# TODO(ROX-20312): pin image tags when there's a process that updates them automatically.
-FROM registry.access.redhat.com/ubi8/ubi-minimal:latest
+FROM registry.access.redhat.com/ubi9/ubi-micro:latest@sha256:7e7f79ab747bf2b452e3043dd89f388e92be4c7fdcc8b815b58adf6c99c39c95 AS ubi-micro-base
+
+
+FROM registry.access.redhat.com/ubi9/ubi:latest@sha256:d3e61197e0f96aee94872141b429f63eadb939de95a25fe6b504843f427b7a3f AS package_installer
+
+# Copy ubi-micro base to /out/ to preserve its rpmdb
+COPY --from=ubi-micro-base / /out/
+
+# Install packages directly to /out/ using --installroot
+# Note: --setopt=reposdir=/etc/yum.repos.d instructs dnf to use repo configurations pointing to RPMs
+# prefetched by Hermeto/Cachi2, instead of installroot's default UBI repos.
+RUN dnf install -y \
+    --installroot=/out/ \
+    --releasever=8 \
+    --setopt=install_weak_deps=False \
+    --setopt=reposdir=/etc/yum.repos.d \
+    --nodocs \
+    ca-certificates \
+    gzip \
+    less \
+    openssl \
+    tar && \
+    dnf clean all --installroot=/out/ && \
+    rm -rf /out/var/cache/*
+
+
+FROM ubi-micro-base
 
 ARG BUILD_TAG
 
@@ -32,7 +55,7 @@ LABEL \
     io.k8s.display-name="operator" \
     io.openshift.tags="rhacs,operator,stackrox" \
     maintainer="Red Hat, Inc." \
-    name="rhacs-rhel8-operator" \
+    name="advanced-cluster-security/rhacs-rhel9-operator" \
     # Custom Snapshot creation in `operator-bundle-pipeline` depends on source-location label to be set correctly.
     source-location="https://github.com/stackrox/stackrox" \
     summary="Operator for Red Hat Advanced Cluster Security for Kubernetes" \
@@ -43,13 +66,9 @@ LABEL \
     # We also set it to not inherit one from a base stage in case it's RHEL or UBI.
     release="1"
 
-COPY --from=builder /go/src/github.com/stackrox/rox/app/image/bin/operator /usr/local/bin/rhacs-operator
+COPY --from=package_installer /out/ /
 
-# TODO(ROX-20234): use hermetic builds when installing/updating RPMs becomes hermetic.
-RUN microdnf upgrade -y --nobest && \
-    microdnf clean all && \
-    rpm --verbose -e --nodeps $(rpm -qa curl '*rpm*' '*dnf*' '*libsolv*' '*hawkey*' 'yum*') && \
-    rm -rf /var/cache/dnf /var/cache/yum
+COPY --from=builder /go/src/github.com/stackrox/rox/app/image/bin/operator /usr/local/bin/rhacs-operator
 
 COPY LICENSE /licenses/LICENSE
 

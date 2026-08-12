@@ -1,4 +1,5 @@
-import React, { ReactElement, useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
+import type { ReactElement } from 'react';
 import {
     Alert,
     Button,
@@ -16,7 +17,7 @@ import useMetadata from 'hooks/useMetadata';
 import usePermissions from 'hooks/usePermissions';
 import { generateCertSecretForComponent } from 'services/CertGenerationService';
 import { fetchCertExpiryForComponent } from 'services/CredentialExpiryService';
-import { CertExpiryComponent } from 'types/credentialExpiryService.proto';
+import type { CertExpiryComponent } from 'types/credentialExpiryService.proto';
 import {
     getCredentialExpiryPhrase,
     getCredentialExpiryVariant,
@@ -25,14 +26,21 @@ import {
 import { getAxiosErrorMessage } from 'utils/responseErrorUtils';
 import { getVersionedDocs } from 'utils/versioning';
 
-import { ErrorIcon, healthIconMap, SpinnerIcon } from '../CardHeaderIcons';
+import { DisabledIcon, ErrorIcon, SpinnerIcon, healthIconMap } from '../CardHeaderIcons';
 
 type CertificateCardProps = {
     component: CertExpiryComponent;
     pollingCount: number;
+    disabled?: boolean;
+    disabledMessage?: string;
 };
 
-function CertificateCard({ component, pollingCount }: CertificateCardProps): ReactElement {
+function CertificateCard({
+    component,
+    pollingCount,
+    disabled = false,
+    disabledMessage,
+}: CertificateCardProps): ReactElement {
     const [isFetching, setIsFetching] = useState(false);
     const [errorMessageFetching, setErrorMessageFetching] = useState('');
     const [expirationDate, setExpirationDate] = useState('');
@@ -48,6 +56,9 @@ function CertificateCard({ component, pollingCount }: CertificateCardProps): Rea
     const { version } = useMetadata();
 
     useEffect(() => {
+        if (disabled) {
+            return;
+        }
         setIsFetching(true);
         fetchCertExpiryForComponent(component)
             .then((expiry) => {
@@ -63,7 +74,7 @@ function CertificateCard({ component, pollingCount }: CertificateCardProps): Rea
             .finally(() => {
                 setIsFetching(false);
             });
-    }, [component, pollingCount]);
+    }, [component, pollingCount, disabled]);
 
     function onDownload() {
         setIsDownloading(true);
@@ -87,97 +98,100 @@ function CertificateCard({ component, pollingCount }: CertificateCardProps): Rea
      */
     const isFetchingInitialRequest = isFetching && pollingCount === 0;
 
-    /* eslint-disable no-nested-ternary */
-    const icon = isFetchingInitialRequest
-        ? SpinnerIcon
-        : !expirationDate || !currentDatetime
-          ? ErrorIcon
-          : healthIconMap[getCredentialExpiryVariant(expirationDate, currentDatetime)];
+    const icon = disabled
+        ? DisabledIcon
+        : isFetchingInitialRequest
+          ? SpinnerIcon
+          : !expirationDate || !currentDatetime
+            ? ErrorIcon
+            : healthIconMap[getCredentialExpiryVariant(expirationDate, currentDatetime)];
 
     return (
-        <Card isCompact>
+        <Card isCompact isDisabled={disabled ? true : undefined}>
             <CardHeader>
-                <Flex className="pf-v5-u-flex-grow-1">
+                <Flex className="pf-v6-u-flex-grow-1">
                     <FlexItem>{icon}</FlexItem>
                     <FlexItem>
                         <CardTitle component="h2">{title}</CardTitle>
                     </FlexItem>
-                    {currentDatetime && expirationDate && (
+                    {disabled && disabledMessage && <FlexItem>{disabledMessage}</FlexItem>}
+                    {!disabled && currentDatetime && expirationDate && (
                         <FlexItem>
                             {getCredentialExpiryPhrase(expirationDate, currentDatetime)}
                         </FlexItem>
                     )}
                 </Flex>
             </CardHeader>
-            <CardBody>
-                {hasAdministrationWritePermission &&
-                // if the DB is external, the expiry will be returned as null, and we do not want to show renewal
-                (component !== 'CENTRAL_DB' || expirationDate) ? (
-                    <Flex>
-                        <FlexItem>
-                            To update the certificate, download the YAML file and apply it to your
-                            cluster
-                        </FlexItem>
-                        <FlexItem>
-                            <Button
-                                variant="secondary"
-                                icon={<DownloadIcon />}
-                                isDisabled={isDownloading}
-                                isLoading={isDownloading}
-                                size="sm"
-                                onClick={onDownload}
-                            >
-                                Download YAML
-                            </Button>
-                        </FlexItem>
-                        {version && (
-                            <FlexItem align={{ default: 'alignRight' }}>
-                                <ExternalLink>
-                                    <a
-                                        href={getVersionedDocs(
-                                            version,
-                                            'configuring/reissue-internal-certificates'
-                                        )}
-                                        target="_blank"
-                                        rel="noopener noreferrer"
-                                    >
-                                        Reissuing internal certificates
-                                    </a>
-                                </ExternalLink>
+            {!disabled && (
+                <CardBody>
+                    {hasAdministrationWritePermission &&
+                    // if the DB is external, the expiry will be returned as null, and we do not want to show renewal
+                    (component !== 'CENTRAL_DB' || expirationDate) ? (
+                        <Flex>
+                            <FlexItem>
+                                To update the certificate, download the YAML file and apply it to
+                                your cluster
                             </FlexItem>
-                        )}
-                    </Flex>
-                ) : expirationDate &&
-                  currentDatetime &&
-                  getCredentialExpiryVariant(expirationDate, currentDatetime) !== 'success' ? (
-                    <Flex>
-                        <FlexItem>
-                            To update the certificate, please contact your administrator
-                        </FlexItem>
-                    </Flex>
-                ) : null}
-                {errorMessageFetching && (
-                    <Alert
-                        isInline
-                        variant="warning"
-                        title={errorMessageFetching}
-                        component="p"
-                        className="pf-v5-u-mt-md"
-                    />
-                )}
-                {errorMessageDownloading && (
-                    <Alert
-                        isInline
-                        variant="danger"
-                        title={errorMessageDownloading}
-                        component="p"
-                        className="pf-v5-u-mt-md"
-                    />
-                )}
-            </CardBody>
+                            <FlexItem>
+                                <Button
+                                    variant="secondary"
+                                    icon={<DownloadIcon />}
+                                    isDisabled={isDownloading}
+                                    isLoading={isDownloading}
+                                    size="sm"
+                                    onClick={onDownload}
+                                >
+                                    Download YAML
+                                </Button>
+                            </FlexItem>
+                            {version && (
+                                <FlexItem align={{ default: 'alignRight' }}>
+                                    <ExternalLink>
+                                        <a
+                                            href={getVersionedDocs(
+                                                version,
+                                                'configuring/reissue-internal-certificates'
+                                            )}
+                                            target="_blank"
+                                            rel="noopener noreferrer"
+                                        >
+                                            Reissuing internal certificates
+                                        </a>
+                                    </ExternalLink>
+                                </FlexItem>
+                            )}
+                        </Flex>
+                    ) : expirationDate &&
+                      currentDatetime &&
+                      getCredentialExpiryVariant(expirationDate, currentDatetime) !== 'success' ? (
+                        <Flex>
+                            <FlexItem>
+                                To update the certificate, please contact your administrator
+                            </FlexItem>
+                        </Flex>
+                    ) : null}
+                    {errorMessageFetching && (
+                        <Alert
+                            isInline
+                            variant="warning"
+                            title={errorMessageFetching}
+                            component="p"
+                            className="pf-v6-u-mt-md"
+                        />
+                    )}
+                    {errorMessageDownloading && (
+                        <Alert
+                            isInline
+                            variant="danger"
+                            title={errorMessageDownloading}
+                            component="p"
+                            className="pf-v6-u-mt-md"
+                        />
+                    )}
+                </CardBody>
+            )}
         </Card>
     );
-    /* eslint-enable no-nested-ternary */
 }
 
 export default CertificateCard;

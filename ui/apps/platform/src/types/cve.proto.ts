@@ -20,14 +20,28 @@ export function isVulnerabilityState(value: unknown): value is VulnerabilityStat
     return vulnerabilityStates.some((state) => state === value);
 }
 
+// advisory property is null if not available or not applicable
+export type Advisory = {
+    name: string; // for example, RHSA-yyyy:nnnn
+    link: string; // for example, https://access.redhat.com/errata/RHSA-yyyy:nnnn
+};
+
 // epss property is null if not available
 export type EPSS = {
     epssProbability: number; // float fraction between 0 and 1 inclusive
     epssPercentile: number; // float fraction between 0 and 1 inclusive
 };
 
+export type Exploit = {
+    // This must always be set to true.
+    // This field solely exists for search purposes.
+    // exists: boolean; // search:"Known Exploit,store"
+    knownRansomwareCampaignUse: boolean; // search:"Known Ransomware Campaign,store"
+};
+
 export type CveBaseInfo = {
     epss: EPSS | null;
+    exploit: Exploit | null; // null if no known exploit
 };
 
 export type CVSSV2 = {

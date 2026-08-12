@@ -1,7 +1,7 @@
-/* eslint-disable no-console */
 import { useEffect, useState } from 'react';
-import { JsonValue } from 'utils/type.utils';
+import type { JsonValue } from 'utils/type.utils';
 
+type TransformFn = (rawValue: unknown) => unknown;
 declare global {
     interface WindowEventMap {
         'use-local-storage': StorageEvent;
@@ -24,19 +24,23 @@ export type UseLocalStorageReturn<Storage> = [Storage, (t: StateUpdater<Storage>
  * @param isValidPredicate
  *      A type predicate that returns true if the stored value is valid, ensuring that the returned value
  *      is of the correct type at runtime.
+ * @param transform
+ *      A function that transforms the stored value before it is parsed and validated. Subject to the validation
+ *      after transformation by the isValidPredicate function. ex.) Used to normalize storage keys.
  * @returns
  *      A tuple containing the stored value and a function to update it
  */
 function useLocalStorage<Storage extends JsonValue>(
     key: string,
     initialValue: Storage,
-    isValidPredicate: (rawValue: JsonValue) => rawValue is Storage
+    isValidPredicate: (rawValue: unknown) => rawValue is Storage,
+    transform: TransformFn = (rawValue: unknown): unknown => rawValue
 ): UseLocalStorageReturn<Storage> {
     const [storedValue, setInternalStoredValue] = useState<Storage>(() => {
         try {
             // Load any previously stored value, if it exists and is valid
             const item = window.localStorage.getItem(key);
-            const parsedItem = JSON.parse(item ?? 'null');
+            const parsedItem = transform(JSON.parse(item ?? 'null'));
             return isValidPredicate(parsedItem) ? parsedItem : initialValue;
         } catch {
             // On error, return the initial value
@@ -65,8 +69,9 @@ function useLocalStorage<Storage extends JsonValue>(
             return;
         }
 
+        /* eslint-disable no-console */
         try {
-            const parsedValue = JSON.parse(event.newValue ?? 'null');
+            const parsedValue = transform(JSON.parse(event.newValue ?? 'null'));
             if (isValidPredicate(parsedValue)) {
                 setInternalStoredValue(parsedValue);
             } else {
@@ -78,6 +83,7 @@ function useLocalStorage<Storage extends JsonValue>(
         } catch (error: unknown) {
             console.warn('Failed to parse incoming JSON value', error);
         }
+        /* eslint-enable no-console */
     }
 
     useEffect(() => {

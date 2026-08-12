@@ -1,4 +1,4 @@
-import React, { ReactElement } from 'react';
+import type { ReactElement } from 'react';
 import {
     DescriptionList,
     DescriptionListDescription,
@@ -6,7 +6,7 @@ import {
     DescriptionListTerm,
 } from '@patternfly/react-core';
 
-import { ClusterInitBundle } from 'services/ClustersService';
+import type { ClusterInitBundle } from 'services/ClustersService';
 
 export type InitBundleDescriptionProps = {
     initBundle: ClusterInitBundle;
@@ -14,11 +14,7 @@ export type InitBundleDescriptionProps = {
 
 function InitBundleDescription({ initBundle }: InitBundleDescriptionProps): ReactElement {
     return (
-        <DescriptionList
-            isCompact
-            isHorizontal
-            className="pf-v5-u-background-color-100 pf-v5-u-p-lg"
-        >
+        <DescriptionList isCompact isHorizontal className="pf-v6-u-p-lg">
             <DescriptionListGroup>
                 <DescriptionListTerm>Name</DescriptionListTerm>
                 <DescriptionListDescription>{initBundle.name}</DescriptionListDescription>

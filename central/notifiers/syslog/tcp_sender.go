@@ -10,7 +10,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/cenkalti/backoff/v3"
+	"github.com/cenkalti/backoff/v4"
 	"github.com/pkg/errors"
 	"github.com/stackrox/rox/generated/storage"
 	"github.com/stackrox/rox/pkg/concurrency"
@@ -87,7 +87,7 @@ func validateRemoteConfig(endpointConfig *storage.Syslog_TCPConfig) (string, err
 		return "", errors.Errorf("invalid port number %d must be between 1 and 65535", port)
 	}
 
-	hostName := fmt.Sprintf("%s:%d", endpointConfig.GetHostname(), endpointConfig.GetPort())
+	hostName := net.JoinHostPort(endpointConfig.GetHostname(), strconv.Itoa(int(endpointConfig.GetPort())))
 
 	sysURL := fmt.Sprintf("tcp://%s", hostName)
 

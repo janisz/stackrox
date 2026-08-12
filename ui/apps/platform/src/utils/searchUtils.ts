@@ -1,14 +1,33 @@
 import qs from 'qs';
+import cloneDeep from 'lodash/cloneDeep';
 
-import {
-    SearchEntry,
+import type { RestSearchOption } from 'services/searchOptionsToQuery';
+import type { Pagination } from 'services/types';
+import type {
     ApiSortOption,
+    ApiSortOptionSingle,
     GraphQLSortOption,
     SearchFilter,
-    ApiSortOptionSingle,
+    SearchQueryOptions,
 } from 'types/search';
-import { Pagination } from 'services/types';
-import { ValueOf } from './type.utils';
+import { nodeAttributes } from 'Components/CompoundSearchFilter/attributes/node';
+import { imageAttributes } from 'Components/CompoundSearchFilter/attributes/image';
+import { imageCVEAttributes } from 'Components/CompoundSearchFilter/attributes/imageCVE';
+import { imageComponentAttributes } from 'Components/CompoundSearchFilter/attributes/imageComponent';
+import { deploymentAttributes } from 'Components/CompoundSearchFilter/attributes/deployment';
+import { namespaceAttributes } from 'Components/CompoundSearchFilter/attributes/namespace';
+import {
+    clusterIdAttribute,
+    clusterKubernetesVersionAttribute,
+    clusterLabelAttribute,
+    clusterNameAttribute,
+    clusterPlatformTypeAttribute,
+    clusterTypeAttribute,
+} from 'Components/CompoundSearchFilter/attributes/cluster';
+import { policyAttributes } from 'Components/CompoundSearchFilter/attributes/policy';
+import { profileName } from 'Components/CompoundSearchFilter/attributes/profile';
+
+import type { NonEmptyArray, ValueOf } from './type.utils';
 import { safeGeneratePath } from './urlUtils';
 
 /**
@@ -37,24 +56,8 @@ export function getViewStateFromSearch(
     ); // and the value of the search for that key cannot be false or the string "false", see https://stack-rox.atlassian.net/browse/ROX-4278
 }
 
-export function filterAllowedSearch(
-    allowed: string[] = [],
-    currentSearch: SearchFilter = {}
-): Record<string, string> {
-    const filtered = Object.keys(currentSearch)
-        .filter((key) => allowed.includes(key))
-        .reduce((newSearch, key) => {
-            return {
-                ...newSearch,
-                [key]: currentSearch[key],
-            };
-        }, {});
-
-    return filtered;
-}
-
-export function convertToRestSearch(workflowSearch: Record<string, string>): SearchEntry[] {
-    const emptyArray: SearchEntry[] = [];
+export function convertToRestSearch(workflowSearch: SearchFilter): RestSearchOption[] {
+    const emptyArray: RestSearchOption[] = [];
     if (!workflowSearch) {
         return emptyArray;
     }
@@ -63,7 +66,7 @@ export function convertToRestSearch(workflowSearch: Record<string, string>): Sea
         const keyWithColon = `${key}:`;
         const value = workflowSearch[key];
 
-        const searchOption: SearchEntry = {
+        const searchOption: RestSearchOption = {
             label: keyWithColon,
             value: keyWithColon,
             type: 'categoryOption',
@@ -87,39 +90,12 @@ export function convertSortToGraphQLFormat({
 }
 
 export function convertSortToRestFormat(
-    graphqlSort: GraphQLSortOption[]
-): Partial<ApiSortOptionSingle> {
+    graphqlSort: NonEmptyArray<GraphQLSortOption>
+): Pick<ApiSortOptionSingle, 'field' | 'reversed'> {
     return {
-        field: graphqlSort[0]?.id,
-        reversed: graphqlSort[0]?.desc,
+        field: graphqlSort[0].id,
+        reversed: graphqlSort[0].desc,
     };
-}
-
-/**
- * Function to convert the legacy SearchEntry array format to the
- * SearchFilter format.
- */
-export function searchOptionsToSearchFilter(searchOptions: SearchEntry[]): SearchFilter {
-    const searchFilter = {};
-    let currentOption = '';
-    searchOptions.forEach(({ value, type }) => {
-        if (type === 'categoryOption') {
-            // categoryOption represents the key of a search filter
-            const option = value.replace(':', '');
-            searchFilter[option] = '';
-            currentOption = option;
-        } else if (searchFilter[currentOption].length === 0) {
-            // If this is the first search value for this category, store it as a string
-            searchFilter[currentOption] = value;
-        } else if (!Array.isArray(searchFilter[currentOption])) {
-            // If this is not the first search value for this category, store it in a new array
-            searchFilter[currentOption] = [searchFilter[currentOption], value];
-        } else {
-            // If we already have an array, simply add the next value
-            searchFilter[currentOption].push(value);
-        }
-    });
-    return searchFilter;
 }
 
 /**
@@ -150,6 +126,41 @@ export function getRequestQueryStringForSearchFilter(searchFilter: SearchFilter)
         .filter(isNonEmptySearchEntry)
         .map(([key, value]) => `${key}:${Array.isArray(value) ? value.join(',') : value}`)
         .join('+');
+}
+
+/**
+ * Convert search filter string to SearchFilter object.
+ *
+ * @param searchString - Search filter format (e.g., "Cluster:production+Namespace:default")
+ * @returns SearchFilter object with parsed key-value pairs (e.g., { Cluster: 'production', Namespace: 'default' })
+ */
+export function getSearchFilterFromSearchString(searchString: string): SearchFilter {
+    const searchFilter: SearchFilter = {};
+
+    if (!searchString || searchString === '') {
+        return searchFilter;
+    }
+
+    // Split on '+' to get individual filter criteria
+    const filterPairs = searchString.split('+');
+
+    filterPairs.forEach((pair) => {
+        const colonIndex = pair.indexOf(':');
+        if (colonIndex > 0 && colonIndex < pair.length - 1) {
+            const key = pair.substring(0, colonIndex).trim();
+            const value = pair.substring(colonIndex + 1).trim();
+
+            if (key && value) {
+                // Split comma-separated values
+                const values = value.split(',');
+
+                // Store as array if multiple values, string if single value
+                searchFilter[key] = values.length > 1 ? values : value;
+            }
+        }
+    });
+
+    return removeRegexSearchModifiers(searchFilter);
 }
 
 export function getUrlQueryStringForSearchFilter(
@@ -227,6 +238,34 @@ export function getListQueryParams({
         },
         { allowDots: true }
     );
+}
+
+/**
+ * Builds query parameters for API endpoints where RawQuery is nested within
+ * the request message (e.g. `{ query: { query, pagination } }`), rather than
+ * being the top-level request parameter.
+ *
+ * @param options - Search query options (page, perPage, sortOption, searchFilter)
+ * @param paramName - The name of the nested parameter (defaults to 'query').
+ *                    Use 'reportParamQuery' for report history endpoints.
+ * @param additionalParams - Additional top-level parameters to include alongside the nested query
+ *                          (e.g., { includeRelationships: true })
+ */
+export function buildNestedRawQueryParams(
+    { page, perPage, sortOption, searchFilter = {} }: SearchQueryOptions,
+    paramName = 'query',
+    additionalParams: Record<string, unknown> = {}
+): string {
+    const query = getRequestQueryStringForSearchFilter(searchFilter);
+    const pagination = getPaginationParams({ page, perPage, sortOption });
+    const queryParameters = {
+        [paramName]: {
+            query,
+            pagination,
+        },
+        ...additionalParams,
+    };
+    return qs.stringify(queryParameters, { arrayFormat: 'repeat', allowDots: true });
 }
 
 /**
@@ -350,3 +389,228 @@ export const generatePathWithQuery = (
 
     return queryParams ? `${path}?${queryParams}` : path;
 };
+
+export function hasSearchKeyValue(search: string, key: string, value: string | null) {
+    const urlSearchParams = new URLSearchParams(search);
+    const encodedValue = encodeURIComponent(value ?? '');
+
+    return urlSearchParams.get(key) === value || urlSearchParams.get(key) === encodedValue;
+}
+
+/**
+ * Finds a value in an object by key case-insensitively.
+ *
+ * @param obj The object to search in
+ * @param targetKey The key to search for (case-insensitive)
+ * @returns The value associated with the key, or undefined if not found
+ */
+export function getValueByCaseInsensitiveKey<T extends Record<string, unknown>>(
+    obj: T,
+    targetKey: string
+): T[keyof T] | undefined {
+    const foundKey = Object.keys(obj).find(
+        (key) => key.toLowerCase() === targetKey.toLowerCase()
+    ) as keyof T | undefined;
+    return foundKey ? obj[foundKey] : undefined;
+}
+
+/**
+ * Deletes the keys from the `SearchFilter` regardless of case. The backend search
+ * API is case-insensitive, so we need to ensure that any keys we delete are also
+ * deleted regardless of case.
+ *
+ * @param searchFilter The `SearchFilter` to delete the keys from
+ * @param keysToDelete The keys to delete from the `SearchFilter`
+ * @returns A new `SearchFilter` with the keys deleted
+ */
+export function deleteKeysCaseInsensitive(searchFilter: SearchFilter, keysToDelete: string[]) {
+    const keysCaseInsensitive = keysToDelete.map((key) => key.toLowerCase());
+    const nextFilter = structuredClone(searchFilter);
+    Object.keys(nextFilter).forEach((key) => {
+        if (keysCaseInsensitive.includes(key.toLowerCase())) {
+            delete nextFilter[key];
+        }
+    });
+    return nextFilter;
+}
+
+/*
+ Search terms that will default to regex search.
+
+ We only convert to regex search if the search field is of type 'text' or 'autocomplete'
+*/
+const regexSearchOptions = [
+    nodeAttributes,
+    imageAttributes,
+    imageCVEAttributes,
+    imageComponentAttributes,
+    deploymentAttributes,
+    namespaceAttributes,
+    clusterIdAttribute,
+    clusterKubernetesVersionAttribute,
+    clusterLabelAttribute,
+    clusterNameAttribute,
+    clusterPlatformTypeAttribute,
+    clusterTypeAttribute,
+    policyAttributes,
+    profileName,
+]
+    .flat()
+    .filter(({ inputType }) => inputType === 'text' || inputType === 'autocomplete')
+    .map(({ searchTerm }) => searchTerm);
+
+/*
+ Search terms that use the key=value label format and need special handling
+ in both regex and exact-match search modes.
+*/
+const keyValueSearchOptions: Set<string> = new Set(
+    [
+        'Cluster Label',
+        'Deployment Annotation',
+        'Deployment Label',
+        'Image Label',
+        'Namespace Annotation',
+        'Namespace Label',
+        'Node Annotation',
+        'Node Label',
+        'Pod Label',
+        'Role Annotation',
+        'Role Binding Annotation',
+        'Role Binding Label',
+        'Role Label',
+    ].map((label) => label.toLowerCase())
+);
+
+export function isKeyValueSearchTerm(searchTerm: string): boolean {
+    return keyValueSearchOptions.has(searchTerm.toLowerCase());
+}
+
+export function isQuotedString(value: string): boolean {
+    return value.startsWith('"') && value.endsWith('"') && value.length >= 2;
+}
+
+/**
+ * Wraps a string in double quotes to indicate exact-match search values.
+ */
+export function wrapInQuotes(value: string): string {
+    return `"${value}"`;
+}
+
+/**
+ * Formats a label value by splitting on the first '=' and applying a formatter
+ * to each half. If no '=' is present, the value is used for both sides with
+ * a `r/.*` regex wildcard on the opposite side.
+ *
+ * Used for both exact-match (formatter = wrapInQuotes) and regex (formatter = r/ prefix)
+ * label formatting.
+ */
+export function formatKeyValue(value: string, formatPart: (part: string) => string): string[] {
+    const eqIndex = value.indexOf('=');
+    if (eqIndex !== -1) {
+        const key = value.slice(0, eqIndex);
+        const val = value.slice(eqIndex + 1);
+        const formattedKey = key ? formatPart(key) : 'r/.*';
+        const formattedVal = val ? formatPart(val) : 'r/.*';
+        return [`${formattedKey}=${formattedVal}`];
+    }
+    // No '=' present — emit two entries to match the value against either the
+    // label key or the label value (OR semantics via comma-joined values).
+    // The wildcard 'r/.*' always uses regex so it matches anything regardless of
+    // whether the user's value is exact-match or regex.
+    return [`${formatPart(value)}=r/.*`, `r/.*=${formatPart(value)}`];
+}
+
+/**
+ * Adds the regex search modifier to the search filter for any search options that support it.
+ * Skips regex wrapping for values that are already quoted (exact-match strings).
+ *
+ * Label search terms (e.g. "Deployment Label") receive special formatting because the
+ * search API treats labels as key=value pairs:
+ *   - With "=": app=reporting -> r/app=r/reporting (regex), "app"="reporting" (exact)
+ *   - Without "=": visa -> [r/visa=r/.*, r/.*=r/visa] (matches key OR value)
+ */
+export function applyRegexSearchModifiers(searchFilter: SearchFilter): SearchFilter {
+    const regexSearchFilter = cloneDeep(searchFilter);
+
+    Object.entries(regexSearchFilter).forEach(([key, value]) => {
+        if (regexSearchOptions.some((option) => option.toLowerCase() === key.toLowerCase())) {
+            const isLabel = isKeyValueSearchTerm(key);
+            regexSearchFilter[key] = searchValueAsArray(value).flatMap((val) => {
+                if (isLabel) {
+                    const rawValue = isQuotedString(val) ? val.slice(1, -1) : val;
+                    const formatPart = isQuotedString(val) ? wrapInQuotes : (v: string) => `r/${v}`;
+                    return formatKeyValue(rawValue, formatPart);
+                }
+                return isQuotedString(val) ? val : `r/${val}`;
+            });
+        }
+    });
+
+    return regexSearchFilter;
+}
+
+function stripRegexPrefix(val: string): string {
+    if (isQuotedString(val)) {
+        return val;
+    }
+    return val.startsWith('r/') ? val.slice(2) : val;
+}
+
+// Strips formatting applied by formatPart in formatKeyValue: r/X→X, "X"→X, r/.*→''
+function unwrapLabelPart(part: string): string {
+    if (part === 'r/.*') {
+        return '';
+    }
+    return isQuotedString(part) ? part.slice(1, -1) : stripRegexPrefix(part);
+}
+
+// Inverts formatKeyValue: re-merges split label key=value pairs.
+// formatKeyValue produces X=r/.* + r/.*=X pairs for values without '=';
+// this collapses them back and unwraps the regex/exact formatting from each part.
+function reverseLabelValues(values: string[]): string[] {
+    const valueSet = new Set(values);
+
+    return values.flatMap((val) => {
+        const eqIdx = val.indexOf('=');
+        if (eqIdx === -1) {
+            return [stripRegexPrefix(val)];
+        }
+
+        const keyPart = val.slice(0, eqIdx);
+        const valPart = val.slice(eqIdx + 1);
+
+        // Drop complement (r/.*=X) when its primary (X=r/.*) exists
+        if (keyPart === 'r/.*' && valPart !== 'r/.*' && valueSet.has(`${valPart}=r/.*`)) {
+            return [];
+        }
+
+        // Collapse no-= pair primary (X=r/.*) back to just X
+        if (valPart === 'r/.*' && valueSet.has(`r/.*=${keyPart}`)) {
+            return [isQuotedString(keyPart) ? keyPart : stripRegexPrefix(keyPart)];
+        }
+
+        // Unwrap key=value: strip r/ or quotes from each side, rejoin
+        const isExact = isQuotedString(keyPart) || isQuotedString(valPart);
+        const joined = `${unwrapLabelPart(keyPart)}=${unwrapLabelPart(valPart)}`;
+        return [isExact ? wrapInQuotes(joined) : joined];
+    });
+}
+
+/**
+ * Reverses `applyRegexSearchModifiers`: strips `r/` prefixes and re-merges
+ * split label key=value pairs back into the SearchFilter format used by the UI.
+ */
+export function removeRegexSearchModifiers(searchFilter: SearchFilter): SearchFilter {
+    const cleanSearchFilter = cloneDeep(searchFilter);
+
+    Object.entries(cleanSearchFilter).forEach(([key, value]) => {
+        if (regexSearchOptions.some((option) => option.toLowerCase() === key.toLowerCase())) {
+            const values = searchValueAsArray(value);
+            cleanSearchFilter[key] = isKeyValueSearchTerm(key)
+                ? reverseLabelValues(values)
+                : values.map(stripRegexPrefix);
+        }
+    });
+
+    return cleanSearchFilter;
+}

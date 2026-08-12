@@ -10,7 +10,7 @@ import (
 
 func getVulnsPerComponent(componentIndex int, numVulns int, cveType storage.EmbeddedVulnerability_VulnerabilityType) []*storage.EmbeddedVulnerability {
 	vulnsPerComponent := make([]*storage.EmbeddedVulnerability, 0, numVulns)
-	for i := 0; i < numVulns; i++ {
+	for i := range numVulns {
 		cveName := fmt.Sprintf("CVE-2014-62%d%d", componentIndex, i)
 		vulnsPerComponent = append(vulnsPerComponent, &storage.EmbeddedVulnerability{
 			Cve:               cveName,
@@ -31,32 +31,52 @@ func getVulnsPerComponent(componentIndex int, numVulns int, cveType storage.Embe
 func GetImage() *storage.Image {
 	numComponentsPerImage := 50
 	componentsPerImage := make([]*storage.EmbeddedImageScanComponent, 0, numComponentsPerImage)
-	for i := 0; i < numComponentsPerImage; i++ {
+	for i := range numComponentsPerImage {
 		componentsPerImage = append(componentsPerImage, &storage.EmbeddedImageScanComponent{
 			Name:    "name",
 			Version: "1.2.3.4",
-			License: &storage.License{
-				Name: "blah",
-				Type: "GPL",
-			},
-			Vulns: getVulnsPerComponent(i, 5, storage.EmbeddedVulnerability_IMAGE_VULNERABILITY),
+			Vulns:   getVulnsPerComponent(i, 5, storage.EmbeddedVulnerability_IMAGE_VULNERABILITY),
 		})
 	}
+	return getImageWithComponents(componentsPerImage)
+}
+
+func GetImagewithDulicateVulnerabilities() *storage.Image {
+	numComponentsPerImage := 50
+	componentsPerImage := make([]*storage.EmbeddedImageScanComponent, 0, numComponentsPerImage)
+	for i := range numComponentsPerImage {
+		componentsPerImage = append(componentsPerImage, &storage.EmbeddedImageScanComponent{
+			Name:    "name",
+			Version: "1.2.3.4",
+			Vulns:   getVulnsPerComponent(i, 5, storage.EmbeddedVulnerability_IMAGE_VULNERABILITY),
+		})
+	}
+	cveName := fmt.Sprintf("CVE-Duplicate-2025-%04d", rand.Intn(10_000))
+	duplicateVuln := &storage.EmbeddedVulnerability{
+		Cve:               cveName,
+		Cvss:              5,
+		VulnerabilityType: storage.EmbeddedVulnerability_IMAGE_VULNERABILITY,
+		Severity:          storage.VulnerabilitySeverity_MODERATE_VULNERABILITY_SEVERITY,
+		Summary:           "Duplicate CVE for testing",
+		Link:              fmt.Sprintf("https://nvd.nist.gov/vuln/detail/%s", cveName),
+		SetFixedBy: &storage.EmbeddedVulnerability_FixedBy{
+			FixedBy: "abcdefg",
+		},
+	}
+	componentsPerImage[0].Vulns = append(componentsPerImage[0].Vulns, duplicateVuln)
+	componentsPerImage[1].Vulns = append(componentsPerImage[1].Vulns, duplicateVuln)
+
 	return getImageWithComponents(componentsPerImage)
 }
 
 // GetImageWithUniqueComponents returns a Mock Image where each component is unique
 func GetImageWithUniqueComponents(numComponents int) *storage.Image {
 	componentsPerImage := make([]*storage.EmbeddedImageScanComponent, 0, numComponents)
-	for i := 0; i < numComponents; i++ {
+	for i := range numComponents {
 		componentsPerImage = append(componentsPerImage, &storage.EmbeddedImageScanComponent{
 			Name:    fmt.Sprintf("name-%d", i),
 			Version: fmt.Sprintf("%d.2.3.4", i),
-			License: &storage.License{
-				Name: "blah",
-				Type: "GPL",
-			},
-			Vulns: getVulnsPerComponent(i, 5, storage.EmbeddedVulnerability_IMAGE_VULNERABILITY),
+			Vulns:   getVulnsPerComponent(i, 5, storage.EmbeddedVulnerability_IMAGE_VULNERABILITY),
 		})
 	}
 	return getImageWithComponents(componentsPerImage)
@@ -71,6 +91,18 @@ func getImageWithComponents(componentsPerImage []*storage.EmbeddedImageScanCompo
 			Remote:   "srox/mongo",
 			Tag:      "latest",
 			FullName: "stackrox.io/srox/mongo:latest",
+		},
+		BaseImageInfo: []*storage.BaseImageInfo{
+			{
+				BaseImageId:       "some-id",
+				BaseImageFullName: "registry.example.com/ns/base:tag",
+				BaseImageDigest:   "sha256:...",
+			},
+			{
+				BaseImageId:       "another-id",
+				BaseImageFullName: "registry.example.com/ns/other:tag",
+				BaseImageDigest:   "sha256:...",
+			},
 		},
 		Metadata: &storage.ImageMetadata{
 			V1: &storage.V1Metadata{

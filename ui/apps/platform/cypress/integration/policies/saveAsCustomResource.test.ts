@@ -1,5 +1,6 @@
-import { selectors } from '../../constants/PoliciesPage';
 import withAuth from '../../helpers/basicAuth';
+import { interceptAndWatchRequests } from '../../helpers/request';
+import pf6 from '../../selectors/pf6';
 import {
     deletePolicyIfExists,
     doPolicyPageAction,
@@ -7,8 +8,8 @@ import {
     importPolicyFromFixture,
     visitPolicies,
     visitPolicy,
-} from '../../helpers/policies';
-import { interceptAndWatchRequests } from '../../helpers/request';
+} from './Policies.helpers';
+import { selectors } from './Policies.selectors';
 
 const saveAsUrl = '/api/policy/custom-resource/save-as-zip';
 
@@ -98,9 +99,7 @@ describe('Save policies as Custom Resource', () => {
 
             interceptAndWatchRequests(routeMatcherMapForPolicySaveAs)
                 .then(({ waitForRequests }) => {
-                    cy.get(
-                        `${selectors.table.bulkActionsDropdownItem}:contains("Save as Custom Resource")`
-                    ).click();
+                    cy.get(`${pf6.dropdownItem}:contains("Save as Custom Resource")`).click();
                     cy.get('button:contains("Yes")').click();
                     return waitForRequests();
                 })

@@ -7,18 +7,20 @@ import (
 	"github.com/stackrox/rox/roxctl/sensor/generate"
 	"github.com/stackrox/rox/roxctl/sensor/generatecerts"
 	"github.com/stackrox/rox/roxctl/sensor/getbundle"
+	"github.com/stackrox/rox/roxctl/sensor/migratetooperator"
 )
 
 // Command controls all of the functions being applied to a sensor
 func Command(cliEnvironment environment.Environment) *cobra.Command {
 	c := &cobra.Command{
 		Use:   "sensor",
-		Short: "Commands related to deploying StackRox services in secured clusters.",
+		Short: "Commands related to deploying StackRox services in secured clusters",
 	}
 	c.AddCommand(
 		generate.Command(cliEnvironment),
 		getbundle.Command(cliEnvironment),
 		generatecerts.Command(cliEnvironment),
+		migratetooperator.Command(cliEnvironment),
 	)
 	flags.AddTimeout(c)
 	flags.AddRetryTimeout(c)

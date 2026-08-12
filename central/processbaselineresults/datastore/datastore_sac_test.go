@@ -33,12 +33,10 @@ type processBaselineResultsDatastoreSACSuite struct {
 }
 
 func (s *processBaselineResultsDatastoreSACSuite) SetupSuite() {
-	var err error
 	pgtestbase := pgtest.ForT(s.T())
 	s.Require().NotNil(pgtestbase)
 	s.pool = pgtestbase.DB
-	s.datastore, err = GetTestPostgresDataStore(s.T(), s.pool)
-	s.Require().NoError(err)
+	s.datastore = GetTestPostgresDataStore(s.T(), s.pool)
 
 	s.testContexts = testutils.GetNamespaceScopedTestContexts(context.Background(), s.T(),
 		resources.DeploymentExtension)
@@ -134,11 +132,17 @@ func (s *processBaselineResultsDatastoreSACSuite) TestDeleteBaselineResults() {
 
 			ctx := s.testContexts[c.ScopeKey]
 			err = s.datastore.DeleteBaselineResults(ctx, processBaselineResult.GetDeploymentId())
-			if c.ExpectError {
-				s.Require().Error(err)
-				s.ErrorIs(err, c.ExpectedError)
+			s.NoError(err)
+
+			fetchedResults, err := s.datastore.GetBaselineResults(
+				s.testContexts[testutils.UnrestrictedReadWriteCtx],
+				processBaselineResult.GetDeploymentId(),
+			)
+			s.NoError(err)
+			if c.ExpectedFound {
+				protoassert.Equal(s.T(), processBaselineResult, fetchedResults)
 			} else {
-				s.NoError(err)
+				s.Nil(fetchedResults)
 			}
 		})
 	}

@@ -1,13 +1,20 @@
+/* IMPORTANT:
+   Tailwind's PostCSS processing (including the purge step) is triggered
+   by matching this specific filename.
+   If this file is renamed or moved, update the condition in postcss.config.js.
+   When tailwind is removed entirely, delete the related PostCSS plugin there. */
+
 @import 'css/style.css';
 
 @import 'css/light.theme.css';
 @import 'css/dark.theme.css';
 
-.theme-dark .react-select__option:hover,
-.theme-dark .react-select__option:focus,
-.theme-dark .react-select__option:active {
-    background: var(--base-400);
-}
+/* React Table overrides. Delete this file once all react Table properties are ported over properly to avoid the use of !important*/
+@import 'react-table-6/react-table.css';
+
+/* React-vis */
+@import 'react-vis/dist/style.css';
+
 
 @tailwind base;
 @tailwind components;
@@ -119,8 +126,8 @@ h6 {
 .toast-selector {
     background-color: #ffffff;
     color: #151515;
-    font-family: var(--pf-v5-global--FontFamily--sans-serif);
-    font-size: var(--pf-v5-global--FontSize--sm);
+    font-family: var(--pf-v6-global--FontFamily--sans-serif);
+    font-size: var(--pf-t--global--font--size--sm);
 }
 
 .Toastify__close-button--default {
@@ -366,9 +373,6 @@ h6 {
     @apply hidden;
 }
 
-/* React Table overrides. Delete this file once all react Table properties are ported over properly to avoid the use of !important*/
-@import '~react-table-6/react-table.css';
-
 .ReactTable .rt-table {
     overflow: overlay !important;
 }
@@ -435,20 +439,6 @@ h6 {
 
 .ReactTable .rt-th {
     @apply bg-base-100 !important; /* th also needs background for horizontal scrolling beyond tr width */
-}
-
-.theme-dark .ReactTable .rt-thead.-header .rt-tr {
-    @apply border-b border-base-200 bg-base-0 !important;
-    box-shadow: -10px 0 0 var(--base-100), 10px 0 0 var(--base-100), 0 2px 8px 0 hsl(233, 25%, 15%) !important;
-}
-
-.theme-dark .ReactTable .rt-th {
-    @apply bg-base-0 !important; /* th also needs background for horizontal scrolling beyond tr width */
-}
-
-.theme-dark .widget .ReactTable .rt-thead.-header .rt-tr,
-.theme-dark .widget .ReactTable .rt-th {
-    @apply bg-base-100 !important;
 }
 
 .ReactTable .rt-thead .rt-th.-sort-desc,
@@ -712,6 +702,10 @@ h6 {
     @apply h-full !important;
 }
 
+.redoc-wrap div:has(a[href*="redocly.com"]) {
+    position: static;
+}
+
 .redoc-wrap .api-content {
     @apply overflow-auto !important;
 }
@@ -818,9 +812,6 @@ h6 {
 .toggle-switch-checkbox:disabled + .toggle-switch-label:before {
     @apply bg-base-200;
 }
-
-/* React-vis */
-@import '~react-vis/dist/style.css';
 
 /*
  * Override overflow-y: auto which causes axe DevTools to report:
@@ -976,14 +967,6 @@ h6 {
     -webkit-box-orient: vertical;
     overflow: hidden;
     padding-bottom: 1px; /* necessary to fix bug where descenders are cut off */
-}
-
-.pdf-export .line-clamp {
-    display: flex;
-    -webkit-line-clamp: initial;
-    -webkit-box-orient: initial;
-    overflow: initial;
-    padding-bottom: 0; /* necessary to fix bug where descenders are cut off */
 }
 
 .drag-grip {

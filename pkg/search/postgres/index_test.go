@@ -37,17 +37,8 @@ func TestIndex(t *testing.T) {
 }
 
 func (s *IndexSuite) SetupTest() {
-
-	source := pgtest.GetConnectionString(s.T())
-	config, err := postgres.ParseConfig(source)
-	s.Require().NoError(err)
-	s.pool, err = postgres.New(context.Background(), config)
-	s.Require().NoError(err)
-
-	pgStore.Destroy(ctx, s.pool)
-	gormDB := pgtest.OpenGormDB(s.T(), source)
-	defer pgtest.CloseGormDB(s.T(), gormDB)
-	s.store = pgStore.CreateTableAndNewStore(ctx, s.pool, gormDB)
+	s.pool = pgtest.ForT(s.T())
+	s.store = pgStore.New(s.pool)
 }
 
 func (s *IndexSuite) TearDownTest() {
@@ -66,7 +57,7 @@ func (s *IndexSuite) getStruct(i int, f func(s *storage.TestStruct)) *storage.Te
 }
 
 func getID(s *storage.TestStruct) string {
-	return s.Key1
+	return s.GetKey1()
 }
 
 type testCase struct {
@@ -579,7 +570,69 @@ func (s *IndexSuite) TestTime() {
 		{
 			desc: "range time query",
 			q: search.NewQueryBuilder().AddTimeRangeField(search.TestTimestamp,
-				protoconv.ConvertTimestampToTimeOrNow(testStruct2020Mar09Noon.Timestamp), protoconv.ConvertTimestampToTimeOrNow(testStruct2022Feb09Noon.Timestamp)).ProtoQuery(),
+				protoconv.ConvertTimestampToTimeOrNow(testStruct2020Mar09Noon.GetTimestamp()), protoconv.ConvertTimestampToTimeOrNow(testStruct2022Feb09Noon.GetTimestamp())).ProtoQuery(),
+			expectedResults: []*storage.TestStruct{testStruct2020Mar09Noon, testStruct2021Mar09Noon},
+		},
+	})
+}
+
+func (s *IndexSuite) TestTimeTZ() {
+	testStruct2029Mar09Noon := s.getStruct(0, func(s *storage.TestStruct) {
+		s.Timestamptz = ts2029Mar09Noon
+	})
+	testStruct2022Mar09Noon := s.getStruct(1, func(s *storage.TestStruct) {
+		s.Timestamptz = ts2022Mar09Noon
+	})
+	testStruct2022Feb09Noon := s.getStruct(2, func(s *storage.TestStruct) {
+		s.Timestamptz = ts2022Feb09Noon
+	})
+	testStruct2021Mar09Noon := s.getStruct(3, func(s *storage.TestStruct) {
+		s.Timestamptz = ts2021Mar09Noon
+	})
+	testStruct2020Mar09Noon := s.getStruct(4, func(s *storage.TestStruct) {
+		s.Timestamptz = ts2020Mar09Noon
+	})
+
+	s.runTestCases([]testCase{
+		{
+			desc:            "timestamptz: exact match (should evaluate if it's within the day) - matches",
+			q:               search.NewQueryBuilder().AddStrings(search.TestTimestampTZ, "03/09/2022 UTC").ProtoQuery(),
+			expectedResults: []*storage.TestStruct{testStruct2022Mar09Noon},
+		},
+		{
+			desc:            "timestamptz: exact match (should evaluate if it's within the day) - no match",
+			q:               search.NewQueryBuilder().AddStrings(search.TestTimestampTZ, "03/08/2022").ProtoQuery(),
+			expectedResults: []*storage.TestStruct{},
+		},
+		{
+			desc:            "timestamptz: < date",
+			q:               search.NewQueryBuilder().AddStrings(search.TestTimestampTZ, "< 03/09/2022").ProtoQuery(),
+			expectedResults: []*storage.TestStruct{testStruct2021Mar09Noon, testStruct2020Mar09Noon, testStruct2022Feb09Noon},
+		},
+		{
+			desc:            "timestamptz: < date time (this time, includes Mar 10th at noon)",
+			q:               search.NewQueryBuilder().AddStrings(search.TestTimestampTZ, "< 03/09/2022 1:00 PM").ProtoQuery(),
+			expectedResults: []*storage.TestStruct{testStruct2021Mar09Noon, testStruct2020Mar09Noon, testStruct2022Feb09Noon, testStruct2022Mar09Noon},
+		},
+		{
+			desc:            "timestamptz: > duration (this test will fail in 2029, but hopefully it's not still being run then)",
+			q:               search.NewQueryBuilder().AddStrings(search.TestTimestampTZ, "> 1d").ProtoQuery(),
+			expectedResults: []*storage.TestStruct{testStruct2021Mar09Noon, testStruct2020Mar09Noon, testStruct2022Feb09Noon, testStruct2022Mar09Noon},
+		},
+		{
+			desc:            "timestamptz: range duration (this test will fail in 2027, but hopefully it's not still being run then)",
+			q:               search.NewQueryBuilder().AddStrings(search.TestTimestampTZ, "1d-2500d").ProtoQuery(),
+			expectedResults: []*storage.TestStruct{testStruct2021Mar09Noon, testStruct2020Mar09Noon, testStruct2022Feb09Noon, testStruct2022Mar09Noon},
+		},
+		{
+			desc:            "timestamptz: range duration with negative (this test will fail in 2029, but hopefully it's not still being run then)",
+			q:               search.NewQueryBuilder().AddStrings(search.TestTimestampTZ, "-3000d-1d").ProtoQuery(),
+			expectedResults: []*storage.TestStruct{testStruct2029Mar09Noon},
+		},
+		{
+			desc: "timestamptz: range time query",
+			q: search.NewQueryBuilder().AddTimeRangeField(search.TestTimestampTZ,
+				protoconv.ConvertTimestampToTimeOrNow(testStruct2020Mar09Noon.GetTimestamptz()), protoconv.ConvertTimestampToTimeOrNow(testStruct2022Feb09Noon.GetTimestamptz())).ProtoQuery(),
 			expectedResults: []*storage.TestStruct{testStruct2020Mar09Noon, testStruct2021Mar09Noon},
 		},
 	})
@@ -881,6 +934,69 @@ func (s *IndexSuite) TestTimeHighlights() {
 				testStruct2020Mar09Noon: {"teststruct.timestamp.seconds": {"2020-03-09 12:00:00"}},
 				testStruct2022Feb09Noon: {"teststruct.timestamp.seconds": {"2022-02-09 12:00:00"}},
 				testStruct2022Mar09Noon: {"teststruct.timestamp.seconds": {"2022-03-09 12:00:00"}},
+			},
+		},
+	})
+}
+
+func (s *IndexSuite) TestTimeTZHighlights() {
+	testStruct2029Mar09Noon := s.getStruct(0, func(s *storage.TestStruct) {
+		s.Timestamptz = ts2029Mar09Noon
+	})
+	testStruct2022Mar09Noon := s.getStruct(1, func(s *storage.TestStruct) {
+		s.Timestamptz = ts2022Mar09Noon
+	})
+	testStruct2022Feb09Noon := s.getStruct(2, func(s *storage.TestStruct) {
+		s.Timestamptz = ts2022Feb09Noon
+	})
+	testStruct2021Mar09Noon := s.getStruct(3, func(s *storage.TestStruct) {
+		s.Timestamptz = ts2021Mar09Noon
+	})
+	testStruct2020Mar09Noon := s.getStruct(4, func(s *storage.TestStruct) {
+		s.Timestamptz = ts2020Mar09Noon
+	})
+	_ = testStruct2029Mar09Noon
+
+	s.runHighlightTestCases([]highlightTestCase{
+		{
+			desc: "timestamptz: exact match (should evaluate if it's within the day) - matches",
+			q:    search.NewQueryBuilder().AddStringsHighlighted(search.TestTimestampTZ, "03/09/2022 UTC").ProtoQuery(),
+			expectedResults: map[*storage.TestStruct]map[string][]string{
+				testStruct2022Mar09Noon: {"teststruct.timestamptz.seconds": {"2022-03-09 12:00:00"}},
+			},
+		},
+		{
+			desc:            "timestamptz: exact match (should evaluate if it's within the day) - no match",
+			q:               search.NewQueryBuilder().AddStringsHighlighted(search.TestTimestampTZ, "03/08/2022").ProtoQuery(),
+			expectedResults: nil,
+		},
+		{
+			desc: "timestamptz: < date",
+			q:    search.NewQueryBuilder().AddStringsHighlighted(search.TestTimestampTZ, "< 03/09/2022").ProtoQuery(),
+			expectedResults: map[*storage.TestStruct]map[string][]string{
+				testStruct2021Mar09Noon: {"teststruct.timestamptz.seconds": {"2021-03-09 12:00:00"}},
+				testStruct2020Mar09Noon: {"teststruct.timestamptz.seconds": {"2020-03-09 12:00:00"}},
+				testStruct2022Feb09Noon: {"teststruct.timestamptz.seconds": {"2022-02-09 12:00:00"}},
+			},
+		},
+		{
+			desc: "timestamptz: < date time (this time, includes Mar 10th at noon)",
+			q:    search.NewQueryBuilder().AddStringsHighlighted(search.TestTimestampTZ, "< 03/09/2022 1:00 PM").ProtoQuery(),
+			expectedResults: map[*storage.TestStruct]map[string][]string{
+				testStruct2021Mar09Noon: {"teststruct.timestamptz.seconds": {"2021-03-09 12:00:00"}},
+				testStruct2020Mar09Noon: {"teststruct.timestamptz.seconds": {"2020-03-09 12:00:00"}},
+				testStruct2022Feb09Noon: {"teststruct.timestamptz.seconds": {"2022-02-09 12:00:00"}},
+				testStruct2022Mar09Noon: {"teststruct.timestamptz.seconds": {"2022-03-09 12:00:00"}},
+			},
+		},
+		{
+			desc: "timestamptz: > duration (this test will fail in 2029, but hopefully it's not still being run then)",
+			q:    search.NewQueryBuilder().AddStringsHighlighted(search.TestTimestampTZ, "> 1d").ProtoQuery(),
+			expectedResults: map[*storage.TestStruct]map[string][]string{
+				testStruct2021Mar09Noon: {"teststruct.timestamptz.seconds": {"2021-03-09 12:00:00"}},
+				testStruct2020Mar09Noon: {"teststruct.timestamptz.seconds": {"2020-03-09 12:00:00"}},
+				testStruct2022Feb09Noon: {"teststruct.timestamptz.seconds": {"2022-02-09 12:00:00"}},
+				testStruct2022Mar09Noon: {"teststruct.timestamptz.seconds": {"2022-03-09 12:00:00"}},
 			},
 		},
 	})
@@ -1272,7 +1388,7 @@ func (s *IndexSuite) TestMapHighlights() {
 
 func (s *IndexSuite) TestPagination() {
 	var testStructs []*storage.TestStruct
-	for i := 0; i < 8; i++ {
+	for i := range 8 {
 		testStructs = append(testStructs, s.getStruct(i, func(s *storage.TestStruct) {
 			s.String_ = fmt.Sprintf("string-%d", i)
 			s.Int64 = int64(rand.Int31())
@@ -1351,5 +1467,4 @@ func (s *IndexSuite) TestPagination() {
 			s.Equal(testCase.orderedExpectedMatches, actualMatches)
 		})
 	}
-
 }

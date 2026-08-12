@@ -4,7 +4,7 @@ import java.security.SecureRandom
 import java.util.concurrent.TimeUnit
 
 import io.restassured.RestAssured
-import orchestratormanager.OrchestratorMain
+import orchestratormanager.Kubernetes
 import orchestratormanager.OrchestratorType
 import orchestratormanager.OrchestratorTypes
 import org.javers.core.Javers
@@ -15,7 +15,9 @@ import org.slf4j.Logger
 import org.slf4j.LoggerFactory
 import org.slf4j.MDC
 
+import io.stackrox.annotations.Retry
 import io.stackrox.proto.api.v1.ApiTokenService
+import io.stackrox.proto.storage.ClusterOuterClass
 import io.stackrox.proto.storage.ImageIntegrationOuterClass
 import io.stackrox.proto.storage.RoleOuterClass
 
@@ -24,6 +26,7 @@ import objects.K8sServiceAccount
 import objects.Secret
 import services.BaseService
 import services.ClusterService
+import services.FeatureFlagService
 import services.ImageIntegrationService
 import services.MetadataService
 import services.RoleService
@@ -42,9 +45,11 @@ class BaseSpecification extends Specification {
 
     static final Logger LOG = LoggerFactory.getLogger("test." + BaseSpecification.getSimpleName())
 
-    static final String TEST_IMAGE = "quay.io/rhacs-eng/qa-multi-arch:nginx-1.12@$TEST_IMAGE_SHA"
+    static final String TEST_IMAGE = "quay.io/rhacs-eng/qa-multi-arch:nginx-2.0.3@$TEST_IMAGE_SHA"
     static final String TEST_IMAGE_NAME_WITH_SHA = TEST_IMAGE
-    static final String TEST_IMAGE_SHA = "sha256:72daaf46f11cc753c4eab981cbf869919bd1fee3d2170a2adeac12400f494728"
+    static final String TEST_IMAGE_SHA = "sha256:ebecc1ad41054eaef19ef9c84e0d95551dfbdebbf0875fd407aee697e4be3860"
+    // UUIDv5 of TEST_IMAGE (full name) and TEST_IMAGE_SHA (digest), used as image ID when FlattenImageData is enabled.
+    static final String TEST_IMAGE_V2_ID = Helpers.generateImageV2ID(TEST_IMAGE, TEST_IMAGE_SHA)
 
     static final String RUN_ID
 
@@ -71,6 +76,9 @@ class BaseSpecification extends Specification {
 
     public static String coreImageIntegrationId = null
 
+    public static boolean scannerV4Enabled = false
+    public static boolean flattenImageDataEnabled = false
+
     private static synchronizedGlobalSetup() {
         synchronized(BaseSpecification) {
             globalSetup()
@@ -91,15 +99,16 @@ class BaseSpecification extends Specification {
             strictIntegrationTesting = true
         }
 
-        OrchestratorMain orchestrator = OrchestratorType.create(
+        Kubernetes orchestrator = OrchestratorType.create(
                 Env.mustGetOrchestratorType(),
                 Constants.ORCHESTRATOR_NAMESPACE
         )
 
         orchestrator.createNamespace(Constants.ORCHESTRATOR_NAMESPACE)
 
-        addStackroxImagePullSecret()
-        addGCRImagePullSecret()
+        addStackroxImagePullSecret(orchestrator)
+        addGCRImagePullSecret(orchestrator)
+        addRedHatImagePullSecret(orchestrator)
 
         RoleOuterClass.Role testRole = null
         ApiTokenService.GenerateTokenResponse tokenResp = null
@@ -124,6 +133,12 @@ class BaseSpecification extends Specification {
                 throw(ex)
             }
         }
+
+        scannerV4Enabled = FeatureFlagService.isFeatureFlagEnabled("ROX_SCANNER_V4")
+        LOG.info "Scanner V4 enabled: ${scannerV4Enabled}"
+
+        flattenImageDataEnabled = Env.get("ROX_FLATTEN_IMAGE_DATA") == "true"
+        LOG.info "Flatten Image Data enabled: ${flattenImageDataEnabled}"
 
         if (ClusterService.isOpenShift4()) {
             assert Env.mustGetOrchestratorType() == OrchestratorTypes.OPENSHIFT,
@@ -206,13 +221,13 @@ class BaseSpecification extends Specification {
             TimeUnit.SECONDS
     )
     @Rule
-    TestName name = new TestName()
+    protected final TestName currentTestName = new TestName()
 
     @Shared
     Logger log = LoggerFactory.getLogger("test." + this.getClass().getSimpleName())
 
     @Shared
-    OrchestratorMain orchestrator = OrchestratorType.create(
+    Kubernetes orchestrator = OrchestratorType.create(
             Env.mustGetOrchestratorType(),
             Constants.ORCHESTRATOR_NAMESPACE
     )
@@ -261,7 +276,7 @@ class BaseSpecification extends Specification {
         }
     }
 
-    private static void recordResourcesAtRunStart(OrchestratorMain orchestrator) {
+    private static void recordResourcesAtRunStart(Kubernetes orchestrator) {
         resourceRecord = [
                 "namespaces": orchestrator.getNamespaces(),
                 "deployments": orchestrator.getDeployments("default") +
@@ -287,7 +302,7 @@ class BaseSpecification extends Specification {
         // These .puts() have to be repeated here or else the key is cleared.
         MDC.put("logFileName", this.class.getSimpleName())
         MDC.put("specification", this.class.getSimpleName())
-        log.info("Starting testcase: ${name.getMethodName()}")
+        log.info("Starting testcase: ${currentTestName.getMethodName()}")
 
         // Make sure to use or revert back to the desired central gRPC auth
         // before each test.
@@ -314,11 +329,16 @@ class BaseSpecification extends Specification {
 
         BaseService.useBasicAuth()
         BaseService.setUseClientCert(false)
+        //TODO(ROX-30946): figure out why Sensor is unhealthy at the end of UpgradesTest
+        if (Env.IN_CI && this.class.simpleName != "UpgradesTest") {
+            log.info("Checking if cluster is healthy after test")
+            waitForClusterHealthy()
+        }
 
         MDC.remove("specification")
     }
 
-    private static void compareResourcesAtRunEnd(OrchestratorMain orchestrator) {
+    private static void compareResourcesAtRunEnd(Kubernetes orchestrator) {
         Javers javers = JaversBuilder.javers()
                 .withListCompareAlgorithm(ListCompareAlgorithm.AS_SET)
                 .build()
@@ -347,12 +367,11 @@ class BaseSpecification extends Specification {
         log.info("Ending testcase")
     }
 
-    static addStackroxImagePullSecret(ns = Constants.ORCHESTRATOR_NAMESPACE) {
+    static addStackroxImagePullSecret(Kubernetes orchestrator, String ns = Constants.ORCHESTRATOR_NAMESPACE) {
         // Add an image pull secret to the qa namespace and also the default service account so the qa namespace can
         // pull stackrox images from dockerhub
 
-        if (!Env.IN_CI && (Env.get("REGISTRY_USERNAME", null) == null ||
-                           Env.get("REGISTRY_PASSWORD", null) == null)) {
+        if (!Env.get("REGISTRY_USERNAME", null) || !Env.get("REGISTRY_PASSWORD", null)) {
             // Arguably this should be fatal but for tests that don't pull from docker.io/stackrox it is not strictly
             // necessary.
             LOG.warn "The REGISTRY_USERNAME and/or REGISTRY_PASSWORD env var is missing. " +
@@ -360,10 +379,6 @@ class BaseSpecification extends Specification {
             return
         }
 
-        OrchestratorMain orchestrator = OrchestratorType.create(
-                Env.mustGetOrchestratorType(),
-                ns
-        )
         orchestrator.createImagePullSecret(
                 "quay",
                 Env.mustGetInCI("REGISTRY_USERNAME", "fakeUsername"),
@@ -386,18 +401,13 @@ class BaseSpecification extends Specification {
         orchestrator.createServiceAccount(sa)
     }
 
-    static addGCRImagePullSecret(ns = Constants.ORCHESTRATOR_NAMESPACE) {
-        if (!Env.IN_CI && Env.get("GOOGLE_CREDENTIALS_GCR_SCANNER_V2", null) == null) {
+    static addGCRImagePullSecret(Kubernetes orchestrator, String ns = Constants.ORCHESTRATOR_NAMESPACE) {
+        if (!Env.get("GOOGLE_CREDENTIALS_GCR_SCANNER_V2", null)) {
             // Arguably this should be fatal but for tests that don't pull from us.gcr.io it is not strictly necessary
             LOG.warn "The GOOGLE_CREDENTIALS_GCR_SCANNER_V2 env var is missing. "+
                     "(this is ok if your test does not use images on us.gcr.io)"
             return
         }
-
-        OrchestratorMain orchestrator = OrchestratorType.create(
-                Env.mustGetOrchestratorType(),
-                ns
-        )
 
         orchestrator.createImagePullSecret(new Secret(
                 name: "gcr-image-pull-secret",
@@ -422,8 +432,36 @@ class BaseSpecification extends Specification {
         orchestrator.deleteSecret("gcr-image-pull-secret", Constants.ORCHESTRATOR_NAMESPACE)
     }
 
+    static addRedHatImagePullSecret(Kubernetes orchestrator, String ns = Constants.ORCHESTRATOR_NAMESPACE) {
+        if (!Env.get("REDHAT_USERNAME") || !Env.get("REDHAT_PASSWORD")) {
+            LOG.warn "The REDHAT_USERNAME and/or REDHAT_PASSWORD env var is missing or empty. " +
+                    "(this is ok if your test does not use images from registry.redhat.io)"
+            return
+        }
+
+        orchestrator.createImagePullSecret(new Secret(
+                name: "redhat-image-pull-secret",
+                server: "https://registry.redhat.io",
+                username: Env.mustGetInCI("REDHAT_USERNAME", "{}"),
+                password: Env.mustGetInCI("REDHAT_PASSWORD", "{}"),
+                namespace: ns
+        ))
+
+        orchestrator.addServiceAccountImagePullSecret(
+                "default",
+                "redhat-image-pull-secret",
+                ns
+        )
+    }
+
     static Boolean isRaceBuild() {
         return Env.get("IS_RACE_BUILD", null) == "true" || Env.CI_JOB_NAME == "race-condition-qa-e2e-tests"
+    }
+
+    @Retry(attempts = 30, delay = 3)
+    static void waitForClusterHealthy() {
+        ClusterOuterClass.ClusterHealthStatus status = ClusterService.getCluster().healthStatus
+        assert status.overallHealthStatus == ClusterOuterClass.ClusterHealthStatus.HealthStatusLabel.HEALTHY
     }
 }
 

@@ -1,8 +1,8 @@
-import React, { ReactElement } from 'react';
-import { generatePath, useHistory } from 'react-router-dom';
+import type { ReactElement } from 'react';
+import { generatePath, useNavigate } from 'react-router-dom-v5-compat';
 import { ActionsColumn } from '@patternfly/react-table';
 
-import { ComplianceScanConfigurationStatus } from 'services/ComplianceScanConfigurationService';
+import type { ComplianceScanConfigurationStatus } from 'services/ComplianceScanConfigurationService';
 
 import { scanConfigDetailsPath } from './compliance.scanConfigs.routes';
 
@@ -17,8 +17,6 @@ export type ScanConfigActionsColumnProps = {
     handleGenerateDownload: (scanConfigResponse: ComplianceScanConfigurationStatus) => void;
     scanConfigResponse: ComplianceScanConfigurationStatus;
     isSnapshotStatusPending: boolean;
-    isReportJobsEnabled: boolean;
-    isComplianceReportingEnabled: boolean;
 };
 
 function ScanConfigActionsColumn({
@@ -28,10 +26,8 @@ function ScanConfigActionsColumn({
     handleGenerateDownload,
     scanConfigResponse,
     isSnapshotStatusPending,
-    isReportJobsEnabled,
-    isComplianceReportingEnabled,
 }: ScanConfigActionsColumnProps): ReactElement {
-    const history = useHistory();
+    const navigate = useNavigate();
 
     const { id, /* lastExecutedTime, */ scanConfig } = scanConfigResponse;
     const { notifiers } = scanConfig;
@@ -47,10 +43,7 @@ function ScanConfigActionsColumn({
             // isDisabled: isScanning,
             onClick: (event) => {
                 event.preventDefault();
-                history.push({
-                    pathname: scanConfigUrl,
-                    search: 'action=edit',
-                });
+                navigate(`${scanConfigUrl}?action=edit`);
             },
             isDisabled: isSnapshotStatusPending,
         },
@@ -79,7 +72,6 @@ function ScanConfigActionsColumn({
                 event.preventDefault();
                 handleSendReport(scanConfigResponse);
             },
-            isHidden: !isComplianceReportingEnabled,
             isDisabled: notifiers.length === 0 || isSnapshotStatusPending,
         },
         {
@@ -88,7 +80,6 @@ function ScanConfigActionsColumn({
                 event.preventDefault();
                 handleGenerateDownload(scanConfigResponse);
             },
-            isHidden: !isReportJobsEnabled,
             isDisabled: isSnapshotStatusPending,
         },
         {
@@ -96,7 +87,7 @@ function ScanConfigActionsColumn({
         },
         {
             title: (
-                <span className={/* isScanning ? '' : */ 'pf-v5-u-danger-color-100'}>
+                <span className={/* isScanning ? '' : */ 'pf-v6-u-text-color-status-danger'}>
                     Delete scan schedule
                 </span>
             ),
@@ -108,7 +99,7 @@ function ScanConfigActionsColumn({
             },
             isDisabled: isSnapshotStatusPending,
         },
-    ].filter(({ isHidden }) => !isHidden);
+    ];
 
     return (
         <ActionsColumn

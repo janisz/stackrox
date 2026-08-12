@@ -1,4 +1,4 @@
-import React, { useCallback } from 'react';
+import { useCallback } from 'react';
 import { PageSection, Pagination, ToolbarItem } from '@patternfly/react-core';
 import { Table, Td, Th, Thead, Tr } from '@patternfly/react-table';
 
@@ -11,20 +11,19 @@ import { fetchVulnerabilityExceptions } from 'services/VulnerabilityExceptionSer
 import PageTitle from 'Components/PageTitle';
 import TableErrorComponent from 'Components/PatternFly/TableErrorComponent';
 import TbodyUnified from 'Components/TableStateTemplates/TbodyUnified';
-import { SearchFilter } from 'types/search';
+import type { SearchFilter } from 'types/search';
+import { getTableUIState } from 'utils/getTableUIState';
 import {
+    RequestCreatedAt,
     RequestExpires,
     RequestIDLink,
+    RequestScope,
     RequestedAction,
     RequestedItems,
-    RequestCreatedAt,
     Requester,
-    RequestScope,
 } from './components/ExceptionRequestTableCells';
-
-import { getTableUIState } from '../../../utils/getTableUIState';
-import { DEFAULT_VM_PAGE_SIZE } from '../constants';
 import AdvancedFiltersToolbar from '../components/AdvancedFiltersToolbar';
+import { DEFAULT_VM_PAGE_SIZE } from '../constants';
 import { vulnRequestSearchFilterConfig } from './searchFilterConfig';
 
 const sortFields = [
@@ -85,7 +84,7 @@ function ApprovedDeferrals() {
 
     if (tableState.type === 'ERROR') {
         return (
-            <PageSection variant="light">
+            <PageSection>
                 <TableErrorComponent
                     error={tableState.error}
                     message="An error occurred. Try refreshing again"
@@ -104,7 +103,7 @@ function ApprovedDeferrals() {
                 includeCveSeverityFilters={false}
                 includeCveStatusFilters={false}
             >
-                <ToolbarItem variant="pagination" align={{ default: 'alignRight' }}>
+                <ToolbarItem variant="pagination" align={{ default: 'alignEnd' }}>
                     <Pagination
                         toggleTemplate={({ firstIndex, lastIndex }) => (
                             <span>
@@ -122,7 +121,7 @@ function ApprovedDeferrals() {
                     />
                 </ToolbarItem>
             </AdvancedFiltersToolbar>
-            <Table borders={false}>
+            <Table>
                 <Thead noWrap>
                     <Tr>
                         <Th sort={getSortParams('Request Name')}>Request name</Th>

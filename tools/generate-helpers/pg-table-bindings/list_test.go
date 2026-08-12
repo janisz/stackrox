@@ -17,9 +17,10 @@ func TestStorageToResource(t *testing.T) {
 	assert.Equal(t, "Cluster", storageToResource("*storage.Cluster"))
 	assert.Equal(t, "Cluster", storageToResource("storage.Cluster"))
 	assert.Equal(t, "Integration", storageToResource("storage.SignatureIntegration"))
-	assert.Equal(t, "*fake", storageToResource("fake"))
-	assert.Equal(t, "fake", storageToResource("storage.fake"))
-	assert.Equal(t, "fake", storageToResource("*storage.fake"))
+	// Unknown types do not get same name resource anymore.
+	assert.Equal(t, "", storageToResource("fake"))
+	assert.Equal(t, "", storageToResource("storage.fake"))
+	assert.Equal(t, "", storageToResource("*storage.fake"))
 }
 
 func TestClusterGetter(t *testing.T) {
@@ -35,8 +36,8 @@ func TestClusterGetter(t *testing.T) {
 	}
 
 	t.Run("panics for not directly scoped type", func(t *testing.T) {
-		assert.Panics(t, func() { clusterGetter("obj", walker.Walk(reflect.TypeOf(&storage.CVE{}), "")) })
-		assert.Panics(t, func() { clusterGetter("obj", walker.Walk(reflect.TypeOf(&storage.Email{}), "")) })
+		assert.Panics(t, func() { clusterGetter("obj", walker.Walk(reflect.TypeFor[*storage.CVE](), "")) })
+		assert.Panics(t, func() { clusterGetter("obj", walker.Walk(reflect.TypeFor[*storage.Email](), "")) })
 	})
 }
 
@@ -53,7 +54,7 @@ func TestNamespaceGetter(t *testing.T) {
 	}
 
 	t.Run("panics for not directly & ns scoped type", func(t *testing.T) {
-		assert.Panics(t, func() { namespaceGetter("obj", walker.Walk(reflect.TypeOf(&storage.Email{}), "")) })
-		assert.Panics(t, func() { namespaceGetter("obj", walker.Walk(reflect.TypeOf(&storage.Cluster{}), "")) })
+		assert.Panics(t, func() { namespaceGetter("obj", walker.Walk(reflect.TypeFor[*storage.Email](), "")) })
+		assert.Panics(t, func() { namespaceGetter("obj", walker.Walk(reflect.TypeFor[*storage.Cluster](), "")) })
 	})
 }

@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -12,11 +12,14 @@ import (
 
 	"github.com/klauspost/compress/zstd"
 	"github.com/pkg/errors"
+	"github.com/quay/claircore"
 	"github.com/quay/claircore/enricher/epss"
+	"github.com/quay/claircore/enricher/kev"
 	"github.com/quay/claircore/libvuln/driver"
 	"github.com/quay/claircore/libvuln/jsonblob"
 	"github.com/quay/claircore/libvuln/updates"
-	"github.com/quay/zlog"
+	"github.com/quay/claircore/rhel/vex"
+	"github.com/quay/claircore/toolkit/log"
 	"github.com/stackrox/rox/scanner/enricher/csaf"
 	"github.com/stackrox/rox/scanner/enricher/nvd"
 	"github.com/stackrox/rox/scanner/updater/manual"
@@ -26,9 +29,30 @@ import (
 	_ "github.com/quay/claircore/updater/defaults"
 )
 
+const (
+	rhelVexUpdaterName = "rhel-vex"
+)
+
+var (
+	// ccUpdaterSets represents Claircore updater sets to initialize.
+	ccUpdaterSets = []string{
+		"alpine",
+		"aws",
+		"debian",
+		"oracle",
+		"osv",
+		"photon",
+		rhelVexUpdaterName,
+		"suse",
+		"ubuntu",
+	}
+)
+
 type ExportOptions struct {
-	SplitBundles  bool
 	ManualVulnURL string
+	// Sources restricts which updaters run. When nil or empty, all updaters run.
+	// Values must be pre-normalized (trimmed, no empty entries).
+	Sources []string
 }
 
 // Export is responsible for triggering the updaters to download Common Vulnerabilities and Exposures (CVEs) data.
@@ -51,20 +75,24 @@ func Export(ctx context.Context, outputDir string, opts *ExportOptions) error {
 	bundles["nvd"] = nvdOpts()
 	bundles["epss"] = epssOpts()
 	bundles["stackrox-rhel-csaf"] = redhatCSAFOpts()
+	bundles["cisa-kev"] = kevOpts()
 
-	// ClairCore updaters.
-	for _, uSet := range []string{
-		"alpine",
-		"aws",
-		"debian",
-		"oracle",
-		"osv",
-		"photon",
-		"rhel-vex",
-		"suse",
-		"ubuntu",
-	} {
-		bundles[uSet] = []updates.ManagerOption{updates.WithEnabled([]string{uSet})}
+	// Claircore Updaters.
+	for _, uSet := range ccUpdaterSets {
+		managerOpts := []updates.ManagerOption{updates.WithEnabled([]string{uSet})}
+		if uSet == rhelVexUpdaterName {
+			managerOpts = rhelVexOpts()
+		}
+		bundles[uSet] = managerOpts
+	}
+
+	if len(opts.Sources) > 0 {
+		filtered, err := filterSources(bundles, opts.Sources)
+		if err != nil {
+			return fmt.Errorf("filtering sources: %w", err)
+		}
+		slog.InfoContext(ctx, "source filter active", "running", len(filtered), "total", len(bundles), "sources", opts.Sources)
+		bundles = filtered
 	}
 
 	// Rate limit to ~16 requests/second by default.
@@ -74,9 +102,11 @@ func Export(ctx context.Context, outputDir string, opts *ExportOptions) error {
 		parsedInterval, err := time.ParseDuration(configuredInterval)
 		switch {
 		case err != nil:
-			log.Printf("invalid interval, using default (%v): %v", interval, err)
+			slog.WarnContext(ctx, "invalid interval, using default",
+				"default", interval, "reason", err)
 		case parsedInterval < interval:
-			log.Printf("interval is too small (%v): using default (%v)", parsedInterval, interval)
+			slog.WarnContext(ctx, "interval is too small, using default",
+				"interval", parsedInterval, "default", interval)
 		default:
 			interval = parsedInterval
 		}
@@ -91,40 +121,20 @@ func Export(ctx context.Context, outputDir string, opts *ExportOptions) error {
 	}
 
 	// Export to bundle(s).
-	if opts.SplitBundles {
-		for name, o := range bundles {
-			ctx = zlog.ContextWithValues(ctx, "bundle", name)
-			w, err := zstdWriter(filepath.Join(outputDir, fmt.Sprintf("%s.json.zst", name)))
-			if err != nil {
-				return err
-			}
-			err = bundle(ctx, httpClient, w, o)
-			if err != nil {
-				_ = w.Close()
-				return err
-			}
-			if err := w.Close(); err != nil {
-				// Fail to close here means the data might not have been written fully, so we
-				// fail.
-				return fmt.Errorf("failed to close bundle output file: %w", err)
-			}
-		}
-	} else {
-		w, err := zstdWriter(filepath.Join(outputDir, "vulns.json.zst"))
+	for name, o := range bundles {
+		ctx = log.With(ctx, "bundle", name)
+		w, err := zstdWriter(filepath.Join(outputDir, fmt.Sprintf("%s.json.zst", name)))
 		if err != nil {
 			return err
 		}
-		for name, o := range bundles {
-			ctx = zlog.ContextWithValues(ctx, "bundle", name)
-			err := bundle(ctx, httpClient, w, o)
-			if err != nil {
-				_ = w.Close()
-				return err
-			}
+		err = bundle(ctx, httpClient, w, o)
+		if err != nil {
+			_ = w.Close()
+			return err
 		}
-		// Fail to close here means the data might not have been written fully, so we
-		// fail.
 		if err := w.Close(); err != nil {
+			// Fail to close here means the data might not have been written fully, so we
+			// fail.
 			return fmt.Errorf("failed to close bundle output file: %w", err)
 		}
 	}
@@ -186,6 +196,40 @@ func epssOpts() []updates.ManagerOption {
 	}
 }
 
+func rhelVexOpts() []updates.ManagerOption {
+	return []updates.ManagerOption{
+		updates.WithEnabled([]string{rhelVexUpdaterName}),
+		updates.WithConfigs(map[string]driver.ConfigUnmarshaler{
+			rhelVexUpdaterName: func(i any) error {
+				ctx := context.Background()
+				ctx = log.With(ctx, "updater", rhelVexUpdaterName)
+
+				// This function gets called for both the Factory and the Updater.
+				// We only need to configure the Factory (which has the CompressedFileTimeout field).
+				switch cfg := i.(type) {
+				case *vex.FactoryConfig:
+					// Configure the factory with custom timeout.
+					timeout := os.Getenv("STACKROX_RHEL_VEX_COMPRESSED_FILE_TIMEOUT")
+					if timeout != "" {
+						parsedTimeout, err := time.ParseDuration(timeout)
+						if err != nil {
+							slog.WarnContext(ctx, "using default STACKROX_RHEL_VEX_COMPRESSED_FILE_TIMEOUT due to invalid duration", "reason", err)
+						} else {
+							cfg.CompressedFileTimeout = claircore.Duration(parsedTimeout)
+							slog.InfoContext(ctx, "using compressed file timeout", "timeout", parsedTimeout.String())
+						}
+					}
+				case *vex.UpdaterConfig:
+					// Updater config - nothing to configure here.
+				default:
+					return fmt.Errorf("rhel-vex: unexpected config type: %T", i)
+				}
+				return nil
+			},
+		}),
+	}
+}
+
 // TODO(ROX-26672): remove this.
 func redhatCSAFOpts() []updates.ManagerOption {
 	return []updates.ManagerOption{
@@ -195,6 +239,28 @@ func redhatCSAFOpts() []updates.ManagerOption {
 			"stackrox.rhel-csaf": csaf.NewFactory(),
 		}),
 	}
+}
+
+func kevOpts() []updates.ManagerOption {
+	return []updates.ManagerOption{
+		// This is required to prevent default updaters from running.
+		updates.WithEnabled([]string{}),
+		updates.WithFactories(map[string]driver.UpdaterSetFactory{
+			"clair.kev": kev.NewFactory(),
+		}),
+	}
+}
+
+func filterSources(bundles map[string][]updates.ManagerOption, selected []string) (map[string][]updates.ManagerOption, error) {
+	filtered := make(map[string][]updates.ManagerOption, len(selected))
+	for _, s := range selected {
+		if o, ok := bundles[s]; ok {
+			filtered[s] = o
+		} else {
+			return nil, fmt.Errorf("unknown source: %q", s)
+		}
+	}
+	return filtered, nil
 }
 
 func zstdWriter(filename string) (io.WriteCloser, error) {

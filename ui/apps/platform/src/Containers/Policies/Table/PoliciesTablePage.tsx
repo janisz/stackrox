@@ -1,40 +1,43 @@
-import React, { useState, useEffect } from 'react';
-import { useHistory } from 'react-router-dom';
+import { useEffect, useState } from 'react';
+import type { ReactElement } from 'react';
+import { useNavigate } from 'react-router-dom-v5-compat';
 import {
-    PageSection,
-    Bullseye,
     Alert,
-    Spinner,
-    AlertGroup,
     AlertActionCloseButton,
-    Divider,
+    AlertGroup,
     Button,
+    Content,
+    Divider,
+    Flex,
+    FlexItem,
+    PageSection,
 } from '@patternfly/react-core';
 import pluralize from 'pluralize';
 import orderBy from 'lodash/orderBy';
 
 import { policiesBasePath } from 'routePaths';
-import TabNavSubHeader from 'Components/TabNav/TabNavSubHeader';
+import PageTitle from 'Components/PageTitle';
+import PolicyManagementHeader from 'Containers/PolicyManagement/PolicyManagementHeader';
 import {
-    getPolicies,
-    reassessPolicies,
     deletePolicies,
     exportPolicies,
+    getPolicies,
+    reassessPolicies,
     updatePoliciesDisabledState,
 } from 'services/PoliciesService';
 import { savePoliciesAsCustomResource } from 'services/PolicyCustomResourceService';
-import useToasts, { Toast } from 'hooks/patternfly/useToasts';
+import useToasts from 'hooks/patternfly/useToasts';
+import type { Toast } from 'hooks/patternfly/useToasts';
 import useURLSort from 'hooks/useURLSort';
 import { fetchNotifierIntegrations } from 'services/NotifierIntegrationsService';
-import { getSearchOptionsForCategory } from 'services/SearchService';
-import { ListPolicy } from 'types/policy.proto';
-import { NotifierIntegration } from 'types/notifier.proto';
-import { ApiSortOption, SearchFilter } from 'types/search';
-import { SortOption } from 'types/table';
+import type { ListPolicy } from 'types/policy.proto';
+import type { NotifierIntegration } from 'types/notifier.proto';
+import type { ApiSortOption, SearchFilter } from 'types/search';
+import type { SortOption } from 'types/table';
 import { getAxiosErrorMessage } from 'utils/responseErrorUtils';
-import { getRequestQueryStringForSearchFilter } from 'utils/searchUtils';
+import { applyRegexSearchModifiers, getRequestQueryStringForSearchFilter } from 'utils/searchUtils';
+import { getTableUIState } from 'utils/getTableUIState';
 
-import PolicyManagementHeader from 'Containers/PolicyManagement/PolicyManagementHeader';
 import ImportPolicyJSONModal from '../Modal/ImportPolicyJSONModal';
 import PoliciesTable from './PoliciesTable';
 import { columns } from './PoliciesTable.utils';
@@ -42,7 +45,7 @@ import { columns } from './PoliciesTable.utils';
 type PoliciesTablePageProps = {
     hasWriteAccessForPolicy: boolean;
     handleChangeSearchFilter: (searchFilter: SearchFilter) => void;
-    searchFilter?: SearchFilter;
+    searchFilter: SearchFilter;
 };
 
 export const sortFields = ['Policy', 'Status', 'Origin', 'Notifiers', 'Severity', 'Lifecycle'];
@@ -55,24 +58,24 @@ function PoliciesTablePage({
     hasWriteAccessForPolicy,
     handleChangeSearchFilter,
     searchFilter,
-}: PoliciesTablePageProps): React.ReactElement {
-    const history = useHistory();
+}: PoliciesTablePageProps): ReactElement {
+    const navigate = useNavigate();
     const { getSortParams, sortOption } = useURLSort({ defaultSortOption, sortFields });
 
     const [notifiers, setNotifiers] = useState<NotifierIntegration[]>([]);
     const [isLoading, setIsLoading] = useState(false);
-    const [policies, setPolicies] = useState<ListPolicy[]>([]);
-    const [errorMessage, setErrorMessage] = useState('');
+    const [policies, setPolicies] = useState<ListPolicy[] | undefined>(undefined);
+    const [error, setError] = useState<Error | undefined>(undefined);
     const { toasts, addToast, removeToast } = useToasts();
-
-    const [searchOptions, setSearchOptions] = useState<string[]>([]);
 
     const [isImportModalOpen, setIsImportModalOpen] = useState(false);
 
-    const query = searchFilter ? getRequestQueryStringForSearchFilter(searchFilter) : '';
+    const query = searchFilter
+        ? getRequestQueryStringForSearchFilter(applyRegexSearchModifiers(searchFilter))
+        : '';
 
     function onClickCreatePolicy() {
-        history.push(`${policiesBasePath}/?action=create`);
+        navigate(`${policiesBasePath}/?action=create`);
     }
 
     function onClickImportPolicy() {
@@ -112,11 +115,11 @@ function PoliciesTablePage({
                 }
 
                 setPolicies(sortedPolicies);
-                setErrorMessage('');
+                setError(undefined);
             })
-            .catch((error) => {
-                setPolicies([]);
-                setErrorMessage(getAxiosErrorMessage(error));
+            .catch((err) => {
+                setPolicies(undefined);
+                setError(err);
             })
             .finally(() => setIsLoading(false));
     }
@@ -201,45 +204,45 @@ function PoliciesTablePage({
     }, []);
 
     useEffect(() => {
-        const { request, cancel } = getSearchOptionsForCategory('POLICIES');
-        request
-            .then((options) => {
-                setSearchOptions(options);
-            })
-            .catch(() => {
-                // TODO
-            });
-
-        return cancel;
-    }, []);
-
-    useEffect(() => {
         fetchPolicies(query, sortOption);
     }, [query, sortOption]);
 
-    let pageContent = (
-        <PageSection variant="light" isFilled id="policies-table-loading">
-            <Bullseye>
-                <Spinner />
-            </Bullseye>
-        </PageSection>
-    );
+    const tableState = getTableUIState({
+        isLoading,
+        data: policies,
+        error,
+        searchFilter,
+    });
 
-    if (errorMessage) {
-        pageContent = (
-            <PageSection variant="light" isFilled id="policies-table-error">
-                <Bullseye>
-                    <Alert variant="danger" title={errorMessage} component="p" />
-                </Bullseye>
+    return (
+        <>
+            <PageTitle title="Policy Management - Policies" />
+            <PolicyManagementHeader currentTabTitle="Policies" />
+            <PageSection>
+                <Flex alignItems={{ default: 'alignItemsCenter' }}>
+                    <FlexItem grow={{ default: 'grow' }}>
+                        <Content component="p">
+                            Configure security policies for your resources.
+                        </Content>
+                    </FlexItem>
+                    {hasWriteAccessForPolicy && (
+                        <FlexItem alignSelf={{ default: 'alignSelfFlexEnd' }}>
+                            <Flex>
+                                <Button variant="primary" onClick={onClickCreatePolicy}>
+                                    Create policy
+                                </Button>
+                                <Button variant="secondary" onClick={onClickImportPolicy}>
+                                    Import policy
+                                </Button>
+                            </Flex>
+                        </FlexItem>
+                    )}
+                </Flex>
             </PageSection>
-        );
-    }
-
-    if (!isLoading && !errorMessage) {
-        pageContent = (
+            <Divider component="div" />
             <PoliciesTable
                 notifiers={notifiers}
-                policies={policies}
+                tableState={tableState}
                 fetchPoliciesHandler={() => fetchPolicies(query, sortOption)}
                 addToast={addToast}
                 hasWriteAccessForPolicy={hasWriteAccessForPolicy}
@@ -252,34 +255,7 @@ function PoliciesTablePage({
                 onClickReassessPolicies={onClickReassessPolicies}
                 getSortParams={getSortParams}
                 searchFilter={searchFilter}
-                searchOptions={searchOptions}
             />
-        );
-    }
-
-    return (
-        <>
-            <PolicyManagementHeader currentTabTitle="Policies" />
-            <Divider component="div" />
-            <TabNavSubHeader
-                description="Configure security policies for your resources."
-                actions={
-                    hasWriteAccessForPolicy ? (
-                        <>
-                            <Button variant="primary" onClick={onClickCreatePolicy}>
-                                Create policy
-                            </Button>
-                            <Button variant="secondary" onClick={onClickImportPolicy}>
-                                Import policy
-                            </Button>
-                        </>
-                    ) : (
-                        <></>
-                    )
-                }
-            />
-            <Divider component="div" />
-            {pageContent}
             <ImportPolicyJSONModal
                 isOpen={isImportModalOpen}
                 cancelModal={() => {

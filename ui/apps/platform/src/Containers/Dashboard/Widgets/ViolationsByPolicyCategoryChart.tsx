@@ -1,40 +1,38 @@
-import React, { useState, useCallback } from 'react';
-import { useHistory } from 'react-router-dom';
+import { useCallback, useState } from 'react';
+import type { SyntheticEvent } from 'react';
+import { useNavigate } from 'react-router-dom-v5-compat';
 import {
     Chart,
     ChartAxis,
     ChartBar,
     ChartContainer,
-    ChartLabelProps,
     ChartLegend,
     ChartStack,
     ChartTooltip,
     getInteractiveLegendEvents,
     getInteractiveLegendItemStyles,
-} from '@patternfly/react-charts';
+} from '@patternfly/react-charts/victory';
+import type { ChartLabelProps, ChartLegendProps } from '@patternfly/react-charts/victory';
 import sortBy from 'lodash/sortBy';
 
 import { filteredWorkflowViewKey } from 'Components/FilteredWorkflowViewSelector/useFilteredWorkflowViewURLState';
 import { fullWorkflowView } from 'Components/FilteredWorkflowViewSelector/types';
 import { LinkableChartLabel } from 'Components/PatternFly/Charts/LinkableChartLabel';
-import { AlertGroup } from 'services/AlertsService';
+import type { AlertGroup } from 'services/AlertsService';
 import { severityLabels } from 'messages/common';
 import {
+    defaultChartBarWidth,
+    defaultChartHeight as chartHeight,
     navigateOnClickEvent,
     patternflySeverityTheme,
-    defaultChartHeight as chartHeight,
-    defaultChartBarWidth,
 } from 'utils/chartUtils';
 import { getQueryString } from 'utils/queryStringUtils';
 import { violationsBasePath } from 'routePaths';
 import useResizeObserver from 'hooks/useResizeObserver';
-import {
-    LifecycleStage,
-    policySeverities as severitiesLowToCritical,
-    PolicySeverity,
-} from 'types/policy.proto';
+import { policySeverities as severitiesLowToCritical } from 'types/policy.proto';
+import type { LifecycleStage, PolicySeverity } from 'types/policy.proto';
 
-import { SearchFilter } from 'types/search';
+import type { SearchFilter } from 'types/search';
 
 /**
  * This function iterates an array of AlertGroups and zeros out severities that
@@ -166,7 +164,7 @@ function ViolationsByPolicyCategoryChart({
     setHiddenSeverities,
     searchFilter,
 }: ViolationsByPolicyCategoryChartProps) {
-    const history = useHistory();
+    const navigate = useNavigate();
     const [widgetContainer, setWidgetContainer] = useState<HTMLDivElement | null>(null);
     const widgetContainerResizeEntry = useResizeObserver(widgetContainer);
 
@@ -198,12 +196,13 @@ function ViolationsByPolicyCategoryChart({
             <ChartBar
                 barWidth={defaultChartBarWidth}
                 key={severity}
+                name={severityLabels[severity]}
                 data={data}
                 labelComponent={<ChartTooltip constrainToVisibleArea />}
                 events={[
                     // TS2339: Property 'xName' does not exist on type '{}'.
                     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-                    navigateOnClickEvent(history, (targetProps: any) => {
+                    navigateOnClickEvent(navigate, (targetProps: any) => {
                         const category = targetProps?.datum?.xName;
                         return linkForViolationsCategory(
                             category,
@@ -227,7 +226,13 @@ function ViolationsByPolicyCategoryChart({
         return legendData;
     }
 
-    function onLegendClick({ index }: { index: number }) {
+    /*
+     * getInteractiveLegendEvents' onLegendClick is not called when ChartBar
+     * is wrapped in ChartStack/ChartGroup alongside ChartAxis.
+     * https://github.com/patternfly/patternfly-react/issues/12263
+     * Apply click events directly to ChartLegend as a workaround.
+     */
+    function handleLegendClick(_evt: SyntheticEvent, { index }: { index: number }) {
         const newHidden = new Set(hiddenSeverities);
         const targetSeverity = severitiesLowToCritical[index];
         if (newHidden.has(targetSeverity)) {
@@ -236,8 +241,14 @@ function ViolationsByPolicyCategoryChart({
         } else if (hiddenSeverities.size < 3) {
             newHidden.add(targetSeverity);
         }
-        return setHiddenSeverities(newHidden);
+        setHiddenSeverities(newHidden).catch(() => {});
+        return [];
     }
+
+    const legendClickEvents: ChartLegendProps['events'] = [
+        { target: 'data', eventHandlers: { onClick: handleLegendClick } },
+        { target: 'labels', eventHandlers: { onClick: handleLegendClick } },
+    ];
 
     return (
         <div ref={setWidgetContainer}>
@@ -249,10 +260,11 @@ function ViolationsByPolicyCategoryChart({
                     chartNames: [Object.values(severityLabels)],
                     isHidden: (index) => hiddenSeverities.has(severitiesLowToCritical[index]),
                     legendName: 'legend',
-                    onLegendClick,
                 })}
                 containerComponent={<ChartContainer role="figure" />}
-                legendComponent={<ChartLegend name="legend" data={getLegendData()} />}
+                legendComponent={
+                    <ChartLegend name="legend" data={getLegendData()} events={legendClickEvents} />
+                }
                 legendPosition="bottom"
                 height={chartHeight}
                 width={widgetContainerResizeEntry?.contentRect.width} // Victory defaults to 450

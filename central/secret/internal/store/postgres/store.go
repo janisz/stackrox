@@ -22,7 +22,6 @@ import (
 	"github.com/stackrox/rox/pkg/sac/resources"
 	"github.com/stackrox/rox/pkg/search"
 	pgSearch "github.com/stackrox/rox/pkg/search/postgres"
-	"gorm.io/gorm"
 )
 
 const (
@@ -36,14 +35,18 @@ var (
 	targetResource = resources.Secret
 )
 
-type storeType = storage.Secret
+type (
+	storeType = storage.Secret
+	callback  = func(obj *storeType) error
+)
 
 // Store is the interface to interact with the storage for storage.Secret
 type Store interface {
 	Upsert(ctx context.Context, obj *storeType) error
 	UpsertMany(ctx context.Context, objs []*storeType) error
 	Delete(ctx context.Context, id string) error
-	DeleteByQuery(ctx context.Context, q *v1.Query) ([]string, error)
+	DeleteByQuery(ctx context.Context, q *v1.Query) error
+	DeleteByQueryWithIDs(ctx context.Context, q *v1.Query) ([]string, error)
 	DeleteMany(ctx context.Context, identifiers []string) error
 	PruneMany(ctx context.Context, identifiers []string) error
 
@@ -52,12 +55,14 @@ type Store interface {
 	Search(ctx context.Context, q *v1.Query) ([]search.Result, error)
 
 	Get(ctx context.Context, id string) (*storeType, bool, error)
+	// Deprecated: use GetByQueryFn instead
 	GetByQuery(ctx context.Context, query *v1.Query) ([]*storeType, error)
+	GetByQueryFn(ctx context.Context, query *v1.Query, fn callback) error
 	GetMany(ctx context.Context, identifiers []string) ([]*storeType, []int, error)
 	GetIDs(ctx context.Context) ([]string, error)
 
-	Walk(ctx context.Context, fn func(obj *storeType) error) error
-	WalkByQuery(ctx context.Context, query *v1.Query, fn func(obj *storeType) error) error
+	Walk(ctx context.Context, fn callback) error
+	WalkByQuery(ctx context.Context, query *v1.Query, fn callback) error
 }
 
 // New returns a new Store instance using the provided sql instance.
@@ -72,6 +77,8 @@ func New(db postgres.DB) Store {
 		metricsSetPostgresOperationDurationTime,
 		isUpsertAllowed,
 		targetResource,
+		pgSearch.GetDefaultSort(search.CreatedTime.String(), false),
+		nil,
 	)
 }
 
@@ -182,39 +189,47 @@ func insertIntoSecretsFilesRegistries(batch *pgx.Batch, obj *storage.ImagePullSe
 	return nil
 }
 
+var copyColsSecrets = []string{
+	"id",
+	"name",
+	"clusterid",
+	"clustername",
+	"namespace",
+	"createdat",
+	"serialized",
+}
+
 func copyFromSecrets(ctx context.Context, s pgSearch.Deleter, tx *postgres.Tx, objs ...*storage.Secret) error {
-	batchSize := pgSearch.MaxBatchSize
-	if len(objs) < batchSize {
-		batchSize = len(objs)
-	}
-	inputRows := make([][]interface{}, 0, batchSize)
-
-	// This is a copy so first we must delete the rows and re-add them
-	// Which is essentially the desired behaviour of an upsert.
-	deletes := make([]string, 0, batchSize)
-
-	copyCols := []string{
-		"id",
-		"name",
-		"clusterid",
-		"clustername",
-		"namespace",
-		"createdat",
-		"serialized",
+	if len(objs) == 0 {
+		return nil
 	}
 
-	for idx, obj := range objs {
-		// Todo: ROX-9499 Figure out how to more cleanly template around this issue.
-		log.Debugf("This is here for now because there is an issue with pods_TerminatedInstances where the obj "+
-			"in the loop is not used as it only consists of the parent ID and the index.  Putting this here as a stop gap "+
-			"to simply use the object.  %s", obj)
+	{
+		// CopyFrom does not upsert, so delete existing rows first to achieve upsert behavior.
+		// Parent deletion cascades to children, so only the top-level parent needs deletion.
+		deletes := make([]string, 0, len(objs))
+		for _, obj := range objs {
+			deletes = append(deletes, obj.GetId())
+		}
+		if err := s.DeleteMany(ctx, deletes); err != nil {
+			return err
+		}
+	}
+
+	idx := 0
+	inputRows := pgx.CopyFromFunc(func() ([]any, error) {
+		if idx >= len(objs) {
+			return nil, nil
+		}
+		obj := objs[idx]
+		idx++
 
 		serialized, marshalErr := obj.MarshalVT()
 		if marshalErr != nil {
-			return marshalErr
+			return nil, marshalErr
 		}
 
-		inputRows = append(inputRows, []interface{}{
+		return []interface{}{
 			pgutils.NilOrUUID(obj.GetId()),
 			obj.GetName(),
 			pgutils.NilOrUUID(obj.GetClusterId()),
@@ -222,33 +237,14 @@ func copyFromSecrets(ctx context.Context, s pgSearch.Deleter, tx *postgres.Tx, o
 			obj.GetNamespace(),
 			protocompat.NilOrTime(obj.GetCreatedAt()),
 			serialized,
-		})
+		}, nil
+	})
 
-		// Add the ID to be deleted.
-		deletes = append(deletes, obj.GetId())
-
-		// if we hit our batch size we need to push the data
-		if (idx+1)%batchSize == 0 || idx == len(objs)-1 {
-			// copy does not upsert so have to delete first.  parent deletion cascades so only need to
-			// delete for the top level parent
-
-			if err := s.DeleteMany(ctx, deletes); err != nil {
-				return err
-			}
-			// clear the inserts and vals for the next batch
-			deletes = deletes[:0]
-
-			if _, err := tx.CopyFrom(ctx, pgx.Identifier{"secrets"}, copyCols, pgx.CopyFromRows(inputRows)); err != nil {
-				return err
-			}
-			// clear the input rows for the next batch
-			inputRows = inputRows[:0]
-		}
+	if _, err := tx.CopyFrom(ctx, pgx.Identifier{"secrets"}, copyColsSecrets, inputRows); err != nil {
+		return err
 	}
 
-	for idx, obj := range objs {
-		_ = idx // idx may or may not be used depending on how nested we are, so avoid compile-time errors.
-
+	for _, obj := range objs {
 		if err := copyFromSecretsFiles(ctx, s, tx, obj.GetId(), obj.GetFiles()...); err != nil {
 			return err
 		}
@@ -257,49 +253,39 @@ func copyFromSecrets(ctx context.Context, s pgSearch.Deleter, tx *postgres.Tx, o
 	return nil
 }
 
+var copyColsSecretsFiles = []string{
+	"secrets_id",
+	"idx",
+	"type",
+	"cert_enddate",
+}
+
 func copyFromSecretsFiles(ctx context.Context, s pgSearch.Deleter, tx *postgres.Tx, secretID string, objs ...*storage.SecretDataFile) error {
-	batchSize := pgSearch.MaxBatchSize
-	if len(objs) < batchSize {
-		batchSize = len(objs)
-	}
-	inputRows := make([][]interface{}, 0, batchSize)
-
-	copyCols := []string{
-		"secrets_id",
-		"idx",
-		"type",
-		"cert_enddate",
+	if len(objs) == 0 {
+		return nil
 	}
 
-	for idx, obj := range objs {
-		// Todo: ROX-9499 Figure out how to more cleanly template around this issue.
-		log.Debugf("This is here for now because there is an issue with pods_TerminatedInstances where the obj "+
-			"in the loop is not used as it only consists of the parent ID and the index.  Putting this here as a stop gap "+
-			"to simply use the object.  %s", obj)
+	idx := 0
+	inputRows := pgx.CopyFromFunc(func() ([]any, error) {
+		if idx >= len(objs) {
+			return nil, nil
+		}
+		obj := objs[idx]
+		idx++
 
-		inputRows = append(inputRows, []interface{}{
+		return []interface{}{
 			pgutils.NilOrUUID(secretID),
 			idx,
 			obj.GetType(),
 			protocompat.NilOrTime(obj.GetCert().GetEndDate()),
-		})
+		}, nil
+	})
 
-		// if we hit our batch size we need to push the data
-		if (idx+1)%batchSize == 0 || idx == len(objs)-1 {
-			// copy does not upsert so have to delete first.  parent deletion cascades so only need to
-			// delete for the top level parent
-
-			if _, err := tx.CopyFrom(ctx, pgx.Identifier{"secrets_files"}, copyCols, pgx.CopyFromRows(inputRows)); err != nil {
-				return err
-			}
-			// clear the input rows for the next batch
-			inputRows = inputRows[:0]
-		}
+	if _, err := tx.CopyFrom(ctx, pgx.Identifier{"secrets_files"}, copyColsSecretsFiles, inputRows); err != nil {
+		return err
 	}
 
-	for idx, obj := range objs {
-		_ = idx // idx may or may not be used depending on how nested we are, so avoid compile-time errors.
-
+	for _, obj := range objs {
 		if err := copyFromSecretsFilesRegistries(ctx, s, tx, secretID, idx, obj.GetImagePullSecret().GetRegistries()...); err != nil {
 			return err
 		}
@@ -308,79 +294,39 @@ func copyFromSecretsFiles(ctx context.Context, s pgSearch.Deleter, tx *postgres.
 	return nil
 }
 
+var copyColsSecretsFilesRegistries = []string{
+	"secrets_id",
+	"secrets_files_idx",
+	"idx",
+	"name",
+}
+
 func copyFromSecretsFilesRegistries(ctx context.Context, s pgSearch.Deleter, tx *postgres.Tx, secretID string, secretFileIdx int, objs ...*storage.ImagePullSecret_Registry) error {
-	batchSize := pgSearch.MaxBatchSize
-	if len(objs) < batchSize {
-		batchSize = len(objs)
-	}
-	inputRows := make([][]interface{}, 0, batchSize)
-
-	copyCols := []string{
-		"secrets_id",
-		"secrets_files_idx",
-		"idx",
-		"name",
+	if len(objs) == 0 {
+		return nil
 	}
 
-	for idx, obj := range objs {
-		// Todo: ROX-9499 Figure out how to more cleanly template around this issue.
-		log.Debugf("This is here for now because there is an issue with pods_TerminatedInstances where the obj "+
-			"in the loop is not used as it only consists of the parent ID and the index.  Putting this here as a stop gap "+
-			"to simply use the object.  %s", obj)
+	idx := 0
+	inputRows := pgx.CopyFromFunc(func() ([]any, error) {
+		if idx >= len(objs) {
+			return nil, nil
+		}
+		obj := objs[idx]
+		idx++
 
-		inputRows = append(inputRows, []interface{}{
+		return []interface{}{
 			pgutils.NilOrUUID(secretID),
 			secretFileIdx,
 			idx,
 			obj.GetName(),
-		})
+		}, nil
+	})
 
-		// if we hit our batch size we need to push the data
-		if (idx+1)%batchSize == 0 || idx == len(objs)-1 {
-			// copy does not upsert so have to delete first.  parent deletion cascades so only need to
-			// delete for the top level parent
-
-			if _, err := tx.CopyFrom(ctx, pgx.Identifier{"secrets_files_registries"}, copyCols, pgx.CopyFromRows(inputRows)); err != nil {
-				return err
-			}
-			// clear the input rows for the next batch
-			inputRows = inputRows[:0]
-		}
+	if _, err := tx.CopyFrom(ctx, pgx.Identifier{"secrets_files_registries"}, copyColsSecretsFilesRegistries, inputRows); err != nil {
+		return err
 	}
 
 	return nil
 }
 
 // endregion Helper functions
-
-// region Used for testing
-
-// CreateTableAndNewStore returns a new Store instance for testing.
-func CreateTableAndNewStore(ctx context.Context, db postgres.DB, gormDB *gorm.DB) Store {
-	pkgSchema.ApplySchemaForTable(ctx, gormDB, baseTable)
-	return New(db)
-}
-
-// Destroy drops the tables associated with the target object type.
-func Destroy(ctx context.Context, db postgres.DB) {
-	dropTableSecrets(ctx, db)
-}
-
-func dropTableSecrets(ctx context.Context, db postgres.DB) {
-	_, _ = db.Exec(ctx, "DROP TABLE IF EXISTS secrets CASCADE")
-	dropTableSecretsFiles(ctx, db)
-
-}
-
-func dropTableSecretsFiles(ctx context.Context, db postgres.DB) {
-	_, _ = db.Exec(ctx, "DROP TABLE IF EXISTS secrets_files CASCADE")
-	dropTableSecretsFilesRegistries(ctx, db)
-
-}
-
-func dropTableSecretsFilesRegistries(ctx context.Context, db postgres.DB) {
-	_, _ = db.Exec(ctx, "DROP TABLE IF EXISTS secrets_files_registries CASCADE")
-
-}
-
-// endregion Used for testing

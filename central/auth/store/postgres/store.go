@@ -18,7 +18,6 @@ import (
 	"github.com/stackrox/rox/pkg/sac/resources"
 	"github.com/stackrox/rox/pkg/search"
 	pgSearch "github.com/stackrox/rox/pkg/search/postgres"
-	"gorm.io/gorm"
 )
 
 const (
@@ -32,14 +31,18 @@ var (
 	targetResource = resources.Access
 )
 
-type storeType = storage.AuthMachineToMachineConfig
+type (
+	storeType = storage.AuthMachineToMachineConfig
+	callback  = func(obj *storeType) error
+)
 
 // Store is the interface to interact with the storage for storage.AuthMachineToMachineConfig
 type Store interface {
 	Upsert(ctx context.Context, obj *storeType) error
 	UpsertMany(ctx context.Context, objs []*storeType) error
 	Delete(ctx context.Context, id string) error
-	DeleteByQuery(ctx context.Context, q *v1.Query) ([]string, error)
+	DeleteByQuery(ctx context.Context, q *v1.Query) error
+	DeleteByQueryWithIDs(ctx context.Context, q *v1.Query) ([]string, error)
 	DeleteMany(ctx context.Context, identifiers []string) error
 	PruneMany(ctx context.Context, identifiers []string) error
 
@@ -50,15 +53,14 @@ type Store interface {
 	Get(ctx context.Context, id string) (*storeType, bool, error)
 	GetMany(ctx context.Context, identifiers []string) ([]*storeType, []int, error)
 	GetIDs(ctx context.Context) ([]string, error)
-	GetAll(ctx context.Context) ([]*storeType, error)
 
-	Walk(ctx context.Context, fn func(obj *storeType) error) error
-	WalkByQuery(ctx context.Context, query *v1.Query, fn func(obj *storeType) error) error
+	Walk(ctx context.Context, fn callback) error
+	WalkByQuery(ctx context.Context, query *v1.Query, fn callback) error
 }
 
 // New returns a new Store instance using the provided sql instance.
 func New(db postgres.DB) Store {
-	return pgSearch.NewGenericStore[storeType, *storeType](
+	return pgSearch.NewGloballyScopedGenericStore[storeType, *storeType](
 		db,
 		schema,
 		pkGetter,
@@ -66,8 +68,9 @@ func New(db postgres.DB) Store {
 		copyFromAuthMachineToMachineConfigs,
 		metricsSetAcquireDBConnDuration,
 		metricsSetPostgresOperationDurationTime,
-		pgSearch.GloballyScopedUpsertChecker[storeType, *storeType](targetResource),
 		targetResource,
+		nil,
+		nil,
 	)
 }
 
@@ -130,65 +133,54 @@ func insertIntoAuthMachineToMachineConfigsMappings(batch *pgx.Batch, obj *storag
 	return nil
 }
 
+var copyColsAuthMachineToMachineConfigs = []string{
+	"id",
+	"issuer",
+	"serialized",
+}
+
 func copyFromAuthMachineToMachineConfigs(ctx context.Context, s pgSearch.Deleter, tx *postgres.Tx, objs ...*storage.AuthMachineToMachineConfig) error {
-	batchSize := pgSearch.MaxBatchSize
-	if len(objs) < batchSize {
-		batchSize = len(objs)
-	}
-	inputRows := make([][]interface{}, 0, batchSize)
-
-	// This is a copy so first we must delete the rows and re-add them
-	// Which is essentially the desired behaviour of an upsert.
-	deletes := make([]string, 0, batchSize)
-
-	copyCols := []string{
-		"id",
-		"issuer",
-		"serialized",
+	if len(objs) == 0 {
+		return nil
 	}
 
-	for idx, obj := range objs {
-		// Todo: ROX-9499 Figure out how to more cleanly template around this issue.
-		log.Debugf("This is here for now because there is an issue with pods_TerminatedInstances where the obj "+
-			"in the loop is not used as it only consists of the parent ID and the index.  Putting this here as a stop gap "+
-			"to simply use the object.  %s", obj)
+	{
+		// CopyFrom does not upsert, so delete existing rows first to achieve upsert behavior.
+		// Parent deletion cascades to children, so only the top-level parent needs deletion.
+		deletes := make([]string, 0, len(objs))
+		for _, obj := range objs {
+			deletes = append(deletes, obj.GetId())
+		}
+		if err := s.DeleteMany(ctx, deletes); err != nil {
+			return err
+		}
+	}
+
+	idx := 0
+	inputRows := pgx.CopyFromFunc(func() ([]any, error) {
+		if idx >= len(objs) {
+			return nil, nil
+		}
+		obj := objs[idx]
+		idx++
 
 		serialized, marshalErr := obj.MarshalVT()
 		if marshalErr != nil {
-			return marshalErr
+			return nil, marshalErr
 		}
 
-		inputRows = append(inputRows, []interface{}{
+		return []interface{}{
 			pgutils.NilOrUUID(obj.GetId()),
 			obj.GetIssuer(),
 			serialized,
-		})
+		}, nil
+	})
 
-		// Add the ID to be deleted.
-		deletes = append(deletes, obj.GetId())
-
-		// if we hit our batch size we need to push the data
-		if (idx+1)%batchSize == 0 || idx == len(objs)-1 {
-			// copy does not upsert so have to delete first.  parent deletion cascades so only need to
-			// delete for the top level parent
-
-			if err := s.DeleteMany(ctx, deletes); err != nil {
-				return err
-			}
-			// clear the inserts and vals for the next batch
-			deletes = deletes[:0]
-
-			if _, err := tx.CopyFrom(ctx, pgx.Identifier{"auth_machine_to_machine_configs"}, copyCols, pgx.CopyFromRows(inputRows)); err != nil {
-				return err
-			}
-			// clear the input rows for the next batch
-			inputRows = inputRows[:0]
-		}
+	if _, err := tx.CopyFrom(ctx, pgx.Identifier{"auth_machine_to_machine_configs"}, copyColsAuthMachineToMachineConfigs, inputRows); err != nil {
+		return err
 	}
 
-	for idx, obj := range objs {
-		_ = idx // idx may or may not be used depending on how nested we are, so avoid compile-time errors.
-
+	for _, obj := range objs {
 		if err := copyFromAuthMachineToMachineConfigsMappings(ctx, s, tx, obj.GetId(), obj.GetMappings()...); err != nil {
 			return err
 		}
@@ -197,71 +189,37 @@ func copyFromAuthMachineToMachineConfigs(ctx context.Context, s pgSearch.Deleter
 	return nil
 }
 
+var copyColsAuthMachineToMachineConfigsMappings = []string{
+	"auth_machine_to_machine_configs_id",
+	"idx",
+	"role",
+}
+
 func copyFromAuthMachineToMachineConfigsMappings(ctx context.Context, s pgSearch.Deleter, tx *postgres.Tx, authMachineToMachineConfigID string, objs ...*storage.AuthMachineToMachineConfig_Mapping) error {
-	batchSize := pgSearch.MaxBatchSize
-	if len(objs) < batchSize {
-		batchSize = len(objs)
-	}
-	inputRows := make([][]interface{}, 0, batchSize)
-
-	copyCols := []string{
-		"auth_machine_to_machine_configs_id",
-		"idx",
-		"role",
+	if len(objs) == 0 {
+		return nil
 	}
 
-	for idx, obj := range objs {
-		// Todo: ROX-9499 Figure out how to more cleanly template around this issue.
-		log.Debugf("This is here for now because there is an issue with pods_TerminatedInstances where the obj "+
-			"in the loop is not used as it only consists of the parent ID and the index.  Putting this here as a stop gap "+
-			"to simply use the object.  %s", obj)
+	idx := 0
+	inputRows := pgx.CopyFromFunc(func() ([]any, error) {
+		if idx >= len(objs) {
+			return nil, nil
+		}
+		obj := objs[idx]
+		idx++
 
-		inputRows = append(inputRows, []interface{}{
+		return []interface{}{
 			pgutils.NilOrUUID(authMachineToMachineConfigID),
 			idx,
 			obj.GetRole(),
-		})
+		}, nil
+	})
 
-		// if we hit our batch size we need to push the data
-		if (idx+1)%batchSize == 0 || idx == len(objs)-1 {
-			// copy does not upsert so have to delete first.  parent deletion cascades so only need to
-			// delete for the top level parent
-
-			if _, err := tx.CopyFrom(ctx, pgx.Identifier{"auth_machine_to_machine_configs_mappings"}, copyCols, pgx.CopyFromRows(inputRows)); err != nil {
-				return err
-			}
-			// clear the input rows for the next batch
-			inputRows = inputRows[:0]
-		}
+	if _, err := tx.CopyFrom(ctx, pgx.Identifier{"auth_machine_to_machine_configs_mappings"}, copyColsAuthMachineToMachineConfigsMappings, inputRows); err != nil {
+		return err
 	}
 
 	return nil
 }
 
 // endregion Helper functions
-
-// region Used for testing
-
-// CreateTableAndNewStore returns a new Store instance for testing.
-func CreateTableAndNewStore(ctx context.Context, db postgres.DB, gormDB *gorm.DB) Store {
-	pkgSchema.ApplySchemaForTable(ctx, gormDB, baseTable)
-	return New(db)
-}
-
-// Destroy drops the tables associated with the target object type.
-func Destroy(ctx context.Context, db postgres.DB) {
-	dropTableAuthMachineToMachineConfigs(ctx, db)
-}
-
-func dropTableAuthMachineToMachineConfigs(ctx context.Context, db postgres.DB) {
-	_, _ = db.Exec(ctx, "DROP TABLE IF EXISTS auth_machine_to_machine_configs CASCADE")
-	dropTableAuthMachineToMachineConfigsMappings(ctx, db)
-
-}
-
-func dropTableAuthMachineToMachineConfigsMappings(ctx context.Context, db postgres.DB) {
-	_, _ = db.Exec(ctx, "DROP TABLE IF EXISTS auth_machine_to_machine_configs_mappings CASCADE")
-
-}
-
-// endregion Used for testing

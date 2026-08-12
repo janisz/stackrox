@@ -2,6 +2,7 @@ package sensor
 
 import (
 	"context"
+	"maps"
 	"strconv"
 	"time"
 
@@ -12,7 +13,7 @@ import (
 	"github.com/stackrox/rox/pkg/centralsensor"
 	"github.com/stackrox/rox/pkg/concurrency"
 	"github.com/stackrox/rox/pkg/deduperkey"
-	"github.com/stackrox/rox/pkg/safe"
+	"github.com/stackrox/rox/pkg/features"
 	"github.com/stackrox/rox/pkg/set"
 	"github.com/stackrox/rox/pkg/sliceutils"
 	"github.com/stackrox/rox/pkg/sync"
@@ -20,12 +21,13 @@ import (
 	"github.com/stackrox/rox/sensor/common"
 	"github.com/stackrox/rox/sensor/common/centralcaps"
 	"github.com/stackrox/rox/sensor/common/centralid"
-	"github.com/stackrox/rox/sensor/common/certdistribution"
-	"github.com/stackrox/rox/sensor/common/clusterid"
+	"github.com/stackrox/rox/sensor/common/centralproxy/allowedpaths"
 	"github.com/stackrox/rox/sensor/common/config"
 	"github.com/stackrox/rox/sensor/common/detector"
+	detectormetrics "github.com/stackrox/rox/sensor/common/detector/metrics"
 	"github.com/stackrox/rox/sensor/common/managedcentral"
 	"github.com/stackrox/rox/sensor/common/sensor/helmconfig"
+	"github.com/stackrox/rox/sensor/common/trace"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/encoding/gzip"
@@ -49,10 +51,15 @@ type centralCommunicationImpl struct {
 	allFinished *sync.WaitGroup
 
 	isReconnect bool
+	clusterID   clusterIDPeekSetter
+}
+
+type clusterIDPeekSetter interface {
+	Set(string)
+	GetNoWait() string
 }
 
 var (
-	errForcedConnectionRestart       = errors.New("forced connection restart")
 	errCantReconcile                 = errors.New("unable to reconcile")
 	errLargePayload                  = errors.Wrap(errCantReconcile, "deduper payload too large")
 	errTimeoutWaitingForDeduperState = errors.Wrap(errCantReconcile, "timeout reached while waiting for the DeduperState")
@@ -64,14 +71,7 @@ func (s *centralCommunicationImpl) Start(client central.SensorServiceClient, cen
 	go s.sendEvents(client, centralReachable, syncDone, configHandler, detector, s.receiver.Stop, s.sender.Stop)
 }
 
-func (s *centralCommunicationImpl) Stop(err error) {
-	if err != nil {
-		if errors.Is(err, errForcedConnectionRestart) {
-			log.Infof("Connection restart requested: %v", err)
-		} else {
-			log.Errorf("Stopping connection due to error: %v", err)
-		}
-	}
+func (s *centralCommunicationImpl) Stop() {
 	s.stopper.Client().Stop()
 }
 
@@ -121,11 +121,11 @@ func (s *centralCommunicationImpl) getSensorState() central.SensorHello_SensorSt
 	return central.SensorHello_STARTUP
 }
 
-func (s *centralCommunicationImpl) sendEvents(client central.SensorServiceClient, centralReachable *concurrency.Flag, syncDone *concurrency.Signal, configHandler config.Handler, detector detector.Detector, onStops ...func(error)) {
+func (s *centralCommunicationImpl) sendEvents(client central.SensorServiceClient, centralReachable *concurrency.Flag, syncDone *concurrency.Signal, configHandler config.Handler, detector detector.Detector, onStops ...func()) {
 	var stream central.SensorService_CommunicateClient
 	defer func() {
 		s.stopper.Flow().ReportStopped()
-		runAll(s.stopper.Client().Stopped().Err(), onStops...)
+		runAll(onStops...)
 		s.allFinished.Wait()
 		if stream != nil {
 			if err := stream.CloseSend(); err != nil {
@@ -155,6 +155,12 @@ func (s *centralCommunicationImpl) sendEvents(client central.SensorServiceClient
 		capsSet.AddAll(component.Capabilities()...)
 	}
 	capsSet.Add(centralsensor.SendDeduperStateOnReconnect)
+	if features.FlattenImageData.Enabled() {
+		capsSet.Add(centralsensor.FlattenImageData)
+	}
+	if features.InitContainerSupport.Enabled() {
+		capsSet.Add(centralsensor.InitContainerSupport)
+	}
 	sensorHello.Capabilities = sliceutils.StringSlice(capsSet.AsSlice()...)
 
 	// Inject desired Helm configuration, if any.
@@ -172,9 +178,7 @@ func (s *centralCommunicationImpl) sendEvents(client central.SensorServiceClient
 	}
 
 	// Prepare outgoing context
-	ctx := context.Background()
-
-	ctx = metadata.AppendToOutgoingContext(ctx, centralsensor.SensorHelloMetadataKey, "true")
+	ctx := metadata.AppendToOutgoingContext(trace.Background(s.clusterID), centralsensor.SensorHelloMetadataKey, "true")
 	ctx, err := centralsensor.AppendSensorHelloInfoToOutgoingMetadata(ctx, sensorHello)
 	if err != nil {
 		s.stopper.Flow().StopWithError(err)
@@ -187,7 +191,7 @@ func (s *centralCommunicationImpl) sendEvents(client central.SensorServiceClient
 		return
 	}
 
-	if err := s.initialSync(stream, sensorHello, configHandler, detector); err != nil {
+	if err := s.initialSync(ctx, stream, sensorHello, configHandler, detector); err != nil {
 		s.stopper.Flow().StopWithError(err)
 		return
 	}
@@ -211,37 +215,32 @@ func (s *centralCommunicationImpl) sendEvents(client central.SensorServiceClient
 	log.Info("Communication with central ended.")
 }
 
-func (s *centralCommunicationImpl) initialSync(stream central.SensorService_CommunicateClient, hello *central.SensorHello, configHandler config.Handler, detector detector.Detector) error {
+func (s *centralCommunicationImpl) hello(stream central.SensorService_CommunicateClient, hello *central.SensorHello) error {
 	rawHdr, err := stream.Header()
 	if err != nil {
 		return errors.Wrap(err, "receiving headers from central")
 	}
 
-	var centralHello *central.CentralHello
-
-	hdr := metautils.MD(rawHdr)
-	if hdr.Get(centralsensor.SensorHelloMetadataKey) == "true" {
-		// Yay, central supports the "sensor hello" protocol!
-		err := stream.Send(&central.MsgFromSensor{Msg: &central.MsgFromSensor_Hello{Hello: hello}})
-		if err != nil {
-			return errors.Wrap(err, "sending SensorHello message to central")
-		}
-
-		firstMsg, err := stream.Recv()
-		if err != nil {
-			return errors.Wrap(err, "receiving first message from central")
-		}
-		centralHello = firstMsg.GetHello()
-		if centralHello == nil {
-			return errors.Errorf("first message received from central was not CentralHello but of type %T", firstMsg.GetMsg())
-		}
-	} else {
-		// No sensor hello :(
-		log.Warn("Central is running a legacy version that might not support all current features")
+	if metautils.MD(rawHdr).Get(centralsensor.SensorHelloMetadataKey) != "true" {
+		return DiagnoseConnectionFailure(stream, "the credentials may be revoked or expired")
 	}
 
-	clusterID := centralHello.GetClusterId()
-	clusterid.Set(clusterID)
+	var centralHello *central.CentralHello
+	err = stream.Send(&central.MsgFromSensor{Msg: &central.MsgFromSensor_Hello{Hello: hello}})
+	if err != nil {
+		return errors.Wrap(err, "sending SensorHello message to central")
+	}
+
+	firstMsg, err := stream.Recv()
+	if err != nil {
+		return errors.Wrap(err, "receiving first message from central")
+	}
+	centralHello = firstMsg.GetHello()
+	if centralHello == nil {
+		return errors.Errorf("first message received from central was not CentralHello but of type %T", firstMsg.GetMsg())
+	}
+
+	s.clusterID.Set(centralHello.GetClusterId())
 
 	if centralHello.GetManagedCentral() {
 		log.Info("Central is managed")
@@ -251,6 +250,13 @@ func (s *centralCommunicationImpl) initialSync(stream central.SensorService_Comm
 	centralid.Set(centralHello.GetCentralId())
 	centralCaps := centralHello.GetCapabilities()
 	centralcaps.Set(sliceutils.FromStringSlice[centralsensor.CentralCapability](centralCaps...))
+	detectormetrics.UpdateScannerConfigurationInfo(nil)
+
+	if centralcaps.Has(centralsensor.CentralProxyPathFiltering) {
+		allowedpaths.Set(centralHello.GetAllowedProxyPaths())
+	} else {
+		allowedpaths.Reset()
+	}
 
 	// Sensor should only communicate deduper states if central is able to do so and it has requested it.
 	s.clientReconcile = s.clientReconcile &&
@@ -262,24 +268,27 @@ func (s *centralCommunicationImpl) initialSync(stream central.SensorService_Comm
 		strconv.FormatBool(centralcaps.Has(centralsensor.SendDeduperStateOnReconnect)),
 		strconv.FormatBool(centralHello.GetSendDeduperState()))
 
-	if hello.HelmManagedConfigInit != nil {
-		if err := helmconfig.StoreCachedClusterID(clusterID); err != nil {
+	if hello.GetHelmManagedConfigInit() != nil {
+		if err := helmconfig.StoreCachedClusterID(s.clusterID.GetNoWait()); err != nil {
 			log.Warnf("Could not cache cluster ID: %v", err)
 		}
 	}
+	return nil
+}
 
-	if err := safe.RunE(func() error {
-		return certdistribution.PersistCertificates(centralHello.GetCertBundle())
-	}); err != nil {
-		log.Warnf("Failed to persist certificates for distribution: %v. This might cause issues with the admission control service.", err)
+func (s *centralCommunicationImpl) initialSync(ctx context.Context, stream central.SensorService_CommunicateClient,
+	hello *central.SensorHello, configHandler config.Handler, detector detector.Detector,
+) error {
+	if err := s.hello(stream, hello); err != nil {
+		return errors.Wrap(err, "error while executing the sensor hello protocol")
 	}
 
 	// DO NOT CHANGE THE ORDER. Please refer to `Run()` at `central/sensor/service/connection/connection_impl.go`
-	if err := s.initialConfigSync(stream, configHandler); err != nil {
+	if err := s.initialConfigSync(ctx, stream, configHandler); err != nil {
 		return err
 	}
 
-	if err := s.initialPolicySync(stream, detector); err != nil {
+	if err := s.initialPolicySync(ctx, stream, detector); err != nil {
 		return err
 	}
 
@@ -327,9 +336,7 @@ func (s *centralCommunicationImpl) initialDeduperSync(stream central.SensorServi
 		}
 
 		log.Infof("Received %d hashes (size=%d), current chunk: %d, total: %d", len(msg.GetDeduperState().GetResourceHashes()), msg.SizeVT(), msg.GetDeduperState().GetCurrent(), msg.GetDeduperState().GetTotal())
-		for k, v := range msg.GetDeduperState().GetResourceHashes() {
-			deduperState[k] = v
-		}
+		maps.Copy(deduperState, msg.GetDeduperState().GetResourceHashes())
 
 		if msg.GetDeduperState().GetCurrent() == msg.GetDeduperState().GetTotal() {
 			break
@@ -340,31 +347,33 @@ func (s *centralCommunicationImpl) initialDeduperSync(stream central.SensorServi
 	return nil
 }
 
-func (s *centralCommunicationImpl) initialConfigSync(stream central.SensorService_CommunicateClient, handler config.Handler) error {
+func (s *centralCommunicationImpl) initialConfigSync(ctx context.Context, stream central.SensorService_CommunicateClient, handler config.Handler) error {
 	msg, err := stream.Recv()
 	if err != nil {
 		return errors.Wrap(err, "receiving initial cluster config")
 	}
 	if msg.GetClusterConfig() == nil {
-		return errors.Errorf("initial message received from Sensor was not a cluster config: %T", msg.Msg)
+		return errors.Errorf("initial message received from Sensor was not a cluster config: %T", msg.GetMsg())
 	}
 	// Send the initial cluster config to the config handler
-	if err := handler.ProcessMessage(msg); err != nil {
+	if err := handler.ProcessMessage(ctx, msg); err != nil {
 		return errors.Wrap(err, "processing initial cluster config")
 	}
 	return nil
 }
 
-func (s *centralCommunicationImpl) initialPolicySync(stream central.SensorService_CommunicateClient, detector detector.Detector) error {
+func (s *centralCommunicationImpl) initialPolicySync(ctx context.Context,
+	stream central.SensorService_CommunicateClient, detector detector.Detector,
+) error {
 	// Policy sync
 	msg, err := stream.Recv()
 	if err != nil {
 		return errors.Wrap(err, "receiving initial policies")
 	}
 	if msg.GetPolicySync() == nil {
-		return errors.Errorf("second message received from Sensor was not a policy sync: %T", msg.Msg)
+		return errors.Errorf("second message received from Sensor was not a policy sync: %T", msg.GetMsg())
 	}
-	if err := detector.ProcessPolicySync(context.Background(), msg.GetPolicySync()); err != nil {
+	if err := detector.ProcessPolicySync(ctx, msg.GetPolicySync()); err != nil {
 		return errors.Wrap(err, "policy sync could not be successfully processed")
 	}
 
@@ -373,7 +382,7 @@ func (s *centralCommunicationImpl) initialPolicySync(stream central.SensorServic
 	if err != nil {
 		return errors.Wrap(err, "receiving initial baselines")
 	}
-	if err := detector.ProcessMessage(msg); err != nil {
+	if err := detector.ProcessMessage(ctx, msg); err != nil {
 		return errors.Wrap(err, "process baselines could not be successfully processed")
 	}
 
@@ -383,16 +392,16 @@ func (s *centralCommunicationImpl) initialPolicySync(stream central.SensorServic
 		return errors.Wrap(err, "receiving network baseline sync")
 	}
 	if msg.GetNetworkBaselineSync() == nil {
-		return errors.Errorf("expected NetworkBaseline message but received %t", msg.Msg)
+		return errors.Errorf("expected NetworkBaseline message but received %t", msg.GetMsg())
 	}
-	if err := detector.ProcessMessage(msg); err != nil {
+	if err := detector.ProcessMessage(ctx, msg); err != nil {
 		return errors.Wrap(err, "network baselines could not be successfully processed")
 	}
 	return nil
 }
 
-func runAll(err error, fs ...func(error)) {
+func runAll(fs ...func()) {
 	for _, f := range fs {
-		f(err)
+		f()
 	}
 }

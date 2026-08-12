@@ -1,11 +1,11 @@
-import React, { ReactElement } from 'react';
-import { Route, Switch } from 'react-router-dom';
+import type { ReactElement } from 'react';
+import { Route, Routes } from 'react-router-dom-v5-compat';
 
 import {
-    loginPath,
-    testLoginResultsPath,
     authResponsePrefix,
     authorizeRoxctlPath,
+    loginPath,
+    testLoginResultsPath,
 } from 'routePaths';
 import LoadingSection from 'Components/PatternFly/LoadingSection';
 import AuthenticatedRoutes from 'Containers/MainPage/AuthenticatedRoutes';
@@ -13,29 +13,22 @@ import LoginPage from 'Containers/Login/LoginPage';
 import TestLoginResultsPage from 'Containers/Login/TestLoginResultsPage';
 import AppPageTitle from 'Containers/AppPageTitle';
 import AppPageFavicon from 'Containers/AppPageFavicon';
+import { useTheme } from 'hooks/useTheme';
 
 function AppPage(): ReactElement {
+    useTheme();
+
     return (
         <>
             <AppPageTitle />
             <AppPageFavicon />
-            <Switch>
-                <Route path={loginPath}>
-                    <LoginPage />
-                </Route>
-                <Route path={authorizeRoxctlPath}>
-                    <LoginPage authorizeRoxctlMode />
-                </Route>
-                <Route path={testLoginResultsPath}>
-                    <TestLoginResultsPage />
-                </Route>
-                <Route path={authResponsePrefix}>
-                    <LoadingSection />
-                </Route>
-                <Route>
-                    <AuthenticatedRoutes />
-                </Route>
-            </Switch>
+            <Routes>
+                <Route path={loginPath} element={<LoginPage />} />
+                <Route path={authorizeRoxctlPath} element={<LoginPage authorizeRoxctlMode />} />
+                <Route path={testLoginResultsPath} element={<TestLoginResultsPage />} />
+                <Route path={authResponsePrefix} element={<LoadingSection />} />
+                <Route path="*" element={<AuthenticatedRoutes />} />
+            </Routes>
         </>
     );
 }

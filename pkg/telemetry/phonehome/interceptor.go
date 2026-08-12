@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 
+	v1 "github.com/stackrox/rox/generated/api/v1"
 	erroxGRPC "github.com/stackrox/rox/pkg/errox/grpc"
 	"github.com/stackrox/rox/pkg/grpc/authn"
 	grpcError "github.com/stackrox/rox/pkg/grpc/errors"
@@ -13,16 +14,25 @@ import (
 
 const userAgentHeaderKey = "User-Agent"
 
-func (cfg *Config) track(rp *RequestParams) {
-	cfg.interceptorsLock.RLock()
-	defer cfg.interceptorsLock.RUnlock()
-	if len(cfg.interceptors) == 0 {
+// Interceptor is a function which will be called on every API call if none of
+// the previous interceptors in the chain returned false.
+// An Interceptor function may add custom properties to the props map so that
+// they appear in the event.
+type Interceptor func(rp *RequestParams, props map[string]any) bool
+
+func (c *Client) track(rp *RequestParams) {
+	if !c.IsActive() {
 		return
 	}
-	opts := []telemeter.Option{
-		telemeter.WithUserID(cfg.HashUserAuthID(rp.UserID)),
-		telemeter.WithGroups(cfg.GroupType, cfg.GroupID)}
-	for event, funcs := range cfg.interceptors {
+	c.interceptorsLock.RLock()
+	defer c.interceptorsLock.RUnlock()
+	if len(c.interceptors) == 0 {
+		return
+	}
+	opts := append(c.WithGroups(),
+		telemeter.WithUserID(c.HashUserAuthID(rp.UserID)))
+	t := c.Telemeter()
+	for event, funcs := range c.interceptors {
 		props := map[string]any{}
 		ok := true
 		for _, interceptor := range funcs {
@@ -31,15 +41,21 @@ func (cfg *Config) track(rp *RequestParams) {
 			}
 		}
 		if ok {
-			cfg.telemeter.Track(event, props, opts...)
+			t.Track(event, props, opts...)
 		}
 	}
 }
 
+// getGRPCRequestDetails constructs a RequestParams for a gRPC invocation.
+// For grpc-gateway requests it uses the HTTP method, path, status code, and
+// headers, merging User-Agent values from both gRPC metadata and the HTTP
+// request. For pure gRPC calls it uses the full method name as both Method
+// and Path, derives the code from erroxGRPC.RoxErrorToGRPCCode, and builds
+// Headers from gRPC metadata.
 func getGRPCRequestDetails(ctx context.Context, err error, grpcFullMethod string, req any) *RequestParams {
 	id, iderr := authn.IdentityFromContext(ctx)
-	if iderr != nil {
-		log.Debug("Cannot identify user from context: ", iderr)
+	if iderr != nil && grpcFullMethod != v1.PingService_Ping_FullMethodName { // Ignore readiness probes.
+		log.Debugf("Cannot identify user from context for method call %q: %v", grpcFullMethod, iderr)
 	}
 
 	ri := requestinfo.FromContext(ctx)
@@ -50,10 +66,10 @@ func getGRPCRequestDetails(ctx context.Context, err error, grpcFullMethod string
 		if ri.HTTPRequest.URL != nil {
 			path = ri.HTTPRequest.URL.Path
 		}
-		// This is either the gRPC client or the grpc-gateway user agent:
-		grpcClientAgent := ri.Metadata.Get(userAgentHeaderKey)
-		if clientAgent := ri.HTTPRequest.Headers.Get(userAgentHeaderKey); clientAgent != "" {
-			grpcClientAgent = append(grpcClientAgent, clientAgent)
+		// Append the gRPC transport User-Agent from metadata to the
+		// original HTTP headers so all User-Agent values are under one key.
+		for _, ua := range ri.Metadata.Get(userAgentHeaderKey) {
+			ri.HTTPRequest.Headers.Add(userAgentHeaderKey, ua)
 		}
 		return &RequestParams{
 			UserID:  id,
@@ -61,12 +77,7 @@ func getGRPCRequestDetails(ctx context.Context, err error, grpcFullMethod string
 			Path:    path,
 			Code:    grpcError.ErrToHTTPStatus(err),
 			GRPCReq: req,
-			Headers: func(key string) []string {
-				if http.CanonicalHeaderKey(key) == userAgentHeaderKey {
-					return grpcClientAgent
-				}
-				return Headers(ri.HTTPRequest.Headers).Get(key)
-			},
+			Headers: Headers(ri.HTTPRequest.Headers),
 		}
 	}
 
@@ -76,10 +87,15 @@ func getGRPCRequestDetails(ctx context.Context, err error, grpcFullMethod string
 		Path:    grpcFullMethod,
 		Code:    int(erroxGRPC.RoxErrorToGRPCCode(err)),
 		GRPCReq: req,
-		Headers: ri.Metadata.Get,
+		Headers: NewHeaders(ri.Metadata),
 	}
 }
 
+// getHTTPRequestDetails extracts the authenticated user (if any) from ctx and constructs
+// a RequestParams describing the given HTTP request and response status.
+// If user identity cannot be obtained, a debug message is logged.
+// The returned RequestParams contains the request method, URL path, provided status code,
+// the original *http.Request (HTTPReq) and a Headers wrapper created from r.Header.
 func getHTTPRequestDetails(ctx context.Context, r *http.Request, status int) *RequestParams {
 	id, iderr := authn.IdentityFromContext(ctx)
 	if iderr != nil {
@@ -92,6 +108,6 @@ func getHTTPRequestDetails(ctx context.Context, r *http.Request, status int) *Re
 		Path:    r.URL.Path,
 		Code:    status,
 		HTTPReq: r,
-		Headers: Headers(r.Header).Get,
+		Headers: Headers(r.Header),
 	}
 }

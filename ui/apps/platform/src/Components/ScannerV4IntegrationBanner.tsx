@@ -1,4 +1,3 @@
-import React from 'react';
 import { Banner } from '@patternfly/react-core';
 
 import ExternalLink from 'Components/PatternFly/IconText/ExternalLink';
@@ -44,7 +43,7 @@ function ScannerV4IntegrationBanner() {
     );
 
     return (
-        <Banner variant="blue" className="pf-v5-u-text-align-center">
+        <Banner color="blue" className="pf-v6-u-text-align-center">
             {brandedText} For more information, see {docsLink}
         </Banner>
     );

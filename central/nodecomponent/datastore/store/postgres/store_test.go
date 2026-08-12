@@ -41,10 +41,6 @@ func (s *NodeComponentsStoreSuite) SetupTest() {
 	s.NoError(err)
 }
 
-func (s *NodeComponentsStoreSuite) TearDownSuite() {
-	s.testDB.Teardown(s.T())
-}
-
 func (s *NodeComponentsStoreSuite) TestStore() {
 	ctx := sac.WithAllAccess(context.Background())
 
@@ -96,6 +92,11 @@ func (s *NodeComponentsStoreSuite) TestStore() {
 	}
 
 	s.NoError(store.UpsertMany(ctx, nodeComponents))
+
+	foundNodeComponents, missing, err := store.GetMany(ctx, nodeComponentIDs)
+	s.NoError(err)
+	s.Empty(missing)
+	protoassert.ElementsMatch(s.T(), nodeComponents, foundNodeComponents)
 
 	nodeComponentCount, err = store.Count(ctx, search.EmptyQuery())
 	s.NoError(err)

@@ -26,8 +26,16 @@ const (
 	KubernetesSourceIPAddressCustomTag = "Source IP Address"
 	KubernetesUserAgentCustomTag       = "User Agent"
 	KubernetesIsImpersonatedCustomTag  = "Is Impersonated User"
+	FileAccessPathCustomTag            = "File Path"
+	FileAccessOperationCustomTag       = "File Operation"
 
 	RuntimeClassCustomTag = "Runtime Class"
+
+	// XattrChange is a virtual operation name used during detection.
+	// Both XATTR_SET and XATTR_REMOVE storage operations are mapped
+	// to this value in the augmented object so that a single policy
+	// criterion matches both.
+	XattrChange = "XATTR_CHANGE"
 )
 
 type dockerfileLine struct {
@@ -83,4 +91,27 @@ type envVar struct {
 
 type imageSignatureVerification struct {
 	VerifierIDs []string `search:"Image Signature Verified By"`
+}
+
+type NodeDetails struct {
+	Id          string `search:"Node ID"`
+	Name        string `search:"Node"`
+	ClusterId   string `search:"Cluster Id"`
+	ClusterName string `search:"Cluster Name"`
+}
+
+// fileAccessPath is a struct to contain ALL file paths
+// for a given file activity event. This allows us to
+// compare them all against a single criteria instead
+// of requiring a criteria for each "kind" of path
+// (effective or actual)
+type fileAccessPath struct {
+	Path []string `search:"File Path"`
+}
+
+// fileAccessOperation replaces the proto's Operation enum field during
+// policy evaluation. The value comes from operationMapping in construct.go,
+// falling back to the proto enum name for unmapped operations.
+type fileAccessOperation struct {
+	Operation string `search:"File Operation"`
 }

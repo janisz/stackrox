@@ -30,7 +30,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/googlerpcStatus"
+              "$ref": "#/definitions/googleRpcStatus"
             }
           }
         },
@@ -103,7 +103,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/googlerpcStatus"
+              "$ref": "#/definitions/googleRpcStatus"
             }
           }
         },
@@ -185,7 +185,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/googlerpcStatus"
+              "$ref": "#/definitions/googleRpcStatus"
             }
           }
         },
@@ -218,7 +218,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/googlerpcStatus"
+              "$ref": "#/definitions/googleRpcStatus"
             }
           }
         },
@@ -306,7 +306,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/googlerpcStatus"
+              "$ref": "#/definitions/googleRpcStatus"
             }
           }
         },
@@ -382,7 +382,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/googlerpcStatus"
+              "$ref": "#/definitions/googleRpcStatus"
             }
           }
         },
@@ -458,7 +458,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/googlerpcStatus"
+              "$ref": "#/definitions/googleRpcStatus"
             }
           }
         },
@@ -489,7 +489,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/googlerpcStatus"
+              "$ref": "#/definitions/googleRpcStatus"
             }
           }
         },
@@ -528,7 +528,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/googlerpcStatus"
+              "$ref": "#/definitions/googleRpcStatus"
             }
           }
         },
@@ -592,16 +592,19 @@
     }
   },
   "definitions": {
-    "AlertDeploymentContainer": {
-      "type": "object",
-      "properties": {
-        "image": {
-          "$ref": "#/definitions/storageContainerImage"
-        },
-        "name": {
-          "type": "string"
-        }
-      }
+    "AclEntryAclTag": {
+      "type": "string",
+      "enum": [
+        "ACL_TAG_UNSPECIFIED",
+        "ACL_TAG_USER_OBJ",
+        "ACL_TAG_USER",
+        "ACL_TAG_GROUP_OBJ",
+        "ACL_TAG_GROUP",
+        "ACL_TAG_MASK",
+        "ACL_TAG_OTHER"
+      ],
+      "default": "ACL_TAG_UNSPECIFIED",
+      "description": "AclTag identifies the type of entity an ACL entry applies to.\n\n - ACL_TAG_USER_OBJ: Owner user permissions\n - ACL_TAG_USER: Specific user permissions\n - ACL_TAG_GROUP_OBJ: Owning group permissions\n - ACL_TAG_GROUP: Specific group permissions\n - ACL_TAG_MASK: Maximum effective permissions mask\n - ACL_TAG_OTHER: Everyone else"
     },
     "AlertEnforcement": {
       "type": "object",
@@ -620,7 +623,8 @@
         "UNSET",
         "DEPLOYMENT",
         "CONTAINER_IMAGE",
-        "RESOURCE"
+        "RESOURCE",
+        "NODE"
       ],
       "default": "UNSET"
     },
@@ -633,6 +637,25 @@
         "count": {
           "type": "string",
           "format": "int64"
+        }
+      }
+    },
+    "AlertNode": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "clusterId": {
+          "type": "string",
+          "description": "This field has to be duplicated in Alert for scope management and search."
+        },
+        "clusterName": {
+          "type": "string",
+          "description": "This field has to be duplicated in Alert for scope management and search."
         }
       }
     },
@@ -688,6 +711,9 @@
         "networkFlowInfo": {
           "$ref": "#/definitions/ViolationNetworkFlowInfo"
         },
+        "fileAccess": {
+          "$ref": "#/definitions/storageFileAccess"
+        },
         "type": {
           "$ref": "#/definitions/AlertViolationType",
           "description": "'type' is for internal use only."
@@ -705,7 +731,8 @@
         "GENERIC",
         "K8S_EVENT",
         "NETWORK_FLOW",
-        "NETWORK_POLICY"
+        "NETWORK_POLICY",
+        "FILE_ACCESS"
       ],
       "default": "GENERIC"
     },
@@ -723,6 +750,78 @@
           }
         }
       }
+    },
+    "DeploymentContainer": {
+      "type": "object",
+      "properties": {
+        "image": {
+          "$ref": "#/definitions/storageContainerImage"
+        },
+        "name": {
+          "type": "string"
+        }
+      }
+    },
+    "ExclusionImage": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        }
+      }
+    },
+    "FileAccessFileMetadata": {
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "gid": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "mode": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "username": {
+          "type": "string"
+        },
+        "group": {
+          "type": "string"
+        },
+        "aclType": {
+          "$ref": "#/definitions/storageAclType",
+          "description": "ACL-specific fields, populated only for ACL_CHANGE operations."
+        },
+        "aclEntries": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/storageAclEntry"
+          }
+        },
+        "xattrName": {
+          "type": "string",
+          "description": "The extended attribute name, populated for XATTR_SET and XATTR_REMOVE operations."
+        }
+      }
+    },
+    "FileAccessOperation": {
+      "type": "string",
+      "enum": [
+        "CREATE",
+        "UNLINK",
+        "RENAME",
+        "PERMISSION_CHANGE",
+        "OWNERSHIP_CHANGE",
+        "OPEN",
+        "ACL_CHANGE",
+        "XATTR_SET",
+        "XATTR_REMOVE"
+      ],
+      "default": "CREATE"
     },
     "GetAlertTimeseriesResponseClusterAlerts": {
       "type": "object",
@@ -794,6 +893,14 @@
         }
       },
       "description": "Fields common to all entities that an alert might belong to."
+    },
+    "ListAlertNodeEntity": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        }
+      }
     },
     "ListAlertPolicyDevFields": {
       "type": "object",
@@ -884,7 +991,7 @@
         }
       }
     },
-    "googlerpcStatus": {
+    "googleRpcStatus": {
       "type": "object",
       "properties": {
         "code": {
@@ -913,6 +1020,35 @@
       },
       "additionalProperties": {},
       "description": "`Any` contains an arbitrary serialized protocol buffer message along with a\nURL that describes the type of the serialized message.\n\nProtobuf library provides support to pack/unpack Any values in the form\nof utility functions or additional generated methods of the Any type.\n\nExample 1: Pack and unpack a message in C++.\n\n    Foo foo = ...;\n    Any any;\n    any.PackFrom(foo);\n    ...\n    if (any.UnpackTo(&foo)) {\n      ...\n    }\n\nExample 2: Pack and unpack a message in Java.\n\n    Foo foo = ...;\n    Any any = Any.pack(foo);\n    ...\n    if (any.is(Foo.class)) {\n      foo = any.unpack(Foo.class);\n    }\n    // or ...\n    if (any.isSameTypeAs(Foo.getDefaultInstance())) {\n      foo = any.unpack(Foo.getDefaultInstance());\n    }\n\n Example 3: Pack and unpack a message in Python.\n\n    foo = Foo(...)\n    any = Any()\n    any.Pack(foo)\n    ...\n    if any.Is(Foo.DESCRIPTOR):\n      any.Unpack(foo)\n      ...\n\n Example 4: Pack and unpack a message in Go\n\n     foo := &pb.Foo{...}\n     any, err := anypb.New(foo)\n     if err != nil {\n       ...\n     }\n     ...\n     foo := &pb.Foo{}\n     if err := any.UnmarshalTo(foo); err != nil {\n       ...\n     }\n\nThe pack methods provided by protobuf library will by default use\n'type.googleapis.com/full.type.name' as the type URL and the unpack\nmethods only use the fully qualified type name after the last '/'\nin the type URL, for example \"foo.bar.com/x/y.z\" will yield type\nname \"y.z\".\n\nJSON\n====\nThe JSON representation of an `Any` value uses the regular\nrepresentation of the deserialized, embedded message, with an\nadditional field `@type` which contains the type URL. Example:\n\n    package google.profile;\n    message Person {\n      string first_name = 1;\n      string last_name = 2;\n    }\n\n    {\n      \"@type\": \"type.googleapis.com/google.profile.Person\",\n      \"firstName\": <string>,\n      \"lastName\": <string>\n    }\n\nIf the embedded message type is well-known and has a custom JSON\nrepresentation, that representation will be embedded adding a field\n`value` which holds the custom JSON in addition to the `@type`\nfield. Example (for message [google.protobuf.Duration][]):\n\n    {\n      \"@type\": \"type.googleapis.com/google.protobuf.Duration\",\n      \"value\": \"1.212s\"\n    }"
+    },
+    "storageAclEntry": {
+      "type": "object",
+      "properties": {
+        "tag": {
+          "$ref": "#/definitions/AclEntryAclTag"
+        },
+        "perm": {
+          "type": "integer",
+          "format": "int64",
+          "title": "Permission bits (e.g. 7 = rwx, 6 = rw-, 4 = r--)"
+        },
+        "id": {
+          "type": "integer",
+          "format": "int64",
+          "description": "The uid or gid for ACL_TAG_USER / ACL_TAG_GROUP entries.\nSet to 0xFFFFFFFF when not applicable."
+        }
+      },
+      "description": "AclEntry represents a single POSIX ACL entry."
+    },
+    "storageAclType": {
+      "type": "string",
+      "enum": [
+        "ACL_TYPE_UNSPECIFIED",
+        "ACL_TYPE_ACCESS",
+        "ACL_TYPE_DEFAULT"
+      ],
+      "default": "ACL_TYPE_UNSPECIFIED",
+      "description": "AclType distinguishes access ACLs from default (inherited) ACLs.\n\n - ACL_TYPE_ACCESS: Controls current permissions on the file\n - ACL_TYPE_DEFAULT: Inherited by new files created in a directory"
     },
     "storageAlert": {
       "type": "object",
@@ -950,6 +1086,10 @@
           "$ref": "#/definitions/storageAlertResource",
           "title": "Represents an alert on a kubernetes resource (configmaps, secrets, etc.)\nAn alert cannot be on more than one entity (deployment, container image, resource, etc.)"
         },
+        "node": {
+          "$ref": "#/definitions/AlertNode",
+          "title": "Represents an alert on a node.\nAn alert cannot be on more than one entity (deployment, container image, resource, etc.)"
+        },
         "violations": {
           "type": "array",
           "items": {
@@ -985,9 +1125,14 @@
         },
         "entityType": {
           "$ref": "#/definitions/AlertEntityType"
+        },
+        "enforcementCount": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Cached enforcement count, computed on upsert. For RUNTIME+KILL_POD alerts\nthis is the number of unique pods killed. For DEPLOY alerts with enforcement\nthis is 1. Avoids deserializing the full alert blob for ListAlert queries."
         }
       },
-      "title": "Next available tag: 24"
+      "title": "Next available tag: 26"
     },
     "storageAlertDeployment": {
       "type": "object",
@@ -1027,7 +1172,7 @@
           "type": "array",
           "items": {
             "type": "object",
-            "$ref": "#/definitions/AlertDeploymentContainer"
+            "$ref": "#/definitions/DeploymentContainer"
           }
         },
         "annotations": {
@@ -1091,9 +1236,20 @@
         },
         "isClusterLocal": {
           "type": "boolean"
+        },
+        "idV2": {
+          "type": "string"
         }
       },
-      "title": "Next tag: 12"
+      "title": "Next tag: 13"
+    },
+    "storageContainerType": {
+      "type": "string",
+      "enum": [
+        "REGULAR",
+        "INIT"
+      ],
+      "default": "REGULAR"
     },
     "storageEnforcementAction": {
       "type": "string",
@@ -1110,12 +1266,25 @@
       "default": "UNSET_ENFORCEMENT",
       "description": " - FAIL_KUBE_REQUEST_ENFORCEMENT: FAIL_KUBE_REQUEST_ENFORCEMENT takes effect only if admission control webhook is enabled to listen on exec and port-forward events.\n - FAIL_DEPLOYMENT_CREATE_ENFORCEMENT: FAIL_DEPLOYMENT_CREATE_ENFORCEMENT takes effect only if admission control webhook is configured to enforce on object creates.\n - FAIL_DEPLOYMENT_UPDATE_ENFORCEMENT: FAIL_DEPLOYMENT_UPDATE_ENFORCEMENT takes effect only if admission control webhook is configured to enforce on object updates."
     },
+    "storageEvaluationFilter": {
+      "type": "object",
+      "properties": {
+        "skipContainerTypes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/storageContainerType"
+          }
+        }
+      },
+      "description": "EvaluationFilter pre-filters which entities a policy evaluates."
+    },
     "storageEventSource": {
       "type": "string",
       "enum": [
         "NOT_APPLICABLE",
         "DEPLOYMENT_EVENT",
-        "AUDIT_LOG_EVENT"
+        "AUDIT_LOG_EVENT",
+        "NODE_EVENT"
       ],
       "default": "NOT_APPLICABLE"
     },
@@ -1129,7 +1298,7 @@
           "$ref": "#/definitions/storageExclusionDeployment"
         },
         "image": {
-          "$ref": "#/definitions/storageExclusionImage"
+          "$ref": "#/definitions/ExclusionImage"
         },
         "expiration": {
           "type": "string",
@@ -1148,11 +1317,48 @@
         }
       }
     },
-    "storageExclusionImage": {
+    "storageFileAccess": {
       "type": "object",
       "properties": {
-        "name": {
-          "type": "string"
+        "file": {
+          "$ref": "#/definitions/storageFileAccessFile"
+        },
+        "operation": {
+          "$ref": "#/definitions/FileAccessOperation"
+        },
+        "moved": {
+          "$ref": "#/definitions/storageFileAccessFile",
+          "description": "specific to `RENAME` activity, the new location / metadata of the file."
+        },
+        "timestamp": {
+          "type": "string",
+          "format": "date-time",
+          "title": "When the file activity happened"
+        },
+        "process": {
+          "$ref": "#/definitions/storageProcessIndicator",
+          "description": "The process that performed the action. May contain deployment/namespace\ninformation."
+        },
+        "hostname": {
+          "type": "string",
+          "title": "The hostname/name of the node where the file activity occurred"
+        }
+      },
+      "description": "FileAccess contains fields related to arbitrary file accesses\nperformed by a given process. This activity can come from k8s, or\ndirectly on a node.\n\nIt is currently intended to be used in Sensor and for detection,\nbut will only be stored embedded in an Alert. As a result, it\ndoes not currently define a primary key."
+    },
+    "storageFileAccessFile": {
+      "type": "object",
+      "properties": {
+        "effectivePath": {
+          "type": "string",
+          "title": "Relevant to deployment-based events, this is the path of a file in the\ncontainer.\ne.g. if /etc/ is mounted to /tmp/etc/ in the container, and the passwd file\nis accessed from within the container: effective_path will be /tmp/etc/passwd"
+        },
+        "actualPath": {
+          "type": "string",
+          "title": "The path on the node file system. This is relevant to both deployment- and\nnode-based events.\ne.g. if /etc/ is mounted to /tmp/etc/ in the container, and the passwd file\nis accessed from within the container: actual_path will be /etc/passwd"
+        },
+        "meta": {
+          "$ref": "#/definitions/FileAccessFileMetadata"
         }
       }
     },
@@ -1231,6 +1437,10 @@
         "resource": {
           "$ref": "#/definitions/ListAlertResourceEntity",
           "title": "Represents an alert on a kubernetes resource (configmaps, secrets, etc.)\nAn alert cannot be on more than one entity (deployment, container image, resource, etc.)"
+        },
+        "node": {
+          "$ref": "#/definitions/ListAlertNodeEntity",
+          "title": "Represents an alert on a node\nAn alert cannot be on more than one entity (deployment, container image, resource, etc.)"
         }
       }
     },
@@ -1304,10 +1514,11 @@
         "CLUSTER_ROLE_BINDINGS",
         "NETWORK_POLICIES",
         "SECURITY_CONTEXT_CONSTRAINTS",
-        "EGRESS_FIREWALLS"
+        "EGRESS_FIREWALLS",
+        "NODE"
       ],
       "default": "DEPLOYMENT",
-      "title": "A special ListAlert-only enumeration of all resource types. Unlike Alert.Resource.ResourceType this also includes deployment as a type\nThis must be kept in sync with Alert.Resource.ResourceType (excluding the deployment value)"
+      "title": "A special ListAlert-only enumeration of all resource types. Unlike Alert.Resource.ResourceType this also includes deployment and node as types\nThis must be kept in sync with Alert.Resource.ResourceType (excluding the deployment and node values)"
     },
     "storageNetworkEntityInfoType": {
       "type": "string",
@@ -1447,9 +1658,13 @@
         },
         "source": {
           "$ref": "#/definitions/storagePolicySource"
+        },
+        "evaluationFilter": {
+          "$ref": "#/definitions/storageEvaluationFilter",
+          "description": "Pre-filters which entities the policy evaluates."
         }
       },
-      "title": "Next tag: 28"
+      "title": "Next tag: 29"
     },
     "storagePolicyGroup": {
       "type": "object",
@@ -1622,6 +1837,13 @@
           "type": "string"
         },
         "label": {
+          "$ref": "#/definitions/storageScopeLabel",
+          "title": "Deployment label."
+        },
+        "clusterLabel": {
+          "$ref": "#/definitions/storageScopeLabel"
+        },
+        "namespaceLabel": {
           "$ref": "#/definitions/storageScopeLabel"
         }
       }

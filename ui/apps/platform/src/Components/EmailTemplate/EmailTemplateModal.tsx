@@ -1,9 +1,11 @@
-import React, { ReactElement } from 'react';
-import { Button, Modal, Tab, TabTitleText, Tabs } from '@patternfly/react-core';
+import type { ReactElement } from 'react';
+import { Button, Tab, TabTitleText, Tabs } from '@patternfly/react-core';
+import { Modal } from '@patternfly/react-core/deprecated';
 import { useFormik } from 'formik';
 import isEmpty from 'lodash/isEmpty';
 
-import { EmailTemplateFormData, emailTemplateValidationSchema } from './EmailTemplate.utils';
+import { emailTemplateValidationSchema } from './EmailTemplate.utils';
+import type { EmailTemplateFormData } from './EmailTemplate.utils';
 import EmailTemplateForm from './EmailTemplateForm';
 
 export type TemplatePreviewArgs = {
@@ -72,12 +74,12 @@ function EmailTemplateModal({
               >
                   Apply
               </Button>,
-              <Button key="cancel" variant="link" isInline onClick={onClose}>
+              <Button key="cancel" variant="link" onClick={onClose}>
                   Cancel
               </Button>,
           ]
         : [
-              <Button key="cancel" variant="secondary" isInline onClick={onClose}>
+              <Button key="cancel" variant="secondary" onClick={onClose}>
                   Close
               </Button>,
           ];

@@ -41,10 +41,6 @@ func (s *SecuredUnitsStoreSuite) SetupTest() {
 	s.NoError(err)
 }
 
-func (s *SecuredUnitsStoreSuite) TearDownSuite() {
-	s.testDB.Teardown(s.T())
-}
-
 func (s *SecuredUnitsStoreSuite) TestStore() {
 	ctx := sac.WithAllAccess(context.Background())
 
@@ -96,6 +92,11 @@ func (s *SecuredUnitsStoreSuite) TestStore() {
 	}
 
 	s.NoError(store.UpsertMany(ctx, securedUnitss))
+
+	foundSecuredUnitss, missing, err := store.GetMany(ctx, securedUnitsIDs)
+	s.NoError(err)
+	s.Empty(missing)
+	protoassert.ElementsMatch(s.T(), securedUnitss, foundSecuredUnitss)
 
 	securedUnitsCount, err = store.Count(ctx, search.EmptyQuery())
 	s.NoError(err)

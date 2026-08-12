@@ -1,9 +1,9 @@
-import React, { ReactElement } from 'react';
+import type { ReactElement } from 'react';
 import { useQuery } from '@apollo/client';
 
 import Loader from 'Components/Loader';
 import { STANDARDS_QUERY } from 'queries/standard';
-import { ComplianceStandardScope } from 'services/ComplianceService';
+import type { ComplianceStandardScope } from 'services/ComplianceService';
 
 import ComplianceByStandard from './ComplianceByStandard';
 
@@ -41,13 +41,11 @@ function ComplianceByStandards({
         );
     }
 
-    /* eslint-disable no-nested-ternary */
     const standards = !data?.results
         ? []
         : !entityType
           ? data.results
           : data.results.filter(({ scopes }) => scopes.includes(entityType));
-    /* eslint-enable no-nested-ternary */
 
     return (
         <>
@@ -59,7 +57,6 @@ function ComplianceByStandards({
                     entityId={entityId}
                     entityName={entityName}
                     entityType={entityType}
-                    className="pdf-page"
                 />
             ))}
         </>

@@ -1,18 +1,18 @@
-import React from 'react';
-import { Link } from 'react-router-dom';
+import { Link } from 'react-router-dom-v5-compat';
 import { Card, CardBody, CardTitle } from '@patternfly/react-core';
 
-import { vulnerabilitiesWorkloadCvesPath } from 'routePaths';
-import { ContainerImage } from 'types/deployment.proto';
+import type { ContainerImage } from 'types/deployment.proto';
 
 type ContainerImageInfoProps = {
-    image: ContainerImage; // note: the k8s API, and our data of it, use singular "command" for this array
+    image: ContainerImage;
+    getImageUrl: (imageId: string) => string;
 };
 
-function ContainerImageInfo({ image }: ContainerImageInfoProps) {
-    const imageDetailsPageURL = `${vulnerabilitiesWorkloadCvesPath}/images/${image.id}`;
+function ContainerImageInfo({ image, getImageUrl }: ContainerImageInfoProps) {
+    const imageId = image.idV2 && image.idV2 !== '' ? image.idV2 : image.id;
+    const imageDetailsPageURL = getImageUrl(imageId);
 
-    if (image.id === '' || image.notPullable) {
+    if (imageId === '' || image.notPullable) {
         const unavailableText = image.notPullable
             ? 'image not currently pullable'
             : 'image not available until deployment is running';

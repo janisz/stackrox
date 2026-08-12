@@ -2,9 +2,11 @@ import { gql } from '@apollo/client';
 import { min, parse } from 'date-fns';
 import sortBy from 'lodash/sortBy';
 import uniq from 'lodash/uniq';
-import { CveBaseInfo, VulnerabilitySeverity, isVulnerabilitySeverity } from 'types/cve.proto';
-import { SourceType } from 'types/image.proto';
-import { ApiSortOptionSingle } from 'types/search';
+
+import { isVulnerabilitySeverity } from 'types/cve.proto';
+import type { Advisory, CveBaseInfo, VulnerabilitySeverity } from 'types/cve.proto';
+import type { SourceType } from 'types/image.proto';
+import type { ApiSortOptionSingle } from 'types/search';
 
 import {
     getHighestVulnerabilitySeverity,
@@ -12,7 +14,8 @@ import {
 } from '../../utils/vulnerabilityUtils';
 
 export type ImageMetadataContext = {
-    id: string;
+    id: string; // UUID - used for linking
+    digest?: string; // For ImageV2, the SHA digest - used for display
     name: {
         registry: string;
         remote: string;
@@ -31,6 +34,27 @@ export type ImageMetadataContext = {
 export const imageMetadataContextFragment = gql`
     fragment ImageMetadataContext on Image {
         id
+        digest
+        name {
+            registry
+            remote
+            tag
+        }
+        metadata {
+            v1 {
+                layers {
+                    instruction
+                    value
+                }
+            }
+        }
+    }
+`;
+
+export const imageV2MetadataContextFragment = gql`
+    fragment ImageV2MetadataContext on ImageV2 {
+        id
+        digest
         name {
             registry
             remote
@@ -55,9 +79,11 @@ export type ComponentVulnerabilityBase = {
     location: string;
     source: SourceType;
     layerIndex: number | null;
+    inBaseImageLayer?: boolean;
     imageVulnerabilities: {
         severity: string;
         fixedByVersion: string;
+        advisory?: Advisory | null;
         pendingExceptionCount: number;
     }[];
 };
@@ -73,6 +99,7 @@ export type DeploymentComponentVulnerability = Omit<
         cvss: number;
         scoreVersion: string;
         fixedByVersion: string;
+        advisory?: Advisory | null;
         discoveredAtImage: string | null;
         publishedOn: string | null;
         pendingExceptionCount: number;
@@ -81,7 +108,8 @@ export type DeploymentComponentVulnerability = Omit<
 
 export type TableDataRow = {
     image: {
-        id: string;
+        id: string; // UUID - used for linking
+        digest?: string; // For ImageV2, the SHA digest - used for display
         name: {
             remote: string;
             registry: string;
@@ -90,6 +118,7 @@ export type TableDataRow = {
     };
     name: string;
     fixedByVersion: string;
+    advisory?: Advisory | null;
     severity: VulnerabilitySeverity;
     version: string;
     location: string;
@@ -100,6 +129,7 @@ export type TableDataRow = {
         value: string;
     } | null;
     pendingExceptionCount: number;
+    inBaseImageLayer?: boolean;
 };
 
 /**
@@ -154,7 +184,7 @@ function extractCommonComponentFields(
     component: ComponentVulnerabilityBase,
     vulnerability: ComponentVulnerabilityBase['imageVulnerabilities'][0] | undefined
 ): TableDataRow {
-    const { name, version, location, source, layerIndex } = component;
+    const { name, version, location, source, layerIndex, inBaseImageLayer } = component;
 
     let layer: TableDataRow['layer'] = null;
 
@@ -174,6 +204,7 @@ function extractCommonComponentFields(
             ? vulnerability.severity
             : 'UNKNOWN_VULNERABILITY_SEVERITY';
     const fixedByVersion = vulnerability?.fixedByVersion ?? 'N/A';
+    const advisory = vulnerability?.advisory;
     const pendingExceptionCount = vulnerability?.pendingExceptionCount ?? 0;
 
     return {
@@ -181,11 +212,17 @@ function extractCommonComponentFields(
         version,
         location,
         source,
-        image,
+        image: {
+            id: image.id,
+            digest: image.digest,
+            name: image.name,
+        },
         layer,
         severity,
         fixedByVersion,
+        advisory,
         pendingExceptionCount,
+        inBaseImageLayer,
     };
 }
 

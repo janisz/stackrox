@@ -22,7 +22,6 @@ var (
 )
 
 func TestConfigMapTrigger(t *testing.T) {
-	t.Parallel()
 	cases := map[string]struct {
 		triggerFunc func(*watch.FakeWatcher, *v1.ConfigMap)
 	}{
@@ -44,8 +43,7 @@ func TestConfigMapTrigger(t *testing.T) {
 
 	for name, c := range cases {
 		t.Run(name, func(t *testing.T) {
-			t.Parallel()
-			k8sClient := fake.NewSimpleClientset()
+			k8sClient := fake.NewClientset()
 			watcher := watch.NewFake()
 			watchReactor := NewTestWatchReactor(t, watcher)
 			k8sClient.WatchReactionChain = []k8sTest.WatchReactor{watchReactor}
@@ -96,8 +94,7 @@ func TestConfigMapContextCancelled(t *testing.T) {
 
 	for name, c := range cases {
 		t.Run(name, func(t *testing.T) {
-			t.Parallel()
-			k8sClient := fake.NewSimpleClientset()
+			k8sClient := fake.NewClientset()
 			watcher := watch.NewFake()
 			watchReactor := NewTestWatchReactor(t, watcher)
 			k8sClient.WatchReactionChain = []k8sTest.WatchReactor{watchReactor}

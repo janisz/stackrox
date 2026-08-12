@@ -28,16 +28,14 @@ go.work
 *~
 
 # Temp files created during build process
-build/
+/build/
+/dist/
 
 # kuttl ignored files
 # Workaround for https://github.com/kudobuilder/kuttl/issues/297
 kubeconfig
 # ignore testing init-bundle which was generated for kuttl e2e tests
 tests/*/*/init-bundle.yaml
-
-# Python virtualenv directory for dependencies of bundle build helpers.
-bundle_helpers/.venv/
 
 # Backups for what we've edited with sed
 *.bak

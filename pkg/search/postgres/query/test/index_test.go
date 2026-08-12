@@ -34,17 +34,8 @@ func TestSingleIndex(t *testing.T) {
 }
 
 func (s *SingleIndexSuite) SetupTest() {
-
-	source := pgtest.GetConnectionString(s.T())
-	config, err := postgres.ParseConfig(source)
-	s.Require().NoError(err)
-	s.pool, err = postgres.New(context.Background(), config)
-	s.Require().NoError(err)
-
-	pgStore.Destroy(ctx, s.pool)
-	gormDB := pgtest.OpenGormDB(s.T(), source)
-	defer pgtest.CloseGormDB(s.T(), gormDB)
-	s.store = pgStore.CreateTableAndNewStore(ctx, s.pool, gormDB)
+	s.pool = pgtest.ForT(s.T())
+	s.store = pgStore.New(s.pool)
 }
 
 func (s *SingleIndexSuite) TearDownTest() {
@@ -63,7 +54,7 @@ func getStruct(id int) *storage.TestSingleKeyStruct {
 
 func (s *SingleIndexSuite) TestDocIDs() {
 	var testStructs []*storage.TestSingleKeyStruct
-	for i := 0; i < 8; i++ {
+	for i := range 8 {
 		testStructs = append(testStructs, getStruct(i))
 	}
 	s.NoError(s.store.UpsertMany(ctx, testStructs))
@@ -105,7 +96,7 @@ func (s *SingleIndexSuite) TestDocIDs() {
 
 func (s *SingleIndexSuite) TestSearchAfter() {
 	var testStructs []*storage.TestSingleKeyStruct
-	for i := 0; i < 4; i++ {
+	for i := range 4 {
 		obj := getStruct(i)
 		obj.Uint64 = uint64(i / 2)
 		testStructs = append(testStructs, obj)

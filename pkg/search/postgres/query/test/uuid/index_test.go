@@ -36,16 +36,9 @@ func TestSingleUUIDIndex(t *testing.T) {
 
 func (s *SingleUUIDIndexSuite) SetupTest() {
 
-	source := pgtest.GetConnectionString(s.T())
-	config, err := postgres.ParseConfig(source)
-	s.Require().NoError(err)
-	s.pool, err = postgres.New(context.Background(), config)
-	s.Require().NoError(err)
+	s.pool = pgtest.ForT(s.T())
 
-	pgStore.Destroy(ctx, s.pool)
-	gormDB := pgtest.OpenGormDB(s.T(), source)
-	defer pgtest.CloseGormDB(s.T(), gormDB)
-	s.store = pgStore.CreateTableAndNewStore(ctx, s.pool, gormDB)
+	s.store = pgStore.New(s.pool)
 }
 
 func (s *SingleUUIDIndexSuite) TearDownTest() {
@@ -64,7 +57,7 @@ func getUUIDStruct(id int) *storage.TestSingleUUIDKeyStruct {
 
 func (s *SingleUUIDIndexSuite) TestDocIDs() {
 	var testStructs []*storage.TestSingleUUIDKeyStruct
-	for i := 0; i < 8; i++ {
+	for i := range 8 {
 		testStructs = append(testStructs, getUUIDStruct(i))
 	}
 	s.NoError(s.store.UpsertMany(ctx, testStructs))
@@ -119,7 +112,7 @@ func (s *SingleUUIDIndexSuite) TestDocIDs() {
 
 func (s *SingleUUIDIndexSuite) TestSearchAfter() {
 	var testStructs []*storage.TestSingleUUIDKeyStruct
-	for i := 0; i < 4; i++ {
+	for i := range 4 {
 		obj := getUUIDStruct(i)
 		obj.Uint64 = uint64(i / 2)
 		testStructs = append(testStructs, obj)
@@ -421,7 +414,7 @@ func (s *SingleUUIDIndexSuite) TestMatches() {
 
 			expectedIDs := make([]string, 0, len(testCase.expectedResults))
 			for _, s := range testCase.expectedResults {
-				expectedIDs = append(expectedIDs, s.Key)
+				expectedIDs = append(expectedIDs, s.GetKey())
 			}
 			s.ElementsMatch(actualIDs, expectedIDs)
 		})

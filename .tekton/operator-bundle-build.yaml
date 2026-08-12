@@ -8,6 +8,7 @@ metadata:
     build.appstudio.redhat.com/pull_request_number: '{{pull_request_number}}'
     build.appstudio.redhat.com/target_branch: '{{target_branch}}'
     pipelinesascode.tekton.dev/max-keep-runs: "500"
+    pipelinesascode.tekton.dev/on-comment: "/konflux-retest operator-bundle-on-push"
     # TODO(ROX-21073): re-enable for all PR branches
     pipelinesascode.tekton.dev/on-cel-expression: |
       (
@@ -16,9 +17,12 @@ metadata:
         event == "pull_request" && (
           target_branch.startsWith("release-") ||
           source_branch.matches("(konflux|renovate|appstudio|rhtap)") ||
-          body.pull_request.labels.exists(l, l.name == "konflux-build")
-        )
+          (has(body.pull_request) && has(body.pull_request.labels) && body.pull_request.labels.exists(l, l.name == "konflux-build"))
+        ) && body.action != "ready_for_review"
       )
+    # The empty `on-label` annotation is a workaround to make sure the pipeline gets triggered when the label gets first
+    # added to the PR. See the Slack tread linked from ROX-30580.
+    pipelinesascode.tekton.dev/on-label: "[]"
   labels:
     appstudio.openshift.io/application: acs
     appstudio.openshift.io/component: operator-bundle
@@ -36,7 +40,7 @@ spec:
   - name: image-expires-after
     value: '13w'
   - name: output-image-repo
-    value: quay.io/rhacs-eng/stackrox-operator-bundle
+    value: quay.io/rhacs-eng/release-operator-bundle
   - name: revision
     value: '{{revision}}'
   - name: rebuild
@@ -46,7 +50,7 @@ spec:
   - name: prefetch-input
     value: |
       [
-        { "type": "pip", "path": "operator/bundle_helpers" }
+        { "type": "gomod", "path": "." }
       ]
   - name: build-source-image
     value: 'true'
@@ -54,14 +58,72 @@ spec:
     value: '0'
   - name: clone-fetch-tags
     value: 'true'
-
-  workspaces:
-  - name: git-auth
-    secret:
-      secretName: '{{ git_auth_secret }}'
+  - name: extra-labels
+    value:
+    # X.Y in the cpe label must be adjusted for every version stream.
+    - "cpe=cpe:/a:redhat:advanced_cluster_security:X.Y::el9"
 
   pipelineRef:
     name: operator-bundle-pipeline
+
+  taskRunSpecs:
+  # The following are overrides to default step resources to prevent occasional or deterministic OOM kills.
+  - pipelineTaskName: prefetch-dependencies
+    podTemplate: &go-memlimit
+      env:
+      - name: GOMEMLIMIT
+        value: 2500MiB
+    stepSpecs:
+    - name: prefetch-dependencies
+      computeResources:
+        limits:
+          memory: 6Gi
+        requests:
+          memory: 6Gi
+    - name: create-trusted-artifact
+      computeResources: &ta-resources
+        limits:
+          cpu: 2
+          memory: 7Gi
+        requests:
+          cpu: 2
+          memory: 7Gi
+  - pipelineTaskName: build-container
+    podTemplate: *go-memlimit
+    stepSpecs:
+    - name: use-trusted-artifact
+      computeResources: *ta-resources
+  - pipelineTaskName: build-source-image
+    podTemplate: *go-memlimit
+    stepSpecs:
+    - name: use-trusted-artifact
+      computeResources: *ta-resources
+    - name: build
+      computeResources:
+        limits:
+          cpu: 1
+          memory: 3Gi
+        requests:
+          cpu: 1
+          memory: 3Gi
+  - pipelineTaskName: sast-shell-check
+    podTemplate: *go-memlimit
+    stepSpecs:
+    - name: use-trusted-artifact
+      computeResources: *ta-resources
+  - pipelineTaskName: sast-unicode-check
+    podTemplate: *go-memlimit
+    stepSpecs:
+    - name: use-trusted-artifact
+      computeResources: *ta-resources
+  - pipelineTaskName: sast-snyk-check
+    podTemplate: *go-memlimit
+    stepSpecs:
+    - name: use-trusted-artifact
+      computeResources: *ta-resources
+
+  taskRunTemplate:
+    serviceAccountName: build-pipeline-operator-bundle
 
   # When building the operator-bundle, we must resolve image digests for all other ACS product images in order to inject
   # these digests in the bundle's ClusterServiceVersion file. For this, the bundle pipeline waits for each image to be
@@ -82,3 +144,8 @@ spec:
     tasks: 3h10m
     finally: 10m
     pipeline: 3h20m
+
+  workspaces:
+  - name: git-auth
+    secret:
+      secretName: '{{ git_auth_secret }}'

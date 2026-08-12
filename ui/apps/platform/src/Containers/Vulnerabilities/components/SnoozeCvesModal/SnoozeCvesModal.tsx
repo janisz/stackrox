@@ -1,13 +1,14 @@
-import React from 'react';
-import { Alert, Modal, Text, Button, Flex, Form, Radio, FormGroup } from '@patternfly/react-core';
-import { FormikHelpers, useFormik } from 'formik';
+import { Alert, Button, Content, Flex, Form, FormGroup, Radio } from '@patternfly/react-core';
+import { Modal } from '@patternfly/react-core/deprecated';
+import { useFormik } from 'formik';
+import type { FormikHelpers } from 'formik';
 
 import { durations, snoozeDurations } from 'constants/timeWindows';
 import useRestMutation from 'hooks/useRestMutation';
 import { suppressVulns, unsuppressVulns } from 'services/VulnerabilitiesService';
 import { getAxiosErrorMessage } from 'utils/responseErrorUtils';
-import { ValueOf } from 'utils/type.utils';
-import { SnoozeAction, SnoozeableCveType } from './useSnoozeCveModal';
+import type { ValueOf } from 'utils/type.utils';
+import type { SnoozeAction, SnoozeableCveType } from './useSnoozeCveModal';
 
 const durationOptions = ['DAY', 'WEEK', 'MONTH', 'UNSET'] as const;
 
@@ -64,7 +65,7 @@ function SnoozeCvesModal({ action, cveType, cves, onSuccess, onClose }: SnoozeCv
             actions={[
                 <Button
                     key="perform-modal-action"
-                    className="pf-v5-u-display-flex pf-v5-u-align-items-center"
+                    className="pf-v6-u-display-flex pf-v6-u-align-items-center"
                     isLoading={isSubmitting}
                     isDisabled={isSubmitting || isSuccess}
                     onClick={submitForm}
@@ -101,7 +102,7 @@ function SnoozeCvesModal({ action, cveType, cves, onSuccess, onClose }: SnoozeCv
                         {getAxiosErrorMessage(error)}
                     </Alert>
                 )}
-                <Text>{text}</Text>
+                <Content component="p">{text}</Content>
                 {action === 'SNOOZE' && (
                     <Form style={{ minHeight: 0 }}>
                         <FormGroup fieldId="snooze-duration" label="Snooze duration">

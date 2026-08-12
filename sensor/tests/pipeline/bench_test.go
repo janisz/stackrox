@@ -5,7 +5,6 @@ import (
 	"math/rand"
 	"net"
 	"testing"
-	"time"
 
 	"github.com/stackrox/rox/generated/internalapi/central"
 	"github.com/stackrox/rox/generated/storage"
@@ -40,15 +39,13 @@ var (
 )
 
 func init() {
-	rand.Seed(time.Now().UnixNano())
-
 	serviceAccounts = make([]string, 1000)
-	for i := 0; i < 1000; i++ {
+	for i := range 1000 {
 		serviceAccounts[i] = randString(5)
 	}
 
 	appNames = make([]string, 1000)
-	for i := 0; i < 1000; i++ {
+	for i := range 1000 {
 		appNames[i] = randString(5)
 	}
 }
@@ -74,7 +71,6 @@ func randString(n int) string {
 }
 
 func Benchmark_Pipeline(b *testing.B) {
-	b.StopTimer()
 
 	setupOnce.Do(func() {
 		fakeClient = k8s.MakeFakeClient()
@@ -95,8 +91,7 @@ func Benchmark_Pipeline(b *testing.B) {
 		setupSensor(fakeCentral, fakeClient)
 	})
 
-	b.StartTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		testNamespace := randString(10)
 		_, err := fakeClient.Kubernetes().CoreV1().Namespaces().Create(context.Background(), &core.Namespace{
 			ObjectMeta: metav1.ObjectMeta{
@@ -123,7 +118,7 @@ func Benchmark_Pipeline(b *testing.B) {
 			"service":    {},
 		}
 
-		for i := 0; i < 100; i++ {
+		for range 100 {
 			roleName := randString(10)
 			createRole(fakeClient, testNamespace, roleName)
 			bindingName := randString(10)
@@ -132,13 +127,13 @@ func Benchmark_Pipeline(b *testing.B) {
 			deletion["binding"] = append(deletion["binding"], bindingName)
 		}
 
-		for i := 0; i < 100; i++ {
+		for range 100 {
 			serviceName := randString(10)
 			createService(fakeClient, testNamespace, serviceName)
 			deletion["service"] = append(deletion["service"], serviceName)
 		}
 
-		for i := 0; i < 1000; i++ {
+		for i := range 1000 {
 			deploymentName := randString(10)
 			createDeployment(fakeClient, testNamespace, deploymentName, appNames[i], serviceAccounts[i])
 			deletion["deployment"] = append(deletion["deployment"], deploymentName)

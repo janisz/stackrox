@@ -1,12 +1,13 @@
-import React, { ReactElement } from 'react';
-import { Alert, Modal } from '@patternfly/react-core';
+import type { ReactElement } from 'react';
+import { Alert } from '@patternfly/react-core';
+import { Modal } from '@patternfly/react-core/deprecated';
 
-export type ManageStandardsErrorProp = {
+export type ManageStandardsErrorProps = {
     onClose: () => void;
     errorMessage: string;
 };
 
-function ManageStandardsError({ onClose, errorMessage }: ManageStandardsErrorProp): ReactElement {
+function ManageStandardsError({ onClose, errorMessage }: ManageStandardsErrorProps): ReactElement {
     return (
         <Modal title="Manage standards" variant="small" isOpen onClose={onClose} showClose>
             <Alert title="Unable to fetch standards" component="p" variant="warning" isInline>

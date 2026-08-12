@@ -1,15 +1,15 @@
-import React, { useCallback } from 'react';
+import { useCallback } from 'react';
 import {
     Breadcrumb,
     BreadcrumbItem,
     Button,
+    Content,
     Divider,
     Flex,
     FlexItem,
     Pagination,
     Stack,
     StackItem,
-    Text,
     Title,
     Toolbar,
     ToolbarContent,
@@ -19,24 +19,29 @@ import { InnerScrollContainer, Table, Tbody, Td, Th, Thead, Tr } from '@patternf
 
 import TbodyUnified from 'Components/TableStateTemplates/TbodyUnified';
 import useRestQuery from 'hooks/useRestQuery';
-import { UseURLPaginationResult } from 'hooks/useURLPagination';
-import { UseUrlSearchReturn } from 'hooks/useURLSearch';
+import type { QueryValue } from 'hooks/useURLParameter';
 import { getExternalNetworkFlows } from 'services/NetworkService';
 import { getTableUIState } from 'utils/getTableUIState';
-import { ExternalNetworkFlowsResponse } from 'types/networkFlow.proto';
+import type { ExternalNetworkFlowsResponse } from 'types/networkFlow.proto';
 
-import { getDeploymentInfoForExternalEntity, protocolLabel } from '../utils/flowUtils';
-import { NetworkScopeHierarchy } from '../types/networkScopeHierarchy';
 import { ExternalEntitiesIcon } from '../common/NetworkGraphIcons';
+import { EXTERNAL_SOURCE_ADDRESS_QUERY } from '../NetworkGraph.constants';
+import type { NetworkScopeHierarchy } from '../types/networkScopeHierarchy';
+import {
+    SIDE_PANEL_SEARCH_PREFIX,
+    usePagination,
+    useSearchFilterSidePanel,
+    useTimeWindow,
+} from '../NetworkGraphURLStateContext';
+import { getDeploymentInfoForExternalEntity, protocolLabel } from '../utils/flowUtils';
+import { timeWindowToISO } from '../utils/timeWindow';
 
 export type EntityDetailsProps = {
     labelledById: string;
     entityName: string;
     entityId: string;
     scopeHierarchy: NetworkScopeHierarchy;
-    urlPagination: UseURLPaginationResult;
-    urlSearchFiltering: UseUrlSearchReturn;
-    onNodeSelect: (id: string) => void;
+    onNodeSelect: (id: string, parametersQuery?: QueryValue, searchFilter?: qs.ParsedQs) => void;
     onExternalIPSelect: (externalIP: string | undefined) => void;
 };
 
@@ -53,23 +58,32 @@ function EntityDetails({
     entityName,
     entityId,
     scopeHierarchy,
-    urlPagination,
-    urlSearchFiltering,
     onNodeSelect,
     onExternalIPSelect,
 }: EntityDetailsProps) {
-    const { page, perPage, setPage, setPerPage } = urlPagination;
-    const { searchFilter } = urlSearchFiltering;
+    const { page, perPage, setPage, setPerPage } = usePagination();
+    const { searchFilter } = useSearchFilterSidePanel();
+    const { timeWindow } = useTimeWindow();
+
     const clusterId = scopeHierarchy.cluster.id;
     const { deployments, namespaces } = scopeHierarchy;
+
     const fetchExternalNetworkFlows = useCallback((): Promise<ExternalNetworkFlowsResponse> => {
-        return getExternalNetworkFlows(clusterId, entityId, namespaces, deployments, {
-            sortOption: {},
-            page,
-            perPage,
-            advancedFilters: searchFilter,
-        });
-    }, [page, perPage, clusterId, deployments, entityId, namespaces, searchFilter]);
+        const fromTimestamp = timeWindowToISO(timeWindow);
+        return getExternalNetworkFlows(
+            clusterId,
+            entityId,
+            namespaces,
+            deployments,
+            fromTimestamp,
+            {
+                sortOption: {},
+                page,
+                perPage,
+                advancedFilters: searchFilter,
+            }
+        );
+    }, [page, perPage, clusterId, deployments, entityId, namespaces, searchFilter, timeWindow]);
 
     const {
         data: externalNetworkFlows,
@@ -89,7 +103,7 @@ function EntityDetails({
     return (
         <Stack>
             <StackItem>
-                <Flex direction={{ default: 'row' }} className="pf-v5-u-p-md pf-v5-u-mb-0">
+                <Flex direction={{ default: 'row' }} className="pf-v6-u-p-md pf-v6-u-mb-0">
                     <FlexItem>
                         <ExternalEntitiesIcon />
                     </FlexItem>
@@ -102,18 +116,18 @@ function EntityDetails({
                                 <EntityTitleText text={externalIPName} id={externalIPName} />
                             </BreadcrumbItem>
                         </Breadcrumb>
-                        <Text className="pf-v5-u-font-size-sm pf-v5-u-color-200">
+                        <Content component="p" className="pf-v6-u-font-size-sm pf-v6-u-color-200">
                             Connected entities outside your cluster
-                        </Text>
+                        </Content>
                     </FlexItem>
                 </Flex>
             </StackItem>
             <Divider component="hr" />
             <StackItem isFilled style={{ overflow: 'auto' }}>
-                <Stack className="pf-v5-u-p-md">
+                <Stack className="pf-v6-u-p-md">
                     <Toolbar>
                         <ToolbarContent>
-                            <ToolbarItem variant="pagination" align={{ default: 'alignRight' }}>
+                            <ToolbarItem variant="pagination" align={{ default: 'alignEnd' }}>
                                 <Pagination
                                     itemCount={externalNetworkFlows?.totalFlows ?? 0}
                                     page={page}
@@ -155,7 +169,20 @@ function EntityDetails({
                                             const { deployment, id } = entity;
 
                                             const onEntitySelect = () => {
-                                                onNodeSelect(id);
+                                                onNodeSelect(
+                                                    id,
+                                                    {
+                                                        sidePanelTabState: 'FLOWS',
+                                                        sidePanelToggleState: 'EXTERNAL_FLOWS',
+                                                    },
+                                                    {
+                                                        [SIDE_PANEL_SEARCH_PREFIX]: {
+                                                            [EXTERNAL_SOURCE_ADDRESS_QUERY]: [
+                                                                `${externalIPName}/32`,
+                                                            ],
+                                                        },
+                                                    }
+                                                );
                                             };
 
                                             return (
@@ -171,14 +198,14 @@ function EntityDetails({
                                                             {deployment.name}
                                                         </Button>
                                                         <div>
-                                                            <Text
+                                                            <Content
                                                                 component="small"
-                                                                className="pf-v5-u-color-200 pf-v5-u-text-truncate"
+                                                                className="pf-v6-u-color-200 pf-v6-u-text-truncate"
                                                             >
                                                                 in &quot;
                                                                 {deployment.namespace}
                                                                 &quot;
-                                                            </Text>
+                                                            </Content>
                                                         </div>
                                                     </Td>
                                                     <Td dataLabel="Direction">{direction}</Td>

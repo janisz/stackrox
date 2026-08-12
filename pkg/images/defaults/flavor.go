@@ -79,6 +79,10 @@ type ImageFlavor struct {
 	CollectorImageName string
 	CollectorImageTag  string
 
+	FactRegistry  string
+	FactImageName string
+	FactImageTag  string
+
 	// ScannerImageTag is used for all scanner* images (scanner, scanner-db, scanner-slim and scanner-db-slim)
 	ScannerImageTag        string
 	ScannerImageName       string
@@ -115,6 +119,10 @@ func DevelopmentBuildImageFlavor() ImageFlavor {
 		CollectorImageName: "collector",
 		CollectorImageTag:  collectorTag,
 
+		FactRegistry:  "quay.io/rhacs-eng",
+		FactImageName: "fact",
+		FactImageTag:  v.FactVersion,
+
 		ScannerImageName:       "scanner",
 		ScannerSlimImageName:   "scanner-slim",
 		ScannerImageTag:        v.ScannerVersion,
@@ -142,23 +150,27 @@ func RHACSReleaseImageFlavor() ImageFlavor {
 	v := version.GetAllVersionsUnified()
 	return ImageFlavor{
 		MainRegistry:       "registry.redhat.io/advanced-cluster-security",
-		MainImageName:      "rhacs-main-rhel8",
+		MainImageName:      "rhacs-main-rhel9",
 		MainImageTag:       v.MainVersion,
 		CentralDBImageTag:  v.MainVersion,
-		CentralDBImageName: "rhacs-central-db-rhel8",
+		CentralDBImageName: "rhacs-central-db-rhel9",
 
 		CollectorRegistry:  "registry.redhat.io/advanced-cluster-security",
-		CollectorImageName: "rhacs-collector-rhel8",
+		CollectorImageName: "rhacs-collector-rhel9",
 		CollectorImageTag:  v.CollectorVersion,
 
-		ScannerImageName:       "rhacs-scanner-rhel8",
-		ScannerSlimImageName:   "rhacs-scanner-slim-rhel8",
-		ScannerImageTag:        v.ScannerVersion,
-		ScannerDBImageName:     "rhacs-scanner-db-rhel8",
-		ScannerDBSlimImageName: "rhacs-scanner-db-slim-rhel8",
+		FactRegistry:  "registry.redhat.io/advanced-cluster-security",
+		FactImageName: "rhacs-fact-rhel9",
+		FactImageTag:  v.FactVersion,
 
-		ScannerV4ImageName:   "rhacs-scanner-v4-rhel8",
-		ScannerV4DBImageName: "rhacs-scanner-v4-db-rhel8",
+		ScannerImageName:       "rhacs-scanner-rhel9",
+		ScannerSlimImageName:   "rhacs-scanner-slim-rhel9",
+		ScannerImageTag:        v.ScannerVersion,
+		ScannerDBImageName:     "rhacs-scanner-db-rhel9",
+		ScannerDBSlimImageName: "rhacs-scanner-db-slim-rhel9",
+
+		ScannerV4ImageName:   "rhacs-scanner-v4-rhel9",
+		ScannerV4DBImageName: "rhacs-scanner-v4-db-rhel9",
 		// Scanner v4 is released along with the main image, so the tags are expected to be the same.
 		ScannerV4ImageTag: v.MainVersion,
 
@@ -195,6 +207,10 @@ func OpenSourceImageFlavor() ImageFlavor {
 		CollectorRegistry:  "quay.io/stackrox-io",
 		CollectorImageName: "collector",
 		CollectorImageTag:  collectorTag,
+
+		FactRegistry:  "quay.io/stackrox-io",
+		FactImageName: "fact",
+		FactImageTag:  v.FactVersion,
 
 		ScannerImageName:       "scanner",
 		ScannerSlimImageName:   "scanner-slim",
@@ -291,7 +307,7 @@ func panicImageFlavorEnv(err error) {
 
 // IsImageDefaultMain checks if provided image matches main image defined in flavor.
 func (f *ImageFlavor) IsImageDefaultMain(img *storage.ImageName) bool {
-	overrideImageNoTag := fmt.Sprintf("%s/%s", img.Registry, img.Remote)
+	overrideImageNoTag := fmt.Sprintf("%s/%s", img.GetRegistry(), img.GetRemote())
 	return f.MainImageNoTag() == overrideImageNoTag
 }
 

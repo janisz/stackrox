@@ -1,5 +1,5 @@
-import React, { useCallback, useContext, useState } from 'react';
-import { Route, Switch, useParams } from 'react-router-dom';
+import { useCallback, useContext, useState } from 'react';
+import { Navigate, Route, Routes, useParams } from 'react-router-dom-v5-compat';
 import {
     Bullseye,
     Divider,
@@ -10,51 +10,43 @@ import {
     Toolbar,
     ToolbarContent,
     ToolbarGroup,
-    ToolbarItem,
 } from '@patternfly/react-core';
 
 import ComplianceUsageDisclaimer, {
     COMPLIANCE_DISCLAIMER_KEY,
 } from 'Components/ComplianceUsageDisclaimer';
 import CompoundSearchFilter from 'Components/CompoundSearchFilter/components/CompoundSearchFilter';
-import { OnSearchPayload } from 'Components/CompoundSearchFilter/types';
+import CompoundSearchFilterLabels from 'Components/CompoundSearchFilter/components/CompoundSearchFilterLabels';
+import SearchFilterSelectInclusive from 'Components/CompoundSearchFilter/components/SearchFilterSelectInclusive';
+import type { OnSearchCallback } from 'Components/CompoundSearchFilter/types';
+import { updateSearchFilter } from 'Components/CompoundSearchFilter/utils/utils';
 import PageTitle from 'Components/PageTitle';
-import SearchFilterChips from 'Components/PatternFly/SearchFilterChips';
 import { useBooleanLocalStorage } from 'hooks/useLocalStorage';
 import useRestQuery from 'hooks/useRestQuery';
 import useURLSearch from 'hooks/useURLSearch';
-import {
-    ComplianceProfileScanStats,
-    getComplianceProfilesStats,
-} from 'services/ComplianceResultsStatsService';
+import { getComplianceProfilesStats } from 'services/ComplianceResultsStatsService';
+import type { ComplianceProfileScanStats } from 'services/ComplianceResultsStatsService';
 import { defaultChartHeight } from 'utils/chartUtils';
 
-import { onURLSearch } from 'Components/CompoundSearchFilter/utils/utils';
-import { clusterSearchFilterConfig } from 'Containers/Vulnerabilities/searchFilterConfig';
-import {
-    CHECK_NAME_QUERY,
-    CHECK_STATUS_QUERY,
-    CLUSTER_QUERY,
-} from './compliance.coverage.constants';
-import {
-    coverageProfileChecksPath,
-    coverageProfileClustersPath,
-} from './compliance.coverage.routes';
+import { coverageProfileChecksPath } from './compliance.coverage.routes';
 import { createScanConfigFilter } from './compliance.coverage.utils';
 import { ComplianceProfilesContext } from './ComplianceProfilesProvider';
-import CheckStatusDropdown from './components/CheckStatusDropdown';
 import ProfileDetailsHeader from './components/ProfileDetailsHeader';
 import ProfileStatsWidget from './components/ProfileStatsWidget';
 import ScanConfigurationSelect from './components/ScanConfigurationSelect';
 import CoveragesPageHeader from './CoveragesPageHeader';
 import useScanConfigRouter from './hooks/useScanConfigRouter';
-import ProfilesToggleGroup from './ProfilesToggleGroup';
+import ProfilesToggleGroup from './ProfilesToggleGroup/ProfilesToggleGroup';
 import ProfileChecksPage from './ProfileChecksPage';
 import ProfileClustersPage from './ProfileClustersPage';
 import { ScanConfigurationsContext } from './ScanConfigurationsProvider';
-import { profileCheckSearchFilterConfig } from '../searchFilterConfig';
+import {
+    attributeForComplianceCheckStatus,
+    clusterSearchFilterConfig,
+    profileCheckSearchFilterConfig,
+} from '../searchFilterConfig';
 
-const searchFilterConfig = [profileCheckSearchFilterConfig, clusterSearchFilterConfig];
+const searchFilterConfig = [clusterSearchFilterConfig, profileCheckSearchFilterConfig];
 
 function CoveragesPage() {
     const [isDisclaimerAccepted, setIsDisclaimerAccepted] = useBooleanLocalStorage(
@@ -62,7 +54,7 @@ function CoveragesPage() {
         false
     );
     const { navigateWithScanConfigQuery } = useScanConfigRouter();
-    const { profileName } = useParams();
+    const { profileName } = useParams() as { profileName: string };
     const { isLoading: isLoadingScanConfigProfiles, scanConfigProfilesResponse } =
         useContext(ComplianceProfilesContext);
     const { scanConfigurationsQuery, selectedScanConfigName, setSelectedScanConfigName } =
@@ -94,19 +86,8 @@ function CoveragesPage() {
         navigateWithScanConfigQuery(coverageProfileChecksPath, { profileName: selectedProfile });
     }
 
-    const onSearch = (payload: OnSearchPayload) => {
-        onURLSearch(searchFilter, setSearchFilter, payload);
-    };
-
-    const onCheckStatusSelect = (
-        filterType: 'Compliance Check Status',
-        checked: boolean,
-        selection: string
-    ) => {
-        const action = checked ? 'ADD' : 'REMOVE';
-        const category = filterType;
-        const value = selection;
-        onSearch({ action, category, value });
+    const onSearch: OnSearchCallback = (payload) => {
+        setSearchFilter(updateSearchFilter(searchFilter, payload));
     };
 
     const selectedProfileDetails = scanConfigProfilesResponse?.profiles.find(
@@ -117,121 +98,96 @@ function CoveragesPage() {
         <>
             <PageTitle title="Compliance coverage - Profile clusters" />
             <CoveragesPageHeader />
-            <Divider component="div" />
-            <ScanConfigurationSelect
-                isLoading={scanConfigurationsQuery.isLoading}
-                scanConfigs={scanConfigurationsQuery.response.configurations}
-                selectedScanConfigName={selectedScanConfigName}
-                setSelectedScanConfigName={setSelectedScanConfigName}
-            />
-            {!isDisclaimerAccepted && (
-                <ComplianceUsageDisclaimer onAccept={() => setIsDisclaimerAccepted(true)} />
-            )}
-            <PageSection>
-                {isLoadingScanConfigProfiles ? (
-                    <Bullseye>
-                        <Spinner />
-                    </Bullseye>
-                ) : (
-                    <>
-                        <ProfilesToggleGroup
-                            profileName={profileName}
-                            profiles={scanConfigProfilesResponse.profiles}
-                            handleToggleChange={handleProfilesToggleChange}
-                        />
-                        <Divider component="div" />
-                        <Flex
-                            alignItems={{ default: 'alignItemsStretch' }}
-                            className="pf-v5-u-background-color-100"
-                            columnGap={{ default: 'columnGapNone' }}
-                            direction={{ default: 'column', md: 'row' }}
-                            flexWrap={{ default: 'nowrap' }}
-                            spaceItems={{ default: 'spaceItemsNone' }}
-                        >
-                            <FlexItem flex={{ default: 'flex_2' }}>
-                                <ProfileDetailsHeader
-                                    isLoading={isLoadingScanConfigProfiles}
-                                    profileName={profileName}
-                                    profileDetails={selectedProfileDetails}
-                                />
-                            </FlexItem>
-                            {(selectedProfileStats ||
-                                isLoadingProfilesStats ||
-                                profilesStatsError) && (
-                                <>
-                                    <Divider
-                                        orientation={{ default: 'horizontal', md: 'vertical' }}
-                                    />
-                                    <FlexItem
-                                        alignSelf={{ default: 'alignSelfStretch' }}
-                                        flex={{ default: 'flex_1' }}
-                                        style={{
-                                            minWidth: '400px',
-                                            minHeight: `${defaultChartHeight}px`,
-                                        }}
-                                    >
-                                        <ProfileStatsWidget
-                                            error={profilesStatsError}
-                                            isLoading={isLoadingProfilesStats}
-                                            profileScanStats={selectedProfileStats}
-                                        />
-                                    </FlexItem>
-                                </>
-                            )}
-                        </Flex>
-                        <Divider component="div" />
-                        <PageSection variant="light" className="pf-v5-u-p-0" component="div">
-                            <Toolbar>
-                                <ToolbarContent>
-                                    <ToolbarGroup className="pf-v5-u-w-100">
-                                        <ToolbarItem className="pf-v5-u-flex-1">
-                                            <CompoundSearchFilter
-                                                config={searchFilterConfig}
-                                                searchFilter={searchFilter}
-                                                onSearch={onSearch}
-                                            />
-                                        </ToolbarItem>
-                                        <ToolbarItem>
-                                            <CheckStatusDropdown
-                                                searchFilter={searchFilter}
-                                                onSelect={onCheckStatusSelect}
-                                            />
-                                        </ToolbarItem>
-                                    </ToolbarGroup>
-                                    <ToolbarGroup className="pf-v5-u-w-100">
-                                        <SearchFilterChips
-                                            searchFilter={searchFilter}
-                                            onFilterChange={setSearchFilter}
-                                            filterChipGroupDescriptors={[
-                                                {
-                                                    displayName: 'Profile Check',
-                                                    searchFilterName: CHECK_NAME_QUERY,
-                                                },
-                                                {
-                                                    displayName: 'Cluster',
-                                                    searchFilterName: CLUSTER_QUERY,
-                                                },
-                                                {
-                                                    displayName: 'Compliance Status',
-                                                    searchFilterName: CHECK_STATUS_QUERY,
-                                                },
-                                            ]}
-                                        />
-                                    </ToolbarGroup>
-                                </ToolbarContent>
-                            </Toolbar>
-                            <Divider />
-                            <Switch>
-                                <Route exact path={coverageProfileChecksPath}>
-                                    <ProfileChecksPage />
-                                </Route>
-                                <Route exact path={coverageProfileClustersPath}>
-                                    <ProfileClustersPage />
-                                </Route>
-                            </Switch>
-                        </PageSection>
-                    </>
+            <PageSection hasBodyWrapper={false}>
+                <ScanConfigurationSelect
+                    isLoading={scanConfigurationsQuery.isLoading}
+                    scanConfigs={scanConfigurationsQuery.response.configurations}
+                    selectedScanConfigName={selectedScanConfigName}
+                    setSelectedScanConfigName={setSelectedScanConfigName}
+                />
+                {!isDisclaimerAccepted && (
+                    <ComplianceUsageDisclaimer onAccept={() => setIsDisclaimerAccepted(true)} />
                 )}
+            </PageSection>
+            {isLoadingScanConfigProfiles ? (
+                <Bullseye>
+                    <Spinner />
+                </Bullseye>
+            ) : (
+                <>
+                    <ProfilesToggleGroup
+                        profileName={profileName}
+                        profiles={scanConfigProfilesResponse.profiles}
+                        handleToggleChange={handleProfilesToggleChange}
+                    />
+                    <Divider component="div" />
+                    <Flex
+                        alignItems={{ default: 'alignItemsStretch' }}
+                        columnGap={{ default: 'columnGapNone' }}
+                        direction={{ default: 'column', md: 'row' }}
+                        flexWrap={{ default: 'nowrap' }}
+                        spaceItems={{ default: 'spaceItemsNone' }}
+                    >
+                        <FlexItem flex={{ default: 'flex_2' }}>
+                            <ProfileDetailsHeader
+                                isLoading={isLoadingScanConfigProfiles}
+                                profileName={profileName}
+                                profileDetails={selectedProfileDetails}
+                            />
+                        </FlexItem>
+                        {(selectedProfileStats || isLoadingProfilesStats || profilesStatsError) && (
+                            <>
+                                <Divider orientation={{ default: 'horizontal', md: 'vertical' }} />
+                                <FlexItem
+                                    alignSelf={{ default: 'alignSelfStretch' }}
+                                    flex={{ default: 'flex_1' }}
+                                    style={{
+                                        minWidth: '400px',
+                                        minHeight: `${defaultChartHeight}px`,
+                                    }}
+                                >
+                                    <ProfileStatsWidget
+                                        error={profilesStatsError}
+                                        isLoading={isLoadingProfilesStats}
+                                        profileScanStats={selectedProfileStats}
+                                    />
+                                </FlexItem>
+                            </>
+                        )}
+                    </Flex>
+                </>
+            )}
+            <Divider component="div" />
+            <PageSection>
+                <Toolbar>
+                    <ToolbarContent>
+                        <CompoundSearchFilter
+                            config={searchFilterConfig}
+                            defaultEntity="Profile check"
+                            searchFilter={searchFilter}
+                            onSearch={onSearch}
+                        />
+                        <SearchFilterSelectInclusive
+                            attribute={attributeForComplianceCheckStatus}
+                            isSeparate
+                            onSearch={onSearch}
+                            searchFilter={searchFilter}
+                        />
+                        <ToolbarGroup className="pf-v6-u-w-100">
+                            <CompoundSearchFilterLabels
+                                attributesSeparateFromConfig={[attributeForComplianceCheckStatus]}
+                                config={searchFilterConfig}
+                                onFilterChange={setSearchFilter}
+                                searchFilter={searchFilter}
+                            />
+                        </ToolbarGroup>
+                    </ToolbarContent>
+                </Toolbar>
+                <Routes>
+                    <Route path="checks" element={<ProfileChecksPage />} />
+                    <Route path="clusters" element={<ProfileClustersPage />} />
+                    <Route path="*" element={<Navigate to="checks" replace />} />
+                </Routes>
             </PageSection>
         </>
     );

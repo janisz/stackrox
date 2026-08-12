@@ -1,13 +1,12 @@
-import React, { ReactElement } from 'react';
+import type { ReactElement } from 'react';
 import { Alert, Card, CardBody, CardTitle, Flex, FlexItem } from '@patternfly/react-core';
 
 import useFetchDeployment from 'hooks/useFetchDeployment';
 import { getAxiosErrorMessage } from 'utils/responseErrorUtils';
 
-import { AlertDeployment } from 'types/alert.proto';
+import type { AlertDeployment } from 'types/alert.proto';
 
 import DeploymentOverview from './DeploymentOverview';
-import SecurityContext from './SecurityContext';
 import PortConfiguration from './PortConfiguration';
 import ContainerConfiguration from './ContainerConfiguration';
 
@@ -39,9 +38,13 @@ function DeploymentTabWithReadAccessForDeployment({
                 </Alert>
             )}
             <Flex flex={{ default: 'flex_1' }}>
-                <Flex direction={{ default: 'column' }} flex={{ default: 'flex_1' }}>
+                <Flex
+                    direction={{ default: 'column' }}
+                    flex={{ default: 'flex_1' }}
+                    style={{ minWidth: 0 }}
+                >
                     <FlexItem>
-                        <Card isFlat>
+                        <Card>
                             <CardTitle component="h3">Deployment overview</CardTitle>
                             <CardBody>
                                 <DeploymentOverview
@@ -54,11 +57,12 @@ function DeploymentTabWithReadAccessForDeployment({
                     <FlexItem>
                         <PortConfiguration deployment={relatedDeployment} />
                     </FlexItem>
-                    <FlexItem>
-                        <SecurityContext deployment={relatedDeployment} />
-                    </FlexItem>
                 </Flex>
-                <Flex direction={{ default: 'column' }} flex={{ default: 'flex_1' }}>
+                <Flex
+                    direction={{ default: 'column' }}
+                    flex={{ default: 'flex_1' }}
+                    style={{ minWidth: 0 }}
+                >
                     <FlexItem>
                         <ContainerConfiguration deployment={relatedDeployment} />
                     </FlexItem>

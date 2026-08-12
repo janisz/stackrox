@@ -22,7 +22,6 @@ import (
 	tokensMocks "github.com/stackrox/rox/pkg/auth/tokens/mocks"
 	"github.com/stackrox/rox/pkg/defaults/accesscontrol"
 	"github.com/stackrox/rox/pkg/errox"
-	"github.com/stackrox/rox/pkg/features"
 	"github.com/stackrox/rox/pkg/grpc/authn/basic"
 	"github.com/stackrox/rox/pkg/postgres/pgtest"
 	"github.com/stackrox/rox/pkg/protoassert"
@@ -75,8 +74,6 @@ type authServiceAccessControlTestSuite struct {
 }
 
 func (s *authServiceAccessControlTestSuite) SetupSuite() {
-	s.T().Setenv(features.AuthMachineToMachine.EnvVar(), "true")
-
 	authProvider, err := authproviders.NewProvider(
 		authproviders.WithEnabled(true),
 		authproviders.WithID(uuid.NewDummy().String()),
@@ -120,15 +117,8 @@ func (s *authServiceAccessControlTestSuite) SetupTest() {
 
 	s.tokenExchangerSet = m2m.TokenExchangerSetForTesting(s.T(), s.roleDS, s.mockIssuerFactory,
 		s.mockExchangerFactory.factory())
-	issuerFetcher := mocks.NewMockServiceAccountIssuerFetcher(gomock.NewController(s.T()))
-	issuerFetcher.EXPECT().GetServiceAccountIssuer().Return("https://localhost", nil).AnyTimes()
-	authDataStore := datastore.New(store, s.tokenExchangerSet, issuerFetcher)
+	authDataStore := datastore.New(store, nil, s.tokenExchangerSet)
 	s.svc = &serviceImpl{authDataStore: authDataStore}
-}
-
-func (s *authServiceAccessControlTestSuite) TearDownTest() {
-	s.pool.Teardown(s.T())
-	s.pool.Close()
 }
 
 type testCase struct {
@@ -801,7 +791,7 @@ func (s *authServiceAccessControlTestSuite) addRoles() {
 		},
 	}))
 
-	for _, role := range testRoles.AsSlice() {
+	for role := range testRoles.All() {
 		s.Require().NoError(s.roleDS.AddRole(s.accessCtx, &storage.Role{
 			Name:            role,
 			Description:     "test role",

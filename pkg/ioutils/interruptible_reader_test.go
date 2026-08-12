@@ -30,17 +30,13 @@ func (r *chunkReader) Read(buf []byte) (int, error) {
 		}
 	}
 
-	n := len(r.currChunk)
-	if n > len(buf) {
-		n = len(buf)
-	}
+	n := min(len(r.currChunk), len(buf))
 	copy(buf, r.currChunk[:n])
 	r.currChunk = r.currChunk[n:]
 	return n, nil
 }
 
 func TestInterruptibleReader_InterruptPreRead(t *testing.T) {
-	t.Parallel()
 
 	cr := newChunkReader()
 
@@ -62,7 +58,6 @@ func TestInterruptibleReader_InterruptPreRead(t *testing.T) {
 }
 
 func TestInterruptibleReader_InterruptDuringRead(t *testing.T) {
-	t.Parallel()
 
 	cr := newChunkReader()
 

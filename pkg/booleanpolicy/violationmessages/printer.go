@@ -30,8 +30,10 @@ var (
 		fieldnames.ContainerMemLimit:              {{required: set.NewStringSet(search.MemoryLimit.String()), printerFuncKey: printer.ResourceKey}},
 		fieldnames.ContainerMemRequest:            {{required: set.NewStringSet(search.MemoryRequest.String()), printerFuncKey: printer.ResourceKey}},
 		fieldnames.ContainerName:                  {{required: set.NewStringSet(search.ContainerName.String()), printerFuncKey: printer.ContainerNameKey}},
+		fieldnames.DaysSincePublished:             {{required: set.NewStringSet(search.CVE.String(), search.CVEPublishedOn.String()), printerFuncKey: printer.CveKey}},
 		fieldnames.DaysSinceImageFirstDiscovered:  {{required: set.NewStringSet(search.CVE.String(), search.FirstImageOccurrenceTimestamp.String()), printerFuncKey: printer.CveKey}},
 		fieldnames.DaysSinceSystemFirstDiscovered: {{required: set.NewStringSet(search.CVE.String(), search.FirstSystemOccurrenceTimestamp.String()), printerFuncKey: printer.CveKey}},
+		fieldnames.DaysSinceFixAvailable:          {{required: set.NewStringSet(search.CVE.String(), search.CVEFixAvailable.String()), printerFuncKey: printer.CveKey}},
 		fieldnames.DisallowedAnnotation:           {{required: set.NewStringSet(search.DeploymentAnnotation.String()), printerFuncKey: printer.DisallowedAnnotationKey}},
 		fieldnames.DisallowedImageLabel:           {{required: set.NewStringSet(search.ImageLabel.String()), printerFuncKey: printer.DisallowedImageLabelKey}},
 		fieldnames.DockerfileLine:                 {{required: set.NewStringSet(augmentedobjs.DockerfileLineCustomTag), printerFuncKey: printer.LineKey}},
@@ -88,6 +90,7 @@ var (
 	requiredKubeEventFields     = set.NewFrozenStringSet(augmentedobjs.KubernetesAPIVerbCustomTag, augmentedobjs.KubernetesResourceCustomTag)
 	requiredNetworkFlowFields   = set.NewFrozenStringSet(augmentedobjs.NotInNetworkBaselineCustomTag)
 	requiredNetworkPolicyFields = set.NewFrozenStringSet(augmentedobjs.HasEgressPolicyCustomTag, augmentedobjs.HasIngressPolicyCustomTag)
+	requiredFileAccessFields    = set.NewFrozenStringSet(augmentedobjs.FileAccessPathCustomTag, search.FileOperation.String())
 )
 
 func containsAllRequiredFields(fieldMap map[string][]string, required set.StringSet) bool {
@@ -160,6 +163,17 @@ func checkForNetworkPolicyViolation(result *evaluator.Result) bool {
 	return false
 }
 
+func checkForFileAccessViolation(result *evaluator.Result) bool {
+	for _, fieldMap := range result.Matches {
+		for k := range fieldMap {
+			if requiredFileAccessFields.Contains(k) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // Render creates violation messages based on evaluation results
 func Render(
 	section *storage.PolicySection,
@@ -168,7 +182,8 @@ func Render(
 	kubeEvent *storage.KubernetesEvent,
 	networkFlow *augmentedobjs.NetworkFlowDetails,
 	networkPolicy *augmentedobjs.NetworkPoliciesApplied,
-) ([]*storage.Alert_Violation, bool, bool, bool, bool, error) {
+	fileAccess *storage.FileAccess,
+) ([]*storage.Alert_Violation, bool, bool, bool, bool, bool, error) {
 	errorList := errorhelpers.NewErrorList("violation printer")
 	messages := set.NewStringSet()
 	for _, fieldMap := range result.Matches {
@@ -190,7 +205,8 @@ func Render(
 	isKubeOrAuditEventViolation := kubeEvent != nil && checkForKubeEventViolation(result)
 	isNetworkFlowViolation := networkFlow != nil && checkForNetworkFlowViolation(result)
 	isNetworkPolicyViolation := networkPolicy != nil && checkForNetworkPolicyViolation(result)
-	if len(messages) == 0 && !isProcessViolation && !isKubeOrAuditEventViolation && !isNetworkFlowViolation {
+	isFileAccessViolation := fileAccess != nil && checkForFileAccessViolation(result)
+	if len(messages) == 0 && !isProcessViolation && !isKubeOrAuditEventViolation && !isNetworkFlowViolation && !isFileAccessViolation {
 		errorList.AddError(errors.New("missing messages"))
 	}
 
@@ -209,5 +225,5 @@ func Render(
 			Type:    alertType,
 		})
 	}
-	return alertViolations, isProcessViolation, isKubeOrAuditEventViolation, isNetworkFlowViolation, isNetworkPolicyViolation, errorList.ToError()
+	return alertViolations, isProcessViolation, isKubeOrAuditEventViolation, isNetworkFlowViolation, isNetworkPolicyViolation, isFileAccessViolation, errorList.ToError()
 }

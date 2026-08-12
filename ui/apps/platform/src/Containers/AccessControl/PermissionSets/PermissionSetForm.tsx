@@ -1,4 +1,5 @@
-import React, { ReactElement, useState } from 'react';
+import { useState } from 'react';
+import type { ReactElement } from 'react';
 import { useFormik } from 'formik';
 import * as yup from 'yup';
 import {
@@ -19,14 +20,14 @@ import {
     ToolbarItem,
 } from '@patternfly/react-core';
 
+import TraitsOriginLabel from 'Components/TraitsOriginLabel';
 import { defaultMinimalReadAccessResources } from 'constants/accessControl';
-import { PermissionSet } from 'services/RolesService';
+import usePermissions from 'hooks/usePermissions';
+import type { PermissionSet } from 'services/RolesService';
 
-import { AccessControlQueryAction } from '../accessControlPaths';
+import type { AccessControlQueryAction } from '../accessControlPaths';
 
 import PermissionsTable from './PermissionsTable';
-import usePermissions from '../../../hooks/usePermissions';
-import { TraitsOriginLabel } from '../TraitsOriginLabel';
 
 export type PermissionSetFormProps = {
     isActionable: boolean;
@@ -121,7 +122,7 @@ function PermissionSetForm({
 
     return (
         <Form id="permission-set-form">
-            <Toolbar inset={{ default: 'insetNone' }} className="pf-v5-u-pt-0">
+            <Toolbar>
                 <ToolbarContent>
                     <ToolbarItem>
                         <Title headingLevel="h1">
@@ -134,7 +135,7 @@ function PermissionSetForm({
                         </ToolbarItem>
                     )}
                     {action !== 'create' && (
-                        <ToolbarGroup variant="button-group" align={{ default: 'alignRight' }}>
+                        <ToolbarGroup variant="action-group" align={{ default: 'alignEnd' }}>
                             <ToolbarItem>
                                 {isActionable ? (
                                     <Button
@@ -200,7 +201,7 @@ function PermissionSetForm({
                     </p>
                     <p>
                         <strong>{defaultMinimalReadAccessResources.join(', ')}</strong>
-                        <Badge isRead className="pf-v5-u-ml-sm">
+                        <Badge isRead className="pf-v6-u-ml-sm">
                             {defaultMinimalReadAccessResources.length}
                         </Badge>
                     </p>
@@ -216,7 +217,7 @@ function PermissionSetForm({
             {hasAction && (
                 <Toolbar inset={{ default: 'insetNone' }}>
                     <ToolbarContent>
-                        <ToolbarGroup variant="button-group">
+                        <ToolbarGroup variant="action-group">
                             <ToolbarItem>
                                 <Button
                                     variant="primary"

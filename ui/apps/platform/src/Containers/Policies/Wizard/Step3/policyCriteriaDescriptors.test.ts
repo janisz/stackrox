@@ -1,6 +1,12 @@
 import uniqBy from 'lodash/uniqBy';
 
-import { auditLogDescriptor, policyCriteriaDescriptors } from './policyCriteriaDescriptors';
+import {
+    auditLogDescriptor,
+    nodeEventDescriptor,
+    policyCriteriaDescriptors,
+    validateFilePath,
+    warnBroadFilePath,
+} from './policyCriteriaDescriptors';
 
 // Enforce consistency of whicheverName properties in policy criteria descriptors.
 
@@ -29,6 +35,8 @@ const allowListForItems = [
 const allowListForNames = [
     'Common Vulnerability Scoring System (CVSS) score',
     'Common Vulnerability Scoring System (CVSS) score from National Vulnerability Database (NVD)',
+    'Volume type (e.g. secret, configMap, hostPath) is',
+    'Volume destination (mountPath) path is',
 ];
 
 function isInitialUpperCase(item: string) {
@@ -52,104 +60,243 @@ function hasSentenceCase(otherName: string) {
     );
 }
 
-describe('policyCriteriaDescriptors', () => {
-    [...auditLogDescriptor, ...policyCriteriaDescriptors].forEach((descriptor) => {
-        const { longName, name, shortName, type } = descriptor;
-
-        describe(`descriptor of "${name}"`, () => {
-            if (typeof longName === 'string') {
-                test(`longName "${longName}" should not equal shortName`, () => {
-                    expect(longName !== shortName).toEqual(true);
-                });
-
-                test(`longName "${longName}" should have sentence case`, () => {
-                    expect(hasSentenceCase(longName)).toEqual(true);
-                });
-            }
-
-            if ('negatedName' in descriptor && typeof descriptor.negatedName === 'string') {
-                const { negatedName } = descriptor;
-
-                test(`negatedName "${negatedName}" should not equal longName`, () => {
-                    expect(negatedName !== longName).toEqual(true);
-                });
-
-                test(`negatedName "${negatedName}" should not equal shortName`, () => {
-                    expect(negatedName !== shortName).toEqual(true);
-                });
-
-                test(`negatedName "${negatedName}" should have sentence case`, () => {
-                    expect(hasSentenceCase(negatedName)).toEqual(true);
-                });
-            }
-
-            test(`shortName "${shortName}" should have sentence case`, () => {
-                expect(hasSentenceCase(shortName)).toEqual(true);
-            });
-
-            switch (type) {
-                case 'group': {
-                    const { subComponents } = descriptor;
-
-                    subComponents.forEach((subComponent) => {
-                        if (subComponent.type === 'select') {
-                            const { options, subpath } = subComponent;
-
-                            test(`group select "${subpath}" should have unique label properties`, () => {
-                                const optionsUnique = uniqBy(options, ({ label }) => label);
-                                expect(optionsUnique.length).toEqual(options.length);
-                            });
-                            test(`group select "${subpath}"  should have unique value properties`, () => {
-                                const optionsUnique = uniqBy(options, ({ value }) => value);
-                                expect(optionsUnique.length).toEqual(options.length);
-                            });
-                        }
-                    });
-                    break;
-                }
-
-                case 'multiselect':
-                case 'select': {
-                    const { options } = descriptor;
-
-                    test(`${type} should have unique label properties`, () => {
-                        const optionsUnique = uniqBy(options, ({ label }) => label);
-                        expect(optionsUnique.length).toEqual(options.length);
-                    });
-                    test(`${type} should have unique value properties`, () => {
-                        const optionsUnique = uniqBy(options, ({ value }) => value);
-                        expect(optionsUnique.length).toEqual(options.length);
-                    });
-                    break;
-                }
-
-                case 'radioGroup': {
-                    const { radioButtons } = descriptor;
-
-                    test('radioGroup should have unique text properties', () => {
-                        const radioButtonsUnique = uniqBy(radioButtons, ({ text }) => text);
-                        expect(radioButtonsUnique.length).toEqual(radioButtons.length);
-                    });
-                    break;
-                }
-
-                case 'radioGroupString': {
-                    const { radioButtons } = descriptor;
-
-                    test('radioGroupString should have unique text properties', () => {
-                        const radioButtonsUnique = uniqBy(radioButtons, ({ text }) => text);
-                        expect(radioButtonsUnique.length).toEqual(radioButtons.length);
-                    });
-                    test('radioGroupString should have unique value properties', () => {
-                        const radioButtonsUnique = uniqBy(radioButtons, ({ value }) => value);
-                        expect(radioButtonsUnique.length).toEqual(radioButtons.length);
-                    });
-                    break;
-                }
-
-                default:
-                    break;
-            }
-        });
+describe('validateFilePath', () => {
+    it('should return undefined for an empty string', () => {
+        expect(validateFilePath('')).toBeUndefined();
     });
+
+    it('should return undefined for a whitespace-only string', () => {
+        expect(validateFilePath('   ')).toBeUndefined();
+    });
+
+    it('should return an error for a relative path', () => {
+        expect(validateFilePath('home/user')).toBe('File path must be absolute (start with /)');
+    });
+
+    it('should return an error for directory traversal', () => {
+        expect(validateFilePath('/home/../etc/passwd')).toBe(
+            'File path must not contain directory traversal (..)'
+        );
+    });
+
+    it('should return undefined for a valid absolute path', () => {
+        expect(validateFilePath('/home/user/.ssh')).toBeUndefined();
+    });
+
+    it('should return undefined for a valid absolute path with glob', () => {
+        expect(validateFilePath('/home/**/.ssh/id_*')).toBeUndefined();
+    });
+
+    it('should allow paths with double dots in filenames', () => {
+        expect(validateFilePath('/etc/file..bak')).toBeUndefined();
+    });
+
+    it('should reject traversal at the end of a path', () => {
+        expect(validateFilePath('/home/user/..')).toBe(
+            'File path must not contain directory traversal (..)'
+        );
+    });
+});
+
+describe('warnBroadFilePath', () => {
+    it('should return undefined for an empty string', () => {
+        expect(warnBroadFilePath('')).toBeUndefined();
+    });
+
+    it('should return undefined for a whitespace-only string', () => {
+        expect(warnBroadFilePath('   ')).toBeUndefined();
+    });
+
+    it('should warn for /** (root catch-all)', () => {
+        expect(warnBroadFilePath('/**')).toContain('every file event on the system');
+    });
+
+    it('should warn for /* (root catch-all)', () => {
+        expect(warnBroadFilePath('/*')).toContain('every file event on the system');
+    });
+
+    it('should warn for /**/foo (root-level recursive search)', () => {
+        expect(warnBroadFilePath('/**/foo')).toContain('subdirectories of root');
+    });
+
+    it('should warn for /**/* (root-level recursive catch-all)', () => {
+        expect(warnBroadFilePath('/**/*')).toContain('subdirectories of root');
+    });
+
+    it('should warn for /*/bar (root-level single-level search)', () => {
+        expect(warnBroadFilePath('/*/bar')).toContain('subdirectories of root');
+    });
+
+    it('should warn for /tmp/**', () => {
+        expect(warnBroadFilePath('/tmp/**')).toContain('temporary file');
+    });
+
+    it('should warn for /proc/* and /proc/**', () => {
+        expect(warnBroadFilePath('/proc/*')).toContain('system');
+        expect(warnBroadFilePath('/proc/**')).toContain('system');
+    });
+
+    it('should warn for /sys/**', () => {
+        expect(warnBroadFilePath('/sys/**')).toContain('system');
+    });
+
+    it('should warn for /var/log/**', () => {
+        expect(warnBroadFilePath('/var/log/**')).toContain('log file');
+    });
+
+    it('should not warn for /var/log/nginx/access.log.* (scoped glob under high-churn)', () => {
+        expect(warnBroadFilePath('/var/log/nginx/access.log.*')).toBeUndefined();
+    });
+
+    it('should not warn for /etc/passwd (specific safe path)', () => {
+        expect(warnBroadFilePath('/etc/passwd')).toBeUndefined();
+    });
+
+    it('should not warn for / (root path, not a glob)', () => {
+        expect(warnBroadFilePath('/')).toBeUndefined();
+    });
+
+    it('should not warn for /tmp (exact path, no glob)', () => {
+        expect(warnBroadFilePath('/tmp')).toBeUndefined();
+    });
+
+    it('should not warn for /tmp/specific.txt (exact path under high-churn)', () => {
+        expect(warnBroadFilePath('/tmp/specific.txt')).toBeUndefined();
+    });
+
+    it('should not warn for /proc/1/status (specific path under high-churn)', () => {
+        expect(warnBroadFilePath('/proc/1/status')).toBeUndefined();
+    });
+
+    it('should not warn for /home/**/.ssh/id_* (scoped pattern)', () => {
+        expect(warnBroadFilePath('/home/**/.ssh/id_*')).toBeUndefined();
+    });
+
+    it('should warn for /opt/app/** (unscoped recursive glob under unknown prefix)', () => {
+        expect(warnBroadFilePath('/opt/app/**')).toContain('Recursive glob patterns');
+    });
+
+    it('should warn for /opt/app/* (unscoped single-level glob under unknown prefix)', () => {
+        expect(warnBroadFilePath('/opt/app/*')).toContain('Single-level glob patterns');
+    });
+
+    it('should not warn for /srv/data/**/config.yaml (scoped recursive pattern with suffix)', () => {
+        expect(warnBroadFilePath('/srv/data/**/config.yaml')).toBeUndefined();
+    });
+
+    it('should prefer specific prefix warning over generic recursive warning', () => {
+        expect(warnBroadFilePath('/tmp/**')).toContain('temporary file');
+    });
+
+    it('should prefer specific prefix warning over generic single-level warning', () => {
+        expect(warnBroadFilePath('/tmp/*')).toContain('temporary file');
+    });
+
+    it('should handle leading/trailing whitespace', () => {
+        expect(warnBroadFilePath('  /**  ')).toBeDefined();
+    });
+});
+
+describe('policyCriteriaDescriptors', () => {
+    [...auditLogDescriptor, ...policyCriteriaDescriptors, ...nodeEventDescriptor].forEach(
+        (descriptor) => {
+            const { longName, name, shortName, type } = descriptor;
+
+            describe(`descriptor of "${name}"`, () => {
+                if (typeof longName === 'string') {
+                    test(`longName "${longName}" should not equal shortName`, () => {
+                        expect(longName !== shortName).toEqual(true);
+                    });
+
+                    test(`longName "${longName}" should have sentence case`, () => {
+                        expect(hasSentenceCase(longName)).toEqual(true);
+                    });
+                }
+
+                if ('negatedName' in descriptor && typeof descriptor.negatedName === 'string') {
+                    const { negatedName } = descriptor;
+
+                    test(`negatedName "${negatedName}" should not equal longName`, () => {
+                        expect(negatedName !== longName).toEqual(true);
+                    });
+
+                    test(`negatedName "${negatedName}" should not equal shortName`, () => {
+                        expect(negatedName !== shortName).toEqual(true);
+                    });
+
+                    test(`negatedName "${negatedName}" should have sentence case`, () => {
+                        expect(hasSentenceCase(negatedName)).toEqual(true);
+                    });
+                }
+
+                test(`shortName "${shortName}" should have sentence case`, () => {
+                    expect(hasSentenceCase(shortName)).toEqual(true);
+                });
+
+                switch (type) {
+                    case 'group': {
+                        const { subComponents } = descriptor;
+
+                        subComponents.forEach((subComponent) => {
+                            if (subComponent.type === 'select') {
+                                const { options, subpath } = subComponent;
+
+                                test(`group select "${subpath}" should have unique label properties`, () => {
+                                    const optionsUnique = uniqBy(options, ({ label }) => label);
+                                    expect(optionsUnique.length).toEqual(options.length);
+                                });
+                                test(`group select "${subpath}"  should have unique value properties`, () => {
+                                    const optionsUnique = uniqBy(options, ({ value }) => value);
+                                    expect(optionsUnique.length).toEqual(options.length);
+                                });
+                            }
+                        });
+                        break;
+                    }
+
+                    case 'multiselect':
+                    case 'select': {
+                        const { options } = descriptor;
+
+                        test(`${type} should have unique label properties`, () => {
+                            const optionsUnique = uniqBy(options, ({ label }) => label);
+                            expect(optionsUnique.length).toEqual(options.length);
+                        });
+                        test(`${type} should have unique value properties`, () => {
+                            const optionsUnique = uniqBy(options, ({ value }) => value);
+                            expect(optionsUnique.length).toEqual(options.length);
+                        });
+                        break;
+                    }
+
+                    case 'radioGroup': {
+                        const { radioButtons } = descriptor;
+
+                        test('radioGroup should have unique text properties', () => {
+                            const radioButtonsUnique = uniqBy(radioButtons, ({ text }) => text);
+                            expect(radioButtonsUnique.length).toEqual(radioButtons.length);
+                        });
+                        break;
+                    }
+
+                    case 'radioGroupString': {
+                        const { radioButtons } = descriptor;
+
+                        test('radioGroupString should have unique text properties', () => {
+                            const radioButtonsUnique = uniqBy(radioButtons, ({ text }) => text);
+                            expect(radioButtonsUnique.length).toEqual(radioButtons.length);
+                        });
+                        test('radioGroupString should have unique value properties', () => {
+                            const radioButtonsUnique = uniqBy(radioButtons, ({ value }) => value);
+                            expect(radioButtonsUnique.length).toEqual(radioButtons.length);
+                        });
+                        break;
+                    }
+
+                    default:
+                        break;
+                }
+            });
+        }
+    );
 });

@@ -1,21 +1,14 @@
-import React, { useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 
 import SearchFilterInput from 'Components/SearchFilterInput';
-import useURLSearch from 'hooks/useURLSearch';
-import searchOptionsToQuery from 'services/searchOptionsToQuery';
 import { getSearchOptionsForCategory } from 'services/SearchService';
-import { orchestratorComponentsOption } from 'utils/orchestratorComponents';
+
+import { useSearchFilter } from '../NetworkGraphURLStateContext';
 
 import './NetworkSearch.css';
 
 const searchCategory = 'DEPLOYMENTS';
-const searchOptionExclusions = [
-    'Cluster',
-    'Deployment',
-    'Namespace',
-    'Namespace ID',
-    'Orchestrator Component',
-];
+const searchOptionExclusions = ['Cluster', 'Deployment', 'Namespace', 'Namespace ID'];
 
 type NetworkSearchProps = {
     selectedCluster: string;
@@ -31,7 +24,7 @@ function NetworkSearch({
     isDisabled,
 }: NetworkSearchProps) {
     const [searchOptions, setSearchOptions] = useState<string[]>([]);
-    const { searchFilter, setSearchFilter } = useURLSearch();
+    const { searchFilter, setSearchFilter } = useSearchFilter();
 
     useEffect(() => {
         const { request, cancel } = getSearchOptionsForCategory(searchCategory);
@@ -56,16 +49,13 @@ function NetworkSearch({
         setSearchFilter(newOptions);
     }
 
-    const prependAutocompleteQuery = [...orchestratorComponentsOption];
-
     return (
         <SearchFilterInput
-            className="pf-v5-u-w-100 theme-light pf-search-shim"
+            className="pf-v6-u-w-100 pf-search-shim"
             placeholder="Filter deployments"
             searchFilter={searchFilter}
             searchCategory="DEPLOYMENTS"
             searchOptions={searchOptions}
-            autocompleteQueryPrefix={searchOptionsToQuery(prependAutocompleteQuery)}
             handleChangeSearchFilter={onSearch}
             isDisabled={isDisabled}
         />

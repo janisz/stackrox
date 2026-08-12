@@ -1,5 +1,5 @@
-import React, { useCallback, useContext } from 'react';
-import { useParams } from 'react-router-dom';
+import { useCallback, useContext } from 'react';
+import { useParams } from 'react-router-dom-v5-compat';
 import {
     Alert,
     Breadcrumb,
@@ -16,8 +16,8 @@ import {
 } from '@patternfly/react-core';
 
 import BreadcrumbItemLink from 'Components/BreadcrumbItemLink';
-import { onURLSearch } from 'Components/CompoundSearchFilter/utils/utils';
-import { OnSearchPayload } from 'Components/CompoundSearchFilter/types';
+import type { OnSearchCallback } from 'Components/CompoundSearchFilter/types';
+import { updateSearchFilter } from 'Components/CompoundSearchFilter/utils/utils';
 import PageTitle from 'Components/PageTitle';
 import useRestQuery from 'hooks/useRestQuery';
 import useURLPagination from 'hooks/useURLPagination';
@@ -34,22 +34,19 @@ import { DEFAULT_COMPLIANCE_PAGE_SIZE } from '../compliance.constants';
 import ProfileDetailsHeader from './components/ProfileDetailsHeader';
 import { CHECK_NAME_QUERY, CLUSTER_QUERY } from './compliance.coverage.constants';
 import {
-    coverageProfileClustersPath,
     coverageClusterDetailsPath,
+    coverageProfileClustersPath,
 } from './compliance.coverage.routes';
 import { createScanConfigFilter, isScanConfigurationDisabled } from './compliance.coverage.utils';
 import ScanConfigurationSelect from './components/ScanConfigurationSelect';
 import useScanConfigRouter from './hooks/useScanConfigRouter';
 import { ScanConfigurationsContext } from './ScanConfigurationsProvider';
-import ProfilesToggleGroup from './ProfilesToggleGroup';
-import { profileCheckSearchFilterConfig } from '../searchFilterConfig';
-
-const searchFilterConfig = [profileCheckSearchFilterConfig];
+import ProfilesToggleGroup from './ProfilesToggleGroup/ProfilesToggleGroup';
 
 function ClusterDetailsPage() {
     const { scanConfigurationsQuery, selectedScanConfigName, setSelectedScanConfigName } =
         useContext(ScanConfigurationsContext);
-    const { clusterId, profileName } = useParams();
+    const { clusterId, profileName } = useParams() as { clusterId: string; profileName: string };
     const { generatePathWithScanConfig, navigateWithScanConfigQuery } = useScanConfigRouter();
     const pagination = useURLPagination(DEFAULT_COMPLIANCE_PAGE_SIZE);
     const { page, perPage, setPage } = pagination;
@@ -106,19 +103,8 @@ function ClusterDetailsPage() {
         });
     }
 
-    const onSearch = (payload: OnSearchPayload) => {
-        onURLSearch(searchFilter, setSearchFilter, payload);
-    };
-
-    const onCheckStatusSelect = (
-        filterType: 'Compliance Check Status',
-        checked: boolean,
-        selection: string
-    ) => {
-        const action = checked ? 'ADD' : 'REMOVE';
-        const category = filterType;
-        const value = selection;
-        onSearch({ action, category, value });
+    const onSearch: OnSearchCallback = (payload) => {
+        setSearchFilter(updateSearchFilter(searchFilter, payload));
     };
 
     function onClearFilters() {
@@ -146,7 +132,7 @@ function ClusterDetailsPage() {
     return (
         <>
             <PageTitle title="Compliance coverage - Cluster" />
-            <PageSection variant="light" className="pf-v5-u-py-md">
+            <PageSection hasBodyWrapper={false} className="pf-v6-u-py-md">
                 <Breadcrumb>
                     <BreadcrumbItemLink
                         to={generatePathWithScanConfig(coverageProfileClustersPath, {
@@ -164,23 +150,24 @@ function ClusterDetailsPage() {
                     </BreadcrumbItem>
                 </Breadcrumb>
             </PageSection>
+            <PageSection>
+                <ScanConfigurationSelect
+                    isLoading={scanConfigurationsQuery.isLoading}
+                    scanConfigs={scanConfigurationsQuery.response.configurations}
+                    selectedScanConfigName={selectedScanConfigName}
+                    isScanConfigDisabled={(config) =>
+                        isScanConfigurationDisabled(config, { clusterId })
+                    }
+                    setSelectedScanConfigName={setSelectedScanConfigName}
+                />
+            </PageSection>
             <Divider component="div" />
-            <ScanConfigurationSelect
-                isLoading={scanConfigurationsQuery.isLoading}
-                scanConfigs={scanConfigurationsQuery.response.configurations}
-                selectedScanConfigName={selectedScanConfigName}
-                isScanConfigDisabled={(config) =>
-                    isScanConfigurationDisabled(config, { clusterId })
-                }
-                setSelectedScanConfigName={setSelectedScanConfigName}
-            />
-            <Divider component="div" />
-            <PageSection variant="light">
+            <PageSection>
                 <Flex
                     direction={{ default: 'column' }}
                     alignItems={{ default: 'alignItemsFlexStart' }}
                 >
-                    <Title headingLevel="h1" className="pf-v5-u-w-100">
+                    <Title headingLevel="h1" className="pf-v6-u-w-100">
                         {isLoadingScanConfigProfiles ? (
                             <Skeleton fontSize="2xl" screenreaderText="Loading cluster name" />
                         ) : (
@@ -201,8 +188,7 @@ function ClusterDetailsPage() {
                     </LabelGroup>
                 </Flex>
             </PageSection>
-            <Divider component="div" />
-            <PageSection>
+            <PageSection padding={{ default: 'noPadding' }}>
                 {isLoadingScanConfigProfiles ? (
                     <Bullseye>
                         <Spinner />
@@ -220,22 +206,22 @@ function ClusterDetailsPage() {
                             profileName={profileName}
                             profileDetails={selectedProfileDetails}
                         />
-                        <Divider component="div" />
-                        <ClusterDetailsTable
-                            checkResultsCount={checkResultsResponse?.totalCount ?? 0}
-                            profileName={profileName}
-                            tableState={tableState}
-                            pagination={pagination}
-                            getSortParams={getSortParams}
-                            searchFilterConfig={searchFilterConfig}
-                            searchFilter={searchFilter}
-                            onFilterChange={setSearchFilter}
-                            onSearch={onSearch}
-                            onCheckStatusSelect={onCheckStatusSelect}
-                            onClearFilters={onClearFilters}
-                        />
                     </>
                 )}
+            </PageSection>
+            <Divider component="div" />
+            <PageSection>
+                <ClusterDetailsTable
+                    checkResultsCount={checkResultsResponse?.totalCount ?? 0}
+                    profileName={profileName}
+                    tableState={tableState}
+                    pagination={pagination}
+                    getSortParams={getSortParams}
+                    searchFilter={searchFilter}
+                    onFilterChange={setSearchFilter}
+                    onSearch={onSearch}
+                    onClearFilters={onClearFilters}
+                />
             </PageSection>
         </>
     );

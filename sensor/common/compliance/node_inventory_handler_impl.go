@@ -1,11 +1,9 @@
 package compliance
 
 import (
-	"strconv"
+	"context"
 
 	"github.com/pkg/errors"
-	"github.com/quay/claircore/indexer/controller"
-	"github.com/quay/claircore/pkg/rhctag"
 	"github.com/stackrox/rox/generated/internalapi/central"
 	v4 "github.com/stackrox/rox/generated/internalapi/scanner/v4"
 	"github.com/stackrox/rox/generated/internalapi/sensor"
@@ -26,13 +24,6 @@ var (
 	errStartMoreThanOnce        = errors.New("unable to start the component more than once")
 )
 
-const (
-	rhcosFullName = "Red Hat Enterprise Linux CoreOS"
-	// From ClairCore rhel-vex matcher
-	goldenName = "Red Hat Container Catalog"
-	goldenURI  = `https://catalog.redhat.com/software/containers/explore`
-)
-
 type nodeInventoryHandlerImpl struct {
 	inventories  <-chan *storage.NodeInventory
 	reportWraps  <-chan *index.IndexReportWrap
@@ -46,9 +37,10 @@ type nodeInventoryHandlerImpl struct {
 	// lock prevents the race condition between Start() [writer] and ResponsesC() [reader]
 	lock    *sync.Mutex
 	stopper concurrency.Stopper
-	// archCache stores an architecture per node, so that it can be used in the index report for
-	// the 'rhcos' package. The arch is discovered once and then reused for subsequent scans.
-	archCache map[string]string
+}
+
+func (c *nodeInventoryHandlerImpl) Name() string {
+	return "compliance.nodeInventoryHandlerImpl"
 }
 
 func (c *nodeInventoryHandlerImpl) Stopped() concurrency.ReadOnlyErrorSignal {
@@ -56,7 +48,7 @@ func (c *nodeInventoryHandlerImpl) Stopped() concurrency.ReadOnlyErrorSignal {
 }
 
 func (c *nodeInventoryHandlerImpl) Capabilities() []centralsensor.SensorCapability {
-	return nil
+	return []centralsensor.SensorCapability{centralsensor.SensorACKSupport}
 }
 
 // ResponsesC returns a channel with messages to Central. It must be called after Start() for the channel to be not nil
@@ -85,7 +77,7 @@ func (c *nodeInventoryHandlerImpl) Start() error {
 	return nil
 }
 
-func (c *nodeInventoryHandlerImpl) Stop(_ error) {
+func (c *nodeInventoryHandlerImpl) Stop() {
 	if !c.stopper.Client().Stopped().IsDone() {
 		defer utils.IgnoreError(c.stopper.Client().Stopped().Wait)
 	}
@@ -104,44 +96,121 @@ func (c *nodeInventoryHandlerImpl) Notify(e common.SensorComponentEvent) {
 	}
 }
 
-func (c *nodeInventoryHandlerImpl) ProcessMessage(msg *central.MsgToSensor) error {
-	ackMsg := msg.GetNodeInventoryAck()
-	if ackMsg == nil {
+func (c *nodeInventoryHandlerImpl) Accepts(msg *central.MsgToSensor) bool {
+	if msg.GetNodeInventoryAck() != nil {
+		return true
+	}
+	if sensorAck := msg.GetSensorAck(); sensorAck != nil {
+		switch sensorAck.GetMessageType() {
+		case central.SensorACK_NODE_INVENTORY, central.SensorACK_NODE_INDEX_REPORT:
+			return true
+		}
+	}
+	return false
+}
+
+func (c *nodeInventoryHandlerImpl) ProcessMessage(_ context.Context, msg *central.MsgToSensor) error {
+	// Handle new SensorACK message (from Central 4.10+)
+	if sensorAck := msg.GetSensorAck(); sensorAck != nil {
+		return c.processSensorACK(sensorAck)
+	}
+
+	// Handle legacy NodeInventoryACK message (from Central 4.9 and earlier)
+	if ackMsg := msg.GetNodeInventoryAck(); ackMsg != nil {
+		return c.processNodeInventoryACK(ackMsg)
+	}
+
+	return nil
+}
+
+// processSensorACK handles the new generic SensorACK message from Central.
+// Only node-related ACK/NACK messages (NODE_INVENTORY, NODE_INDEX_REPORT) are forwarded to Compliance.
+// All other message types are ignored - they should be handled by their respective handlers.
+func (c *nodeInventoryHandlerImpl) processSensorACK(sensorAck *central.SensorACK) error {
+	log.Debugf("Received SensorACK message: type=%s, action=%s, resource_id=%s, reason=%s",
+		sensorAck.GetMessageType(), sensorAck.GetAction(), sensorAck.GetResourceId(), sensorAck.GetReason())
+
+	metrics.ObserveNodeScanningAck(sensorAck.GetResourceId(),
+		sensorAck.GetAction().String(),
+		sensorAck.GetMessageType().String(),
+		metrics.AckOperationReceive,
+		"", metrics.AckOriginSensor)
+
+	// Only handle node-related message types - all others are handled by their respective handlers
+	var messageType sensor.MsgToCompliance_ComplianceACK_MessageType
+	switch sensorAck.GetMessageType() {
+	case central.SensorACK_NODE_INVENTORY:
+		messageType = sensor.MsgToCompliance_ComplianceACK_NODE_INVENTORY
+	case central.SensorACK_NODE_INDEX_REPORT:
+		messageType = sensor.MsgToCompliance_ComplianceACK_NODE_INDEX_REPORT
+	default:
+		// Not a node-related message - ignore it (handled by other handlers like VM handler)
+		log.Debugf("Ignoring SensorACK message type %s - not handled by node inventory handler", sensorAck.GetMessageType())
 		return nil
 	}
-	log.Debugf("Received node-scanning-ACK message of type %s, action %s for node %s",
+
+	// Map central.SensorACK action to sensor.ComplianceACK action
+	var action sensor.MsgToCompliance_ComplianceACK_Action
+	switch sensorAck.GetAction() {
+	case central.SensorACK_ACK:
+		action = sensor.MsgToCompliance_ComplianceACK_ACK
+	case central.SensorACK_NACK:
+		action = sensor.MsgToCompliance_ComplianceACK_NACK
+	default:
+		log.Debugf("Ignoring SensorACK message with unknown action %s: type=%s, resource_id=%s, reason=%s",
+			sensorAck.GetAction(), sensorAck.GetMessageType(), sensorAck.GetResourceId(), sensorAck.GetReason())
+		return nil
+	}
+
+	c.sendComplianceAck(
+		sensorAck.GetResourceId(),
+		action,
+		messageType,
+		sensorAck.GetReason(),
+		metrics.AckReasonForwardingFromCentral,
+	)
+	return nil
+}
+
+// processNodeInventoryACK handles the legacy NodeInventoryACK message from Central 4.9 and earlier.
+// It forwards the ACK/NACK to Compliance using the legacy NodeInventoryACK message type.
+func (c *nodeInventoryHandlerImpl) processNodeInventoryACK(ackMsg *central.NodeInventoryACK) error {
+	log.Debugf("Received legacy node-scanning-ACK message of type %s, action %s for node %s",
 		ackMsg.GetMessageType(), ackMsg.GetAction(), ackMsg.GetNodeName())
 	metrics.ObserveNodeScanningAck(ackMsg.GetNodeName(),
 		ackMsg.GetAction().String(),
 		ackMsg.GetMessageType().String(),
 		metrics.AckOperationReceive,
 		"", metrics.AckOriginSensor)
+
+	var action sensor.MsgToCompliance_ComplianceACK_Action
 	switch ackMsg.GetAction() {
 	case central.NodeInventoryACK_ACK:
-		switch ackMsg.GetMessageType() {
-		case central.NodeInventoryACK_NodeIndexer:
-			c.sendAckToCompliance(ackMsg.GetNodeName(),
-				sensor.MsgToCompliance_NodeInventoryACK_ACK,
-				sensor.MsgToCompliance_NodeInventoryACK_NodeIndexer, metrics.AckReasonForwardingFromCentral)
-		default:
-			// If Central version is behind Sensor, then MessageType field will be unset - then default to NodeInventory.
-			c.sendAckToCompliance(ackMsg.GetNodeName(),
-				sensor.MsgToCompliance_NodeInventoryACK_ACK,
-				sensor.MsgToCompliance_NodeInventoryACK_NodeInventory, metrics.AckReasonForwardingFromCentral)
-		}
+		action = sensor.MsgToCompliance_ComplianceACK_ACK
 	case central.NodeInventoryACK_NACK:
-		switch ackMsg.GetMessageType() {
-		case central.NodeInventoryACK_NodeIndexer:
-			c.sendAckToCompliance(ackMsg.GetNodeName(),
-				sensor.MsgToCompliance_NodeInventoryACK_NACK,
-				sensor.MsgToCompliance_NodeInventoryACK_NodeIndexer, metrics.AckReasonForwardingFromCentral)
-		default:
-			// If Central version is behind Sensor, then MessageType field will be unset - then default to NodeInventory.
-			c.sendAckToCompliance(ackMsg.GetNodeName(),
-				sensor.MsgToCompliance_NodeInventoryACK_NACK,
-				sensor.MsgToCompliance_NodeInventoryACK_NodeInventory, metrics.AckReasonForwardingFromCentral)
-		}
+		action = sensor.MsgToCompliance_ComplianceACK_NACK
+	default:
+		log.Debugf("Ignoring legacy NodeInventoryACK with unknown action %s", ackMsg.GetAction())
+		return nil
 	}
+
+	var messageType sensor.MsgToCompliance_ComplianceACK_MessageType
+	switch ackMsg.GetMessageType() {
+	case central.NodeInventoryACK_NodeIndexer:
+		messageType = sensor.MsgToCompliance_ComplianceACK_NODE_INDEX_REPORT
+	default:
+		// If Central version is behind Sensor, MessageType can be unset: default to node inventory.
+		messageType = sensor.MsgToCompliance_ComplianceACK_NODE_INVENTORY
+	}
+
+	c.sendComplianceAck(
+		ackMsg.GetNodeName(),
+		action,
+		messageType,
+		"",
+		metrics.AckReasonForwardingFromCentral,
+	)
+
 	return nil
 }
 
@@ -190,18 +259,25 @@ func (c *nodeInventoryHandlerImpl) handleNodeInventory(
 	metrics.ObserveNodeScan(inventory.GetNodeName(), metrics.NodeScanTypeNodeInventory, metrics.NodeScanOperationReceive)
 	if !c.centralReady.IsDone() {
 		log.Warn("Received NodeInventory but Central is not reachable. Requesting Compliance to resend NodeInventory later")
-		c.sendAckToCompliance(inventory.GetNodeName(),
-			sensor.MsgToCompliance_NodeInventoryACK_NACK,
-			sensor.MsgToCompliance_NodeInventoryACK_NodeInventory, metrics.AckReasonCentralUnreachable)
+		c.sendComplianceAck(
+			inventory.GetNodeName(),
+			sensor.MsgToCompliance_ComplianceACK_NACK,
+			sensor.MsgToCompliance_ComplianceACK_NODE_INVENTORY,
+			string(metrics.AckReasonCentralUnreachable),
+			metrics.AckReasonCentralUnreachable,
+		)
 		return
 	}
 
 	if nodeID, err := c.nodeMatcher.GetNodeID(inventory.GetNodeName()); err != nil {
 		log.Warnf("Node %q unknown to Sensor. Requesting Compliance to resend NodeInventory later", inventory.GetNodeName())
-		c.sendAckToCompliance(inventory.GetNodeName(),
-			sensor.MsgToCompliance_NodeInventoryACK_NACK,
-			sensor.MsgToCompliance_NodeInventoryACK_NodeInventory,
-			metrics.AckReasonNodeUnknown)
+		c.sendComplianceAck(
+			inventory.GetNodeName(),
+			sensor.MsgToCompliance_ComplianceACK_NACK,
+			sensor.MsgToCompliance_ComplianceACK_NODE_INVENTORY,
+			string(metrics.AckReasonNodeUnknown),
+			metrics.AckReasonNodeUnknown,
+		)
 
 	} else {
 		inventory.NodeId = nodeID
@@ -222,19 +298,25 @@ func (c *nodeInventoryHandlerImpl) handleNodeIndex(
 	metrics.ObserveNodeScan(index.NodeName, metrics.NodeScanTypeNodeIndex, metrics.NodeScanOperationReceive)
 	if !c.centralReady.IsDone() {
 		log.Warn("Received IndexReport but Central is not reachable. Requesting Compliance to resend later.")
-		c.sendAckToCompliance(index.NodeName,
-			sensor.MsgToCompliance_NodeInventoryACK_NACK,
-			sensor.MsgToCompliance_NodeInventoryACK_NodeIndexer,
-			metrics.AckReasonCentralUnreachable)
+		c.sendComplianceAck(
+			index.NodeName,
+			sensor.MsgToCompliance_ComplianceACK_NACK,
+			sensor.MsgToCompliance_ComplianceACK_NODE_INDEX_REPORT,
+			string(metrics.AckReasonCentralUnreachable),
+			metrics.AckReasonCentralUnreachable,
+		)
 		return
 	}
 
 	if nodeID, err := c.nodeMatcher.GetNodeID(index.NodeName); err != nil {
 		log.Warnf("Received Index Report from Node %q that is unknown to Sensor. Requesting Compliance to resend later.", index.NodeName)
-		c.sendAckToCompliance(index.NodeName,
-			sensor.MsgToCompliance_NodeInventoryACK_NACK,
-			sensor.MsgToCompliance_NodeInventoryACK_NodeIndexer,
-			metrics.AckReasonNodeUnknown)
+		c.sendComplianceAck(
+			index.NodeName,
+			sensor.MsgToCompliance_ComplianceACK_NACK,
+			sensor.MsgToCompliance_ComplianceACK_NODE_INDEX_REPORT,
+			string(metrics.AckReasonNodeUnknown),
+			metrics.AckReasonNodeUnknown,
+		)
 	} else {
 		index.NodeID = nodeID
 		log.Debugf("Mapping IndexReport name '%s' to Node ID '%s'", index.NodeName, nodeID)
@@ -242,32 +324,43 @@ func (c *nodeInventoryHandlerImpl) handleNodeIndex(
 	}
 }
 
-func (c *nodeInventoryHandlerImpl) sendAckToCompliance(
-	nodeName string,
-	action sensor.MsgToCompliance_NodeInventoryACK_Action,
-	messageType sensor.MsgToCompliance_NodeInventoryACK_MessageType,
-	reason metrics.AckReason,
+// sendComplianceAck sends a ComplianceACK message to Compliance.
+func (c *nodeInventoryHandlerImpl) sendComplianceAck(
+	resourceID string,
+	action sensor.MsgToCompliance_ComplianceACK_Action,
+	messageType sensor.MsgToCompliance_ComplianceACK_MessageType,
+	reason string,
+	metricReason metrics.AckReason,
 ) {
 	select {
 	case <-c.stopper.Flow().StopRequested():
+		log.Debugf("Skipped sending ComplianceACK (stop requested): type=%s, action=%s, resource_id=%s, reason=%s",
+			messageType, action, resourceID, reason)
 	case c.toCompliance <- common.MessageToComplianceWithAddress{
 		Msg: &sensor.MsgToCompliance{
-			Msg: &sensor.MsgToCompliance_Ack{
-				Ack: &sensor.MsgToCompliance_NodeInventoryACK{
+			Msg: &sensor.MsgToCompliance_ComplianceAck{
+				ComplianceAck: &sensor.MsgToCompliance_ComplianceACK{
 					Action:      action,
 					MessageType: messageType,
+					ResourceId:  resourceID,
+					Reason:      reason,
 				},
 			},
 		},
-		Hostname:  nodeName,
-		Broadcast: nodeName == "",
+		Hostname:  resourceID, // For node-based messages, resourceID is the node name
+		Broadcast: resourceID == "",
 	}:
+		log.Debugf("Sent ComplianceACK to Compliance: type=%s, action=%s, resource_id=%s, reason=%s",
+			messageType, action, resourceID, reason)
+
+		// Record old metric for compatibility.
+		metrics.ObserveNodeScanningAck(resourceID,
+			action.String(),
+			messageType.String(),
+			metrics.AckOperationSend,
+			metricReason,
+			metrics.AckOriginSensor)
 	}
-	metrics.ObserveNodeScanningAck(nodeName,
-		action.String(),
-		messageType.String(),
-		metrics.AckOperationSend,
-		reason, metrics.AckOriginSensor)
 }
 
 func (c *nodeInventoryHandlerImpl) sendNodeInventory(toC chan<- *message.ExpiringMessage, inventory *storage.NodeInventory) {
@@ -289,7 +382,6 @@ func (c *nodeInventoryHandlerImpl) sendNodeInventory(toC chan<- *message.Expirin
 			},
 		},
 	}):
-		metrics.ObserveReceivedNodeInventory(inventory) // keeping for compatibility with 4.6. Remove in 4.8
 		metrics.ObserveNodeScan(inventory.GetNodeName(), metrics.NodeScanTypeNodeInventory, metrics.NodeScanOperationSendToCentral)
 	}
 }
@@ -300,30 +392,22 @@ func (c *nodeInventoryHandlerImpl) sendNodeIndex(toC chan<- *message.ExpiringMes
 		return
 	}
 
-	isRHCOS, version, err := c.nodeRHCOSMatcher.GetRHCOSVersion(indexWrap.NodeName)
-	if err != nil {
-		log.Warnf("Unable to determine RHCOS version for node %q: %v", indexWrap.NodeName, err)
-		isRHCOS = false
-	}
-	log.Debugf("Node=%q discovered RHCOS=%t rhcos-version=%q", indexWrap.NodeName, isRHCOS, version)
-
 	select {
 	case <-c.stopper.Flow().StopRequested():
 	default:
 		defer func() {
 			log.Debugf("Sent IndexReport to Central")
-			metrics.ObserveReceivedNodeIndex(indexWrap.NodeName) // keeping for compatibility with 4.6. Remove in 4.8
 			metrics.ObserveNodeScan(indexWrap.NodeName, metrics.NodeScanTypeNodeIndex, metrics.NodeScanOperationSendToCentral)
 		}()
-		irWrapperFunc := noop
-		arch := c.archCache[indexWrap.NodeName]
-		if isRHCOS {
-			if _, ok := c.archCache[indexWrap.NodeName]; !ok {
-				arch = extractArch(indexWrap.IndexReport)
-				c.archCache[indexWrap.NodeName] = arch
+		if hasRHCOSPackage(indexWrap.IndexReport) {
+			log.Debugf("Node=%q has rhcos package from compliance", indexWrap.NodeName)
+		} else {
+			isRHCOS, ver, err := c.nodeRHCOSMatcher.GetRHCOSVersion(indexWrap.NodeName)
+			if err != nil {
+				log.Debugf("Unable to determine RHCOS version for node %q: %v", indexWrap.NodeName, err)
+			} else if isRHCOS {
+				log.Warnf("Node %q appears to be RHCOS (osImage version=%s) but compliance did not add rhcos package - RHCOS-level vulnerabilities will not be reported", indexWrap.NodeName, ver)
 			}
-			log.Debugf("Attaching OCI entry for 'rhcos' to index-report for node %s: version=%s, arch=%s", indexWrap.NodeName, version, arch)
-			irWrapperFunc = attachRPMtoRHCOS
 		}
 		toC <- message.New(&central.MsgFromSensor{
 			Msg: &central.MsgFromSensor_Event{
@@ -333,7 +417,7 @@ func (c *nodeInventoryHandlerImpl) sendNodeIndex(toC chan<- *message.ExpiringMes
 					// This can be changed to CREATE or UPDATE for Sensor 4.8 or when Central 4.6 is out of support.
 					Action: central.ResourceAction_UNSET_ACTION_RESOURCE,
 					Resource: &central.SensorEvent_IndexReport{
-						IndexReport: irWrapperFunc(version, arch, indexWrap.IndexReport),
+						IndexReport: indexWrap.IndexReport,
 					},
 				},
 			},
@@ -341,109 +425,11 @@ func (c *nodeInventoryHandlerImpl) sendNodeIndex(toC chan<- *message.ExpiringMes
 	}
 }
 
-func normalizeVersion(version string) []int32 {
-	rhctagVersion, err := rhctag.Parse(version)
-	if err != nil {
-		return []int32{0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
-	}
-	m := rhctagVersion.MinorStart()
-	v := m.Version(true).V
-	// Only two first fields matter for the initial db query that matches the vulnerabilities.
-	// The results of that query will be further filtered using the string value of the Version field.
-	return []int32{v[0], v[1], 0, 0, 0, 0, 0, 0, 0, 0}
-}
-
-func noop(_, _ string, rpm *v4.IndexReport) *v4.IndexReport {
-	return rpm
-}
-
-func idTaken[T any](m map[string]T, id int) bool {
-	_, exists := m[strconv.Itoa(id)]
-	return exists
-}
-
-// extractArch deduces the architecture of the node OS based on the index report containing rpm packages.
-func extractArch(rpm *v4.IndexReport) string {
-	for _, distro := range rpm.GetContents().GetDistributions() {
-		if distro.GetArch() != "" && distro.GetArch() != "noarch" {
-			return distro.GetArch()
+func hasRHCOSPackage(report *v4.IndexReport) bool {
+	for _, p := range report.GetContents().GetPackages() {
+		if p.GetName() == "rhcos" {
+			return true
 		}
 	}
-	for _, p := range rpm.GetContents().GetPackages() {
-		if p.GetArch() != "" && p.GetArch() != "noarch" {
-			return p.GetArch()
-		}
-	}
-	return ""
-}
-
-func attachRPMtoRHCOS(version, arch string, rpm *v4.IndexReport) *v4.IndexReport {
-	idCandidate := 600 // Arbitrary selected. RHCOS has usually 520-560 rpm packages.
-	for idTaken(rpm.GetContents().GetEnvironments(), idCandidate) {
-		idCandidate++
-	}
-	strID := strconv.Itoa(idCandidate)
-	oci := buildRHCOSIndexReport(strID, version, arch)
-	oci.Contents.Packages = append(oci.Contents.Packages, rpm.GetContents().GetPackages()...)
-	oci.Contents.Repositories = append(oci.Contents.Repositories, rpm.GetContents().GetRepositories()...)
-	for envId, list := range rpm.GetContents().GetEnvironments() {
-		oci.Contents.Environments[envId] = list
-	}
-	oci.Contents.Distributions = rpm.GetContents().GetDistributions()
-	return oci
-}
-
-func buildRHCOSIndexReport(Id, version, arch string) *v4.IndexReport {
-	return &v4.IndexReport{
-		// This hashId is arbitrary. The value doesn't play a role for matcher, but must be valid sha256.
-		HashId:  "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-		State:   controller.IndexFinished.String(),
-		Success: true,
-		Err:     "",
-		Contents: &v4.Contents{
-			Packages: []*v4.Package{
-				{
-					Id:      Id,
-					Name:    "rhcos",
-					Version: version,
-					NormalizedVersion: &v4.NormalizedVersion{
-						Kind: "rhctag",
-						V:    normalizeVersion(version), // Only two first fields matter for the db-query.
-					},
-					Kind: "binary",
-					Source: &v4.Package{
-						Id:      Id,
-						Name:    "rhcos",
-						Kind:    "source",
-						Version: version,
-						Cpe:     "cpe:2.3:*", // required to pass validation of scanner V4 API
-					},
-					Arch: arch,
-					Cpe:  "cpe:2.3:*", // required to pass validation of scanner V4 API
-				},
-			},
-			Repositories: []*v4.Repository{
-				{
-					Id:   Id,
-					Name: goldenName,
-					Key:  "",
-					Uri:  goldenURI,
-					Cpe:  "cpe:2.3:*", // required to pass validation of scanner V4 API
-				},
-			},
-			// Environments must be present for the matcher to discover records
-			Environments: map[string]*v4.Environment_List{
-				Id: {
-					Environments: []*v4.Environment{
-						{
-							PackageDb: "",
-							// IntroducedIn must be a valid sha256, but the value is not important.
-							IntroducedIn:  "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-							RepositoryIds: []string{Id},
-						},
-					},
-				},
-			},
-		},
-	}
+	return false
 }

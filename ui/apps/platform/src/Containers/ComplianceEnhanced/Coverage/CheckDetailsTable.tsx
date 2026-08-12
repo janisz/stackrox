@@ -1,5 +1,4 @@
-import React from 'react';
-import { Link } from 'react-router-dom';
+import { Link } from 'react-router-dom-v5-compat';
 import {
     Pagination,
     Toolbar,
@@ -10,25 +9,30 @@ import {
 import { Table, Tbody, Td, Th, Thead, Tr } from '@patternfly/react-table';
 
 import TbodyUnified from 'Components/TableStateTemplates/TbodyUnified';
-import { UseURLPaginationResult } from 'hooks/useURLPagination';
-import { UseURLSortResult } from 'hooks/useURLSort';
-import { ClusterCheckStatus } from 'services/ComplianceResultsService';
-import { TableUIState } from 'utils/getTableUIState';
+import type { UseURLPaginationResult } from 'hooks/useURLPagination';
+import type { UseURLSortResult } from 'hooks/useURLSort';
+import type { ClusterCheckStatus } from 'services/ComplianceResultsService';
+import type { TableUIState } from 'utils/getTableUIState';
 
 import CompoundSearchFilter from 'Components/CompoundSearchFilter/components/CompoundSearchFilter';
-import SearchFilterChips from 'Components/PatternFly/SearchFilterChips';
-import { CompoundSearchFilterConfig, OnSearchPayload } from 'Components/CompoundSearchFilter/types';
-import { SearchFilter } from 'types/search';
+import CompoundSearchFilterLabels from 'Components/CompoundSearchFilter/components/CompoundSearchFilterLabels';
+import SearchFilterSelectInclusive from 'Components/CompoundSearchFilter/components/SearchFilterSelectInclusive';
+import type { OnSearchCallback } from 'Components/CompoundSearchFilter/types';
+import type { SearchFilter } from 'types/search';
 
 import { coverageClusterDetailsPath } from './compliance.coverage.routes';
 import {
     getClusterResultsStatusObject,
     getTimeDifferenceAsPhrase,
 } from './compliance.coverage.utils';
-import { CHECK_STATUS_QUERY, CLUSTER_QUERY } from './compliance.coverage.constants';
-import CheckStatusDropdown from './components/CheckStatusDropdown';
 import StatusIcon from './components/StatusIcon';
 import useScanConfigRouter from './hooks/useScanConfigRouter';
+import {
+    attributeForComplianceCheckStatus,
+    clusterSearchFilterConfig,
+} from '../searchFilterConfig';
+
+const searchFilterConfig = [clusterSearchFilterConfig];
 
 export const tabContentIdForResults = 'check-details-Results-tab-section';
 
@@ -39,15 +43,9 @@ export type CheckDetailsTableProps = {
     profileName: string;
     tableState: TableUIState<ClusterCheckStatus>;
     getSortParams: UseURLSortResult['getSortParams'];
-    searchFilterConfig: CompoundSearchFilterConfig;
     searchFilter: SearchFilter;
     onFilterChange: (newFilter: SearchFilter) => void;
-    onSearch: (payload: OnSearchPayload) => void;
-    onCheckStatusSelect: (
-        filterType: 'Compliance Check Status',
-        checked: boolean,
-        selection: string
-    ) => void;
+    onSearch: OnSearchCallback;
     onClearFilters: () => void;
 };
 
@@ -58,11 +56,9 @@ function CheckDetailsTable({
     profileName,
     tableState,
     getSortParams,
-    searchFilterConfig,
     searchFilter,
     onFilterChange,
     onSearch,
-    onCheckStatusSelect,
     onClearFilters,
 }: CheckDetailsTableProps) {
     const { generatePathWithScanConfig } = useScanConfigRouter();
@@ -72,21 +68,27 @@ function CheckDetailsTable({
         <div id={tabContentIdForResults}>
             <Toolbar>
                 <ToolbarContent>
-                    <ToolbarGroup className="pf-v5-u-w-100">
-                        <ToolbarItem className="pf-v5-u-flex-1">
-                            <CompoundSearchFilter
-                                config={searchFilterConfig}
-                                searchFilter={searchFilter}
-                                onSearch={onSearch}
-                            />
-                        </ToolbarItem>
-                        <ToolbarItem>
-                            <CheckStatusDropdown
-                                searchFilter={searchFilter}
-                                onSelect={onCheckStatusSelect}
-                            />
-                        </ToolbarItem>
-                        <ToolbarItem variant="pagination" align={{ default: 'alignRight' }}>
+                    <CompoundSearchFilter
+                        config={searchFilterConfig}
+                        searchFilter={searchFilter}
+                        onSearch={onSearch}
+                    />
+                    <SearchFilterSelectInclusive
+                        attribute={attributeForComplianceCheckStatus}
+                        isSeparate
+                        onSearch={onSearch}
+                        searchFilter={searchFilter}
+                    />
+                    <ToolbarGroup className="pf-v6-u-w-100">
+                        <CompoundSearchFilterLabels
+                            attributesSeparateFromConfig={[attributeForComplianceCheckStatus]}
+                            config={searchFilterConfig}
+                            onFilterChange={onFilterChange}
+                            searchFilter={searchFilter}
+                        />
+                    </ToolbarGroup>
+                    <ToolbarGroup className="pf-v6-u-w-100">
+                        <ToolbarItem variant="pagination" align={{ default: 'alignEnd' }}>
                             <Pagination
                                 itemCount={checkResultsCount}
                                 page={page}
@@ -95,22 +97,6 @@ function CheckDetailsTable({
                                 onPerPageSelect={(_, newPerPage) => setPerPage(newPerPage)}
                             />
                         </ToolbarItem>
-                    </ToolbarGroup>
-                    <ToolbarGroup className="pf-v5-u-w-100">
-                        <SearchFilterChips
-                            searchFilter={searchFilter}
-                            onFilterChange={onFilterChange}
-                            filterChipGroupDescriptors={[
-                                {
-                                    displayName: 'Cluster',
-                                    searchFilterName: CLUSTER_QUERY,
-                                },
-                                {
-                                    displayName: 'Compliance Status',
-                                    searchFilterName: CHECK_STATUS_QUERY,
-                                },
-                            ]}
-                        />
                     </ToolbarGroup>
                 </ToolbarContent>
             </Toolbar>

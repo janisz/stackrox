@@ -1,4 +1,3 @@
-import React from 'react';
 import { Card, CardBody, CardTitle, Grid, GridItem, pluralize } from '@patternfly/react-core';
 
 export type AffectedNodesSummaryCardProps = {
@@ -13,14 +12,14 @@ function AffectedNodesSummaryCard({
     operatingSystemCount,
 }: AffectedNodesSummaryCardProps) {
     return (
-        <Card isCompact isFlat>
+        <Card isCompact isFullHeight>
             <CardTitle>Affected nodes</CardTitle>
             <CardBody>
                 <Grid>
-                    <GridItem span={12} className="pf-v5-u-pt-sm">
+                    <GridItem span={12} className="pf-v6-u-pt-sm">
                         {affectedNodeCount} / {totalNodeCount} affected nodes
                     </GridItem>
-                    <GridItem span={12} className="pf-v5-u-pt-sm">
+                    <GridItem span={12} className="pf-v6-u-pt-sm">
                         {pluralize(operatingSystemCount, 'operating system')} affected
                     </GridItem>
                 </Grid>

@@ -16,6 +16,7 @@ class GlobalSearch extends BaseSpecification {
 
     static final private DEPLOYMENT = new Deployment()
             .setName("qaglobalsearch")
+            .setImagePrefetcherAffinity()
             .setImage("quay.io/rhacs-eng/qa-multi-arch-busybox:latest")
             .addPort(22)
             .addLabel("app", "test")
@@ -33,6 +34,10 @@ class GlobalSearch extends BaseSpecification {
                                      SearchServiceOuterClass.SearchCategory.NAMESPACES,
                                      SearchServiceOuterClass.SearchCategory.IMAGES,
                                      SearchServiceOuterClass.SearchCategory.DEPLOYMENTS)
+        if (flattenImageDataEnabled) {
+            EXPECTED_DEPLOYMENT_CATEGORIES.add(SearchServiceOuterClass.SearchCategory.IMAGES_V2)
+            EXPECTED_IMAGE_CATEGORIES.add(SearchServiceOuterClass.SearchCategory.IMAGES_V2)
+        }
 
         orchestrator.createDeployment(DEPLOYMENT)
         assert Services.waitForDeployment(DEPLOYMENT)

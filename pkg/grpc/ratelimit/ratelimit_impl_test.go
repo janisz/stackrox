@@ -121,12 +121,10 @@ func TestLimitWithThrottle(t *testing.T) {
 			numCalls := tt.maxPerSec + 10
 			resultChan := make(chan bool, numCalls)
 
-			for i := 0; i < numCalls; i++ {
-				wg.Add(1)
-				go func() {
-					defer wg.Done()
+			for range numCalls {
+				wg.Go(func() {
 					resultChan <- rl.limit(context.Background())
-				}()
+				})
 			}
 
 			go func() {
@@ -168,7 +166,7 @@ func BenchmarkRateLimiter(b *testing.B) {
 	for _, tt := range tests {
 		b.Run(tt.name, func(b *testing.B) {
 			l := NewRateLimiter(tt.maxPerSec, tt.maxThrottleDuration)
-			for i := 0; i < b.N; i++ {
+			for b.Loop() {
 				_ = l.Limit(context.Background())
 			}
 		})

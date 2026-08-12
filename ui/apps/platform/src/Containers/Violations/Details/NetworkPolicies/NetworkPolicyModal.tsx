@@ -1,10 +1,10 @@
-import React, { useState } from 'react';
-import { Button, Flex, Modal } from '@patternfly/react-core';
-import { CodeEditor, Language } from '@patternfly/react-code-editor';
+import type { CSSProperties } from 'react';
+import { Button, Flex } from '@patternfly/react-core';
+import { Modal } from '@patternfly/react-core/deprecated';
 
-import CodeEditorDarkModeControl from 'Components/PatternFly/CodeEditorDarkModeControl';
-import { NetworkPolicy } from 'types/networkPolicy.proto';
+import type { NetworkPolicy } from 'types/networkPolicy.proto';
 import download from 'utils/download';
+import CodeViewer from 'Components/CodeViewer';
 
 export type NetworkPolicyModalProps = {
     networkPolicy: Pick<NetworkPolicy, 'name' | 'yaml'>;
@@ -13,8 +13,6 @@ export type NetworkPolicyModalProps = {
 };
 
 function NetworkPolicyModal({ networkPolicy, isOpen, onClose }: NetworkPolicyModalProps) {
-    const [isDarkMode, setIsDarkMode] = useState(false);
-
     function exportYAMLHandler() {
         download(`${networkPolicy.name}.yml`, networkPolicy.yaml, 'yml');
     }
@@ -26,27 +24,20 @@ function NetworkPolicyModal({ networkPolicy, isOpen, onClose }: NetworkPolicyMod
             isOpen={isOpen}
             onClose={onClose}
             actions={[
-                <Button className="pf-v5-u-display-inline-block" onClick={exportYAMLHandler}>
+                <Button className="pf-v6-u-display-inline-block" onClick={exportYAMLHandler}>
                     Export YAML
                 </Button>,
             ]}
         >
             <Flex direction={{ default: 'column' }}>
                 <p>Policy name: {networkPolicy.name}</p>
-                <CodeEditor
-                    isDarkTheme={isDarkMode}
-                    customControls={
-                        <CodeEditorDarkModeControl
-                            isDarkMode={isDarkMode}
-                            onToggleDarkMode={() => setIsDarkMode((wasDarkMode) => !wasDarkMode)}
-                        />
-                    }
-                    isCopyEnabled
-                    isLineNumbersVisible
-                    isReadOnly
+                <CodeViewer
                     code={networkPolicy.yaml}
-                    language={Language.yaml}
-                    height="450px"
+                    style={
+                        {
+                            '--pf-v6-u-max-height--MaxHeight': '450px',
+                        } as CSSProperties
+                    }
                 />
             </Flex>
         </Modal>

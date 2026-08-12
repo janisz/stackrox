@@ -1,4 +1,5 @@
-import React, { ReactElement, useEffect } from 'react';
+import { useEffect } from 'react';
+import type { ReactElement } from 'react';
 import {
     Drawer,
     DrawerActions,
@@ -8,11 +9,12 @@ import {
     DrawerPanelContent,
 } from '@patternfly/react-core';
 
-import { Collection } from 'services/CollectionsService';
-import { CollectionPageAction } from './collections.utils';
+import type { Collection } from 'services/CollectionsService';
+import type { CollectionPageAction } from './collections.utils';
 import CollectionResults from './CollectionResults';
 import { isCollectionParseError, parseCollection } from './converter';
-import CollectionForm, { CollectionFormProps } from './CollectionForm';
+import CollectionForm from './CollectionForm';
+import type { CollectionFormProps } from './CollectionForm';
 import UnsupportedCollectionState from './UnsupportedCollectionState';
 import useDryRunConfiguration from './hooks/useDryRunConfiguration';
 
@@ -68,12 +70,7 @@ function CollectionFormDrawer({
             <Drawer isExpanded={isDrawerOpen} isInline={isInlineDrawer}>
                 <DrawerContent
                     panelContent={
-                        <DrawerPanelContent
-                            style={{
-                                borderLeft: 'var(--pf-v5-global--BorderColor--100) 1px solid',
-                                maxWidth: isInlineDrawer ? '40%' : 'unset',
-                            }}
-                        >
+                        <DrawerPanelContent style={{ maxWidth: isInlineDrawer ? '40%' : 'unset' }}>
                             <CollectionResults
                                 headerContent={
                                     !isInlineDrawer && (
@@ -91,27 +88,29 @@ function CollectionFormDrawer({
                         </DrawerPanelContent>
                     }
                 >
-                    <DrawerContentBody className="pf-v5-u-background-color-100 pf-v5-u-display-flex pf-v5-u-flex-direction-column">
+                    <DrawerContentBody>
                         {headerContent}
-                        {isCollectionParseError(initialData) ? (
-                            <UnsupportedCollectionState
-                                className="pf-v5-u-pt-xl"
-                                errors={initialData.errors}
-                            />
-                        ) : (
-                            <CollectionForm
-                                hasWriteAccessForCollections={hasWriteAccessForCollections}
-                                action={action}
-                                initialData={initialData}
-                                initialEmbeddedCollections={initialEmbeddedCollections}
-                                onFormChange={updateDryRunConfig}
-                                onSubmit={onSubmit}
-                                onCancel={onCancel}
-                                configError={configError}
-                                setConfigError={setConfigError}
-                                getCollectionTableCells={getCollectionTableCells}
-                            />
-                        )}
+                        <div className="pf-v6-u-p-lg">
+                            {isCollectionParseError(initialData) ? (
+                                <UnsupportedCollectionState
+                                    className="pf-v6-u-pt-xl"
+                                    errors={initialData.errors}
+                                />
+                            ) : (
+                                <CollectionForm
+                                    hasWriteAccessForCollections={hasWriteAccessForCollections}
+                                    action={action}
+                                    initialData={initialData}
+                                    initialEmbeddedCollections={initialEmbeddedCollections}
+                                    onFormChange={updateDryRunConfig}
+                                    onSubmit={onSubmit}
+                                    onCancel={onCancel}
+                                    configError={configError}
+                                    setConfigError={setConfigError}
+                                    getCollectionTableCells={getCollectionTableCells}
+                                />
+                            )}
+                        </div>
                     </DrawerContentBody>
                 </DrawerContent>
             </Drawer>

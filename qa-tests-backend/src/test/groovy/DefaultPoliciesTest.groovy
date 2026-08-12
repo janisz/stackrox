@@ -23,7 +23,7 @@ import io.stackrox.proto.storage.RiskOuterClass.Risk.Result
 
 import common.Constants
 import objects.Deployment
-import objects.GCRImageIntegration
+import objects.GoogleArtifactRegistry
 import objects.Service
 import services.AlertService
 import services.DeploymentService
@@ -53,6 +53,7 @@ class DefaultPoliciesTest extends BaseSpecification {
     static final private String TRIGGER_MOST = "qadefpoltriggermost"
     static final private String K8S_DASHBOARD = "kubernetes-dashboard"
     static final private String GCR_NGINX = "qadefpolnginx"
+    static final private String UNSIGNED_REDHAT = "qadefpolunsignedredhat"
     static final private String WGET_CURL = ((Env.REMOTE_CLUSTER_ARCH == "x86_64") ? STRUTS:TRIGGER_MOST)
     static final private String STRUTS_IMAGE = ((Env.REMOTE_CLUSTER_ARCH == "x86_64") ?
         "quay.io/rhacs-eng/qa:struts-app":"quay.io/rhacs-eng/qa-multi-arch:struts-app")
@@ -74,6 +75,7 @@ class DefaultPoliciesTest extends BaseSpecification {
             "Docker CIS 5.15: Ensure that the host's process namespace is not shared",
             "Docker CIS 5.7: Ensure privileged ports are not mapped within containers",
             "Alert on deployments with the Alpine Linux package manager (apk) present",
+            "Container with privilege escalation allowed",
             Constants.ANY_FIXED_VULN_POLICY,
     ]
 
@@ -85,6 +87,7 @@ class DefaultPoliciesTest extends BaseSpecification {
 
     static final private Deployment STRUTS_DEPLOYMENT = new Deployment()
             .setName(STRUTS)
+            .setImagePrefetcherAffinity()
             .setImage(STRUTS_IMAGE)
             .addLabel("app", "test")
             .addPort(80)
@@ -92,6 +95,7 @@ class DefaultPoliciesTest extends BaseSpecification {
     static final private List<Deployment> DEPLOYMENTS = [
         new Deployment()
             .setName (NGINX_LATEST)
+            .setImagePrefetcherAffinity()
             // this is docker.io/nginx:1.23.3 but tagged as latest
             .setImage ("quay.io/rhacs-eng/qa-multi-arch-nginx:latest")
             .addPort (22)
@@ -105,6 +109,7 @@ class DefaultPoliciesTest extends BaseSpecification {
         //     .setCommand(["sleep", "600"]),
         new Deployment()
             .setName(TRIGGER_MOST)
+            .setImagePrefetcherAffinity()
             .setImage("quay.io/rhacs-eng/qa-multi-arch:trigger-policy-violations-most-v1")
             .addLabel("app", "test"),
         new Deployment()
@@ -112,13 +117,18 @@ class DefaultPoliciesTest extends BaseSpecification {
             .setImage("us.gcr.io/acs-san-stackroxci/qa-multi-arch:nginx-1.12")
             .addLabel ( "app", "test" )
             .setCommand(["sleep", "600"]),
+        new Deployment()
+            .setName(UNSIGNED_REDHAT)
+            .setImage("registry.redhat.io/redhat/community-operator-index:v4.19")
+            .addLabel("app", "test")
+            .setCommand(["sleep", "600"]),
     ]
 
     static final private Integer WAIT_FOR_VIOLATION_TIMEOUT = 300
     static final private Integer VIOLATION_CLEARED_TIMEOUT = WAIT_FOR_VIOLATION_TIMEOUT
 
     @Shared
-    private String gcrId
+    private String garId
     @Shared
     private String anyFixedPolicyId
 
@@ -141,8 +151,8 @@ class DefaultPoliciesTest extends BaseSpecification {
         anyFixedPolicyId = PolicyService.createNewPolicy(anyFixedPolicy)
         assert anyFixedPolicyId
 
-        gcrId = GCRImageIntegration.createDefaultIntegration()
-        assert gcrId != ""
+        garId = GoogleArtifactRegistry.createDefaultIntegration()
+        assert garId != ""
 
         ImageService.clearImageCaches()
         for (Deployment deployment : DEPLOYMENTS) {
@@ -171,7 +181,9 @@ class DefaultPoliciesTest extends BaseSpecification {
                 componentCount="9[1-9]"
                 break
             default:
-                componentCount="1(6[6-9]|7[0-5])"
+                // Scanner V4 detects components at a more granular level than StackRox Scanner, in one example:
+                // V2: ~175 components  vs.  V4: ~284 components.
+                componentCount = scannerV4Enabled ? "2[5-9][0-9]" : "1(6[6-9]|7[0-5])"
                 break
         }
     }
@@ -180,7 +192,7 @@ class DefaultPoliciesTest extends BaseSpecification {
         for (Deployment deployment : DEPLOYMENTS) {
             orchestrator.deleteDeployment(deployment)
         }
-        assert ImageIntegrationService.deleteImageIntegration(gcrId)
+        assert ImageIntegrationService.deleteImageIntegration(garId)
         if (anyFixedPolicyId) {
             PolicyService.deletePolicy(anyFixedPolicyId)
         }
@@ -240,27 +252,29 @@ class DefaultPoliciesTest extends BaseSpecification {
         where:
         "Data inputs are:"
 
-        policyName                                      | deploymentName | testId | flaky
+        policyName                                               | deploymentName | testId | flaky
 
-        "Secure Shell (ssh) Port Exposed"               | NGINX_LATEST   | "C311" | false
+        "Secure Shell (ssh) Port Exposed"                        | NGINX_LATEST   | "C311" | false
 
-        "Latest tag"                                    | NGINX_LATEST   | ""     | false
+        "Latest tag"                                             | NGINX_LATEST   | ""     | false
 
-        "Environment Variable Contains Secret"          | NGINX_LATEST   | ""     | false
+        "Environment Variable Contains Secret"                   | NGINX_LATEST   | ""     | false
 
-        "Apache Struts: CVE-2017-5638"                  | STRUTS         | "C938" | true
+        "Apache Struts: CVE-2017-5638"                           | STRUTS         | "C938" | true
 
-        "Wget in Image"                                 | WGET_CURL      | "C939" | true
+        "Wget in Image"                                          | WGET_CURL      | "C939" | true
 
-        "90-Day Image Age"                              | STRUTS         | "C810" | false
+        "90-Day Image Age"                                       | STRUTS         | "C810" | false
 
-        "Ubuntu Package Manager in Image"               | STRUTS         | "C931" | true
+        "Ubuntu Package Manager in Image"                        | STRUTS         | "C931" | true
 
-        //"30-Day Scan Age"                               | SSL_TERMINATOR | "C941" | false
+        //"30-Day Scan Age"                                        | SSL_TERMINATOR  | "C941" | false
 
-        "Fixable CVSS >= 7"                             | GCR_NGINX      | "C933" | false
+        "Fixable CVSS >= 7"                                      | GCR_NGINX      | "C933" | false
 
-        "Curl in Image"                                 | WGET_CURL      | "C948" | true
+        "Curl in Image"                                          | WGET_CURL      | "C948" | true
+
+        "Red Hat images must be signed by a Red Hat release key" | UNSIGNED_REDHAT | "C999" | false
     }
 
     def hasApacheStrutsVuln(image) {
@@ -445,10 +459,12 @@ class DefaultPoliciesTest extends BaseSpecification {
                 "Port 80 is exposed in the cluster"  | null | []
 
         "Image Vulnerabilities"           | 4.0f     | null |
-                // This makes sure it has at least 100 CVEs.
+                // StackRox Scanner reports 100+ CVEs between Low and Critical.
+                // Scanner V4 reports fewer CVEs (~78) and a different minimum
+                // severity (Moderate in this case). Using \\d{2,} and \\w+ to accept both outcomes.
                 "Image \"" + STRUTS_IMAGE + "\\\"" +
-                     " contains \\d{3,} CVEs with severities ranging between " +
-                     "Low and Critical" | []
+                     " contains \\d{2,} CVEs with severities ranging between " +
+                     "\\w+ and \\w+" | []
 
         "Service Configuration"           | 2.0f     |
                 "No capabilities were dropped" | null | []

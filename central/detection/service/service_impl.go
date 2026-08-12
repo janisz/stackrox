@@ -6,10 +6,13 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"maps"
+	"slices"
 	"time"
 
 	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
 	"github.com/pkg/errors"
+	"github.com/stackrox/rox/central/administration/events"
 	clusterDatastore "github.com/stackrox/rox/central/cluster/datastore"
 	clusterUtil "github.com/stackrox/rox/central/cluster/util"
 	centralDetection "github.com/stackrox/rox/central/detection"
@@ -17,6 +20,7 @@ import (
 	"github.com/stackrox/rox/central/detection/deploytime"
 	"github.com/stackrox/rox/central/enrichment"
 	imageDatastore "github.com/stackrox/rox/central/image/datastore"
+	namespaceDatastore "github.com/stackrox/rox/central/namespace/datastore"
 	networkPolicyDS "github.com/stackrox/rox/central/networkpolicies/datastore"
 	"github.com/stackrox/rox/central/risk/manager"
 	"github.com/stackrox/rox/central/role/sachelper"
@@ -33,6 +37,7 @@ import (
 	"github.com/stackrox/rox/pkg/env"
 	"github.com/stackrox/rox/pkg/errorhelpers"
 	"github.com/stackrox/rox/pkg/errox"
+	"github.com/stackrox/rox/pkg/features"
 	"github.com/stackrox/rox/pkg/grpc/authz"
 	"github.com/stackrox/rox/pkg/grpc/authz/or"
 	"github.com/stackrox/rox/pkg/grpc/authz/perrpc"
@@ -49,7 +54,6 @@ import (
 	"github.com/stackrox/rox/pkg/sac/resources"
 	pkgUtils "github.com/stackrox/rox/pkg/utils"
 	"github.com/stackrox/rox/pkg/uuid"
-	"golang.org/x/exp/maps"
 	"google.golang.org/grpc"
 	coreV1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -71,7 +75,7 @@ var (
 		},
 	})
 
-	log = logging.LoggerForModule()
+	log = logging.LoggerForModule(events.EnableAdministrationEvents())
 
 	workloadScheme = k8sRuntime.NewScheme()
 
@@ -97,11 +101,13 @@ type serviceImpl struct {
 
 	policySet          detection.PolicySet
 	imageEnricher      enricher.ImageEnricher
+	imageEnricherV2    enricher.ImageEnricherV2
 	imageDatastore     imageDatastore.DataStore
 	riskManager        manager.Manager
 	deploymentEnricher enrichment.Enricher
 	buildTimeDetector  buildtime.Detector
 	clusters           clusterDatastore.DataStore
+	namespaces         namespaceDatastore.DataStore
 	connManager        connection.Manager
 
 	netpols            networkPolicyDS.DataStore
@@ -158,12 +164,14 @@ func (s *serviceImpl) DetectBuildTime(ctx context.Context, req *apiV1.BuildDetec
 		name.FullName = types.Wrapper{GenericImage: image}.FullName()
 	}
 
-	img := types.ToImage(image)
-
-	enrichmentContext := enricher.EnrichmentContext{}
 	fetchOpt, err := getFetchOptionFromRequest(req)
 	if err != nil {
 		return nil, err
+	}
+	enrichmentContext := enricher.EnrichmentContext{
+		Delegable: true,
+		FetchOpt:  fetchOpt,
+		Namespace: req.GetNamespace(),
 	}
 
 	if req.GetCluster() != "" {
@@ -176,23 +184,60 @@ func (s *serviceImpl) DetectBuildTime(ctx context.Context, req *apiV1.BuildDetec
 		enrichmentContext.ClusterID = clusterID
 	}
 
-	enrichmentContext.FetchOpt = fetchOpt
-	enrichmentContext.Delegable = true
-	enrichResult, err := s.imageEnricher.EnrichImage(ctx, enrichmentContext, img)
-	if err != nil {
-		return nil, err
-	}
-	if enrichResult.ImageUpdated {
-		img.Id = utils.GetSHA(img)
-		if img.GetId() != "" {
-			if err := s.riskManager.CalculateRiskAndUpsertImage(img); err != nil {
+	var img *storage.Image
+	if features.FlattenImageData.Enabled() {
+		imgV2 := types.ToImageV2(image)
+		enrichResult, err := s.imageEnricherV2.EnrichImage(ctx, enrichmentContext, imgV2)
+		if err != nil {
+			if env.AdministrationEventsAdHocScans.BooleanSetting() {
+				log.Errorw("Enriching image",
+					logging.ImageName(image.GetName().GetFullName()),
+					logging.Err(err),
+					logging.Bool("ad_hoc", true),
+				)
+			}
+			return nil, err
+		}
+		if enrichResult.ImageUpdated {
+			imgV2.Digest = utils.GetSHAV2(imgV2)
+			imgV2.Id, err = utils.GetImageV2ID(imgV2)
+			if err != nil {
 				return nil, err
 			}
+			if imgV2.GetId() != "" {
+				if err := s.riskManager.CalculateRiskAndUpsertImageV2(imgV2); err != nil {
+					return nil, err
+				}
+			}
 		}
+		utils.FilterSuppressedCVEsNoCloneV2(imgV2)
+		img = utils.ConvertToV1(imgV2)
+	} else {
+		img = types.ToImage(image)
+		enrichResult, err := s.imageEnricher.EnrichImage(ctx, enrichmentContext, img)
+		if err != nil {
+			if env.AdministrationEventsAdHocScans.BooleanSetting() {
+				log.Errorw("Enriching image",
+					logging.ImageName(image.GetName().GetFullName()),
+					logging.Err(err),
+					logging.Bool("ad_hoc", true),
+				)
+			}
+			return nil, err
+		}
+		if enrichResult.ImageUpdated {
+			img.Id = utils.GetSHA(img)
+			if img.GetId() != "" {
+				if err := s.riskManager.CalculateRiskAndUpsertImage(img); err != nil {
+					return nil, err
+				}
+			}
+		}
+		utils.FilterSuppressedCVEsNoClone(img)
 	}
-	utils.FilterSuppressedCVEsNoClone(img)
+
 	filter, getUnusedCategories := centralDetection.MakeCategoryFilter(req.GetPolicyCategories())
-	alerts, err := s.buildTimeDetector.Detect(img, filter)
+	alerts, err := s.buildTimeDetector.Detect(ctx, img, filter)
 	if err != nil {
 		return nil, err
 	}
@@ -209,27 +254,49 @@ func (s *serviceImpl) DetectBuildTime(ctx context.Context, req *apiV1.BuildDetec
 }
 
 func (s *serviceImpl) enrichAndDetect(ctx context.Context, enrichmentContext enricher.EnrichmentContext, deployment *storage.Deployment, policyCategories ...string) (*apiV1.DeployDetectionResponse_Run, error) {
-	images, updatedIndices, _, err := s.deploymentEnricher.EnrichDeployment(ctx, enrichmentContext, deployment)
-	if err != nil {
-		return nil, err
-	}
-	for _, idx := range updatedIndices {
-		img := images[idx]
-		img.Id = utils.GetSHA(img)
-		if err := s.riskManager.CalculateRiskAndUpsertImage(images[idx]); err != nil {
+	var images []*storage.Image
+	if features.FlattenImageData.Enabled() {
+		imagesV2, updatedIndices, _, err := s.deploymentEnricher.EnrichDeploymentV2(ctx, enrichmentContext, deployment)
+		if err != nil {
 			return nil, err
 		}
-	}
-	for _, img := range images {
-		utils.FilterSuppressedCVEsNoClone(img)
-	}
-
-	detectionCtx := deploytimePkg.DetectionContext{
-		EnforcementOnly: enrichmentContext.EnforcementOnly,
+		for _, idx := range updatedIndices {
+			img := imagesV2[idx]
+			img.Digest = utils.GetSHAV2(img)
+			img.Id, err = utils.GetImageV2ID(img)
+			if err != nil {
+				return nil, err
+			}
+			if err := s.riskManager.CalculateRiskAndUpsertImageV2(img); err != nil {
+				return nil, err
+			}
+		}
+		for _, img := range imagesV2 {
+			utils.FilterSuppressedCVEsNoCloneV2(img)
+		}
+		images = utils.ConvertToV1List(imagesV2)
+	} else {
+		var updatedIndices []int
+		var err error
+		images, updatedIndices, _, err = s.deploymentEnricher.EnrichDeployment(ctx, enrichmentContext, deployment)
+		if err != nil {
+			return nil, err
+		}
+		for _, idx := range updatedIndices {
+			img := images[idx]
+			img.Id = utils.GetSHA(img)
+			if err := s.riskManager.CalculateRiskAndUpsertImage(images[idx]); err != nil {
+				return nil, err
+			}
+		}
+		for _, img := range images {
+			utils.FilterSuppressedCVEsNoClone(img)
+		}
 	}
 
 	var appliedNetpols *augmentedobjs.NetworkPoliciesApplied
 	if enrichmentContext.ClusterID != "" {
+		var err error
 		appliedNetpols, err = s.getAppliedNetpolsForDeployment(ctx, enrichmentContext, deployment)
 		if err != nil {
 			log.Warnf("Could not find applied network policies for deployment %s. Continuing with deployment enrichment. Error: %s", deployment.GetName(), err)
@@ -239,11 +306,16 @@ func (s *serviceImpl) enrichAndDetect(ctx context.Context, enrichmentContext enr
 	}
 
 	filter, getUnusedCategories := centralDetection.MakeCategoryFilter(policyCategories)
-	alerts, err := s.detector.Detect(detectionCtx, booleanpolicy.EnhancedDeployment{
+	var opts []deploytimePkg.DetectOption
+	if enrichmentContext.EnforcementOnly {
+		opts = append(opts, deploytimePkg.WithEnforcementOnly())
+	}
+	opts = append(opts, deploytimePkg.WithPolicyFilters(filter))
+	alerts, err := s.detector.Detect(ctx, booleanpolicy.EnhancedDeployment{
 		Deployment:             deployment,
 		Images:                 images,
 		NetworkPoliciesApplied: appliedNetpols,
-	}, filter)
+	}, opts...)
 	if err != nil {
 		return nil, err
 	}
@@ -411,6 +483,13 @@ func (s *serviceImpl) DetectDeployTimeFromYAML(ctx context.Context, req *apiV1.D
 		log.Warnf("Deployment YAMLs failed to parse: %v", errs)
 	}
 
+	// Populate cluster ID on all deployments for label-based scope matching
+	for _, d := range deployments {
+		if eCtx.ClusterID != "" {
+			d.ClusterId = eCtx.ClusterID
+		}
+	}
+
 	// If a cluster is provided and Sensor has the capability, enhance deployments with additional info from Sensor
 	if eCtx.ClusterID != "" {
 		conn := s.connManager.GetConnection(eCtx.ClusterID)
@@ -462,7 +541,7 @@ func (s *serviceImpl) DetectDeployTimeFromYAML(ctx context.Context, req *apiV1.D
 	return &apiV1.DeployDetectionResponse{
 		Runs:              runs,
 		IgnoredObjectRefs: ignoredObjectRefs,
-		Remarks:           maps.Values(remarks),
+		Remarks:           slices.Collect(maps.Values(remarks)),
 	}, nil
 }
 

@@ -1,4 +1,4 @@
-import React from 'react';
+import { useEffect } from 'react';
 import {
     Button,
     Divider,
@@ -11,57 +11,54 @@ import {
 import { InnerScrollContainer, Table, Tbody, Td, Th, Thead, Tr } from '@patternfly/react-table';
 
 import ExternalLink from 'Components/PatternFly/IconText/ExternalLink';
-import SearchFilterChips from 'Components/PatternFly/SearchFilterChips';
+import CompoundSearchFilterLabels from 'Components/CompoundSearchFilter/components/CompoundSearchFilterLabels';
 import TbodyUnified from 'Components/TableStateTemplates/TbodyUnified';
 import useMetadata from 'hooks/useMetadata';
-import { UseURLPaginationResult } from 'hooks/useURLPagination';
-import { UseUrlSearchReturn } from 'hooks/useURLSearch';
-import { TableUIState } from 'utils/getTableUIState';
+import type { TableUIState } from 'utils/getTableUIState';
 import { getVersionedDocs } from 'utils/versioning';
-import { ExternalNetworkFlowsMetadata } from 'types/networkFlow.proto';
+import type { ExternalNetworkFlowsMetadata } from 'types/networkFlow.proto';
 
 import IPMatchFilter from '../common/IPMatchFilter';
-import { EXTERNAL_SOURCE_ADDRESS_QUERY } from '../NetworkGraph.constants';
+import { attributeForExternalSourceAddress } from '../types/searchFilterConfig';
+
+import { usePagination, useSearchFilterSidePanel } from '../NetworkGraphURLStateContext';
 
 export type ExternalIpsTableProps = {
     onExternalIPSelect: (externalIP: string) => void;
     tableState: TableUIState<ExternalNetworkFlowsMetadata>;
     totalEntities: number;
-    urlSearchFiltering: UseUrlSearchReturn;
-    urlPagination: UseURLPaginationResult;
 };
 
 function ExternalIpsTable({
     onExternalIPSelect,
     tableState,
     totalEntities,
-    urlSearchFiltering,
-    urlPagination,
 }: ExternalIpsTableProps) {
     const { version } = useMetadata();
-    const { page, perPage, setPage, setPerPage } = urlPagination;
-    const { searchFilter, setSearchFilter } = urlSearchFiltering;
+    const { page, perPage, setPage, setPerPage } = usePagination();
+    const { searchFilter, setSearchFilter } = useSearchFilterSidePanel();
+
+    useEffect(() => {
+        setPage(1);
+    }, [searchFilter, setPage]);
 
     return (
         <>
-            <Toolbar className="pf-v5-u-pb-md pf-v5-u-pt-0">
-                <ToolbarContent className="pf-v5-u-px-0">
-                    <ToolbarItem className="pf-v5-u-w-100 pf-v5-u-mr-0">
+            <Toolbar className="pf-v6-u-pb-md pf-v6-u-pt-0">
+                <ToolbarContent className="pf-v6-u-px-0">
+                    <ToolbarItem className="pf-v6-u-w-100 pf-v6-u-mr-0">
                         <IPMatchFilter
+                            attribute={attributeForExternalSourceAddress}
                             searchFilter={searchFilter}
                             setSearchFilter={setSearchFilter}
                         />
                     </ToolbarItem>
-                    <ToolbarItem className="pf-v5-u-w-100">
-                        <SearchFilterChips
-                            searchFilter={searchFilter}
+                    <ToolbarItem className="pf-v6-u-w-100">
+                        <CompoundSearchFilterLabels
+                            attributesSeparateFromConfig={[attributeForExternalSourceAddress]}
+                            config={[]}
                             onFilterChange={setSearchFilter}
-                            filterChipGroupDescriptors={[
-                                {
-                                    displayName: 'CIDR',
-                                    searchFilterName: EXTERNAL_SOURCE_ADDRESS_QUERY,
-                                },
-                            ]}
+                            searchFilter={searchFilter}
                         />
                     </ToolbarItem>
                 </ToolbarContent>
@@ -69,7 +66,7 @@ function ExternalIpsTable({
             <Divider />
             <Toolbar>
                 <ToolbarContent>
-                    <ToolbarItem variant="pagination" align={{ default: 'alignRight' }}>
+                    <ToolbarItem variant="pagination" align={{ default: 'alignEnd' }}>
                         <Pagination
                             itemCount={totalEntities}
                             page={page}

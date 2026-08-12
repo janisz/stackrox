@@ -7,11 +7,14 @@ import {
     callbackForPairOfDescendingPolicySeverityValuesFromElements,
 } from '../../helpers/sort';
 
+import { visit } from '../../helpers/visit';
+
 import {
     clickDeploymentTabWithFixture,
     exportAndWaitForNetworkPolicyYaml,
     interactAndWaitForNetworkPoliciesResponse,
-    interactAndWaitForSortedViolationsResponses,
+    interactAndWaitForViolationsResponses,
+    routeMatcherMapForViolations,
     selectFilteredWorkflowView,
     visitViolationFromTableWithFixture,
     visitViolationWithFixture,
@@ -57,7 +60,7 @@ describe('Violations', () => {
 
         // check audit log type
         cy.get('tbody tr:nth-child(2) td[data-label="Entity"]').should('contain', 'test-scc'); // table cell also has cluster
-        cy.get('tbody tr:nth-child(2) td[data-label="Entity"] div.pf-v5-u-font-size-xs').should(
+        cy.get('tbody tr:nth-child(2) td[data-label="Entity"] div.pf-v6-u-font-size-xs').should(
             'have.text',
             'in "aaa_remote"'
         ); // table cell also has cluster
@@ -99,27 +102,22 @@ describe('Violations', () => {
     it('should contain correct action buttons for the lifecycle stage', () => {
         visitViolationsWithFixture('alerts/alerts.json');
 
+        const { actions } = selectors;
+        const { btn, excludeDeploymentBtn, resolveAndAddToBaselineBtn, resolveBtn } = actions;
+
         // Lifecycle: Runtime
-        cy.get(`tbody tr:nth-child(1) ${selectors.actions.btn}`).click(); // click kabob to open actions menu
-        cy.get('tbody tr:nth-child(1)')
-            .get(selectors.actions.excludeDeploymentBtn)
-            .should('exist')
-            .get(selectors.actions.resolveBtn)
-            .should('exist')
-            .get(selectors.actions.resolveAndAddToBaselineBtn)
-            .should('exist');
-        cy.get(`tbody tr:nth-child(1) ${selectors.actions.btn}`).click(); // click kabob to close actions menu
+        cy.get(`tbody tr:nth-child(1) ${btn}`).click(); // click kabob to open actions menu
+        cy.get(excludeDeploymentBtn).should('exist');
+        cy.get(resolveBtn).should('exist');
+        cy.get(resolveAndAddToBaselineBtn).should('exist');
+        cy.get(`tbody tr:nth-child(1) ${btn}`).click(); // click kabob to close actions menu
 
         // Lifecycle: Deploy
-        cy.get(`tbody tr:nth-child(3) ${selectors.actions.btn}`).click(); // click kabob to open actions menu
-        cy.get('tbody tr:nth-child(3)')
-            .get(selectors.actions.resolveBtn)
-            .should('not.exist')
-            .get(selectors.actions.resolveAndAddToBaselineBtn)
-            .should('not.exist')
-            .get(selectors.actions.excludeDeploymentBtn)
-            .should('exist');
-        cy.get(`tbody tr:nth-child(3) ${selectors.actions.btn}`).click(); // click kabob to close actions menu
+        cy.get(`tbody tr:nth-child(3) ${btn}`).click(); // click kabob to open actions menu
+        cy.get(resolveBtn).should('not.exist');
+        cy.get(resolveAndAddToBaselineBtn).should('not.exist');
+        cy.get(excludeDeploymentBtn).should('exist');
+        cy.get(`tbody tr:nth-child(3) ${btn}`).click(); // click kabob to close actions menu
     });
 
     // TODO test of bulk actions
@@ -143,8 +141,8 @@ describe('Violations', () => {
 
         cy.get(selectors.deployment.overview);
         cy.get(selectors.deployment.overview)
-            .find('.pf-v5-c-description-list__term:contains("Deployment type")')
-            .siblings('.pf-v5-c-description-list__description:contains("DaemonSet")');
+            .find('.pf-v6-c-description-list__term:contains("Deployment type")')
+            .siblings('.pf-v6-c-description-list__description:contains("DaemonSet")');
         cy.get(selectors.deployment.containerConfiguration);
         cy.get(`${selectors.deployment.containerConfiguration} *[aria-label="Commands"]`).should(
             'not.exist'
@@ -164,15 +162,7 @@ describe('Violations', () => {
         );
     });
 
-    // TODO: After upgrading to PatternFly 5, this functionality works when tested manually, but the <CodeEditor> component gets stuck on "Loading..." in the Cypress test.
-    //     Jira ticket to re-able
-    //     https://issues.redhat.com/browse/ROX-23537
-    it.skip('should show network policy details for all policies in the namespace of the target deployment', () => {
-        // TODO - Don't fail on exceptions in the console. This is needed due to the exceptions thrown
-        //        from the Monaco editor when it first loads. This should be removed once the Monaco
-        // .      editor errors are fixed.
-        cy.on('uncaught:exception', () => false);
-
+    it('should show network policy details for all policies in the namespace of the target deployment', () => {
         visitViolationWithFixture('alerts/alertWithEmptyContainerConfig.json');
         interactAndWaitForNetworkPoliciesResponse(() => {
             cy.get(selectors.details.networkPoliciesTab).click();
@@ -215,63 +205,48 @@ describe('Violations', () => {
         visitViolationWithFixture('alerts/alertFirstInAlerts.json');
 
         cy.get(selectors.details.policyTab).click();
-        cy.get('h3:contains("Policy overview")');
-        cy.get('h3:contains("Policy behavior")');
-        cy.get('h3:contains("Policy criteria")');
+        cy.get('h2:contains("Policy overview")');
+        cy.get('h2:contains("Policy behavior")');
+        cy.get('h2:contains("Policy criteria")');
         // Conditionally rendered: Policy scope
     });
 
-    it.skip('should sort the Severity column', () => {
-        visitViolations();
+    it('should sort the Severity column', () => {
+        interactAndWaitForViolationsResponses(() => {
+            visitViolations();
+        });
+
+        interactAndWaitForViolationsResponses(() => {
+            selectFilteredWorkflowView('All Violations');
+        });
 
         const thSelector = 'th[scope="col"]:contains("Severity")';
         const tdSelector = 'td[data-label="Severity"]';
 
         // 0. Initial table state is sorted descending by Time.
-        cy.get(thSelector).should('have.attr', 'aria-sort', 'none');
+        cy.get(thSelector).should('not.have.attr', 'aria-sort');
 
-        // 1. Sort decending by the Severity column.
-        interactAndWaitForSortedViolationsResponses(() => {
+        // 1. Sort descending by the Severity column.
+        interactAndWaitForViolationsResponses(() => {
             cy.get(thSelector).click();
-        }, 'desc');
+        });
 
         cy.get(thSelector).should('have.attr', 'aria-sort', 'descending');
 
-        cy.wait(1000); // prevent timing failures
         cy.get(tdSelector).then((items) => {
             assertSortedItems(items, callbackForPairOfDescendingPolicySeverityValuesFromElements);
         });
 
         // 2. Sort ascending by the Severity column.
-        interactAndWaitForSortedViolationsResponses(() => {
+        interactAndWaitForViolationsResponses(() => {
             cy.get(thSelector).click();
-        }, 'asc');
+        });
 
         cy.get(thSelector).should('have.attr', 'aria-sort', 'ascending');
 
-        cy.wait(1000); // prevent timing failures
         cy.get(tdSelector).then((items) => {
             assertSortedItems(items, callbackForPairOfAscendingPolicySeverityValuesFromElements);
         });
-    });
-
-    it('should show an active violation in the details page', () => {
-        visitViolations();
-
-        // filter to show the "Full view" of violations
-        selectFilteredWorkflowView('All Violations');
-
-        cy.intercept('GET', '/v1/alerts?query=*').as('getViolations');
-        cy.wait('@getViolations');
-
-        // go to the details page
-        cy.get('#ViolationsTable table tr:nth(1) td[data-label="Policy"] a').click();
-
-        // check if the "Violation state" is "Active"
-        cy.get('ul[aria-label="Violation state and resolution"] li:eq(0)').should(
-            'have.text',
-            'State: Active'
-        );
     });
 
     it('should filter by active violations', () => {
@@ -302,6 +277,56 @@ describe('Violations', () => {
             const queryString = interception.request.query.query;
 
             expect(queryString).to.contain('Violation State:RESOLVED');
+        });
+    });
+
+    describe('Node view', () => {
+        const tabsSelector = '[aria-label="Violation state tabs"]';
+        const attemptedTab = `${tabsSelector} button[role="tab"]:contains("Attempted")`;
+        const activeTab = `${tabsSelector} button[role="tab"]:contains("Active")`;
+        const resolvedTab = `${tabsSelector} button[role="tab"]:contains("Resolved")`;
+
+        it('should hide the Attempted tab and keep Active and Resolved tabs', () => {
+            visitViolations();
+
+            // Attempted tab should be visible in the default view
+            cy.get(attemptedTab).should('exist');
+
+            interactAndWaitForViolationsResponses(() => {
+                selectFilteredWorkflowView('Nodes');
+            });
+
+            // Attempted tab should be hidden, but Active and Resolved remain
+            cy.get(attemptedTab).should('not.exist');
+            cy.get(activeTab).should('exist');
+            cy.get(resolvedTab).should('exist');
+        });
+
+        it('should restore the Attempted tab when switching away from Node view', () => {
+            visitViolations();
+
+            interactAndWaitForViolationsResponses(() => {
+                selectFilteredWorkflowView('Nodes');
+            });
+
+            cy.get(attemptedTab).should('not.exist');
+
+            interactAndWaitForViolationsResponses(() => {
+                selectFilteredWorkflowView('All Violations');
+            });
+
+            cy.get(attemptedTab).should('exist');
+        });
+
+        it('should reset to Active tab when visiting Node view with Attempted in the URL', () => {
+            visit(
+                '/main/violations?filteredWorkflowView=Node+view&violationState=ATTEMPTED',
+                routeMatcherMapForViolations
+            );
+
+            cy.get(`h1:contains("Node violations")`);
+            cy.get(attemptedTab).should('not.exist');
+            cy.get(activeTab).should('have.attr', 'aria-selected', 'true');
         });
     });
 });

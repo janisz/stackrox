@@ -6,7 +6,6 @@ import (
 
 	"github.com/pkg/errors"
 	"github.com/stackrox/rox/central/metrics"
-	"github.com/stackrox/rox/central/reports/snapshot/datastore/search"
 	pgStore "github.com/stackrox/rox/central/reports/snapshot/datastore/store/postgres"
 	v1 "github.com/stackrox/rox/generated/api/v1"
 	"github.com/stackrox/rox/generated/storage"
@@ -25,8 +24,7 @@ var (
 )
 
 type datastoreImpl struct {
-	storage  pgStore.Store
-	searcher search.Searcher
+	storage pgStore.Store
 }
 
 func (ds *datastoreImpl) Search(ctx context.Context, q *v1.Query) ([]pkgSearch.Result, error) {
@@ -34,7 +32,7 @@ func (ds *datastoreImpl) Search(ctx context.Context, q *v1.Query) ([]pkgSearch.R
 	if ok, err := workflowSAC.ReadAllowed(ctx); !ok || err != nil {
 		return nil, err
 	}
-	return ds.searcher.Search(ctx, q)
+	return ds.storage.Search(ctx, q)
 }
 
 // Count returns the number of search results from the query
@@ -43,7 +41,7 @@ func (ds *datastoreImpl) Count(ctx context.Context, q *v1.Query) (int, error) {
 	if ok, err := workflowSAC.ReadAllowed(ctx); !ok || err != nil {
 		return 0, err
 	}
-	return ds.searcher.Count(ctx, q)
+	return ds.storage.Count(ctx, q)
 }
 
 func (ds *datastoreImpl) SearchReportSnapshots(ctx context.Context, q *v1.Query) ([]*storage.ReportSnapshot, error) {
@@ -51,7 +49,18 @@ func (ds *datastoreImpl) SearchReportSnapshots(ctx context.Context, q *v1.Query)
 	if ok, err := workflowSAC.ReadAllowed(ctx); !ok || err != nil {
 		return nil, err
 	}
-	return ds.searcher.SearchReportSnapshots(ctx, q)
+
+	var snapshots []*storage.ReportSnapshot
+	// Using WalkByQuery as risk could potentially return a large amount of data
+	err := ds.storage.GetByQueryFn(ctx, q, func(snapshot *storage.ReportSnapshot) error {
+		snapshots = append(snapshots, snapshot)
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return snapshots, nil
 }
 
 func (ds *datastoreImpl) SearchResults(ctx context.Context, q *v1.Query) ([]*v1.SearchResult, error) {
@@ -59,7 +68,24 @@ func (ds *datastoreImpl) SearchResults(ctx context.Context, q *v1.Query) ([]*v1.
 	if ok, err := workflowSAC.ReadAllowed(ctx); !ok || err != nil {
 		return nil, err
 	}
-	return ds.searcher.SearchResults(ctx, q)
+
+	if q == nil {
+		q = pkgSearch.EmptyQuery()
+	} else {
+		q = q.CloneVT()
+	}
+
+	results, err := ds.Search(ctx, q)
+	if err != nil {
+		return nil, err
+	}
+
+	// Populate Name from ID for each result (report snapshots use ID as name).
+	for i := range results {
+		results[i].Name = results[i].ID
+	}
+
+	return pkgSearch.ResultsToSearchResultProtos(results, &ReportSnapshotSearchResultConverter{}), nil
 }
 
 func (ds *datastoreImpl) Get(ctx context.Context, id string) (*storage.ReportSnapshot, bool, error) {
@@ -104,14 +130,14 @@ func (ds *datastoreImpl) AddReportSnapshot(ctx context.Context, snap *storage.Re
 	if err := sac.VerifyAuthzOK(workflowSAC.WriteAllowed(ctx)); err != nil {
 		return "", err
 	}
-	if snap.ReportId != "" {
+	if snap.GetReportId() != "" {
 		return "", errors.New("New report snapshot must have an empty report id")
 	}
 	snap.ReportId = uuid.NewV4().String()
 	if err := ds.storage.Upsert(ctx, snap); err != nil {
 		return "", err
 	}
-	return snap.ReportId, nil
+	return snap.GetReportId(), nil
 }
 
 func (ds *datastoreImpl) UpdateReportSnapshot(ctx context.Context, snap *storage.ReportSnapshot) error {
@@ -119,7 +145,7 @@ func (ds *datastoreImpl) UpdateReportSnapshot(ctx context.Context, snap *storage
 	if err := sac.VerifyAuthzOK(workflowSAC.WriteAllowed(ctx)); err != nil {
 		return err
 	}
-	if snap.ReportId == "" {
+	if snap.GetReportId() == "" {
 		return errors.New("Report snapshot must have a non-empty report id")
 	}
 	if err := ds.storage.Upsert(ctx, snap); err != nil {
@@ -145,4 +171,20 @@ func (ds *datastoreImpl) Walk(ctx context.Context, fn func(report *storage.Repor
 		return err
 	}
 	return ds.storage.Walk(ctx, fn)
+}
+
+type ReportSnapshotSearchResultConverter struct{}
+
+func (c *ReportSnapshotSearchResultConverter) BuildName(result *pkgSearch.Result) string {
+	// Name is already populated from ID
+	return result.Name
+}
+
+func (c *ReportSnapshotSearchResultConverter) BuildLocation(result *pkgSearch.Result) string {
+	// ReportSnapshot does not have a location
+	return ""
+}
+
+func (c *ReportSnapshotSearchResultConverter) GetCategory() v1.SearchCategory {
+	return v1.SearchCategory_REPORT_SNAPSHOT
 }

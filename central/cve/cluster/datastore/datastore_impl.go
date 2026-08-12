@@ -2,13 +2,14 @@ package datastore
 
 import (
 	"context"
+	"strings"
 	"time"
 
 	"github.com/pkg/errors"
-	"github.com/stackrox/rox/central/cve/cluster/datastore/search"
 	"github.com/stackrox/rox/central/cve/cluster/datastore/store"
 	"github.com/stackrox/rox/central/cve/common"
 	"github.com/stackrox/rox/central/cve/converter/v2"
+	"github.com/stackrox/rox/central/cve/edgefields"
 	v1 "github.com/stackrox/rox/generated/api/v1"
 	"github.com/stackrox/rox/generated/storage"
 	"github.com/stackrox/rox/pkg/protocompat"
@@ -33,8 +34,7 @@ var (
 )
 
 type datastoreImpl struct {
-	storage  store.Store
-	searcher search.Searcher
+	storage store.Store
 
 	cveSuppressionLock  sync.RWMutex
 	cveSuppressionCache common.CVESuppressionCache
@@ -74,7 +74,7 @@ func getSuppressionCacheEntry(cve *storage.ClusterCVE) common.SuppressionCacheEn
 
 func (ds *datastoreImpl) buildSuppressedCache() error {
 	query := pkgSearch.NewQueryBuilder().AddBools(pkgSearch.CVESuppressed, true).ProtoQuery()
-	suppressedCVEs, err := ds.searcher.SearchRawClusterCVEs(accessAllCtx, query)
+	suppressedCVEs, err := ds.SearchRawCVEs(accessAllCtx, query)
 	if err != nil {
 		return errors.Wrap(err, "searching suppress CVEs")
 	}
@@ -88,26 +88,53 @@ func (ds *datastoreImpl) buildSuppressedCache() error {
 }
 
 func (ds *datastoreImpl) Search(ctx context.Context, q *v1.Query) ([]pkgSearch.Result, error) {
-	return ds.searcher.Search(ctx, q)
+	return ds.storage.Search(ctx, edgefields.TransformFixableFieldsQuery(q))
 }
 
 func (ds *datastoreImpl) SearchClusterCVEs(ctx context.Context, q *v1.Query) ([]*v1.SearchResult, error) {
-	return ds.searcher.SearchClusterCVEs(ctx, q)
-}
+	if q == nil {
+		q = pkgSearch.EmptyQuery()
+	}
+	clonedQuery := q.CloneVT()
 
-func (ds *datastoreImpl) SearchRawCVEs(ctx context.Context, q *v1.Query) ([]*storage.ClusterCVE, error) {
-	cves, err := ds.searcher.SearchRawClusterCVEs(ctx, q)
+	// Add CVE field to select columns
+	clonedQuery.Selects = append(clonedQuery.GetSelects(), pkgSearch.NewQuerySelect(pkgSearch.CVE).Proto())
+
+	results, err := ds.Search(ctx, clonedQuery)
 	if err != nil {
 		return nil, err
 	}
+
+	// Extract CVE name from FieldValues and populate Name in search results
+	searchTag := strings.ToLower(pkgSearch.CVE.String())
+	for i := range results {
+		if results[i].FieldValues != nil {
+			if nameVal, ok := results[i].FieldValues[searchTag]; ok {
+				results[i].Name = nameVal
+			}
+		}
+	}
+
+	return pkgSearch.ResultsToSearchResultProtos(results, &ClusterCVESearchResultConverter{}), nil
+}
+
+func (ds *datastoreImpl) SearchRawCVEs(ctx context.Context, q *v1.Query) ([]*storage.ClusterCVE, error) {
+	q = edgefields.TransformFixableFieldsQuery(q)
+
+	var cves []*storage.ClusterCVE
+	err := ds.storage.GetByQueryFn(ctx, q, func(cve *storage.ClusterCVE) error {
+		cves = append(cves, cve)
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
 	return cves, nil
 }
 
 func (ds *datastoreImpl) Count(ctx context.Context, q *v1.Query) (int, error) {
-	if q == nil {
-		q = pkgSearch.EmptyQuery()
-	}
-	return ds.searcher.Count(ctx, q)
+	return ds.storage.Count(ctx, edgefields.TransformFixableFieldsQuery(q))
 }
 
 func (ds *datastoreImpl) Get(ctx context.Context, id string) (*storage.ClusterCVE, bool, error) {
@@ -146,7 +173,7 @@ func (ds *datastoreImpl) Suppress(ctx context.Context, start *time.Time, duratio
 		return err
 	}
 
-	vulns, err := ds.searcher.SearchRawClusterCVEs(ctx, pkgSearch.NewQueryBuilder().AddExactMatches(pkgSearch.CVE, cves...).ProtoQuery())
+	vulns, err := ds.SearchRawCVEs(ctx, pkgSearch.NewQueryBuilder().AddExactMatches(pkgSearch.CVE, cves...).ProtoQuery())
 	if err != nil {
 		return err
 	}
@@ -171,7 +198,7 @@ func (ds *datastoreImpl) Unsuppress(ctx context.Context, cves ...string) error {
 		return sac.ErrResourceAccessDenied
 	}
 
-	vulns, err := ds.searcher.SearchRawClusterCVEs(ctx, pkgSearch.NewQueryBuilder().AddExactMatches(pkgSearch.CVE, cves...).ProtoQuery())
+	vulns, err := ds.SearchRawCVEs(ctx, pkgSearch.NewQueryBuilder().AddExactMatches(pkgSearch.CVE, cves...).ProtoQuery())
 	if err != nil {
 		return err
 	}
@@ -217,4 +244,19 @@ func (ds *datastoreImpl) deleteFromCache(cves ...*storage.ClusterCVE) {
 	for _, cve := range cves {
 		delete(ds.cveSuppressionCache, cve.GetCveBaseInfo().GetCve())
 	}
+}
+
+type ClusterCVESearchResultConverter struct{}
+
+func (c *ClusterCVESearchResultConverter) BuildName(result *pkgSearch.Result) string {
+	return result.Name
+}
+
+func (c *ClusterCVESearchResultConverter) BuildLocation(result *pkgSearch.Result) string {
+	// ClusterCVE does not have a location
+	return ""
+}
+
+func (c *ClusterCVESearchResultConverter) GetCategory() v1.SearchCategory {
+	return v1.SearchCategory_CLUSTER_VULNERABILITIES
 }

@@ -1,6 +1,5 @@
 import queryString from 'qs';
 
-import { ORCHESTRATOR_COMPONENTS_KEY } from 'utils/orchestratorComponents';
 import { convertToExactMatch, getListQueryParams } from 'utils/searchUtils';
 
 import axios from './instance';
@@ -160,8 +159,7 @@ export function fetchNetworkPolicyGraph(
     deployments,
     query,
     modification,
-    includePorts,
-    includeOrchestratorComponents = false
+    includePorts
 ) {
     const urlParams = query ? { query } : {};
     const namespaceQuery = namespaces.length > 0 ? `Namespace:${namespaces.join(',')}` : '';
@@ -173,15 +171,6 @@ export function fetchNetworkPolicyGraph(
         urlParams.includePorts = true;
     }
 
-    // for openshift filtering toggle
-    if (
-        !includeOrchestratorComponents &&
-        localStorage.getItem(ORCHESTRATOR_COMPONENTS_KEY) !== 'true'
-    ) {
-        urlParams.scope = {
-            query: 'Orchestrator Component:false',
-        };
-    }
     const params = queryString.stringify(urlParams, { arrayFormat: 'repeat', allowDots: true });
 
     let options;
@@ -216,9 +205,9 @@ export function fetchNetworkPolicyGraph(
  * @param {String[]} namespaces
  * @param {String[]} deployments
  * @param {String} query
- * @param {Date} date
+ * @param {String} sinceTimestamp
  * @param {boolean} includePorts
- * @param {boolean} includeOrchestratorComponents
+ * @param {boolean} includePolicies
  *
  * @returns {Promise<Object, Error>}
  */
@@ -227,9 +216,8 @@ export function fetchNetworkFlowGraph(
     namespaces,
     deployments,
     query = '',
-    date = null,
+    sinceTimestamp = '',
     includePorts = false,
-    includeOrchestratorComponents = false,
     includePolicies = false
 ) {
     const urlParams = query ? { query } : {};
@@ -241,23 +229,14 @@ export function fetchNetworkFlowGraph(
             : '';
     urlParams.query = query ? `${query}+${namespaceQuery}` : namespaceQuery;
     urlParams.query = deploymentQuery ? `${urlParams.query}+${deploymentQuery}` : urlParams.query;
-    if (date) {
-        urlParams.since = date.toISOString();
+    if (sinceTimestamp) {
+        urlParams.since = sinceTimestamp;
     }
     if (includePorts) {
         urlParams.includePorts = true;
     }
     if (includePolicies) {
         urlParams.include_policies = true;
-    }
-    // for openshift filtering toggle
-    if (
-        !includeOrchestratorComponents &&
-        localStorage.getItem(ORCHESTRATOR_COMPONENTS_KEY) !== 'true'
-    ) {
-        urlParams.scope = {
-            query: 'Orchestrator Component:false',
-        };
     }
     const params = queryString.stringify(urlParams, { arrayFormat: 'repeat', allowDots: true });
     const options = {
@@ -467,6 +446,7 @@ export function getExternalNetworkFlows(
     entityId,
     namespaces,
     deployments,
+    sinceTimestamp,
     { sortOption, page, perPage, advancedFilters }
 ) {
     const searchFilter = {
@@ -481,7 +461,7 @@ export function getExternalNetworkFlows(
     const params = getListQueryParams({ searchFilter, sortOption, page, perPage });
     return axios
         .get(
-            `${networkFlowBaseUrl}/cluster/${clusterId}/externalentities/${entityId}/flows?${params}`
+            `${networkFlowBaseUrl}/cluster/${clusterId}/externalentities/${entityId}/flows?since=${sinceTimestamp}&${params}`
         )
         .then((response) => response.data);
 }
@@ -496,6 +476,7 @@ export function getExternalIpsFlowsMetadata(
     clusterId,
     namespaces,
     deployments,
+    sinceTimestamp,
     { sortOption, page, perPage, advancedFilters }
 ) {
     const searchFilter = {
@@ -511,7 +492,22 @@ export function getExternalIpsFlowsMetadata(
     };
     const params = getListQueryParams({ searchFilter, sortOption, page, perPage });
     return axios
-        .get(`${networkFlowBaseUrl}/cluster/${clusterId}/externalentities/metadata?${params}`)
+        .get(
+            `${networkFlowBaseUrl}/cluster/${clusterId}/externalentities/metadata?since=${sinceTimestamp}&${params}`
+        )
+        .then((response) => response.data);
+}
+
+export function getNetworkBaselineExternalStatus(
+    deploymentId,
+    sinceTimestamp,
+    { sortOption, page, perPage, searchFilter }
+) {
+    const params = getListQueryParams({ searchFilter, sortOption, page, perPage });
+    return axios
+        .get(
+            `${networkBaselineBaseUrl}/${deploymentId}/status/external?since=${sinceTimestamp}&${params}`
+        )
         .then((response) => response.data);
 }
 

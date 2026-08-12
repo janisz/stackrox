@@ -1,5 +1,6 @@
-import React, { ReactElement, ReactNode } from 'react';
-import { Button, Modal } from '@patternfly/react-core';
+import type { ReactElement, ReactNode } from 'react';
+import { Button } from '@patternfly/react-core';
+import { Modal } from '@patternfly/react-core/deprecated';
 
 type ConfirmationModalProps = {
     ariaLabel: string;

@@ -29,7 +29,7 @@ const registeredStandardID = "standard1"
 
 func mockStandardsRepo(t require.TestingT) standards.Repository {
 	controls := make([]metadata.Control, 0, 8)
-	for i := 0; i < 9; i++ {
+	for i := range 9 {
 		controls = append(controls, metadata.Control{
 			ID: fmt.Sprintf("control%d", i),
 		})
@@ -334,9 +334,9 @@ func TestGetAggregatedResults(t *testing.T) {
 			results, _ := ag.getAggregatedResults(c.groupBy, c.unit, runResults, c.mask)
 			require.Equal(t, c.numResults, len(results))
 			for _, r := range results {
-				assert.Equal(t, c.passPerResult, r.NumPassing)
-				assert.Equal(t, c.failPerResult, r.NumFailing)
-				assert.Equal(t, c.skipPerResult, r.NumSkipped)
+				assert.Equal(t, c.passPerResult, r.GetNumPassing())
+				assert.Equal(t, c.failPerResult, r.GetNumFailing())
+				assert.Equal(t, c.skipPerResult, r.GetNumSkipped())
 			}
 		})
 	}
@@ -412,7 +412,7 @@ func TestDomainAttribution(t *testing.T) {
 		&mask{},
 	)
 	for i, r := range results {
-		nodeID := r.AggregationKeys[1].GetId()
+		nodeID := r.GetAggregationKeys()[1].GetId()
 		mappedDomain := domainMap[results[i]].GetNodes()
 		_, ok := mappedDomain[nodeID]
 		assert.True(t, ok)
@@ -544,11 +544,11 @@ func TestIsValidCheck(t *testing.T) {
 func mockBenchmarkRunResult() *storage.ComplianceRunResults {
 	deploymentResults := make(map[string]*storage.ComplianceRunResults_EntityResults)
 	deployments := make(map[string]*storage.ComplianceDomain_Deployment)
-	for i := 0; i < 10000; i++ {
+	for range 10000 {
 		results := &storage.ComplianceRunResults_EntityResults{
 			ControlResults: make(map[string]*storage.ComplianceResultValue),
 		}
-		for i := 0; i < 50; i++ {
+		for i := range 50 {
 			results.ControlResults[fmt.Sprintf("%s:control%d", registeredStandardID, i)] = &storage.ComplianceResultValue{
 				OverallState: storage.ComplianceState_COMPLIANCE_STATE_FAILURE,
 			}
@@ -584,11 +584,10 @@ func mockBenchmarkRunResult() *storage.ComplianceRunResults {
 func BenchmarkAggregatedResults(b *testing.B) {
 	result := mockBenchmarkRunResult()
 
-	b.ResetTimer()
 	a := &aggregatorImpl{
 		standards: mockStandardsRepo(b),
 	}
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		a.getAggregatedResults(nil, storage.ComplianceAggregation_CHECK, []*storage.ComplianceRunResults{result}, &mask{})
 	}
 }

@@ -33,7 +33,6 @@ const (
 	// proceed and move into more e2e and larger performance testing
 	batchSize = 10000
 
-	cursorBatchSize = 50
 	deleteBatchSize = 5000
 )
 
@@ -222,7 +221,7 @@ func (s *storeImpl) copyFrom(ctx context.Context, objs ...*storage.Policy) error
 	}
 	defer release()
 
-	tx, err := conn.Begin(ctx)
+	tx, ctx, err := conn.Begin(ctx)
 	if err != nil {
 		return err
 	}

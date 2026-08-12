@@ -191,7 +191,7 @@ func (r *registryImpl) loginHTTPHandler(w http.ResponseWriter, req *http.Request
 // TokenRefreshResponse holds the HTTP response from the token refresh endpoint.
 type TokenRefreshResponse struct {
 	Token  string    `json:"token,omitempty"`
-	Expiry time.Time `json:"expiry,omitempty"`
+	Expiry time.Time `json:"expiry,omitzero"`
 }
 
 func (r *registryImpl) tokenRefreshEndpoint(req *http.Request) (interface{}, error) {
@@ -356,11 +356,17 @@ func (r *registryImpl) providersHTTPHandler(w http.ResponseWriter, req *http.Req
 				clientState, false)
 			return
 		}
+		if callbackURL.Scheme != "http" && callbackURL.Scheme != "https" {
+			r.error(w, errox.InvalidArgs.New("roxctl authorization callback URL must use http or https"), typ,
+				clientState, false)
+			return
+		}
 		// Verify the callback URL again before doing the final redirect, ensuring we _only_ redirect to localhost and
 		// no unauthorized third-party.
 		if !netutil.IsLocalHost(callbackURL.Hostname()) {
 			r.error(w, errox.InvalidArgs.New("roxctl authorization has to specify localhost / "+
 				"127.0.0.1 as callback URL"), typ, clientState, false)
+			return
 		}
 		qp := callbackURL.Query()
 		qp.Set(TokenQueryParameter, tokenInfo.Token)

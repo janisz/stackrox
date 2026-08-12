@@ -2,12 +2,14 @@ package clusterentities
 
 import (
 	"fmt"
+	"maps"
+	"slices"
+	"time"
 
 	"github.com/stackrox/rox/pkg/concurrency"
 	"github.com/stackrox/rox/pkg/set"
 	"github.com/stackrox/rox/pkg/sync"
 	"github.com/stackrox/rox/sensor/common/clusterentities/metrics"
-	"golang.org/x/exp/maps"
 )
 
 type containerIDsStore struct {
@@ -64,7 +66,7 @@ func (e *containerIDsStore) historyEnabled() bool {
 // RecordTick records a tick
 func (e *containerIDsStore) RecordTick() {
 	e.mutex.Lock()
-	defer e.mutex.Unlock()
+	defer deferUnlock(e.mutex.Unlock, time.Now(), "container_ids", "record_tick")
 	for id, metaMap := range e.historicalContainerIDs {
 		for metadata, status := range metaMap {
 			status.recordTick()
@@ -72,11 +74,14 @@ func (e *containerIDsStore) RecordTick() {
 			e.removeFromHistoryIfExpired(id, metadata)
 		}
 	}
+	// RecordTick can shrink historicalContainerIDs even without Apply/resetMaps calls.
+	// Refresh gauges here so metrics mirror in-memory state after expirations.
+	e.updateMetricsNoLock()
 }
 
 func (e *containerIDsStore) Apply(updates map[string]*EntityData, incremental bool) []ContainerMetadata {
 	e.mutex.Lock()
-	defer e.mutex.Unlock()
+	defer deferUnlock(e.mutex.Unlock, time.Now(), "container_ids", "apply")
 	var metadata []ContainerMetadata
 	if !incremental {
 		for deploymentID := range updates {
@@ -174,6 +179,6 @@ func (e *containerIDsStore) String() string {
 	e.mutex.RLock()
 	defer e.mutex.RUnlock()
 	return fmt.Sprintf("Current: %s\n Historical: %s",
-		maps.Keys(e.containerIDMap),
+		slices.Collect(maps.Keys(e.containerIDMap)),
 		prettyPrintHistoricalData(e.historicalContainerIDs))
 }

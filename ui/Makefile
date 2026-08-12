@@ -7,10 +7,10 @@ all: deps lint test test-component build
 SOURCES := $(shell find apps -type d \( -name node_modules \) -prune -o -print)
 
 ROX_PRODUCT_BRANDING ?= $(shell $(MAKE) --quiet --no-print-directory -C .. product-branding)
-export REACT_APP_ROX_PRODUCT_BRANDING := $(ROX_PRODUCT_BRANDING)
+export ROX_PRODUCT_BRANDING := $(ROX_PRODUCT_BRANDING)
 
 deps: apps/platform/package.json apps/platform/package-lock.json
-	cd apps/platform && npm ci --prefer-offline --fetch-timeout=$(UI_PKG_INSTALL_NETWORK_TIMEOUT) --no-audit --no-fund $(UI_PKG_INSTALL_EXTRA_ARGS) && npm audit --omit=dev || true
+	cd apps/platform && npm ci --prefer-offline --fetch-timeout=$(UI_PKG_INSTALL_NETWORK_TIMEOUT) --no-audit --no-fund $(UI_PKG_INSTALL_EXTRA_ARGS) && (npm audit --omit=dev || true)
 	@touch deps
 
 .PHONY: printsrcs
@@ -46,7 +46,11 @@ test-component: deps $(SOURCES)
 .PHONY: test-e2e
 test-e2e: deps $(SOURCES)
 	@echo "+ $@"
-	npm run test-e2e
+# Fail if either test-e2e or test-e2e:ocp fails
+	exit_code=0; \
+	npm run test-e2e || exit_code=1; \
+	npm run test-e2e:ocp || exit_code=1; \
+	exit $$exit_code
 
 .PHONY: clean
 clean:

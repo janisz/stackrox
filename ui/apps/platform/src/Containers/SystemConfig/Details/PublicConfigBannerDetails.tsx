@@ -1,20 +1,20 @@
-import React, { ReactElement } from 'react';
-
+import type { ReactElement } from 'react';
 import capitalize from 'lodash/capitalize';
-import ColorPicker from 'Components/ColorPicker';
-import { PublicConfig } from 'types/config.proto';
 import {
     Card,
-    CardTitle,
     CardBody,
     CardHeader,
-    Label,
+    CardTitle,
     DescriptionList,
+    DescriptionListDescription,
     DescriptionListGroup,
     DescriptionListTerm,
-    DescriptionListDescription,
     Divider,
+    Label,
 } from '@patternfly/react-core';
+
+import ColorPicker from 'Components/ColorPicker';
+import type { PublicConfig } from 'types/config.proto';
 
 type BannerType = 'header' | 'footer';
 
@@ -33,12 +33,12 @@ const PublicConfigBannerDetails = ({
         enabled = false,
         size = 'None',
         text = 'None',
-    } = publicConfig?.[type] || {};
+    } = publicConfig?.[type] ?? {};
 
     const title = `${capitalize(type)} configuration`;
 
     return (
-        <Card isFlat data-testid={`${type}-config`}>
+        <Card data-testid={`${type}-config`}>
             <CardHeader
                 actions={{
                     actions: (

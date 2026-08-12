@@ -111,7 +111,7 @@ func NewTLSConfigurerFromEnv() verifier.TLSConfigurer {
 // watchForChanges watches for changes of the server TLS certificate files and the client CA config map.
 func (t *tlsConfigurerImpl) watchForChanges() {
 	// Watch for changes of server TLS certificate.
-	certwatch.WatchCertDir(t.certDir, t.getCertificateFromDirectory, t.updateCertificate, certwatch.WithVerify(false))
+	certwatch.WatchCertDir("secure metrics", t.certDir, t.getCertificateFromDirectory, t.updateCertificate, certwatch.WithVerify(false))
 
 	// Watch for changes of client CA.
 	t.k8sWatcher.Watch(context.Background(), t.clientCANamespace, t.clientCAConfigMap)
@@ -173,7 +173,7 @@ func (t *tlsConfigurerImpl) updateClientCA(cm *v1.ConfigMap) {
 		return
 	}
 	if caFile, ok := cm.Data[env.SecureMetricsClientCAKey.Setting()]; ok {
-		log.Infof("Updating secure metrics client CAs based on %s/%s", t.clientCANamespace, t.clientCAConfigMap)
+		log.Debugf("Updating secure metrics client CAs based on %s/%s", t.clientCANamespace, t.clientCAConfigMap)
 		signerCAs, err := helpers.ParseCertificatesPEM([]byte(caFile))
 		if err != nil {
 			log.Errorw("Unable to parse client CAs", logging.Err(err))

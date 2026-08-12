@@ -64,7 +64,6 @@ func TestPointerWaiter(t *testing.T) {
 }
 
 func TestWaitCancel(t *testing.T) {
-	t.Parallel()
 	wm := NewManager[string]()
 	wm.Start(context.Background())
 
@@ -87,7 +86,6 @@ func TestWaitCancel(t *testing.T) {
 }
 
 func TestWaitClose(t *testing.T) {
-	t.Parallel()
 	wm := NewManager[string]()
 	wm.Start(context.Background())
 
@@ -95,12 +93,10 @@ func TestWaitClose(t *testing.T) {
 	assert.NoError(t, err)
 
 	wg := sync.WaitGroup{}
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		_, err := w.Wait(context.Background())
 		assert.ErrorIs(t, err, ErrWaiterClosed)
-	}()
+	})
 
 	assert.Equal(t, 1, wm.len())
 	w.Close()
@@ -112,7 +108,6 @@ func TestWaitClose(t *testing.T) {
 }
 
 func TestCloseManager(t *testing.T) {
-	t.Parallel()
 	wm := NewManager[string]()
 	ctx, cancel := context.WithCancel(context.Background())
 	wm.Start(ctx)
@@ -133,14 +128,13 @@ func TestCloseManager(t *testing.T) {
 }
 
 func TestCloseManagerMany(t *testing.T) {
-	t.Parallel()
 	wm := NewManager[string]()
 	ctx, cancel := context.WithCancel(context.Background())
 	wm.Start(ctx)
 
 	wg := sync.WaitGroup{}
 
-	for i := 0; i < 10; i++ {
+	for range 10 {
 		wg.Add(1)
 		w, err := wm.NewWaiter()
 		require.NoError(t, err)
@@ -163,7 +157,6 @@ func TestCloseManagerMany(t *testing.T) {
 }
 
 func TestSendToClosedWaiter(t *testing.T) {
-	t.Parallel()
 	wm := NewManager[string]()
 	wm.Start(context.Background())
 
@@ -179,7 +172,6 @@ func TestSendToClosedWaiter(t *testing.T) {
 }
 
 func TestNewWaiterOnShutdownManager(t *testing.T) {
-	t.Parallel()
 	wm := NewManager[string]()
 	ctx, cancel := context.WithCancel(context.Background())
 	wm.Start(ctx)

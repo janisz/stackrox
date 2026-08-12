@@ -1,29 +1,30 @@
-import React from 'react';
+import { useEffect } from 'react';
 import {
+    Content,
     Flex,
     FlexItem,
     Stack,
     StackItem,
     Tab,
     TabContent,
-    Tabs,
     TabTitleText,
-    Text,
+    Tabs,
     Title,
 } from '@patternfly/react-core';
 import uniq from 'lodash/uniq';
 
-import useTabs from 'hooks/patternfly/useTabs';
+import type { QueryValue } from 'hooks/useURLParameter';
 import {
     getDeploymentNodesInNamespace,
     getNodeById,
     getNumDeploymentFlows,
 } from '../utils/networkGraphUtils';
-import { CustomEdgeModel, CustomNodeModel } from '../types/topology.type';
+import type { CustomEdgeModel, CustomNodeModel } from '../types/topology.type';
 
 import { NamespaceIcon } from '../common/NetworkGraphIcons';
 import NamespaceDeployments from './NamespaceDeployments';
 import NetworkPolicies from '../common/NetworkPolicies';
+import { useSidePanelTab } from '../NetworkGraphURLStateContext';
 
 type NamespaceSideBarProps = {
     labelledById: string; // corresponds to aria-labelledby prop of TopologySideBar
@@ -33,6 +34,15 @@ type NamespaceSideBarProps = {
     onNodeSelect: (id: string) => void;
 };
 
+const NAMESPACE_TABS = ['DEPLOYMENTS', 'NETWORK_POLICIES'] as const;
+type NamespaceTabKey = (typeof NAMESPACE_TABS)[number];
+
+const DEFAULT_NAMESPACE_TAB: NamespaceTabKey = 'DEPLOYMENTS';
+
+function isValidNamespaceTab(value: QueryValue): value is NamespaceTabKey {
+    return typeof value === 'string' && NAMESPACE_TABS.some((tab) => tab === value);
+}
+
 function NamespaceSideBar({
     labelledById,
     namespaceId,
@@ -40,10 +50,7 @@ function NamespaceSideBar({
     edges,
     onNodeSelect,
 }: NamespaceSideBarProps) {
-    // component state
-    const { activeKeyTab, onSelectTab } = useTabs({
-        defaultTab: 'Deployments',
-    });
+    const { selectedTabSidePanel, setSelectedTabSidePanel } = useSidePanelTab();
 
     // derived state
     const namespaceNode = getNodeById(nodes, namespaceId);
@@ -59,15 +66,25 @@ function NamespaceSideBar({
         };
     });
     const namespacePolicyIds = deploymentNodes.reduce((acc, curr) => {
-        const policyIds: string[] = curr?.data?.policyIds || [];
+        const policyIds: string[] = curr?.data?.policyIds ?? [];
         return [...acc, ...policyIds];
     }, [] as string[]);
     const uniqueNamespacePolicyIds = uniq(namespacePolicyIds);
 
+    const activeTab: NamespaceTabKey = isValidNamespaceTab(selectedTabSidePanel)
+        ? selectedTabSidePanel
+        : DEFAULT_NAMESPACE_TAB;
+
+    useEffect(() => {
+        if (selectedTabSidePanel !== undefined && !isValidNamespaceTab(selectedTabSidePanel)) {
+            setSelectedTabSidePanel(DEFAULT_NAMESPACE_TAB, 'replace');
+        }
+    }, [selectedTabSidePanel, setSelectedTabSidePanel]);
+
     return (
         <Stack>
             <StackItem>
-                <Flex direction={{ default: 'row' }} className="pf-v5-u-p-md pf-v5-u-mb-0">
+                <Flex direction={{ default: 'row' }} className="pf-v6-u-p-md pf-v6-u-mb-0">
                     <FlexItem>
                         <NamespaceIcon />
                     </FlexItem>
@@ -75,47 +92,52 @@ function NamespaceSideBar({
                         <Title headingLevel="h2" id={labelledById}>
                             {namespaceNode?.label}
                         </Title>
-                        <Text className="pf-v5-u-font-size-sm pf-v5-u-color-200">
+                        <Content component="p" className="pf-v6-u-font-size-sm pf-v6-u-color-200">
                             in &quot;
                             {cluster}
                             &quot;
-                        </Text>
+                        </Content>
                     </FlexItem>
                 </Flex>
             </StackItem>
             <StackItem>
-                <Tabs activeKey={activeKeyTab} onSelect={onSelectTab}>
+                <Tabs
+                    activeKey={activeTab}
+                    onSelect={(_e, key) => setSelectedTabSidePanel(key.toString())}
+                >
                     <Tab
-                        eventKey="Deployments"
-                        tabContentId="Deployments"
+                        eventKey="DEPLOYMENTS"
+                        tabContentId="DEPLOYMENTS"
                         title={<TabTitleText>Deployments</TabTitleText>}
                     />
                     <Tab
-                        eventKey="Network policies"
-                        tabContentId="Network_policies"
+                        eventKey="NETWORK_POLICIES"
+                        tabContentId="NETWORK_POLICIES"
                         title={<TabTitleText>Network policies</TabTitleText>}
                     />
                 </Tabs>
             </StackItem>
             <StackItem isFilled style={{ overflow: 'auto' }}>
-                <TabContent
-                    eventKey="Deployments"
-                    id="Deployments"
-                    hidden={activeKeyTab !== 'Deployments'}
-                >
-                    <NamespaceDeployments deployments={deployments} onNodeSelect={onNodeSelect} />
-                </TabContent>
-                <TabContent
-                    eventKey="Network policies"
-                    id="Network_policies"
-                    hidden={activeKeyTab !== 'Network policies'}
-                    className="pf-v5-u-h-100"
-                >
-                    <NetworkPolicies
-                        entityName={namespaceNode?.label || ''}
-                        policyIds={uniqueNamespacePolicyIds}
-                    />
-                </TabContent>
+                {activeTab === 'DEPLOYMENTS' && (
+                    <TabContent eventKey="DEPLOYMENTS" id="DEPLOYMENTS">
+                        <NamespaceDeployments
+                            deployments={deployments}
+                            onNodeSelect={onNodeSelect}
+                        />
+                    </TabContent>
+                )}
+                {activeTab === 'NETWORK_POLICIES' && (
+                    <TabContent
+                        eventKey="NETWORK_POLICIES"
+                        id="NETWORK_POLICIES"
+                        className="pf-v6-u-h-100"
+                    >
+                        <NetworkPolicies
+                            entityName={namespaceNode?.label || ''}
+                            policyIds={uniqueNamespacePolicyIds}
+                        />
+                    </TabContent>
+                )}
             </StackItem>
         </Stack>
     );

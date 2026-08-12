@@ -1,7 +1,6 @@
 package runtime
 
 import (
-	"context"
 	"testing"
 	"time"
 
@@ -10,7 +9,6 @@ import (
 	"github.com/stackrox/rox/generated/storage"
 	"github.com/stackrox/rox/pkg/concurrency"
 	"github.com/stackrox/rox/pkg/env"
-	"github.com/stackrox/rox/pkg/features"
 	"github.com/stackrox/rox/sensor/debugger/collector"
 	"github.com/stackrox/rox/sensor/tests/helper"
 	"github.com/stackrox/rox/sensor/testutils"
@@ -24,21 +22,16 @@ var (
 	NginxService    = helper.K8sResourceInfo{Kind: "Service", YamlFile: "nginx-service.yaml", Name: "nginx-service"}
 	TalkPod         = helper.K8sResourceInfo{Kind: "Pod", YamlFile: "talk.yaml", Name: "talk"}
 
-	processIndicatorPolicyName = "test-pi-curl"
+	processIndicatorPolicyName = "test-pi-wget"
 	networkFlowPolicyName      = "test-flow"
 )
 
 func Test_SensorIntermediateRuntimeEvents(t *testing.T) {
-	t.Setenv(features.PreventSensorRestartOnDisconnect.EnvVar(), "true")
-	t.Setenv(features.SensorReconciliationOnReconnect.EnvVar(), "true")
-	t.Setenv(features.SensorCapturesIntermediateEvents.EnvVar(), "true")
-
 	t.Setenv(env.ConnectionRetryInitialInterval.EnvVar(), "1s")
 	t.Setenv(env.ConnectionRetryMaxInterval.EnvVar(), "2s")
 
 	var err error
-	ctx, cancelFn := context.WithCancel(context.Background())
-	defer cancelFn()
+	ctx := t.Context()
 	config := helper.DefaultConfig()
 	config.RealCerts = helper.UseRealCollector.BooleanSetting()
 	config.InitialSystemPolicies, err = testutils.GetPoliciesFromFile("../../data/runtime-policies.json")
@@ -57,8 +50,10 @@ func Test_SensorIntermediateRuntimeEvents(t *testing.T) {
 
 	var fakeCollector *collector.FakeCollector
 	if !helper.UseRealCollector.BooleanSetting() {
-		fakeCollector = collector.NewFakeCollector(collector.WithDefaultConfig().WithCertsPath(config.CertFilePath))
-		require.NoError(t, fakeCollector.Start())
+		require.Eventually(t, func() bool {
+			fakeCollector = collector.NewFakeCollector(collector.WithDefaultConfig().WithCertsPath(config.CertFilePath))
+			return fakeCollector.Start() == nil
+		}, 30*time.Second, time.Second, "fake collector failed to connect to sensor gRPC server")
 	}
 
 	c.RunTest(t, helper.WithTestCase(func(t *testing.T, testContext *helper.TestContext, _ map[string]k8s.Object) {
@@ -100,7 +95,7 @@ func Test_SensorIntermediateRuntimeEvents(t *testing.T) {
 			nginxIP := c.GetIPFromService(srvObj)
 			require.NotEqual(t, "", nginxIP)
 
-			helper.SendSignalMessage(fakeCollector, talkContainerIds[0], "curl")
+			helper.SendSignalMessage(fakeCollector, talkContainerIds[0], "wget")
 			helper.SendFlowMessage(fakeCollector,
 				sensor.SocketFamily_SOCKET_FAMILY_UNKNOWN,
 				storage.L4Protocol_L4_PROTOCOL_TCP,
@@ -115,7 +110,7 @@ func Test_SensorIntermediateRuntimeEvents(t *testing.T) {
 		expectedNetworkFlows := []helper.ExpectedNetworkConnectionMessageFn{
 			func(msg *sensor.NetworkConnectionInfoMessage) bool {
 				for _, conn := range msg.GetInfo().GetUpdatedConnections() {
-					if conn.Protocol == storage.L4Protocol_L4_PROTOCOL_TCP && conn.ContainerId == talkContainerIds[0] && conn.GetRemoteAddress().GetPort() == 80 {
+					if conn.GetProtocol() == storage.L4Protocol_L4_PROTOCOL_TCP && conn.GetContainerId() == talkContainerIds[0] && conn.GetRemoteAddress().GetPort() == 80 {
 						return true
 					}
 				}
@@ -124,7 +119,7 @@ func Test_SensorIntermediateRuntimeEvents(t *testing.T) {
 		}
 		expectedSignals := []helper.ExpectedSignalMessageFn{
 			func(msg *sensor.SignalStreamMessage) bool {
-				return msg.GetSignal().GetProcessSignal().GetName() == "curl" && msg.GetSignal().GetProcessSignal().GetContainerId() == talkContainerIds[0]
+				return msg.GetSignal().GetProcessSignal().GetName() == "wget" && msg.GetSignal().GetProcessSignal().GetContainerId() == talkContainerIds[0]
 			},
 		}
 		go helper.WaitToReceiveMessagesFromCollector(ctx, &messagesReceivedSignal,
@@ -148,7 +143,7 @@ func Test_SensorIntermediateRuntimeEvents(t *testing.T) {
 
 		msg, err := testContext.WaitForMessageWithMatcher(func(event *central.MsgFromSensor) bool {
 			return event.GetEvent().GetProcessIndicator().GetDeploymentId() == talkUID &&
-				event.GetEvent().GetProcessIndicator().GetSignal().GetName() == "curl"
+				event.GetEvent().GetProcessIndicator().GetSignal().GetName() == "wget"
 		}, time.Minute)
 		assert.NoError(t, err)
 		assert.NotNil(t, msg)

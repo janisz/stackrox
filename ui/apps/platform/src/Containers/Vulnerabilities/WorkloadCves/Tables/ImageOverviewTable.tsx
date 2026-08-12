@@ -1,38 +1,50 @@
-import React, { useState } from 'react';
+import { useState } from 'react';
+import type { ReactNode } from 'react';
 import { gql } from '@apollo/client';
 import pluralize from 'pluralize';
-import { ActionsColumn, IAction, Table, Tbody, Td, Th, Thead, Tr } from '@patternfly/react-table';
-import { Flex, Label } from '@patternfly/react-core';
+import { ActionsColumn, Table, Tbody, Td, Th, Thead, Tr } from '@patternfly/react-table';
+import type { IAction } from '@patternfly/react-table';
+import { Flex, Label, LabelGroup } from '@patternfly/react-core';
 import { EyeIcon } from '@patternfly/react-icons';
 import isEmpty from 'lodash/isEmpty';
 
-import { UseURLSortResult } from 'hooks/useURLSort';
+import type { UseURLSortResult } from 'hooks/useURLSort';
 import { DynamicColumnIcon } from 'Components/DynamicIcon';
 import TooltipTh from 'Components/TooltipTh';
 import DateDistance from 'Components/DateDistance';
 import TbodyUnified from 'Components/TableStateTemplates/TbodyUnified';
-import { TableUIState } from 'utils/getTableUIState';
+import type { TableUIState } from 'utils/getTableUIState';
 import { ACTION_COLUMN_POPPER_PROPS } from 'constants/tables';
-import {
-    generateVisibilityForColumns,
-    getHiddenColumnCount,
-    ManagedColumns,
-} from 'hooks/useManagedColumns';
+import { generateVisibilityForColumns, getHiddenColumnCount } from 'hooks/useManagedColumns';
+import type { ManagedColumns } from 'hooks/useManagedColumns';
 import useIsScannerV4Enabled from 'hooks/useIsScannerV4Enabled';
-import useHasGenerateSBOMAbility from '../../hooks/useHasGenerateSBOMAbility';
+import usePermissions from 'hooks/usePermissions';
+import type { GenerateSbomImageParams } from 'services/ImageSbomService';
 import GenerateSbomModal, {
     getSbomGenerationStatusMessage,
 } from '../../components/GenerateSbomModal';
 import ImageNameLink from '../components/ImageNameLink';
 import SeverityCountLabels from '../../components/SeverityCountLabels';
-import { VulnerabilitySeverityLabel, WatchStatus } from '../../types';
-import ImageScanningIncompleteLabel from '../components/ImageScanningIncompleteLabelLayout';
+import type {
+    SignatureVerificationResult,
+    VulnerabilitySeverityLabel,
+    WatchStatus,
+} from '../../types';
+import ImageScanningIncompleteLabel from '../components/ImageScanningIncompleteLabel';
+import VerifiedSignatureLabel, {
+    getVerifiedSignatureInResults,
+} from '../components/VerifiedSignatureLabel';
 import getImageScanMessage from '../utils/getImageScanMessage';
 import { getSeveritySortOptions } from '../../utils/sortUtils';
 
 export const tableId = 'WorkloadCvesImageOverviewTable';
 
 export const defaultColumns = {
+    image: {
+        title: 'Image',
+        isShownByDefault: true,
+        isUntoggleAble: true,
+    },
     cvesBySeverity: {
         title: 'CVEs by severity',
         isShownByDefault: true,
@@ -53,12 +65,18 @@ export const defaultColumns = {
         title: 'Scan time',
         isShownByDefault: true,
     },
+    rowActions: {
+        title: 'Row actions',
+        isShownByDefault: true,
+        isUntoggleAble: true,
+    },
 } as const;
 
 export const imageListQuery = gql`
     query getImageList($query: String, $pagination: Pagination) {
         images(query: $query, pagination: $pagination) {
             id
+            digest: id
             name {
                 registry
                 remote
@@ -78,6 +96,9 @@ export const imageListQuery = gql`
                 low {
                     total
                 }
+                unknown {
+                    total
+                }
             }
             operatingSystem
             deploymentCount(query: $query)
@@ -90,12 +111,72 @@ export const imageListQuery = gql`
             scanTime
             scanNotes
             notes
+            signatureVerificationData {
+                results {
+                    status
+                    verifiedImageReferences
+                    verifierId
+                    verifierName
+                }
+            }
+        }
+    }
+`;
+
+export const imageV2ListQuery = gql`
+    query getImageList($query: String, $pagination: Pagination) {
+        images: imageV2s(query: $query, pagination: $pagination) {
+            id
+            digest
+            name {
+                registry
+                remote
+                tag
+                fullName
+            }
+            imageCVECountBySeverity(query: $query) {
+                critical {
+                    total
+                }
+                important {
+                    total
+                }
+                moderate {
+                    total
+                }
+                low {
+                    total
+                }
+                unknown {
+                    total
+                }
+            }
+            operatingSystem
+            deploymentCount(query: $query)
+            watchStatus
+            metadata {
+                v1 {
+                    created
+                }
+            }
+            scanTime
+            scanNotes
+            notes
+            signatureVerificationData {
+                results {
+                    status
+                    verifiedImageReferences
+                    verifierId
+                    verifierName
+                }
+            }
         }
     }
 `;
 
 export type Image = {
-    id: string;
+    id: string; // UUID for linking
+    digest?: string; // For ImageV2, the actual SHA digest for display
     name: {
         registry: string;
         remote: string;
@@ -107,6 +188,7 @@ export type Image = {
         important: { total: number };
         moderate: { total: number };
         low: { total: number };
+        unknown: { total: number };
     };
     operatingSystem: string;
     deploymentCount: number;
@@ -119,6 +201,9 @@ export type Image = {
     scanTime: string | null;
     scanNotes: string[];
     notes: string[];
+    signatureVerificationData: {
+        results: SignatureVerificationResult[];
+    } | null;
 };
 
 export type ImageOverviewTableProps = {
@@ -129,7 +214,6 @@ export type ImageOverviewTableProps = {
     hasWriteAccessForWatchedImage: boolean;
     onWatchImage: (imageName: string) => void;
     onUnwatchImage: (imageName: string) => void;
-    showCveDetailFields: boolean;
     onClearFilters: () => void;
     columnVisibilityState: ManagedColumns<keyof typeof defaultColumns>['columns'];
 };
@@ -142,37 +226,36 @@ function ImageOverviewTable({
     hasWriteAccessForWatchedImage,
     onWatchImage,
     onUnwatchImage,
-    showCveDetailFields,
     onClearFilters,
     columnVisibilityState,
 }: ImageOverviewTableProps) {
-    const hasGenerateSBOMAbility = useHasGenerateSBOMAbility();
+    const { hasReadWriteAccess } = usePermissions();
+    const hasWriteAccessForImage = hasReadWriteAccess('Image'); // SBOM Generation mutates image scan state.
     const isScannerV4Enabled = useIsScannerV4Enabled();
     const getVisibilityClass = generateVisibilityForColumns(columnVisibilityState);
     const hiddenColumnCount = getHiddenColumnCount(columnVisibilityState);
-    const hasActionColumn = hasWriteAccessForWatchedImage || hasGenerateSBOMAbility;
-    const colSpan =
-        5 + (hasActionColumn ? 1 : 0) + (showCveDetailFields ? 1 : 0) + -hiddenColumnCount;
-    const [sbomTargetImage, setSbomTargetImage] = useState<string>();
+
+    const colSpan = Object.values(defaultColumns).length - hiddenColumnCount;
+    const [sbomTargetImage, setSbomTargetImage] = useState<GenerateSbomImageParams>();
 
     return (
-        <Table borders={false} variant="compact">
+        <Table variant="compact">
             <Thead noWrap>
                 <Tr>
-                    <Th sort={getSortParams('Image')}>Image</Th>
-                    {showCveDetailFields && (
-                        <TooltipTh
-                            className={getVisibilityClass('cvesBySeverity')}
-                            tooltip="CVEs by severity across this image"
-                            sort={getSortParams(
-                                'CVEs By Severity',
-                                getSeveritySortOptions(filteredSeverities)
-                            )}
-                        >
-                            CVEs by severity
-                            {isFiltered && <DynamicColumnIcon />}
-                        </TooltipTh>
-                    )}
+                    <Th className={getVisibilityClass('image')} sort={getSortParams('Image')}>
+                        Image
+                    </Th>
+                    <TooltipTh
+                        className={getVisibilityClass('cvesBySeverity')}
+                        tooltip="CVEs by severity across this image"
+                        sort={getSortParams(
+                            'CVEs By Severity',
+                            getSeveritySortOptions(filteredSeverities)
+                        )}
+                    >
+                        CVEs by severity
+                        {isFiltered && <DynamicColumnIcon />}
+                    </TooltipTh>
                     <Th
                         className={getVisibilityClass('operatingSystem')}
                         sort={getSortParams('Image OS')}
@@ -185,21 +268,20 @@ function ImageOverviewTable({
                     </Th>
                     <Th
                         className={getVisibilityClass('age')}
-                        sort={getSortParams('Image created time')}
+                        sort={getSortParams('Image Created Time')}
                     >
                         Age
                     </Th>
                     <Th
                         className={getVisibilityClass('scanTime')}
-                        sort={getSortParams('Image scan time')}
+                        sort={getSortParams('Image Scan Time')}
                     >
                         Scan time
                     </Th>
-                    {hasActionColumn && (
-                        <Th>
-                            <span className="pf-v5-screen-reader">Row actions</span>
-                        </Th>
-                    )}
+                    <Th
+                        className={getVisibilityClass('rowActions')}
+                        screenReaderText="Row actions"
+                    />
                 </Tr>
             </Thead>
             <TbodyUnified
@@ -220,11 +302,13 @@ function ImageOverviewTable({
                             scanTime,
                             scanNotes,
                             notes,
+                            signatureVerificationData,
                         } = image;
                         const criticalCount = imageCVECountBySeverity.critical.total;
                         const importantCount = imageCVECountBySeverity.important.total;
                         const moderateCount = imageCVECountBySeverity.moderate.total;
                         const lowCount = imageCVECountBySeverity.low.total;
+                        const unknownCount = imageCVECountBySeverity.unknown.total;
 
                         const isWatchedImage = watchStatus === 'WATCHED';
                         const watchImageMenuText = isWatchedImage ? 'Unwatch image' : 'Watch image';
@@ -245,8 +329,9 @@ function ImageOverviewTable({
                             });
                         }
 
-                        if (hasGenerateSBOMAbility) {
-                            const isAriaDisabled = !isScannerV4Enabled || hasScanMessage;
+                        if (hasWriteAccessForImage) {
+                            const isAriaDisabled =
+                                !isScannerV4Enabled || hasScanMessage || !name?.fullName;
                             const description = getSbomGenerationStatusMessage({
                                 isScannerV4Enabled,
                                 hasScanMessage,
@@ -257,58 +342,84 @@ function ImageOverviewTable({
                                 isAriaDisabled,
                                 description,
                                 onClick: () => {
-                                    setSbomTargetImage(name?.fullName);
+                                    setSbomTargetImage({
+                                        name: name?.fullName ?? '',
+                                        digest: image.digest,
+                                    });
                                 },
                             });
                         }
 
+                        const labels: ReactNode[] = [];
+                        const verifiedSignatureResults = getVerifiedSignatureInResults(
+                            signatureVerificationData?.results
+                        );
+                        if (verifiedSignatureResults.length !== 0) {
+                            labels.push(
+                                <VerifiedSignatureLabel
+                                    key="verifiedSignatureResults"
+                                    verifiedSignatureResults={verifiedSignatureResults}
+                                    isCompact
+                                    variant="outline"
+                                />
+                            );
+                        }
+                        if (isWatchedImage) {
+                            labels.push(
+                                <Label
+                                    key="isWatchedImage"
+                                    isCompact
+                                    variant="outline"
+                                    color="grey"
+                                    icon={<EyeIcon />}
+                                >
+                                    Watched image
+                                </Label>
+                            );
+                        }
+                        if (hasScanMessage) {
+                            labels.push(
+                                <ImageScanningIncompleteLabel
+                                    key="hasScanMessage"
+                                    scanMessage={scanMessage}
+                                />
+                            );
+                        }
+
+                        // Td style={{ paddingTop: 0 }} prop emulates vertical space when label was in cell instead of row
+                        // and assumes adjacent empty cell has no paddingTop.
                         return (
-                            <Tbody
-                                key={id}
-                                style={{
-                                    borderBottom: '1px solid var(--pf-v5-c-table--BorderColor)',
-                                }}
-                            >
-                                <Tr>
-                                    <Td dataLabel="Image">
+                            <Tbody key={id}>
+                                <Tr
+                                    style={
+                                        labels.length !== 0 ? { borderBlockEnd: 'none' } : undefined
+                                    }
+                                >
+                                    <Td className={getVisibilityClass('image')} dataLabel="Image">
                                         {name ? (
-                                            <ImageNameLink name={name} id={id}>
-                                                {isWatchedImage && (
-                                                    <Label
-                                                        isCompact
-                                                        variant="outline"
-                                                        color="grey"
-                                                        className="pf-v5-u-mt-xs"
-                                                        icon={<EyeIcon />}
-                                                    >
-                                                        Watched image
-                                                    </Label>
-                                                )}
-                                                {hasScanMessage && (
-                                                    <ImageScanningIncompleteLabel
-                                                        scanMessage={scanMessage}
-                                                    />
-                                                )}
-                                            </ImageNameLink>
+                                            <ImageNameLink
+                                                name={name}
+                                                id={id}
+                                                digest={image.digest}
+                                            />
                                         ) : (
                                             'Image name not available'
                                         )}
                                     </Td>
-                                    {showCveDetailFields && (
-                                        <Td
-                                            className={getVisibilityClass('cvesBySeverity')}
-                                            dataLabel="CVEs by severity"
-                                        >
-                                            <SeverityCountLabels
-                                                criticalCount={criticalCount}
-                                                importantCount={importantCount}
-                                                moderateCount={moderateCount}
-                                                lowCount={lowCount}
-                                                entity="image"
-                                                filteredSeverities={filteredSeverities}
-                                            />
-                                        </Td>
-                                    )}
+                                    <Td
+                                        className={getVisibilityClass('cvesBySeverity')}
+                                        dataLabel="CVEs by severity"
+                                    >
+                                        <SeverityCountLabels
+                                            criticalCount={criticalCount}
+                                            importantCount={importantCount}
+                                            moderateCount={moderateCount}
+                                            lowCount={lowCount}
+                                            unknownCount={unknownCount}
+                                            entity="image"
+                                            filteredSeverities={filteredSeverities}
+                                        />
+                                    </Td>
                                     <Td
                                         dataLabel="Operating system"
                                         className={getVisibilityClass('operatingSystem')}
@@ -347,15 +458,22 @@ function ImageOverviewTable({
                                     >
                                         {scanTime ? <DateDistance date={scanTime} /> : 'unknown'}
                                     </Td>
-                                    {hasActionColumn && (
-                                        <Td isActionCell>
-                                            <ActionsColumn
-                                                popperProps={ACTION_COLUMN_POPPER_PROPS}
-                                                items={rowActions}
-                                            />
-                                        </Td>
-                                    )}
+                                    <Td className={getVisibilityClass('rowActions')} isActionCell>
+                                        <ActionsColumn
+                                            popperProps={ACTION_COLUMN_POPPER_PROPS}
+                                            items={rowActions}
+                                        />
+                                    </Td>
                                 </Tr>
+                                {labels.length !== 0 && (
+                                    <Tr>
+                                        <Td colSpan={colSpan} style={{ paddingTop: 0 }}>
+                                            <LabelGroup isCompact numLabels={labels.length}>
+                                                {labels}
+                                            </LabelGroup>
+                                        </Td>
+                                    </Tr>
+                                )}
                             </Tbody>
                         );
                     })
@@ -364,7 +482,7 @@ function ImageOverviewTable({
             {sbomTargetImage && (
                 <GenerateSbomModal
                     onClose={() => setSbomTargetImage(undefined)}
-                    imageName={sbomTargetImage}
+                    image={sbomTargetImage}
                 />
             )}
         </Table>

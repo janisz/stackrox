@@ -41,10 +41,6 @@ func (s *ExternalBackupsStoreSuite) SetupTest() {
 	s.NoError(err)
 }
 
-func (s *ExternalBackupsStoreSuite) TearDownSuite() {
-	s.testDB.Teardown(s.T())
-}
-
 func (s *ExternalBackupsStoreSuite) TestStore() {
 	ctx := sac.WithAllAccess(context.Background())
 
@@ -96,9 +92,11 @@ func (s *ExternalBackupsStoreSuite) TestStore() {
 	}
 
 	s.NoError(store.UpsertMany(ctx, externalBackups))
-	allExternalBackup, err := store.GetAll(ctx)
+
+	foundExternalBackups, missing, err := store.GetMany(ctx, externalBackupIDs)
 	s.NoError(err)
-	protoassert.ElementsMatch(s.T(), externalBackups, allExternalBackup)
+	s.Empty(missing)
+	protoassert.ElementsMatch(s.T(), externalBackups, foundExternalBackups)
 
 	externalBackupCount, err = store.Count(ctx, search.EmptyQuery())
 	s.NoError(err)

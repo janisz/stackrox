@@ -55,10 +55,6 @@ func (s *postgresPolicyMigratorTestSuite) SetupTest() {
 
 }
 
-func (s *postgresPolicyMigratorTestSuite) TearDownTest() {
-	s.db.Teardown(s.T())
-}
-
 func (s *postgresPolicyMigratorTestSuite) comparePolicyWithDB(policyID string, policy *storage.Policy) {
 	newPolicy, exists, err := s.store.Get(s.ctx, policyID)
 	s.NoError(err)
@@ -92,7 +88,7 @@ func (s *postgresPolicyMigratorTestSuite) TestUnrelatedPolicyIsNotUpdated() {
 	policiesToMigrate := map[string]PolicyChanges{
 		"0000-0000-0000-0000": {
 			FieldsToCompare: []FieldComparator{DescriptionComparator},
-			ToChange:        PolicyUpdates{Description: strPtr("this is a new description")},
+			ToChange:        PolicyUpdates{Description: new("this is a new description")},
 		},
 	}
 
@@ -116,7 +112,7 @@ func (s *postgresPolicyMigratorTestSuite) TestUnmodifiedAndMatchingPolicyIsUpdat
 	policiesToMigrate := map[string]PolicyChanges{
 		policyID: {
 			FieldsToCompare: []FieldComparator{DescriptionComparator},
-			ToChange:        PolicyUpdates{Description: strPtr("this is a new description")},
+			ToChange:        PolicyUpdates{Description: new("this is a new description")},
 		},
 	}
 
@@ -149,17 +145,17 @@ func (s *postgresPolicyMigratorTestSuite) TestAllUnmodifiedPoliciesGetUpdated() 
 	for tc, fn := range tests {
 		s.T().Run(tc, func(t *testing.T) {
 			// Create and insert a set of unmodified fake policies
-			for i := 0; i < 10; i++ {
+			for i := range 10 {
 				policy := testPolicy(fmt.Sprintf("policy%d", i))
 				policiesToTest[i] = policy
 				policy.Name = fmt.Sprintf("policy-name%d", i) // name is a unique key
 				policy.Description = "sfasdf"
 
 				comparisonPolicy := policy.CloneVT()
-				comparisonPolicies[policy.Id] = comparisonPolicy
-				policiesToMigrate[policy.Id] = PolicyChanges{
+				comparisonPolicies[policy.GetId()] = comparisonPolicy
+				policiesToMigrate[policy.GetId()] = PolicyChanges{
 					FieldsToCompare: []FieldComparator{PolicySectionComparator, ExclusionComparator, RemediationComparator, RationaleComparator},
-					ToChange:        PolicyUpdates{Description: strPtr(fmt.Sprintf("%s new description", policy.Id))}, // give them all a new description
+					ToChange:        PolicyUpdates{Description: new(fmt.Sprintf("%s new description", policy.GetId()))}, // give them all a new description
 				}
 			}
 
@@ -168,8 +164,8 @@ func (s *postgresPolicyMigratorTestSuite) TestAllUnmodifiedPoliciesGetUpdated() 
 
 			for _, policy := range policiesToTest {
 				// All the policies should've changed
-				policy.Description = fmt.Sprintf("%s new description", policy.Id)
-				s.comparePolicyWithDB(policy.Id, policy)
+				policy.Description = fmt.Sprintf("%s new description", policy.GetId())
+				s.comparePolicyWithDB(policy.GetId(), policy)
 			}
 		})
 	}
@@ -266,7 +262,7 @@ func (s *postgresPolicyMigratorTestSuite) TestCategoriesAreAddedAndRemovedAsNece
 
 	s.NoError(s.store.Upsert(s.ctx, policy))
 
-	for _, c := range policy.Categories {
+	for _, c := range policy.GetCategories() {
 		s.NoError(s.categoryStore.Upsert(s.ctx, &storage.PolicyCategory{
 			Id:        c,
 			Name:      c,

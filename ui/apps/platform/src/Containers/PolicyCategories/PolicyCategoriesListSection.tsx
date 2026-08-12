@@ -1,9 +1,10 @@
-import React, { useEffect, useState } from 'react';
-import { PageSection, Divider, Title, Flex, FlexItem, TextInput } from '@patternfly/react-core';
+import { useEffect, useState } from 'react';
+import { Divider, Flex, FlexItem, PageSection, TextInput, Title } from '@patternfly/react-core';
 
-import { PolicyCategory } from 'types/policy.proto';
+import type { PolicyCategory } from 'types/policy.proto';
 import PolicyCategoriesList from './PolicyCategoriesList';
-import PolicyCategoriesFilterSelect, { CategoryFilter } from './PolicyCategoriesFilterSelect';
+import PolicyCategoriesFilterSelect from './PolicyCategoriesFilterSelect';
+import type { CategoryFilter } from './PolicyCategoriesFilterSelect';
 import PolicyCategorySidePanel from './PolicyCategorySidePanel';
 import DeletePolicyCategoryModal from './DeletePolicyCategoryModal';
 
@@ -24,20 +25,14 @@ function PolicyCategoriesListSection({
 }: PolicyCategoriesListSectionProps) {
     const customPolicyCategories = policyCategories.filter(({ isDefault }) => !isDefault);
     const defaultPolicyCategories = policyCategories.filter(({ isDefault }) => isDefault);
-    const [selectedFilters, setSelectedFilters] = useState<CategoryFilter[]>([
-        'Default categories',
-        'Custom categories',
-    ]);
+    const [selectedFilter, setSelectedFilter] = useState<CategoryFilter>('All categories');
     const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false);
 
     let currentPolicyCategories = policyCategories;
-    if (selectedFilters.length === 1) {
-        if (selectedFilters[0] === 'Default categories') {
-            currentPolicyCategories = defaultPolicyCategories;
-        }
-        if (selectedFilters[0] === 'Custom categories') {
-            currentPolicyCategories = customPolicyCategories;
-        }
+    if (selectedFilter === 'Default categories') {
+        currentPolicyCategories = defaultPolicyCategories;
+    } else if (selectedFilter === 'Custom categories') {
+        currentPolicyCategories = customPolicyCategories;
     }
     const [filterTerm, setFilterTerm] = useState('');
     const [filteredCategories, setFilteredCategories] = useState(currentPolicyCategories);
@@ -49,33 +44,32 @@ function PolicyCategoriesListSection({
             )
         );
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [filterTerm, selectedFilters, policyCategories]);
+    }, [filterTerm, selectedFilter, policyCategories]);
 
     return (
         <>
             <PageSection id="policy-categories-list-section">
                 <Flex
-                    spaceItems={{ default: 'spaceItemsNone' }}
+                    spaceItems={{ default: 'spaceItemsMd' }}
                     alignItems={{ default: 'alignItemsStretch' }}
-                    className="pf-v5-u-h-100"
                 >
                     <FlexItem flex={{ default: 'flex_1' }}>
-                        <PageSection isFilled variant="light" className="pf-v5-u-h-100">
-                            <Flex direction={{ default: 'column' }}>
-                                <Title headingLevel="h2">
-                                    <Flex
-                                        justifyContent={{ default: 'justifyContentSpaceBetween' }}
-                                        fullWidth={{ default: 'fullWidth' }}
-                                    >
-                                        <span>Categories</span>
-                                        <span>{filteredCategories.length} results found</span>
-                                    </Flex>
-                                </Title>
+                        <Flex direction={{ default: 'column' }}>
+                            <Title headingLevel="h2">
                                 <Flex
                                     justifyContent={{ default: 'justifyContentSpaceBetween' }}
                                     fullWidth={{ default: 'fullWidth' }}
-                                    flexWrap={{ default: 'nowrap' }}
                                 >
+                                    <span>Categories</span>
+                                    <span>{filteredCategories.length} results found</span>
+                                </Flex>
+                            </Title>
+                            <Flex
+                                spaceItems={{ default: 'spaceItemsSm' }}
+                                fullWidth={{ default: 'fullWidth' }}
+                                flexWrap={{ default: 'nowrap' }}
+                            >
+                                <FlexItem flex={{ default: 'flex_1' }}>
                                     <TextInput
                                         onChange={(_event, val) => setFilterTerm(val)}
                                         type="text"
@@ -84,23 +78,25 @@ function PolicyCategoriesListSection({
                                         id="policy-categories-filter-input"
                                         isDisabled={!!selectedCategory}
                                     />
+                                </FlexItem>
+                                <FlexItem>
                                     <PolicyCategoriesFilterSelect
-                                        selectedFilters={selectedFilters}
-                                        setSelectedFilters={setSelectedFilters}
+                                        selectedFilter={selectedFilter}
+                                        setSelectedFilter={setSelectedFilter}
                                         isDisabled={!!selectedCategory}
                                     />
-                                </Flex>
-                                {filteredCategories.length > 0 && (
-                                    <PolicyCategoriesList
-                                        policyCategories={filteredCategories}
-                                        setSelectedCategory={setSelectedCategory}
-                                    />
-                                )}
-                                {filteredCategories.length === 0 && (
-                                    <div>No policy categories found.</div>
-                                )}
+                                </FlexItem>
                             </Flex>
-                        </PageSection>
+                            {filteredCategories.length > 0 && (
+                                <PolicyCategoriesList
+                                    policyCategories={filteredCategories}
+                                    setSelectedCategory={setSelectedCategory}
+                                />
+                            )}
+                            {filteredCategories.length === 0 && (
+                                <div>No policy categories found.</div>
+                            )}
+                        </Flex>
                     </FlexItem>
                     {selectedCategory && (
                         <>

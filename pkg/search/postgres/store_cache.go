@@ -2,8 +2,11 @@ package postgres
 
 import (
 	"context"
+	"maps"
+	"slices"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
 	v1 "github.com/stackrox/rox/generated/api/v1"
 	"github.com/stackrox/rox/generated/storage"
 	"github.com/stackrox/rox/pkg/auth/permissions"
@@ -13,6 +16,7 @@ import (
 	"github.com/stackrox/rox/pkg/postgres/walker"
 	"github.com/stackrox/rox/pkg/sac"
 	"github.com/stackrox/rox/pkg/search"
+	"github.com/stackrox/rox/pkg/search/scoped"
 	"github.com/stackrox/rox/pkg/sync"
 )
 
@@ -29,6 +33,8 @@ func NewGenericStoreWithCache[T any, PT ClonedUnmarshaler[T]](
 	setCacheOperationDurationTime durationTimeSetter,
 	upsertAllowed upsertChecker[T, PT],
 	targetResource permissions.ResourceMetadata,
+	defaultSort *v1.QuerySortOption,
+	transformOptionsMap search.OptionsMap,
 ) Store[T, PT] {
 	underlyingStore := NewGenericStore[T, PT](
 		db,
@@ -40,6 +46,8 @@ func NewGenericStoreWithCache[T any, PT ClonedUnmarshaler[T]](
 		setPostgresOperationDurationTime,
 		upsertAllowed,
 		targetResource,
+		defaultSort,
+		transformOptionsMap,
 	)
 	store := &cachedStore[T, PT]{
 		schema:          schema,
@@ -62,9 +70,9 @@ func NewGenericStoreWithCache[T any, PT ClonedUnmarshaler[T]](
 	return store
 }
 
-// NewGenericStoreWithCacheAndPermissionChecker returns new subStore implementation for given resource.
+// NewGloballyScopedGenericStoreWithCache returns new subStore implementation for given resource.
 // subStore implements subset of Store operations.
-func NewGenericStoreWithCacheAndPermissionChecker[T any, PT ClonedUnmarshaler[T]](
+func NewGloballyScopedGenericStoreWithCache[T any, PT ClonedUnmarshaler[T]](
 	db postgres.DB,
 	schema *walker.Schema,
 	pkGetter primaryKeyGetter[T, PT],
@@ -73,9 +81,11 @@ func NewGenericStoreWithCacheAndPermissionChecker[T any, PT ClonedUnmarshaler[T]
 	setAcquireDBConnDuration durationTimeSetter,
 	setPostgresOperationDurationTime durationTimeSetter,
 	setCacheOperationDurationTime durationTimeSetter,
-	checker walker.PermissionChecker,
+	targetResource permissions.ResourceMetadata,
+	defaultSort *v1.QuerySortOption,
+	transformOptionsMap search.OptionsMap,
 ) Store[T, PT] {
-	underlyingStore := NewGenericStoreWithPermissionChecker[T, PT](
+	underlyingStore := NewGloballyScopedGenericStore[T, PT](
 		db,
 		schema,
 		pkGetter,
@@ -83,14 +93,16 @@ func NewGenericStoreWithCacheAndPermissionChecker[T any, PT ClonedUnmarshaler[T]
 		copyFromObj,
 		setAcquireDBConnDuration,
 		setPostgresOperationDurationTime,
-		checker,
+		targetResource,
+		defaultSort,
+		transformOptionsMap,
 	)
 	store := &cachedStore[T, PT]{
-		schema:            schema,
-		pkGetter:          pkGetter,
-		permissionChecker: checker,
-		cache:             make(map[string]PT),
-		underlyingStore:   underlyingStore,
+		schema:          schema,
+		pkGetter:        pkGetter,
+		targetResource:  targetResource,
+		cache:           make(map[string]PT),
+		underlyingStore: underlyingStore,
 
 		setCacheOperationDurationTime: setCacheOperationDurationTime,
 	}
@@ -111,7 +123,6 @@ type cachedStore[T any, PT ClonedUnmarshaler[T]] struct {
 	schema                        *walker.Schema
 	pkGetter                      primaryKeyGetter[T, PT]
 	setCacheOperationDurationTime durationTimeSetter
-	permissionChecker             walker.PermissionChecker
 	targetResource                permissions.ResourceMetadata
 	underlyingStore               Store[T, PT]
 	cache                         map[string]PT
@@ -128,6 +139,7 @@ func (c *cachedStore[T, PT]) Upsert(ctx context.Context, obj PT) error {
 	c.cacheLock.Lock()
 	defer c.cacheLock.Unlock()
 	c.addToCacheNoLock(obj)
+	c.setCacheEntriesGauge()
 	return nil
 }
 
@@ -143,6 +155,7 @@ func (c *cachedStore[T, PT]) UpsertMany(ctx context.Context, objs []PT) error {
 	for _, obj := range objs {
 		c.addToCacheNoLock(obj)
 	}
+	c.setCacheEntriesGauge()
 	return nil
 }
 
@@ -174,6 +187,7 @@ func (c *cachedStore[T, PT]) Delete(ctx context.Context, id string) error {
 	c.cacheLock.Lock()
 	defer c.cacheLock.Unlock()
 	delete(c.cache, id)
+	c.setCacheEntriesGauge()
 	return nil
 }
 
@@ -209,6 +223,7 @@ func (c *cachedStore[T, PT]) DeleteMany(ctx context.Context, identifiers []strin
 	for _, id := range filteredIDs {
 		delete(c.cache, id)
 	}
+	c.setCacheEntriesGauge()
 	return nil
 }
 
@@ -231,16 +246,19 @@ func (c *cachedStore[T, PT]) Exists(ctx context.Context, id string) (bool, error
 	defer c.cacheLock.RUnlock()
 	obj, found := c.cache[id]
 	if !found {
+		cacheMissTotal.With(prometheus.Labels{"Type": c.schema.TypeName, "Operation": "Exists"}).Inc()
 		return false, nil
 	}
+	cacheHitTotal.With(prometheus.Labels{"Type": c.schema.TypeName, "Operation": "Exists"}).Inc()
 	return c.isReadAllowed(ctx, obj), nil
 }
 
 // Count returns the number of objects in the store matching the query.
 func (c *cachedStore[T, PT]) Count(ctx context.Context, q *v1.Query) (int, error) {
-	if q == nil || q.EqualVT(search.EmptyQuery()) {
+	if checkScopeQueries(ctx, q) {
 		return c.countFromCache(ctx)
 	}
+	cacheBypassTotal.With(prometheus.Labels{"Type": c.schema.TypeName, "Operation": "Count"}).Inc()
 	return c.underlyingStore.Count(ctx, q)
 }
 
@@ -271,11 +289,13 @@ func (c *cachedStore[T, PT]) Get(ctx context.Context, id string) (PT, bool, erro
 	defer c.cacheLock.RUnlock()
 	obj, found := c.cache[id]
 	if !found {
+		cacheMissTotal.With(prometheus.Labels{"Type": c.schema.TypeName, "Operation": "Get"}).Inc()
 		return nil, false, nil
 	}
 	if !c.isReadAllowed(ctx, obj) {
 		return nil, false, nil
 	}
+	cacheHitTotal.With(prometheus.Labels{"Type": c.schema.TypeName, "Operation": "Get"}).Inc()
 	return obj.CloneVT(), true, nil
 }
 
@@ -289,9 +309,11 @@ func (c *cachedStore[T, PT]) GetMany(ctx context.Context, identifiers []string) 
 	defer c.cacheLock.RUnlock()
 	results := make([]PT, 0, len(identifiers))
 	misses := make([]int, 0)
+	var notFound int
 	for idx, id := range identifiers {
 		obj, found := c.cache[id]
 		if !found {
+			notFound++
 			misses = append(misses, idx)
 			continue
 		}
@@ -301,80 +323,83 @@ func (c *cachedStore[T, PT]) GetMany(ctx context.Context, identifiers []string) 
 		}
 		results = append(results, obj.CloneVT())
 	}
+	if notFound > 0 {
+		cacheMissTotal.With(prometheus.Labels{"Type": c.schema.TypeName, "Operation": "GetMany"}).Add(float64(notFound))
+	}
+	cacheHitTotal.With(prometheus.Labels{"Type": c.schema.TypeName, "Operation": "GetMany"}).Add(float64(len(results)))
 	return results, misses, nil
 }
 
 // WalkByQuery iterates over all the objects scoped by the query applies the closure.
 func (c *cachedStore[T, PT]) WalkByQuery(ctx context.Context, query *v1.Query, fn func(obj PT) error) error {
-	if query == nil || query.EqualVT(search.EmptyQuery()) {
-		c.cacheLock.RLock()
-		defer c.cacheLock.RUnlock()
-		return c.walkCacheNoLock(ctx, fn)
+	defer c.setCacheOperationDurationTime(time.Now(), ops.WalkByQuery)
+	if checkScopeQueries(ctx, query) {
+		return c.Walk(ctx, fn)
 	}
-
-	identifiers, err := c.underlyingStore.GetIDsByQuery(ctx, query)
-	// Fallback to the underlying store on error.
-	if err != nil {
-		log.Errorf("Failed to get identifiers by query, falling back to walk results by query: %v", err)
-		return c.underlyingStore.WalkByQuery(ctx, query, fn)
-	}
-	c.cacheLock.RLock()
-	defer c.cacheLock.RUnlock()
-	for _, id := range identifiers {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		obj, found := c.cache[id]
-		if !found {
-			log.Warnf("Object %q not found in store cache", id)
-			continue
-		}
-		if !c.isReadAllowed(ctx, obj) {
-			continue
-		}
-		if err := fn(obj); err != nil {
-			return err
-		}
-	}
-	return nil
+	cacheBypassTotal.With(prometheus.Labels{"Type": c.schema.TypeName, "Operation": "WalkByQuery"}).Inc()
+	return c.underlyingStore.WalkByQuery(ctx, query, fn)
 }
 
 // Walk iterates over all the objects in the store and applies the closure.
 func (c *cachedStore[T, PT]) Walk(ctx context.Context, fn func(obj PT) error) error {
 	c.cacheLock.RLock()
 	defer c.cacheLock.RUnlock()
-	return c.walkCacheNoLock(ctx, fn)
+	return c.walkCacheNoLock(ctx, func(obj PT) error {
+		return fn(obj.CloneVT())
+	})
+}
+
+// GetAllFromCache returns all the objects in the store without cloning.
+//
+// Deprecated: It will not clone the object so it should be used only for SAC.
+func (c *cachedStore[T, PT]) GetAllFromCacheForSAC() []PT {
+	c.cacheLock.RLock()
+	defer c.cacheLock.RUnlock()
+	return slices.AppendSeq(make([]PT, 0, len(c.cache)), maps.Values(c.cache))
+}
+
+// GetByQueryFn iterates over the objects from the store matching the query.
+func (c *cachedStore[T, PT]) GetByQueryFn(ctx context.Context, query *v1.Query, fn func(obj PT) error) error {
+	defer c.setCacheOperationDurationTime(time.Now(), ops.GetByQuery)
+	if checkScopeQueries(ctx, query) {
+		return c.Walk(ctx, fn)
+	}
+	cacheBypassTotal.With(prometheus.Labels{"Type": c.schema.TypeName, "Operation": "GetByQueryFn"}).Inc()
+	return c.underlyingStore.GetByQueryFn(ctx, query, fn)
 }
 
 // GetByQuery returns the objects from the store matching the query.
 func (c *cachedStore[T, PT]) GetByQuery(ctx context.Context, query *v1.Query) ([]*T, error) {
 	defer c.setCacheOperationDurationTime(time.Now(), ops.GetByQuery)
-	identifiers, err := c.underlyingStore.GetIDsByQuery(ctx, query)
-	// Fallback to the underlying store on error.
-	if err != nil {
-		log.Errorf("Failed to get identifiers by query, falling back to get results by query: %v", err)
-		return c.underlyingStore.GetByQuery(ctx, query)
-	}
-	results := make([]*T, 0, len(identifiers))
-	c.cacheLock.RLock()
-	defer c.cacheLock.RUnlock()
-	for _, id := range identifiers {
-		obj, found := c.cache[id]
-		if !found {
-			log.Warnf("Object %q not found in store cache", id)
-			continue
+	if checkScopeQueries(ctx, query) {
+		var result []*T
+		err := c.Walk(ctx, func(obj PT) error {
+			result = append(result, obj)
+			return nil
+		})
+		if err != nil {
+			return nil, err
 		}
-		if !c.isReadAllowed(ctx, obj) {
-			continue
-		}
-		results = append(results, obj.CloneVT())
+		return result, err
 	}
-	return results, nil
+	cacheBypassTotal.With(prometheus.Labels{"Type": c.schema.TypeName, "Operation": "GetByQuery"}).Inc()
+	return c.underlyingStore.GetByQuery(ctx, query)
 }
 
 // DeleteByQuery removes the objects from the store based on the passed query.
-func (c *cachedStore[T, PT]) DeleteByQuery(ctx context.Context, query *v1.Query) ([]string, error) {
-	identifiersToRemove, err := c.underlyingStore.DeleteByQuery(ctx, query)
+func (c *cachedStore[T, PT]) DeleteByQuery(ctx context.Context, query *v1.Query) error {
+	_, err := c.deleteByQueryWithIDs(ctx, query)
+	return err
+}
+
+// DeleteByQueryWithIDs removes the objects from the store based on the passed query returning deleted IDs.
+func (c *cachedStore[T, PT]) DeleteByQueryWithIDs(ctx context.Context, query *v1.Query) ([]string, error) {
+	return c.deleteByQueryWithIDs(ctx, query)
+}
+
+// deleteByQueryWithIDs removes the objects from the store based on the passed query returning deleted IDs.
+func (c *cachedStore[T, PT]) deleteByQueryWithIDs(ctx context.Context, query *v1.Query) ([]string, error) {
+	identifiersToRemove, err := c.underlyingStore.DeleteByQueryWithIDs(ctx, query)
 	if err != nil {
 		return nil, err
 	}
@@ -384,6 +409,7 @@ func (c *cachedStore[T, PT]) DeleteByQuery(ctx context.Context, query *v1.Query)
 	for _, id := range identifiersToRemove {
 		delete(c.cache, id)
 	}
+	c.setCacheEntriesGauge()
 	return identifiersToRemove, nil
 }
 
@@ -405,25 +431,11 @@ func (c *cachedStore[T, PT]) GetIDs(ctx context.Context) ([]string, error) {
 
 // GetIDsByQuery returns the IDs for the store matching the query.
 func (c *cachedStore[T, PT]) GetIDsByQuery(ctx context.Context, query *v1.Query) ([]string, error) {
-	return c.underlyingStore.GetIDsByQuery(ctx, query)
-}
-
-// GetAll retrieves all objects from the store.
-//
-// Deprecated: This can be dangerous on high cardinality stores consider Walk instead.
-func (c *cachedStore[T, PT]) GetAll(ctx context.Context) ([]PT, error) {
-	defer c.setCacheOperationDurationTime(time.Now(), ops.GetAll)
-	c.cacheLock.RLock()
-	defer c.cacheLock.RUnlock()
-	result := make([]PT, 0, len(c.cache))
-	err := c.walkCacheNoLock(ctx, func(obj PT) error {
-		result = append(result, obj.CloneVT())
-		return nil
-	})
-	if err != nil {
-		return nil, err
+	if checkScopeQueries(ctx, query) {
+		return c.GetIDs(ctx)
 	}
-	return result, nil
+	cacheBypassTotal.With(prometheus.Labels{"Type": c.schema.TypeName, "Operation": "GetIDsByQuery"}).Inc()
+	return c.underlyingStore.GetIDsByQuery(ctx, query)
 }
 
 func (c *cachedStore[T, PT]) walkCacheNoLock(ctx context.Context, fn func(obj PT) error) error {
@@ -442,6 +454,19 @@ func (c *cachedStore[T, PT]) walkCacheNoLock(ctx context.Context, fn func(obj PT
 	return nil
 }
 
+func checkScopeQueries(ctx context.Context, query *v1.Query) bool {
+	scopeQuery, err := scoped.GetQueryForAllScopes(ctx)
+	if err != nil {
+		return false
+	}
+
+	if scopeQuery == nil && (query == nil || query.EqualVT(search.EmptyQuery())) {
+		return true
+	}
+
+	return false
+}
+
 func (c *cachedStore[T, PT]) isReadAllowed(ctx context.Context, obj PT) bool {
 	return c.isActionAllowed(ctx, storage.Access_READ_ACCESS, obj)
 }
@@ -451,22 +476,6 @@ func (c *cachedStore[T, PT]) isWriteAllowed(ctx context.Context, obj PT) bool {
 }
 
 func (c *cachedStore[T, PT]) isActionAllowed(ctx context.Context, action storage.Access, obj PT) bool {
-	if c.hasPermissionsChecker() {
-		var allowed bool
-		var err error
-		switch action {
-		case storage.Access_READ_ACCESS:
-			allowed, err = c.permissionChecker.ReadAllowed(ctx)
-		case storage.Access_READ_WRITE_ACCESS:
-			allowed, err = c.permissionChecker.WriteAllowed(ctx)
-		default:
-			return false
-		}
-		if err != nil {
-			return false
-		}
-		return allowed
-	}
 	scopeChecker := sac.GlobalAccessScopeChecker(ctx).AccessMode(action).Resource(c.targetResource)
 	var interfaceObj interface{} = obj
 	switch c.targetResource.GetScope() {
@@ -490,18 +499,22 @@ func (c *cachedStore[T, PT]) isActionAllowed(ctx context.Context, action storage
 	return scopeChecker.IsAllowed()
 }
 
-func (c *cachedStore[T, PT]) hasPermissionsChecker() bool {
-	return c.permissionChecker != nil
-}
-
 func (c *cachedStore[T, PT]) populateCache() error {
+	timer := prometheus.NewTimer(cachePopulationDuration.WithLabelValues(c.schema.TypeName))
+	defer timer.ObserveDuration()
 	c.cacheLock.Lock()
 	defer c.cacheLock.Unlock()
 	c.cache = make(map[string]PT)
-	return c.underlyingStore.Walk(sac.WithAllAccess(context.Background()), func(obj PT) error {
+	err := c.underlyingStore.Walk(sac.WithAllAccess(context.Background()), func(obj PT) error {
 		c.addToCacheNoLock(obj)
 		return nil
 	})
+	c.setCacheEntriesGauge()
+	return err
+}
+
+func (c *cachedStore[T, PT]) setCacheEntriesGauge() {
+	cacheEntries.WithLabelValues(c.schema.TypeName).Set(float64(len(c.cache)))
 }
 
 func (c *cachedStore[T, PT]) addToCacheNoLock(obj PT) {

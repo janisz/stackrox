@@ -48,7 +48,7 @@ type Field struct {
 var customResourceTemplate = newTemplate(templateFile)
 
 func main() {
-	typ := reflect.TypeOf(storage.Policy{})
+	typ := reflect.TypeFor[storage.Policy]()
 	renderData := RenderRequestData{
 		TypeName:       "Policy",
 		TypesToConvert: generateTemplateData(typ, set.NewStringSet()),
@@ -70,8 +70,7 @@ func generateTemplateData(t reflect.Type, visited set.StringSet) []ConvertType {
 	needUpdate := false
 	// Iterate over fields and collect information
 	var conversionList []ConvertType
-	for i := 0; i < t.NumField(); i++ {
-		field := t.Field(i)
+	for field := range t.Fields() {
 		fieldName := field.Name
 		// Skip internal fields
 		if len(fieldName) == 0 || !unicode.IsUpper(rune(fieldName[0])) {
@@ -137,7 +136,7 @@ func checkForConversion(field reflect.StructField) bool {
 
 func getBaseType(fieldType reflect.Type) reflect.Type {
 	baseType := fieldType
-	for baseType.Kind() == reflect.Slice || baseType.Kind() == reflect.Map || baseType.Kind() == reflect.Ptr {
+	for baseType.Kind() == reflect.Slice || baseType.Kind() == reflect.Map || baseType.Kind() == reflect.Pointer {
 		baseType = baseType.Elem()
 	}
 

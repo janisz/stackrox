@@ -1,18 +1,14 @@
-import React, { ReactElement, ReactNode } from 'react';
-import {
-    EmptyState,
-    EmptyStateIcon,
-    EmptyStateBody,
-    EmptyStateHeader,
-} from '@patternfly/react-core';
+import type { ComponentType, PropsWithChildren, ReactElement, ReactNode } from 'react';
+import { EmptyState, EmptyStateBody } from '@patternfly/react-core';
+import type { EmptyStateProps } from '@patternfly/react-core';
 import { CubesIcon } from '@patternfly/react-icons';
 
 export type EmptyStateTemplateProps = {
     children?: ReactNode;
     title: string;
     headingLevel: 'h1' | 'h2' | 'h3' | 'h4';
-    icon?: React.ComponentType<React.PropsWithChildren<unknown>>;
-    iconClassName?: string;
+    icon?: ComponentType<PropsWithChildren<unknown>>;
+    status?: EmptyStateProps['status'];
 };
 
 function EmptyStateTemplate({
@@ -20,15 +16,16 @@ function EmptyStateTemplate({
     title,
     headingLevel,
     icon = CubesIcon,
-    iconClassName = '',
+    status,
 }: EmptyStateTemplateProps): ReactElement {
     return (
-        <EmptyState variant="lg">
-            <EmptyStateHeader
-                titleText={<>{title}</>}
-                icon={<EmptyStateIcon className={iconClassName} icon={icon} />}
-                headingLevel={headingLevel}
-            />
+        <EmptyState
+            status={status}
+            headingLevel={headingLevel}
+            icon={icon}
+            titleText={<>{title}</>}
+            variant="lg"
+        >
             <EmptyStateBody>{children}</EmptyStateBody>
         </EmptyState>
     );

@@ -8,6 +8,8 @@ import (
 	"github.com/stackrox/rox/generated/storage"
 	"github.com/stackrox/rox/pkg/booleanpolicy/fieldnames"
 	"github.com/stackrox/rox/pkg/booleanpolicy/policyversion"
+	"github.com/stackrox/rox/pkg/features"
+	"github.com/stackrox/rox/pkg/testutils"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/suite"
 )
@@ -104,6 +106,12 @@ func (s *PolicyValueValidator) TestRegex() {
 			valid:   []string{"NODE", "Host"},
 			invalid: []string{"", " "},
 			r:       portExposureValueRegex,
+		},
+		{
+			name:    "file operation",
+			valid:   []string{"OPEN", "CREATE", "UNLINK", "OWNERSHIP_CHANGE", "PERMISSION_CHANGE", "open", "create", "unlink", "ownership_change", "permission_change", "Open", "Create", "rename", "RENAME", "XATTR_CHANGE", "xattr_change", "Xattr_Change"},
+			invalid: []string{"", " ", "READ", "WRITE", "DELETE", "INVALID_OPERATION", "MODIFY", "ACCESS", "ACL_CHANGE"},
+			r:       fileOperationRegex,
 		},
 	}
 
@@ -596,4 +604,158 @@ func (s *PolicyValueValidator) TestValidatePolicyHasCorrectVersion() {
 	s.Error(Validate(&storage.Policy{Name: "name", PolicyVersion: "x.y.z", PolicySections: []*storage.PolicySection{
 		{SectionName: "good", PolicyGroups: []*storage.PolicyGroup{group}},
 	}}))
+}
+
+func (s *PolicyValueValidator) TestValidateFileOperationRequiresFilePath() {
+	testutils.MustUpdateFeature(s.T(), features.SensitiveFileActivity, true)
+	defer testutils.MustUpdateFeature(s.T(), features.SensitiveFileActivity, false)
+
+	ResetFieldMetadataSingleton(s.T())
+	defer ResetFieldMetadataSingleton(s.T())
+
+	s.Error(Validate(&storage.Policy{
+
+		Name:          "Operation Without Path",
+		PolicyVersion: policyversion.CurrentVersion().String(),
+		EventSource:   storage.EventSource_NODE_EVENT,
+		PolicySections: []*storage.PolicySection{
+			{
+				SectionName: "bad",
+				PolicyGroups: []*storage.PolicyGroup{
+					{
+						FieldName: fieldnames.FileOperation,
+						Values:    []*storage.PolicyValue{{Value: "CREATE"}},
+					},
+				},
+			},
+		},
+	}))
+
+	s.Error(Validate(&storage.Policy{
+		Name:          "Operation With Path In Different Section",
+		PolicyVersion: policyversion.CurrentVersion().String(),
+		EventSource:   storage.EventSource_NODE_EVENT,
+		PolicySections: []*storage.PolicySection{
+			{
+				SectionName: "bad1",
+				PolicyGroups: []*storage.PolicyGroup{
+					{
+						FieldName: fieldnames.FileOperation,
+						Values:    []*storage.PolicyValue{{Value: "CREATE"}},
+					},
+				},
+			},
+			{
+				SectionName: "bad2",
+				PolicyGroups: []*storage.PolicyGroup{
+					{
+						FieldName: fieldnames.FilePath,
+						Values:    []*storage.PolicyValue{{Value: "/etc/passwd"}},
+					},
+				},
+			},
+		},
+	}))
+
+	s.NoError(Validate(&storage.Policy{
+		Name:          "Valid Section",
+		PolicyVersion: policyversion.CurrentVersion().String(),
+		EventSource:   storage.EventSource_NODE_EVENT,
+		PolicySections: []*storage.PolicySection{
+			{
+				SectionName: "good",
+				PolicyGroups: []*storage.PolicyGroup{
+					{
+						FieldName: fieldnames.FileOperation,
+						Values:    []*storage.PolicyValue{{Value: "CREATE"}},
+					},
+					{
+						FieldName: fieldnames.FilePath,
+						Values:    []*storage.PolicyValue{{Value: "/etc/passwd"}},
+					},
+				},
+			},
+		},
+	}))
+
+	s.Error(Validate(&storage.Policy{
+		Name:          "FileOperation without path for deployment event",
+		PolicyVersion: policyversion.CurrentVersion().String(),
+		EventSource:   storage.EventSource_DEPLOYMENT_EVENT,
+		PolicySections: []*storage.PolicySection{
+			{
+				SectionName: "bad",
+				PolicyGroups: []*storage.PolicyGroup{
+					{
+						FieldName: fieldnames.FileOperation,
+						Values:    []*storage.PolicyValue{{Value: "CREATE"}},
+					},
+				},
+			},
+		},
+	}))
+}
+
+func (s *PolicyValueValidator) TestValidateFilePath() {
+	for _, tc := range []struct {
+		description string
+		valid       bool
+		path        string
+	}{
+		{
+			description: "valid arbitrary path",
+			valid:       true,
+			path:        "/home/user/app/config.json",
+		},
+		{
+			description: "valid hidden file",
+			valid:       true,
+			path:        "/home/user/app/.config.json",
+		},
+		{
+			description: "valid wildcard path",
+			valid:       true,
+			path:        "/home/*/.config/**/*",
+		},
+		{
+			description: "valid wildcard path with question mark",
+			valid:       true,
+			path:        "/home/*/.confi?/**/*",
+		},
+		{
+			description: "invalid relative path",
+			valid:       false,
+			path:        "user/app/config.json",
+		},
+		{
+			description: "invalid path traversal path",
+			valid:       false,
+			path:        "/user/../app/config.json",
+		},
+	} {
+		s.Run(tc.description, func() {
+			policy := &storage.Policy{
+				Name:          tc.description,
+				PolicyVersion: policyversion.CurrentVersion().String(),
+				EventSource:   storage.EventSource_DEPLOYMENT_EVENT,
+				PolicySections: []*storage.PolicySection{
+					{
+						SectionName: "Rule 1",
+						PolicyGroups: []*storage.PolicyGroup{
+							{
+								FieldName: fieldnames.FilePath,
+								Values:    []*storage.PolicyValue{{Value: tc.path}},
+							},
+						},
+					},
+				},
+			}
+
+			if tc.valid {
+				s.NoError(Validate(policy))
+			} else {
+				s.Error(Validate(policy))
+			}
+		})
+	}
 }

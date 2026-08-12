@@ -41,10 +41,6 @@ func (s *ComplianceConfigsStoreSuite) SetupTest() {
 	s.NoError(err)
 }
 
-func (s *ComplianceConfigsStoreSuite) TearDownSuite() {
-	s.testDB.Teardown(s.T())
-}
-
 func (s *ComplianceConfigsStoreSuite) TestStore() {
 	ctx := sac.WithAllAccess(context.Background())
 
@@ -96,6 +92,11 @@ func (s *ComplianceConfigsStoreSuite) TestStore() {
 	}
 
 	s.NoError(store.UpsertMany(ctx, complianceConfigs))
+
+	foundComplianceConfigs, missing, err := store.GetMany(ctx, complianceConfigIDs)
+	s.NoError(err)
+	s.Empty(missing)
+	protoassert.ElementsMatch(s.T(), complianceConfigs, foundComplianceConfigs)
 
 	complianceConfigCount, err = store.Count(ctx, search.EmptyQuery())
 	s.NoError(err)

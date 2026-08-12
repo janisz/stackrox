@@ -46,6 +46,20 @@ func (m *MockDetector) EXPECT() *MockDetectorMockRecorder {
 	return m.recorder
 }
 
+// Accepts mocks base method.
+func (m *MockDetector) Accepts(msg *central.MsgToSensor) bool {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "Accepts", msg)
+	ret0, _ := ret[0].(bool)
+	return ret0
+}
+
+// Accepts indicates an expected call of Accepts.
+func (mr *MockDetectorMockRecorder) Accepts(msg any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Accepts", reflect.TypeOf((*MockDetector)(nil).Accepts), msg)
+}
+
 // Capabilities mocks base method.
 func (m *MockDetector) Capabilities() []centralsensor.SensorCapability {
 	m.ctrl.T.Helper()
@@ -58,6 +72,20 @@ func (m *MockDetector) Capabilities() []centralsensor.SensorCapability {
 func (mr *MockDetectorMockRecorder) Capabilities() *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Capabilities", reflect.TypeOf((*MockDetector)(nil).Capabilities))
+}
+
+// Name mocks base method.
+func (m *MockDetector) Name() string {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "Name")
+	ret0, _ := ret[0].(string)
+	return ret0
+}
+
+// Name indicates an expected call of Name.
+func (mr *MockDetectorMockRecorder) Name() *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Name", reflect.TypeOf((*MockDetector)(nil).Name))
 }
 
 // Notify mocks base method.
@@ -84,6 +112,18 @@ func (mr *MockDetectorMockRecorder) ProcessDeployment(ctx, deployment, action an
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ProcessDeployment", reflect.TypeOf((*MockDetector)(nil).ProcessDeployment), ctx, deployment, action)
 }
 
+// ProcessFileAccess mocks base method.
+func (m *MockDetector) ProcessFileAccess(ctx context.Context, access *storage.FileAccess) {
+	m.ctrl.T.Helper()
+	m.ctrl.Call(m, "ProcessFileAccess", ctx, access)
+}
+
+// ProcessFileAccess indicates an expected call of ProcessFileAccess.
+func (mr *MockDetectorMockRecorder) ProcessFileAccess(ctx, access any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ProcessFileAccess", reflect.TypeOf((*MockDetector)(nil).ProcessFileAccess), ctx, access)
+}
+
 // ProcessIndicator mocks base method.
 func (m *MockDetector) ProcessIndicator(ctx context.Context, indicator *storage.ProcessIndicator) {
 	m.ctrl.T.Helper()
@@ -97,17 +137,17 @@ func (mr *MockDetectorMockRecorder) ProcessIndicator(ctx, indicator any) *gomock
 }
 
 // ProcessMessage mocks base method.
-func (m *MockDetector) ProcessMessage(msg *central.MsgToSensor) error {
+func (m *MockDetector) ProcessMessage(ctx context.Context, msg *central.MsgToSensor) error {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "ProcessMessage", msg)
+	ret := m.ctrl.Call(m, "ProcessMessage", ctx, msg)
 	ret0, _ := ret[0].(error)
 	return ret0
 }
 
 // ProcessMessage indicates an expected call of ProcessMessage.
-func (mr *MockDetectorMockRecorder) ProcessMessage(msg any) *gomock.Call {
+func (mr *MockDetectorMockRecorder) ProcessMessage(ctx, msg any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ProcessMessage", reflect.TypeOf((*MockDetector)(nil).ProcessMessage), msg)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ProcessMessage", reflect.TypeOf((*MockDetector)(nil).ProcessMessage), ctx, msg)
 }
 
 // ProcessNetworkFlow mocks base method.
@@ -136,32 +176,18 @@ func (mr *MockDetectorMockRecorder) ProcessPolicySync(ctx, sync any) *gomock.Cal
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ProcessPolicySync", reflect.TypeOf((*MockDetector)(nil).ProcessPolicySync), ctx, sync)
 }
 
-// ProcessReassessPolicies mocks base method.
-func (m *MockDetector) ProcessReassessPolicies() error {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "ProcessReassessPolicies")
-	ret0, _ := ret[0].(error)
-	return ret0
-}
-
-// ProcessReassessPolicies indicates an expected call of ProcessReassessPolicies.
-func (mr *MockDetectorMockRecorder) ProcessReassessPolicies() *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ProcessReassessPolicies", reflect.TypeOf((*MockDetector)(nil).ProcessReassessPolicies))
-}
-
 // ProcessReprocessDeployments mocks base method.
-func (m *MockDetector) ProcessReprocessDeployments() error {
+func (m *MockDetector) ProcessReprocessDeployments(msg *central.ReprocessDeployments) error {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "ProcessReprocessDeployments")
+	ret := m.ctrl.Call(m, "ProcessReprocessDeployments", msg)
 	ret0, _ := ret[0].(error)
 	return ret0
 }
 
 // ProcessReprocessDeployments indicates an expected call of ProcessReprocessDeployments.
-func (mr *MockDetectorMockRecorder) ProcessReprocessDeployments() *gomock.Call {
+func (mr *MockDetectorMockRecorder) ProcessReprocessDeployments(msg any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ProcessReprocessDeployments", reflect.TypeOf((*MockDetector)(nil).ProcessReprocessDeployments))
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ProcessReprocessDeployments", reflect.TypeOf((*MockDetector)(nil).ProcessReprocessDeployments), msg)
 }
 
 // ProcessUpdatedImage mocks base method.
@@ -235,13 +261,13 @@ func (mr *MockDetectorMockRecorder) Start() *gomock.Call {
 }
 
 // Stop mocks base method.
-func (m *MockDetector) Stop(err error) {
+func (m *MockDetector) Stop() {
 	m.ctrl.T.Helper()
-	m.ctrl.Call(m, "Stop", err)
+	m.ctrl.Call(m, "Stop")
 }
 
 // Stop indicates an expected call of Stop.
-func (mr *MockDetectorMockRecorder) Stop(err any) *gomock.Call {
+func (mr *MockDetectorMockRecorder) Stop() *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Stop", reflect.TypeOf((*MockDetector)(nil).Stop), err)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Stop", reflect.TypeOf((*MockDetector)(nil).Stop))
 }

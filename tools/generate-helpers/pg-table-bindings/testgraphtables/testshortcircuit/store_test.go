@@ -41,10 +41,6 @@ func (s *TestShortCircuitsStoreSuite) SetupTest() {
 	s.NoError(err)
 }
 
-func (s *TestShortCircuitsStoreSuite) TearDownSuite() {
-	s.testDB.Teardown(s.T())
-}
-
 func (s *TestShortCircuitsStoreSuite) TestStore() {
 	ctx := sac.WithAllAccess(context.Background())
 
@@ -96,6 +92,11 @@ func (s *TestShortCircuitsStoreSuite) TestStore() {
 	}
 
 	s.NoError(store.UpsertMany(ctx, testShortCircuits))
+
+	foundTestShortCircuits, missing, err := store.GetMany(ctx, testShortCircuitIDs)
+	s.NoError(err)
+	s.Empty(missing)
+	protoassert.ElementsMatch(s.T(), testShortCircuits, foundTestShortCircuits)
 
 	testShortCircuitCount, err = store.Count(ctx, search.EmptyQuery())
 	s.NoError(err)

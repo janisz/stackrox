@@ -1,54 +1,38 @@
-import React, { ReactElement } from 'react';
-import { Card, CardBody, CardTitle, Title } from '@patternfly/react-core';
+import type { ReactElement } from 'react';
+import { Card, CardBody, CardTitle } from '@patternfly/react-core';
 
-import { Deployment } from 'types/deployment.proto';
-import useFeatureFlags from 'hooks/useFeatureFlags';
-import {
-    vulnerabilitiesPlatformPath,
-    vulnerabilitiesUserWorkloadsPath,
-    vulnerabilitiesWorkloadCvesPath,
-} from 'routePaths';
-import ContainerConfigurationDescriptionList from './ContainerConfigurationDescriptionList';
+import type { Deployment } from 'types/deployment.proto';
+import { vulnerabilitiesPlatformPath, vulnerabilitiesUserWorkloadsPath } from 'routePaths';
+import DeploymentContainersCard from 'Components/DeploymentContainersCard';
 
 export type ContainerConfigurationProps = {
     deployment: Deployment | null;
 };
 
 function ContainerConfiguration({ deployment }: ContainerConfigurationProps): ReactElement {
-    const { isFeatureFlagEnabled } = useFeatureFlags();
-
-    const hasPlatformWorkloadCveLink = deployment && deployment.platformComponent;
-
-    // eslint-disable-next-line no-nested-ternary
-    const vulnMgmtBasePath = !isFeatureFlagEnabled('ROX_PLATFORM_CVE_SPLIT')
-        ? vulnerabilitiesWorkloadCvesPath
-        : hasPlatformWorkloadCveLink
-          ? vulnerabilitiesPlatformPath
-          : vulnerabilitiesUserWorkloadsPath;
-
-    let content: JSX.Element[] | string = 'None';
-
     if (deployment === null) {
-        content =
-            'Container configurations are unavailable because the alert’s deployment no longer exists.';
-    } else if (deployment.containers.length !== 0) {
-        content = deployment.containers.map((container, i) => (
-            <React.Fragment key={container.id}>
-                <Title headingLevel="h4" className="pf-v5-u-mb-md">{`containers[${i}]`}</Title>
-                <ContainerConfigurationDescriptionList
-                    key={container.id}
-                    container={container}
-                    vulnMgmtBasePath={vulnMgmtBasePath}
-                />
-            </React.Fragment>
-        ));
+        return (
+            <Card>
+                <CardTitle component="h3">Container configuration</CardTitle>
+                <CardBody>
+                    Container configurations are unavailable because the alert&apos;s deployment no
+                    longer exists.
+                </CardBody>
+            </Card>
+        );
     }
 
+    const vulnMgmtBasePath = deployment.platformComponent
+        ? vulnerabilitiesPlatformPath
+        : vulnerabilitiesUserWorkloadsPath;
+    const getImageUrl = (imageId: string) => `${vulnMgmtBasePath}/images/${imageId}`;
+
     return (
-        <Card isFlat>
-            <CardTitle component="h3">Container configuration</CardTitle>
-            <CardBody>{content}</CardBody>
-        </Card>
+        <DeploymentContainersCard
+            containers={deployment.containers}
+            title="Container configuration"
+            getImageUrl={getImageUrl}
+        />
     );
 }
 

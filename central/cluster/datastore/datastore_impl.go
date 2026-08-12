@@ -3,18 +3,24 @@ package datastore
 import (
 	"context"
 	"fmt"
+	"maps"
+	"regexp"
+	"slices"
 	"strings"
 	"time"
 
 	"github.com/pkg/errors"
 	alertDataStore "github.com/stackrox/rox/central/alert/datastore"
-	"github.com/stackrox/rox/central/cluster/datastore/internal/search"
 	clusterStore "github.com/stackrox/rox/central/cluster/store/cluster"
 	clusterHealthStore "github.com/stackrox/rox/central/cluster/store/clusterhealth"
+	clusterInitStore "github.com/stackrox/rox/central/clusterinit/store"
 	compliancePruning "github.com/stackrox/rox/central/complianceoperator/v2/pruner"
+	"github.com/stackrox/rox/central/convert/storagetoeffectiveaccessscope"
 	clusterCVEDS "github.com/stackrox/rox/central/cve/cluster/datastore"
 	deploymentDataStore "github.com/stackrox/rox/central/deployment/datastore"
 	imageIntegrationDataStore "github.com/stackrox/rox/central/imageintegration/datastore"
+	"github.com/stackrox/rox/central/metrics"
+	"github.com/stackrox/rox/central/metrics/custom/refresh"
 	namespaceDataStore "github.com/stackrox/rox/central/namespace/datastore"
 	networkBaselineManager "github.com/stackrox/rox/central/networkbaseline/manager"
 	netEntityDataStore "github.com/stackrox/rox/central/networkgraph/entity/datastore"
@@ -31,7 +37,8 @@ import (
 	v1 "github.com/stackrox/rox/generated/api/v1"
 	"github.com/stackrox/rox/generated/internalapi/central"
 	"github.com/stackrox/rox/generated/storage"
-	clusterValidation "github.com/stackrox/rox/pkg/cluster"
+	"github.com/stackrox/rox/pkg/centralsensor"
+	clusterPkg "github.com/stackrox/rox/pkg/cluster"
 	"github.com/stackrox/rox/pkg/concurrency"
 	"github.com/stackrox/rox/pkg/env"
 	"github.com/stackrox/rox/pkg/errox"
@@ -41,8 +48,11 @@ import (
 	"github.com/stackrox/rox/pkg/postgres/pgutils"
 	"github.com/stackrox/rox/pkg/protoconv"
 	"github.com/stackrox/rox/pkg/sac"
+	"github.com/stackrox/rox/pkg/sac/effectiveaccessscope"
 	"github.com/stackrox/rox/pkg/sac/resources"
 	pkgSearch "github.com/stackrox/rox/pkg/search"
+	"github.com/stackrox/rox/pkg/search/paginated"
+	"github.com/stackrox/rox/pkg/search/sorted"
 	"github.com/stackrox/rox/pkg/set"
 	"github.com/stackrox/rox/pkg/simplecache"
 	"github.com/stackrox/rox/pkg/sliceutils"
@@ -66,6 +76,7 @@ var (
 
 type datastoreImpl struct {
 	clusterStorage            clusterStore.Store
+	clusterInitStore          clusterInitStore.Store
 	clusterHealthStorage      clusterHealthStore.Store
 	clusterCVEDataStore       clusterCVEDS.DataStore
 	alertDataStore            alertDataStore.DataStore
@@ -87,10 +98,9 @@ type datastoreImpl struct {
 	notifier      notifierProcessor.Processor
 	clusterRanker *ranking.Ranker
 
-	idToNameCache simplecache.Cache
-	nameToIDCache simplecache.Cache
-
-	searcher search.Searcher
+	idToNameCache            simplecache.Cache
+	idToNamespaceFilterCache simplecache.Cache
+	nameToIDCache            simplecache.Cache
 
 	lock sync.Mutex
 }
@@ -113,7 +123,12 @@ func (ds *datastoreImpl) UpdateClusterUpgradeStatus(ctx context.Context, id stri
 	}
 
 	cluster.Status.UpgradeStatus = upgradeStatus
-	return ds.clusterStorage.Upsert(ctx, cluster)
+
+	err = ds.clusterStorage.Upsert(ctx, cluster)
+	if err == nil {
+		refresh.RefreshTracker(metrics.Health)
+	}
+	return err
 }
 
 func (ds *datastoreImpl) UpdateClusterCertExpiryStatus(ctx context.Context, id string, clusterCertExpiryStatus *storage.ClusterCertExpiryStatus) error {
@@ -134,7 +149,11 @@ func (ds *datastoreImpl) UpdateClusterCertExpiryStatus(ctx context.Context, id s
 	}
 
 	cluster.Status.CertExpiryStatus = clusterCertExpiryStatus
-	return ds.clusterStorage.Upsert(ctx, cluster)
+	err = ds.clusterStorage.Upsert(ctx, cluster)
+	if err == nil {
+		refresh.RefreshTracker(metrics.Expiry)
+	}
+	return err
 }
 
 func (ds *datastoreImpl) UpdateClusterStatus(ctx context.Context, id string, status *storage.ClusterStatus) error {
@@ -151,7 +170,11 @@ func (ds *datastoreImpl) UpdateClusterStatus(ctx context.Context, id string, sta
 	status.CertExpiryStatus = cluster.GetStatus().GetCertExpiryStatus()
 	cluster.Status = status
 
-	return ds.clusterStorage.Upsert(ctx, cluster)
+	err = ds.clusterStorage.Upsert(ctx, cluster)
+	if err == nil {
+		refresh.RefreshTracker(metrics.Health)
+	}
+	return err
 }
 
 func (ds *datastoreImpl) buildCache(ctx context.Context) error {
@@ -164,7 +187,7 @@ func (ds *datastoreImpl) buildCache(ctx context.Context) error {
 	walkFn := func() error {
 		clusterHealthStatuses = make(map[string]*storage.ClusterHealthStatus)
 		return ds.clusterHealthStorage.Walk(ctx, func(healthInfo *storage.ClusterHealthStatus) error {
-			clusterHealthStatuses[healthInfo.Id] = healthInfo
+			clusterHealthStatuses[healthInfo.GetId()] = healthInfo
 			return nil
 		})
 	}
@@ -175,6 +198,22 @@ func (ds *datastoreImpl) buildCache(ctx context.Context) error {
 	for _, c := range clusters {
 		ds.idToNameCache.Add(c.GetId(), c.GetName())
 		ds.nameToIDCache.Add(c.GetName(), c.GetId())
+
+		if filter := clusterPkg.GetNamespaceFilter(c); filter != nil {
+			compiledFilter, err := regexp.Compile(*filter)
+
+			if err == nil {
+				ds.idToNamespaceFilterCache.Add(c.GetId(), compiledFilter)
+			} else {
+				log.Errorf("Could not compile filter regexp: %v", err)
+			}
+		} else {
+			// We got empty filter building the cluster. There should be no
+			// prior cache at this point, but just in case make sure it's
+			// invalidated.
+			ds.idToNamespaceFilterCache.Remove(c.GetId())
+		}
+
 		c.HealthStatus = clusterHealthStatuses[c.GetId()]
 	}
 	return nil
@@ -197,22 +236,83 @@ func (ds *datastoreImpl) registerClusterForNetworkGraphExtSrcs() error {
 }
 
 func (ds *datastoreImpl) Search(ctx context.Context, q *v1.Query) ([]pkgSearch.Result, error) {
-	return ds.searcher.Search(ctx, q)
+	// Need to check if we are sorting by priority.
+	validPriorityQuery, err := sorted.IsValidPriorityQuery(q, pkgSearch.ClusterPriority)
+	if err != nil {
+		return nil, err
+	}
+	if validPriorityQuery {
+		priorityQuery, reversed, err := sorted.RemovePrioritySortFromQuery(q, pkgSearch.ClusterPriority)
+		if err != nil {
+			return nil, err
+		}
+		results, err := ds.clusterStorage.Search(ctx, priorityQuery)
+		if err != nil {
+			return nil, err
+		}
+
+		sortedResults := sorted.SortResults(results, reversed, ds.clusterRanker)
+		return paginated.PageResults(sortedResults, q)
+	}
+
+	return ds.clusterStorage.Search(ctx, q)
 }
 
 // Count returns the number of search results from the query
 func (ds *datastoreImpl) Count(ctx context.Context, q *v1.Query) (int, error) {
-	return ds.searcher.Count(ctx, q)
+	return ds.clusterStorage.Count(ctx, q)
 }
 
 func (ds *datastoreImpl) SearchResults(ctx context.Context, q *v1.Query) ([]*v1.SearchResult, error) {
-	return ds.searcher.SearchResults(ctx, q)
+	if q == nil {
+		q = pkgSearch.EmptyQuery()
+	}
+	clonedQuery := q.CloneVT()
+	selectSelects := []*v1.QuerySelect{
+		pkgSearch.NewQuerySelect(pkgSearch.Cluster).Proto(),
+	}
+	clonedQuery.Selects = append(clonedQuery.GetSelects(), selectSelects...)
+	results, err := ds.Search(ctx, clonedQuery)
+	if err != nil {
+		return nil, err
+	}
+	for i := range results {
+		if results[i].FieldValues != nil {
+			if nameVal, ok := results[i].FieldValues[strings.ToLower(pkgSearch.Cluster.String())]; ok {
+				results[i].Name = nameVal
+			}
+		}
+	}
+	return pkgSearch.ResultsToSearchResultProtos(results, &ClusterSearchResultConverter{}), nil
 }
 
 func (ds *datastoreImpl) searchRawClusters(ctx context.Context, q *v1.Query) ([]*storage.Cluster, error) {
-	clusters, err := ds.searcher.SearchClusters(ctx, q)
+	var clusters []*storage.Cluster
+	validPriorityQuery, err := sorted.IsValidPriorityQuery(q, pkgSearch.ClusterPriority)
 	if err != nil {
 		return nil, err
+	}
+	if validPriorityQuery {
+		results, err := ds.Search(ctx, q)
+		if err != nil {
+			return nil, err
+		}
+
+		clusters, _, err = ds.clusterStorage.GetMany(ctx, pkgSearch.ResultsToIDs(results))
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		err = ds.clusterStorage.WalkByQuery(ctx, q, func(cluster *storage.Cluster) error {
+			clusters = append(clusters, cluster)
+			return nil
+		})
+		slices.SortFunc(clusters, func(a, b *storage.Cluster) int {
+			return strings.Compare(a.GetName(), b.GetName())
+		})
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	ds.populateHealthInfos(ctx, clusters...)
@@ -252,26 +352,8 @@ func (ds *datastoreImpl) GetClusters(ctx context.Context) ([]*storage.Cluster, e
 	return ds.searchRawClusters(ctx, pkgSearch.EmptyQuery())
 }
 
-func (ds *datastoreImpl) GetClustersForSAC(ctx context.Context) ([]*storage.Cluster, error) {
-	ok, err := clusterSAC.ReadAllowed(ctx)
-	if err != nil {
-		return nil, err
-	} else if !ok {
-		return ds.searchRawClusters(ctx, pkgSearch.EmptyQuery())
-	}
-	var clusters []*storage.Cluster
-	walkFn := func() error {
-		clusters = clusters[:0]
-		return ds.clusterStorage.Walk(ctx, func(cluster *storage.Cluster) error {
-			clusters = append(clusters, cluster)
-			return nil
-		})
-	}
-	if err := pgutils.RetryIfPostgres(ctx, walkFn); err != nil {
-		return nil, err
-	}
-
-	return clusters, nil
+func (ds *datastoreImpl) GetClustersForSAC() ([]effectiveaccessscope.Cluster, error) {
+	return storagetoeffectiveaccessscope.Clusters(ds.clusterStorage.GetAllFromCacheForSAC()), nil
 }
 
 func (ds *datastoreImpl) GetClusterName(ctx context.Context, id string) (string, bool, error) {
@@ -283,6 +365,26 @@ func (ds *datastoreImpl) GetClusterName(ctx context.Context, id string) (string,
 		return "", false, nil
 	}
 	return val.(string), true, nil
+}
+
+// Figure out if an indicator matches provided namespace filter. We consider
+// SAC errors or failure to find the pre-compiled filter regex as not matching
+// cases.
+func (ds *datastoreImpl) MatchProcessIndicator(ctx context.Context,
+	indicator *storage.ProcessIndicator) (bool, error) {
+
+	id := indicator.GetClusterId()
+
+	if ok, err := clusterSAC.ReadAllowed(ctx, sac.ClusterScopeKey(id)); err != nil || !ok {
+		return false, err
+	}
+
+	filter, ok := ds.idToNamespaceFilterCache.Get(id)
+	if !ok {
+		return false, nil
+	}
+
+	return filter.(*regexp.Regexp).MatchString(indicator.GetNamespace()), nil
 }
 
 func (ds *datastoreImpl) Exists(ctx context.Context, id string) (bool, error) {
@@ -336,7 +438,7 @@ func (ds *datastoreImpl) AddCluster(ctx context.Context, cluster *storage.Cluste
 	if err := checkWriteSac(ctx, cluster.GetId()); err != nil {
 		return "", err
 	}
-	_, found := ds.nameToIDCache.Get(cluster.Name)
+	_, found := ds.nameToIDCache.Get(cluster.GetName())
 	if found {
 		return "", errox.AlreadyExists.Newf("the cluster with name %s exists, cannot re-add it", cluster.GetName())
 	}
@@ -449,6 +551,7 @@ func (ds *datastoreImpl) UpdateClusterHealth(ctx context.Context, id string, clu
 	if clusterHealthStatus.GetSensorHealthStatus() == oldHealth.GetSensorHealthStatus() && clusterHealthStatus.GetCollectorHealthStatus() == oldHealth.GetCollectorHealthStatus() {
 		return nil
 	}
+	defer refresh.RefreshTracker(metrics.Health)
 
 	cluster, exists, err := ds.clusterStorage.Get(ctx, id)
 	if err != nil {
@@ -509,9 +612,7 @@ func (ds *datastoreImpl) UpdateAuditLogFileStates(ctx context.Context, id string
 	if cluster.GetAuditLogState() == nil {
 		cluster.AuditLogState = make(map[string]*storage.AuditLogFileState)
 	}
-	for node, state := range states {
-		cluster.AuditLogState[node] = state
-	}
+	maps.Copy(cluster.GetAuditLogState(), states)
 
 	return ds.clusterStorage.Upsert(ctx, cluster)
 }
@@ -524,7 +625,7 @@ func (ds *datastoreImpl) RemoveCluster(ctx context.Context, id string, done *con
 	ds.lock.Lock()
 	defer ds.lock.Unlock()
 
-	// Fetch the cluster an confirm it exists.
+	// Fetch the cluster and confirm it exists.
 	cluster, exists, err := ds.clusterStorage.Get(ctx, id)
 	if !exists {
 		return errors.Errorf("unable to find cluster %q", id)
@@ -537,6 +638,7 @@ func (ds *datastoreImpl) RemoveCluster(ctx context.Context, id string, done *con
 		return errors.Wrapf(err, "failed to remove cluster %q", id)
 	}
 	ds.idToNameCache.Remove(id)
+	ds.idToNamespaceFilterCache.Remove(id)
 	ds.nameToIDCache.Remove(cluster.GetName())
 
 	deleteRelatedCtx := sac.WithAllAccess(context.Background())
@@ -550,6 +652,11 @@ func (ds *datastoreImpl) postRemoveCluster(ctx context.Context, cluster *storage
 		ds.cm.CloseConnection(cluster.GetId())
 	}
 	ds.removeClusterImageIntegrations(ctx, cluster)
+
+	// Remove the cluster health since the cluster no longer exists
+	if err := ds.clusterHealthStorage.Delete(ctx, cluster.GetId()); err != nil {
+		log.Errorf("failed to remove health status for cluster %s: %v", cluster.GetId(), err)
+	}
 
 	// Remove ranker record here since removal is not handled in risk store as no entry present for cluster
 	ds.clusterRanker.Remove(cluster.GetId())
@@ -568,6 +675,10 @@ func (ds *datastoreImpl) postRemoveCluster(ctx context.Context, cluster *storage
 
 	if err := ds.netEntityDataStore.DeleteExternalNetworkEntitiesForCluster(ctx, cluster.GetId()); err != nil {
 		log.Errorf("failed to delete external network graph entities for removed cluster %s: %v", cluster.GetId(), err)
+	}
+
+	if err := ds.netFlowsDataStore.RemoveFlowStore(ctx, cluster.GetId()); err != nil {
+		log.Errorf("failed to delete network flows for removed cluster %s: %v", cluster.GetId(), err)
 	}
 
 	if features.ComplianceEnhancements.Enabled() {
@@ -836,139 +947,210 @@ func (ds *datastoreImpl) updateClusterNoLock(ctx context.Context, cluster *stora
 	}
 	ds.idToNameCache.Add(cluster.GetId(), cluster.GetName())
 	ds.nameToIDCache.Add(cluster.GetName(), cluster.GetId())
+
+	if filter := clusterPkg.GetNamespaceFilter(cluster); filter != nil {
+		compiledFilter, err := regexp.Compile(*filter)
+
+		if err == nil {
+			ds.idToNamespaceFilterCache.Add(cluster.GetId(), compiledFilter)
+		} else {
+			log.Errorf("Could not compile filter regexp: %v", err)
+		}
+	} else {
+		// We got empty filter updating the cluster. Make sure the cache is
+		// invalidated.
+		ds.idToNamespaceFilterCache.Remove(cluster.GetId())
+	}
 	return nil
 }
 
-// registrantID can be the ID of an init bundle or of a CRS.
+// clusterConfigData holds extracted configuration from SensorHello.
+// This allows pure functions to work with structured data instead of raw protobuf messages.
+type clusterConfigData struct {
+	clusterName              string
+	manager                  storage.ManagerType
+	helmConfig               *storage.CompleteClusterConfig
+	isNotManagedManually     bool
+	deploymentIdentification *storage.SensorDeploymentIdentification
+	capabilities             []string
+}
+
+// extractClusterConfig extracts relevant configuration data from SensorHello.
+// This is a pure function that performs the extraction once.
+func extractClusterConfig(hello *central.SensorHello) clusterConfigData {
+	helmInit := hello.GetHelmManagedConfigInit()
+	return clusterConfigData{
+		clusterName:              helmInit.GetClusterName(),
+		manager:                  helmInit.GetManagedBy(),
+		helmConfig:               helmInit.GetClusterConfig(),
+		isNotManagedManually:     centralsensor.SecuredClusterIsNotManagedManually(helmInit),
+		deploymentIdentification: hello.GetDeploymentIdentification(),
+		capabilities:             hello.GetCapabilities(),
+	}
+}
+
+// shouldUpdateCluster determines if an existing cluster needs updating.
+// Returns true if any of: sensor capabilities, config fingerprint, init bundle ID, or manager type has changed.
+func shouldUpdateCluster(existing *storage.Cluster, config clusterConfigData, registrantID string) bool {
+	return !(set.NewSet(existing.GetSensorCapabilities()...).Equal(set.NewSet(config.capabilities...)) &&
+		existing.GetInitBundleId() == registrantID &&
+		existing.GetHelmConfig().GetConfigFingerprint() == config.helmConfig.GetConfigFingerprint() &&
+		existing.GetManagedBy() == config.manager)
+}
+
+func buildNewClusterFromConfig(clusterName, registrantID string, config clusterConfigData) *storage.Cluster {
+	cluster := &storage.Cluster{
+		Name:               clusterName,
+		InitBundleId:       registrantID,
+		ManagedBy:          config.manager,
+		MostRecentSensorId: config.deploymentIdentification.CloneVT(),
+		SensorCapabilities: sliceutils.CopySliceSorted(config.capabilities),
+	}
+	if config.isNotManagedManually {
+		configureFromHelmConfig(cluster, config.helmConfig)
+	}
+
+	return cluster
+}
+
+// applyConfigToCluster applies configuration updates to a cluster.
+// Returns a new cluster object with updates applied (immutable pattern).
+func applyConfigToCluster(cluster *storage.Cluster, config clusterConfigData) *storage.Cluster {
+	updated := cluster.CloneVT()
+	updated.ManagedBy = config.manager
+	updated.SensorCapabilities = sliceutils.CopySliceSorted(config.capabilities)
+
+	if config.isNotManagedManually {
+		configureFromHelmConfig(updated, config.helmConfig)
+	} else {
+		updated.HelmConfig = nil
+	}
+
+	return updated
+}
+
+// checkGracePeriodForReconnect checks if reconnection is allowed based on grace period.
+// For Helm/Operator managed clusters, prevents cluster moves within the grace period.
+// (Note: see ROX-32981 for further discussion)
+func checkGracePeriodForReconnect(cluster *storage.Cluster, deploymentID *storage.SensorDeploymentIdentification, manager storage.ManagerType) error {
+	// In a scale test environment, allow Sensors to reconnect in under the time limit.
+	if env.ScaleTestEnabled.BooleanSetting() {
+		return nil
+	}
+
+	lastContact := protoconv.ConvertTimestampToTimeOrDefault(cluster.GetHealthStatus().GetLastContact(), time.Time{})
+	timeLeftInGracePeriod := clusterMoveGracePeriod - time.Since(lastContact)
+
+	if timeLeftInGracePeriod > 0 {
+		if err := common.CheckConnReplace(deploymentID, cluster.GetMostRecentSensorId()); err != nil {
+			// Fallback value - should be overridden by switch unless ManagerType is extended.
+			// This should never surface to the user.
+			managerPretty := "non-manually"
+			switch manager {
+			case storage.ManagerType_MANAGER_TYPE_HELM_CHART:
+				managerPretty = "Helm"
+			case storage.ManagerType_MANAGER_TYPE_KUBERNETES_OPERATOR:
+				managerPretty = "Operator"
+			}
+			return errors.Errorf("registering %s-managed cluster is not allowed: %s. If you recently re-deployed, please wait for another %v",
+				managerPretty, err, timeLeftInGracePeriod)
+		}
+	}
+	return nil
+}
+
+// Returns the cluster, a bool indicating whether it was an existing cluster (true) or newly created (false), and an error.
+// The bool is important because existing clusters need grace period checks and update checks, while new clusters skip those.
+func (ds *datastoreImpl) lookupOrCreateCluster(ctx context.Context, clusterID, clusterName, registrantID string, config clusterConfigData) (*storage.Cluster, bool, error) {
+	if clusterID == "" && clusterName == "" {
+		return nil, false, errors.New("neither a cluster ID nor a cluster name was specified")
+	}
+
+	// Try to resolve cluster ID from name if not provided
+	if clusterID == "" {
+		if cachedID, ok := ds.nameToIDCache.Get(clusterName); ok {
+			clusterID, _ = cachedID.(string)
+		}
+	}
+
+	// Path 1: Lookup existing cluster by ID
+	if clusterID != "" {
+		cluster, exists, err := ds.GetCluster(ctx, clusterID)
+		if err != nil {
+			return nil, false, err
+		}
+		if !exists {
+			return nil, false, errors.Errorf("cluster with ID %q does not exist", clusterID)
+		}
+
+		// Validate name matches if specified
+		if clusterName != "" && clusterName != cluster.GetName() {
+			return nil, false, errors.Errorf("name mismatch for cluster %q: expected %q, but %q was specified. Set the cluster.name/clusterName attribute in your Helm config to %q, or remove it",
+				clusterID, cluster.GetName(), clusterName, cluster.GetName())
+		}
+
+		return cluster, true, nil
+	}
+
+	// Path 2: Create new cluster by name
+	cluster := buildNewClusterFromConfig(clusterName, registrantID, config)
+
+	if err := ds.clusterInitStore.InitiateClusterRegistration(ctx, registrantID, clusterName); err != nil {
+		return nil, false, errors.Wrapf(err, "initiating registrations of cluster %s using init artifact %s", clusterName, registrantID)
+	}
+
+	if _, err := ds.addClusterNoLock(ctx, cluster); err != nil {
+		return nil, false, errors.Wrapf(err, "failed to dynamically add cluster with name %q", clusterName)
+	}
+
+	return cluster, false, nil
+}
+
+// registrantID can be one of
+// * ID of an init bundle, when connecting with an init bundle certificate.
+// * ID of a CRS, when connecting with a CRS certificate.
+// * Empty, when connecting with non-init service certificates.
 func (ds *datastoreImpl) LookupOrCreateClusterFromConfig(ctx context.Context, clusterID, registrantID string, hello *central.SensorHello) (*storage.Cluster, error) {
 	if err := checkWriteSac(ctx, clusterID); err != nil {
 		return nil, err
 	}
 
-	helmConfig := hello.GetHelmManagedConfigInit()
-	manager := helmConfig.GetManagedBy()
+	config := extractClusterConfig(hello)
 
 	ds.lock.Lock()
 	defer ds.lock.Unlock()
 
-	clusterName := helmConfig.GetClusterName()
-
-	if clusterID == "" && clusterName != "" {
-		// Try to look up cluster ID by name, if this is for an existing cluster
-		clusterIDVal, _ := ds.nameToIDCache.Get(clusterName)
-		clusterID, _ = clusterIDVal.(string)
+	cluster, isExisting, err := ds.lookupOrCreateCluster(ctx, clusterID, config.clusterName, registrantID, config)
+	if err != nil {
+		return nil, err
 	}
 
-	isExisting := false
-	var cluster *storage.Cluster
-	if clusterID != "" {
-		clusterByID, exist, err := ds.GetCluster(ctx, clusterID)
-		if err != nil {
+	// New clusters are fully built and persisted by lookupOrCreateCluster; no further update needed.
+	if !isExisting {
+		return cluster, nil
+	}
+
+	// For existing clusters, check if update is needed
+	if config.manager != storage.ManagerType_MANAGER_TYPE_MANUAL {
+		if err := checkGracePeriodForReconnect(cluster, config.deploymentIdentification, config.manager); err != nil {
 			return nil, err
-		} else if !exist {
-			return nil, errors.Errorf("cluster with ID %q does not exist", clusterID)
 		}
 
-		isExisting = true
-
-		cluster = clusterByID
-
-		// If a name is specified, validate it (otherwise, accept any name)
-		if clusterName != "" && clusterName != clusterByID.GetName() {
-			return nil, errors.Errorf("Name mismatch for cluster %q: expected %q, but %q was specified. Set the cluster.name/clusterName attribute in your Helm config to %q, or remove it", clusterID, cluster.GetName(), clusterName, cluster.GetName())
-		}
-
-	} else if clusterName != "" {
-		// At this point, we can be sure that the cluster does not exist.
-		cluster = &storage.Cluster{
-			Name:               clusterName,
-			InitBundleId:       registrantID,
-			MostRecentSensorId: hello.GetDeploymentIdentification().CloneVT(),
-			SensorCapabilities: sliceutils.CopySliceSorted(hello.GetCapabilities()),
-		}
-		clusterConfig := helmConfig.GetClusterConfig()
-		configureFromHelmConfig(cluster, clusterConfig)
-
-		if securedClusterIsNotManagedManually(helmConfig) {
-			cluster.HelmConfig = clusterConfig.CloneVT()
-		}
-
-		if _, err := ds.addClusterNoLock(ctx, cluster); err != nil {
-			return nil, errors.Wrapf(err, "failed to dynamically add cluster with name %q", clusterName)
-		}
-	} else {
-		return nil, errors.New("neither a cluster ID nor a cluster name was specified")
-	}
-
-	if manager != storage.ManagerType_MANAGER_TYPE_MANUAL && isExisting {
-		// This is short-cut for clusters whose Helm config fingerprint and init bundle ID is unchanged.
-		// Applies to Helm- and Operator-managed clusters, not to manually managed clusters.
-
-		// Check if the newly incoming request may replace the old connection
-		lastContact := protoconv.ConvertTimestampToTimeOrDefault(cluster.GetHealthStatus().GetLastContact(), time.Time{})
-		timeLeftInGracePeriod := clusterMoveGracePeriod - time.Since(lastContact)
-
-		// In a scale test environment, allow Sensors to reconnect in under the time limit
-		if timeLeftInGracePeriod > 0 && !env.ScaleTestEnabled.BooleanSetting() {
-			if err := common.CheckConnReplace(hello.GetDeploymentIdentification(), cluster.GetMostRecentSensorId()); err != nil {
-				managerPretty := "non-manually" // Unless we extend the `ManagerType` and forget to extend the switch here, this should never surface to the user.
-				switch manager {
-				case storage.ManagerType_MANAGER_TYPE_HELM_CHART:
-					managerPretty = "Helm"
-				case storage.ManagerType_MANAGER_TYPE_KUBERNETES_OPERATOR:
-					managerPretty = "Operator"
-				}
-				return nil, errors.Errorf("registering %s-managed cluster is not allowed: %s. If you recently re-deployed, please wait for another %v",
-					managerPretty, err, timeLeftInGracePeriod)
-			}
-		}
-
-		if sensorCapabilitiesEqual(cluster, hello) &&
-			cluster.GetInitBundleId() == registrantID &&
-			cluster.GetHelmConfig().GetConfigFingerprint() == helmConfig.GetClusterConfig().GetConfigFingerprint() &&
-			cluster.GetManagedBy() == manager {
-			// No change in either of
-			// * sensor capabilities
-			// * fingerprint of the Helm configuration
-			// * in init bundle ID
-			// * manager type
-			//
-			// => there is no need to update the cluster, return immediately.
+		if !shouldUpdateCluster(cluster, config, registrantID) {
 			return cluster, nil
 		}
 	}
 
-	clusterConfig := helmConfig.GetClusterConfig()
-	currentCluster := cluster
+	updatedCluster := applyConfigToCluster(cluster, config)
 
-	cluster = cluster.CloneVT()
-	cluster.ManagedBy = manager
-	cluster.InitBundleId = registrantID
-	cluster.SensorCapabilities = sliceutils.CopySliceSorted(hello.GetCapabilities())
-	if securedClusterIsNotManagedManually(helmConfig) {
-		configureFromHelmConfig(cluster, clusterConfig)
-		cluster.HelmConfig = clusterConfig.CloneVT()
-	} else {
-		cluster.HelmConfig = nil
-	}
-
-	if !currentCluster.EqualVT(cluster) {
-		// Cluster is dirty and needs to be updated in the DB.
-		if err := ds.updateClusterNoLock(ctx, cluster); err != nil {
+	// Persist if changed
+	if !cluster.EqualVT(updatedCluster) {
+		if err := ds.updateClusterNoLock(ctx, updatedCluster); err != nil {
 			return nil, err
 		}
 	}
 
-	return cluster, nil
-}
-
-func securedClusterIsNotManagedManually(helmManagedConfig *central.HelmManagedConfigInit) bool {
-	return helmManagedConfig.GetManagedBy() != storage.ManagerType_MANAGER_TYPE_UNKNOWN &&
-		helmManagedConfig.GetManagedBy() != storage.ManagerType_MANAGER_TYPE_MANUAL
-}
-
-func sensorCapabilitiesEqual(cluster *storage.Cluster, hello *central.SensorHello) bool {
-	return set.NewSet(cluster.GetSensorCapabilities()...).Equal(set.NewSet(hello.GetCapabilities()...))
+	return updatedCluster, nil
 }
 
 func normalizeCluster(cluster *storage.Cluster) error {
@@ -983,7 +1165,7 @@ func normalizeCluster(cluster *storage.Cluster) error {
 }
 
 func validateInput(cluster *storage.Cluster) error {
-	return clusterValidation.Validate(cluster).ToError()
+	return clusterPkg.Validate(cluster).ToError()
 }
 
 // addDefaults enriches the provided non-nil cluster object with defaults for
@@ -1016,7 +1198,7 @@ func addDefaults(cluster *storage.Cluster) error {
 		cluster.DynamicConfig.DisableAuditLogs = true
 	}
 
-	acConfig := cluster.DynamicConfig.GetAdmissionControllerConfig()
+	acConfig := cluster.GetDynamicConfig().GetAdmissionControllerConfig()
 	if acConfig == nil {
 		acConfig = &storage.AdmissionControllerConfig{
 			Enabled: false,
@@ -1056,6 +1238,12 @@ func configureFromHelmConfig(cluster *storage.Cluster, helmConfig *storage.Compl
 	cluster.AdmissionControllerEvents = staticConfig.GetAdmissionControllerEvents()
 	cluster.TolerationsConfig = staticConfig.GetTolerationsConfig().CloneVT()
 	cluster.SlimCollector = staticConfig.GetSlimCollector()
+	cluster.AdmissionControllerFailOnError = false
+	if features.AdmissionControllerConfig.Enabled() {
+		cluster.AdmissionControllerFailOnError = staticConfig.GetAdmissionControllerFailOnError()
+	}
+	cluster.HelmConfig = helmConfig.CloneVT()
+
 }
 
 func (ds *datastoreImpl) collectClusters(ctx context.Context) ([]*storage.Cluster, error) {
@@ -1071,4 +1259,32 @@ func (ds *datastoreImpl) collectClusters(ctx context.Context) ([]*storage.Cluste
 		return nil, err
 	}
 	return clusters, nil
+}
+
+// GetClusterLabels returns the labels for the specified cluster.
+func (ds *datastoreImpl) GetClusterLabels(ctx context.Context, clusterID string) (map[string]string, error) {
+	cluster, exists, err := ds.GetCluster(ctx, clusterID)
+	if err != nil {
+		return nil, err
+	}
+	if !exists {
+		return nil, nil
+	}
+	return cluster.GetLabels(), nil
+}
+
+// ClusterSearchResultConverter implements search.SearchResultConverter for cluster search results.
+// This enables single-pass query construction for SearchResult protos.
+type ClusterSearchResultConverter struct{}
+
+func (c *ClusterSearchResultConverter) BuildName(result *pkgSearch.Result) string {
+	return result.Name
+}
+
+func (c *ClusterSearchResultConverter) BuildLocation(result *pkgSearch.Result) string {
+	return fmt.Sprintf("/%s", result.Name)
+}
+
+func (c *ClusterSearchResultConverter) GetCategory() v1.SearchCategory {
+	return v1.SearchCategory_CLUSTERS
 }

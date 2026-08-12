@@ -1,17 +1,17 @@
 import withAuth from '../../helpers/basicAuth';
 import {
-    credentialForCentralExpiryAlias,
     credentialForCentralDbExpiryAlias,
+    credentialForCentralExpiryAlias,
     credentialForScannerExpiryAlias,
     setClock,
     visitSystemHealth,
 } from '../../helpers/systemHealth';
 
-const statusSelectorCentral = 'div:has(.pf-v5-c-card__header:contains("Central certificate"))';
+const statusSelectorCentral = 'div:has(.pf-v6-c-card__header:contains("Central certificate"))';
 const statusSelectorCentralDb =
-    'div:has(.pf-v5-c-card__header:contains("Central Database certificate"))';
+    'div:has(.pf-v6-c-card__header:contains("Central Database certificate"))';
 const statusSelectorScanner =
-    'div:has(.pf-v5-c-card__header:contains("StackRox Scanner certificate"))';
+    'div:has(.pf-v6-c-card__header:contains("StackRox Scanner certificate"))';
 
 describe('System Health Certificate Health Cards', () => {
     withAuth();

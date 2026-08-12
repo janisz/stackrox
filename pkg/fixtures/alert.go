@@ -2,6 +2,7 @@ package fixtures
 
 import (
 	"github.com/stackrox/rox/generated/storage"
+	"github.com/stackrox/rox/pkg/booleanpolicy/violationmessages/printer"
 	"github.com/stackrox/rox/pkg/fixtures/fixtureconsts"
 	"github.com/stackrox/rox/pkg/images/types"
 	"github.com/stackrox/rox/pkg/protocompat"
@@ -10,17 +11,20 @@ import (
 )
 
 func copyScopingInfo(alert *storage.Alert) *storage.Alert {
-	switch entity := alert.Entity.(type) {
+	switch entity := alert.GetEntity().(type) {
 	case *storage.Alert_Deployment_:
-		alert.ClusterName = entity.Deployment.ClusterName
-		alert.ClusterId = entity.Deployment.ClusterId
-		alert.Namespace = entity.Deployment.Namespace
-		alert.NamespaceId = entity.Deployment.NamespaceId
+		alert.ClusterName = entity.Deployment.GetClusterName()
+		alert.ClusterId = entity.Deployment.GetClusterId()
+		alert.Namespace = entity.Deployment.GetNamespace()
+		alert.NamespaceId = entity.Deployment.GetNamespaceId()
 	case *storage.Alert_Resource_:
-		alert.ClusterName = entity.Resource.ClusterName
-		alert.ClusterId = entity.Resource.ClusterId
-		alert.Namespace = entity.Resource.Namespace
-		alert.NamespaceId = entity.Resource.NamespaceId
+		alert.ClusterName = entity.Resource.GetClusterName()
+		alert.ClusterId = entity.Resource.GetClusterId()
+		alert.Namespace = entity.Resource.GetNamespace()
+		alert.NamespaceId = entity.Resource.GetNamespaceId()
+	case *storage.Alert_Node_:
+		alert.ClusterId = entity.Node.GetClusterId()
+		alert.ClusterName = entity.Node.GetClusterName()
 	}
 	return alert
 }
@@ -132,6 +136,29 @@ func GetScopedResourceAlert(ID string, clusterID string, namespace string) *stor
 		},
 		LifecycleStage: storage.LifecycleStage_RUNTIME,
 	})
+}
+
+// GetScopedNodeAlert returns a Mock alert attached to a node belonging to the input cluster
+func GetScopedNodeAlert(ID string, clusterID string, nodeID string, nodeName string) *storage.Alert {
+	return &storage.Alert{
+		Id: ID,
+		Violations: []*storage.Alert_Violation{
+			{
+				Message: "Node has suspicious file activity",
+			},
+		},
+		Time:        protocompat.TimestampNow(),
+		Policy:      GetPolicy(),
+		ClusterId:   clusterID,
+		ClusterName: "prod cluster",
+		Entity: &storage.Alert_Node_{
+			Node: &storage.Alert_Node{
+				Id:   nodeID,
+				Name: nodeName,
+			},
+		},
+		LifecycleStage: storage.LifecycleStage_RUNTIME,
+	}
 }
 
 // GetClusterResourceAlert returns a Mock Alert with a resource entity that is cluster wide (i.e. has no namespace)
@@ -277,7 +304,7 @@ func GetAlertWithID(id string) *storage.Alert {
 
 // GetSACTestAlertSet returns a set of mock alerts that can be used for scoped access control tests
 func GetSACTestAlertSet() []*storage.Alert {
-	alerts := make([]*storage.Alert, 0, 19)
+	alerts := make([]*storage.Alert, 0, 24)
 	alerts = append(alerts, GetScopedDeploymentAlert(uuid.NewV4().String(), testconsts.Cluster1, testconsts.NamespaceA))
 	alerts = append(alerts, GetScopedDeploymentAlert(uuid.NewV4().String(), testconsts.Cluster1, testconsts.NamespaceA))
 	alerts = append(alerts, GetScopedDeploymentAlert(uuid.NewV4().String(), testconsts.Cluster1, testconsts.NamespaceA))
@@ -297,6 +324,12 @@ func GetSACTestAlertSet() []*storage.Alert {
 	alerts = append(alerts, GetScopedDeploymentAlert(uuid.NewV4().String(), testconsts.Cluster2, testconsts.NamespaceC))
 	alerts = append(alerts, GetScopedResourceAlert(uuid.NewV4().String(), testconsts.Cluster2, testconsts.NamespaceC))
 	alerts = append(alerts, getImageAlertWithID(uuid.NewV4().String()))
+
+	alerts = append(alerts, GetScopedNodeAlert(uuid.NewV4().String(), testconsts.Cluster1, uuid.NewV4().String(), "node-1"))
+	alerts = append(alerts, GetScopedNodeAlert(uuid.NewV4().String(), testconsts.Cluster1, uuid.NewV4().String(), "node-2"))
+	alerts = append(alerts, GetScopedNodeAlert(uuid.NewV4().String(), testconsts.Cluster2, uuid.NewV4().String(), "node-3"))
+	alerts = append(alerts, GetScopedNodeAlert(uuid.NewV4().String(), testconsts.Cluster2, uuid.NewV4().String(), "node-4"))
+	alerts = append(alerts, GetScopedNodeAlert(uuid.NewV4().String(), testconsts.Cluster3, uuid.NewV4().String(), "node-5"))
 	return alerts
 }
 
@@ -342,6 +375,7 @@ func GetJSONSerializedTestAlertWithDefaults() string {
 	"clusterId": "caaaaaaa-bbbb-4011-0000-111111111111",
 	"clusterName": "prod cluster",
 	"enforcement": null,
+	"enforcementCount": 0,
 	"entityType": "UNSET",
 	"firstOccurred": null,
 	"lifecycleStage": "DEPLOY",
@@ -403,4 +437,50 @@ func GetJSONSerializedTestAlert() string {
 		}
 	]
 }`
+}
+
+func GetNodeAlert() *storage.Alert {
+	return copyScopingInfo(&storage.Alert{
+		Id:             fixtureconsts.Alert1,
+		Violations:     []*storage.Alert_Violation{},
+		Time:           protocompat.TimestampNow(),
+		Policy:         GetNodePolicy(),
+		LifecycleStage: storage.LifecycleStage_RUNTIME,
+		Entity: &storage.Alert_Node_{
+			Node: &storage.Alert_Node{
+				Name:        fixtureconsts.Node1,
+				Id:          fixtureconsts.Node1,
+				ClusterId:   fixtureconsts.Cluster1,
+				ClusterName: fixtureconsts.ClusterName1,
+			},
+		},
+	})
+}
+
+func WithFileAccessViolation(alert *storage.Alert) *storage.Alert {
+	alert.Violations = append(alert.Violations, []*storage.Alert_Violation{
+		printer.GenerateFileAccessViolation(&storage.FileAccess{
+			File: &storage.FileAccess_File{
+				ActualPath:    "/etc/passwd",
+				EffectivePath: "/etc/passwd",
+			},
+			Operation: storage.FileAccess_OPEN,
+			Timestamp: protocompat.TimestampNow(),
+			Process: &storage.ProcessIndicator{
+				Signal: &storage.ProcessSignal{
+					Name:         "cp",
+					ExecFilePath: "/bin/cp",
+				},
+			},
+		}),
+	}...)
+	return alert
+}
+
+func GetNodeFileAccessAlert() *storage.Alert {
+	return WithFileAccessViolation(GetNodeAlert())
+}
+
+func GetDeploymentFileAccessAlert() *storage.Alert {
+	return WithFileAccessViolation(GetScopedDeploymentAlert(fixtureconsts.Alert1, fixtureconsts.Cluster1, "stackrox"))
 }

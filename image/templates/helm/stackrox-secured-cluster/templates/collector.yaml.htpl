@@ -7,7 +7,6 @@ metadata:
     {{- include "srox.labels" (list . "daemonset" "collector") | nindent 4 }}
     service: collector
     app: collector
-    auto-upgrade.stackrox.io/component: "sensor"
   annotations:
     {{- include "srox.annotations" (list . "daemonset" "collector") | nindent 4 }}
   name: collector
@@ -45,10 +44,6 @@ spec:
       hostAliases: {{ toYaml ._rox.collector.hostAliases | nindent 8 }}
       {{- end }}
       serviceAccountName: collector
-      initContainers:
-      {{- if ._rox._securedClusterCertRefresh }}
-      - {{ include "srox.tlsCertsInitContainer" (list .) | indent 8 | trim }}
-      {{- end }}
       containers:
       {{- if ne ._rox.collector.collectionMethod "NO_COLLECTION"}}
       - name: collector
@@ -72,10 +67,6 @@ spec:
           value: {{ ._rox.sensor.endpoint }}
         - name: SNI_HOSTNAME
           value: "sensor.stackrox.svc"
-        [<- if .FeatureFlags.ROX_COLLECTOR_RUNTIME_CONFIG >]
-        - name: ROX_COLLECTOR_RUNTIME_FILTERS_ENABLED
-          value: "{{ ._rox.collector.runtimeConfig.enabled }}"
-        [<- end >]
         {{- include "srox.envVars" (list . "daemonset" "collector" "collector") | nindent 8 }}
         resources:
           {{- ._rox.collector._resources | nindent 10 }}
@@ -109,22 +100,62 @@ spec:
         - mountPath: /run/secrets/stackrox.io/certs/
           name: certs
           readOnly: true
-        [<- if .FeatureFlags.ROX_COLLECTOR_RUNTIME_CONFIG >]
-        {{- if ._rox.collector.containerd.enabled }}
-        - mountPath: /host/run/containerd/containerd.sock
-          name: containerd-sock
-          mountPropagation: HostToContainer
-        {{- end }}
-        {{- if ._rox.collector.crio.enabled }}
-        - mountPath: /host/run/crio/crio.sock
-          name: crio-sock
-          mountPropagation: HostToContainer
-        {{- end }}
-        [<- end >]
         - mountPath: "/etc/stackrox"
           name: collector-config
           readOnly: true
+        - mountPath: /var/profiles
+          name: collector-profiles
       {{- end }}
+
+      [<- if .FeatureFlags.ROX_SENSITIVE_FILE_ACTIVITY >]
+
+      {{- if ._rox.collector.famEnabled }}
+      - name: fact
+        image: {{ quote ._rox.image.fact.fullRef }}
+        imagePullPolicy: {{ ._rox.fact.imagePullPolicy }}
+        {{- if ._rox.fact.exposeMonitoring }}
+        ports:
+          - containerPort: 9001
+            name: monitoring
+        {{- end }}
+        command: ["/usr/local/bin/fact", "--skip-pre-flight"]
+        env:
+        - name: FACT_LOGLEVEL
+          value: 'debug'
+        - name: FACT_URL
+          value: "https://{{ ._rox.sensor.endpoint }}"
+        - name: FACT_CERTS
+          value: "/var/run/secrets/stackrox.io/certs/"
+        - name: FACT_HOST_MOUNT
+          value: "/host"
+        {{- include "srox.envVars" (list . "daemonset" "collector" "fact") | nindent 8 }}
+        resources:
+          {{- ._rox.collector._famResources | nindent 10 }}
+        securityContext:
+          capabilities:
+            drop:
+            - NET_RAW
+          privileged: true
+          readOnlyRootFilesystem: true
+        volumeMounts:
+        - mountPath: /sys
+          name: sys-ro
+          readOnly: true
+          mountPropagation: HostToContainer
+        - mountPath: /run/secrets/stackrox.io/certs/
+          name: certs
+          readOnly: true
+        - mountPath: /host
+          name: host-root-ro
+          readOnly: true
+          mountPropagation: HostToContainer
+        - mountPath: /etc/stackrox
+          name: fact-config
+          readOnly: true
+      {{- end }}
+
+      [<- end >]
+
       - command:
         - stackrox/compliance
         env:
@@ -136,6 +167,14 @@ spec:
           valueFrom:
             resourceFieldRef:
               resource: limits.cpu
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: POD_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
         - name: ROX_CALL_NODE_INVENTORY_ENABLED
           value: {{ if eq ._rox.env.openshift 4 }}"true"{{ else }}"false"{{ end }}
       {{- if eq ._rox.env.openshift 4 }}
@@ -154,6 +193,8 @@ spec:
               apiVersion: v1
               fieldPath: spec.nodeName
         - name: ROX_ADVERTISED_ENDPOINT
+          value: {{ quote ._rox.sensor.endpoint }}
+        - name: ROX_SENSOR_ENDPOINT
           value: {{ quote ._rox.sensor.endpoint }}
         - name: ROX_NODE_SCANNING_ENDPOINT
           value: {{ quote ._rox.collector.nodescanningEndpoint }}
@@ -212,6 +253,14 @@ spec:
             fieldRef:
               apiVersion: v1
               fieldPath: spec.nodeName
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: POD_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
         {{- include "srox.envVars" (list . "daemonset" "collector" "node-inventory") | nindent 8 }}
         volumeMounts:
          - mountPath: /host
@@ -240,7 +289,11 @@ spec:
           path: /dev
         name: dev-ro
       {{- if ._rox._securedClusterCertRefresh }}
-      {{- include "srox.tlsCertsInitContainerVolumes" (list "collector") | indent 6 }}
+      - name: certs
+        secret:
+          secretName: tls-cert-collector
+          optional: false
+          items: null
       {{- else }}
       - name: certs
         secret:
@@ -270,23 +323,39 @@ spec:
         emptyDir: {}
       - name: tmp-volume
         emptyDir: {}
+      - name: collector-profiles
+        emptyDir: {}
       - name: cache-volume
         emptyDir:
           sizeLimit: 200Mi
 
-      [<- if .FeatureFlags.ROX_COLLECTOR_RUNTIME_CONFIG >]
-      {{- if ._rox.collector.containerd.enabled }}
-      - name: containerd-sock
-        hostPath:
-          path: /run/containerd/containerd.sock
-      {{- end }}
-      {{- if ._rox.collector.crio.enabled }}
-      - name: crio-sock
-        hostPath:
-          path: /run/crio/crio.sock
-      {{- end }}
-      [<- end >]
       - name: collector-config
         configMap:
           name: collector-config
           optional: true
+      - name: fact-config
+        configMap:
+          name: fact-config
+          optional: true
+
+{{- if ._rox.collector.exposeMonitoring }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: compliance-metrics
+  namespace: {{ ._rox._namespace }}
+  labels:
+    {{- include "srox.labels" (list . "service" "compliance-metrics") | nindent 4 }}
+  annotations:
+    {{- include "srox.annotations" (list . "service" "compliance-metrics") | nindent 4 }}
+spec:
+  clusterIP: None
+  ports:
+  - name: monitoring
+    port: 9091
+    targetPort: 9091
+    protocol: TCP
+  selector:
+    app: collector
+{{- end }}

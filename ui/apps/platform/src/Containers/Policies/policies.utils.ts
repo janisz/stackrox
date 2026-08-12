@@ -1,37 +1,41 @@
 import pluralize from 'pluralize';
 import qs from 'qs';
 import cloneDeep from 'lodash/cloneDeep';
+import isEqual from 'lodash/isEqual';
 import omit from 'lodash/omit';
 
-import {
-    policyCriteriaDescriptors,
-    auditLogDescriptor,
-    imageSigningCriteriaName,
-    Descriptor,
-} from 'Containers/Policies/Wizard/Step3/policyCriteriaDescriptors';
 import { notifierIntegrationsDescriptors } from 'Containers/Integrations/utils/integrationsList';
 import { eventSourceLabels, lifecycleStageLabels } from 'messages/common';
-import { ClusterScopeObject } from 'services/RolesService';
-import { NotifierIntegration } from 'types/notifier.proto';
-import {
+import type { ClusterScopeObject } from 'services/RolesService';
+import type { NotifierIntegration } from 'types/notifier.proto';
+import type {
+    ClientPolicy,
     EnforcementAction,
     LifecycleStage,
+    ListPolicy,
+    Policy,
+    PolicyDeploymentExclusion,
     PolicyEventSource,
     PolicyExcludedDeployment,
     PolicyExclusion,
-    Policy,
-    ClientPolicy,
-    ValueObj,
-    PolicyScope,
     PolicyGroup,
-    PolicyDeploymentExclusion,
     PolicyImageExclusion,
-    ListPolicy,
+    PolicyScope,
+    PolicyScopeLabel,
+    ValueObj,
 } from 'types/policy.proto';
-import { SearchFilter } from 'types/search';
-import { ExtendedPageAction } from 'utils/queryStringUtils';
+import type { SearchFilter } from 'types/search';
+import type { ExtendedPageAction } from 'utils/queryStringUtils';
 import { checkArrayContainsArray } from 'utils/arrayUtils';
 import { allEnabled } from 'utils/featureFlagUtils';
+
+import {
+    auditLogDescriptor,
+    imageSigningCriteriaName,
+    nodeEventDescriptor,
+    policyCriteriaDescriptors,
+} from './Wizard/Step3/policyCriteriaDescriptors';
+import type { Descriptor } from './Wizard/Step3/policyCriteriaDescriptors';
 
 function isValidAction(action: unknown): action is ExtendedPageAction {
     return action === 'clone' || action === 'create' || action === 'edit' || action === 'generate';
@@ -71,6 +75,11 @@ export const initialPolicy: ClientPolicy = {
     criteriaLocked: false,
     mitreVectorsLocked: false,
     source: 'IMPERATIVE',
+    evaluationFilter: {
+        skipContainerTypes: [],
+        // TODO: uncomment this once backend support is available
+        // skipImageLayers: 'SKIP_NONE',
+    },
 };
 
 export type PoliciesSearch = {
@@ -264,39 +273,23 @@ export function getClusterName(clusters: ClusterScopeObject[], clusterId: string
 /* PolicyWizard steps */
 
 export type WizardPolicyStep4 = {
-    scope: WizardScope[];
-    excludedDeploymentScopes: WizardExcludedDeployment[];
+    scope: PolicyScope[];
+    excludedDeploymentScopes: PolicyExcludedDeployment[];
     excludedImageNames: string[];
 };
 
-export type WizardExcludedDeployment = {
-    name?: string;
-    scope: WizardScope;
-};
-
-/*
- * WizardScope whose label object whose properties have either empty string or undefined values
- * corresponds to PolicyScope label value null.
- */
-
-export type WizardScope = {
-    cluster?: string;
-    namespace?: string;
-    label: WizardScopeLabel | null;
-};
-
-export type WizardScopeLabel = {
-    key?: string;
-    value?: string;
-};
-
-export const initialScope: WizardScope = {
+// The exclusion UI does not show cluster or namespace label yet, but inclusion and exclusion both
+// use the same backend proto (storage.Scope), so defaults include the full PolicyScope to match the API.
+// We plan to add those fields to the exclusion UI later.
+export const initialScope: PolicyScope = {
     cluster: '',
+    clusterLabel: null,
     namespace: '',
-    label: {},
+    namespaceLabel: null,
+    label: null,
 };
 
-export const initialExcludedDeployment: WizardExcludedDeployment = {
+export const initialExcludedDeployment: PolicyExcludedDeployment = {
     name: '',
     scope: initialScope,
 };
@@ -337,7 +330,7 @@ export function parseNumericComparisons(str): [string, string] {
     return [matches[1], matches[2]];
 }
 
-export function parseValueStr(value, fieldName): ValueObj {
+export function parseValueStr(value: string, fieldName: string): ValueObj {
     // TODO: work with API to update contract for returning number comparison fields
     //   until that improves, we short-circuit those fields here
 
@@ -356,19 +349,23 @@ export function parseValueStr(value, fieldName): ValueObj {
     if (typeof value === 'string' && isCompoundField(fieldName)) {
         // handle all other string fields
         const valueArr = value.split('=');
-        // for nested policy criteria fields
-        if (valueArr.length === 2) {
+
+        // for the Environment Variable policy criteria
+        if (fieldName === 'Environment Variable') {
+            const [source, key, ...values] = valueArr;
             return {
-                key: valueArr[0],
-                value: valueArr[1],
+                source,
+                key,
+                value: values.join('='),
             };
         }
-        // for the Environment Variable policy criteria
-        if (valueArr.length === 3) {
+
+        // for nested policy criteria fields
+        if (valueArr.length > 1) {
+            const [key, ...values] = valueArr;
             return {
-                source: valueArr[0],
-                key: valueArr[1],
-                value: valueArr[2],
+                key,
+                value: values.join('='),
             };
         }
     }
@@ -448,6 +445,35 @@ function getExclusionFields({ exclusions }: Policy): {
     };
 }
 
+function isPolicyScopeLabelEmpty(label: PolicyScopeLabel | null | undefined): boolean {
+    if (label == null) {
+        return true;
+    }
+    return label.key === '' && label.value === '';
+}
+
+/**
+ * Whether a deployment exclusion scope should be sent as null to Central (matches validateScope
+ * "no field populated"). Call only after trimming in trimClientWizardPolicy.
+ */
+export function isExcludedDeploymentScopeEmpty(scope: PolicyScope | null | undefined): boolean {
+    if (scope == null) {
+        return true;
+    }
+
+    const hasCluster = (scope.cluster ?? '') !== '';
+    const hasNamespace = (scope.namespace ?? '') !== '';
+    if (hasCluster || hasNamespace) {
+        return false;
+    }
+
+    return (
+        isPolicyScopeLabelEmpty(scope.label) &&
+        isPolicyScopeLabelEmpty(scope.clusterLabel) &&
+        isPolicyScopeLabelEmpty(scope.namespaceLabel)
+    );
+}
+
 /*
  * Merge client-wizard excludedDeploymentScopes and excludedImageNames properties into server exclusions property.
  */
@@ -455,7 +481,14 @@ export function getServerPolicyExclusions(policy: ClientPolicy): Policy['exclusi
     const exclusions: Policy['exclusions'] = [];
 
     policy.excludedDeploymentScopes.forEach((deployment) => {
-        exclusions.push({ deployment, image: null });
+        const deploymentForServer = isExcludedDeploymentScopeEmpty(deployment.scope)
+            ? { ...deployment, scope: null }
+            : deployment;
+
+        exclusions.push({
+            deployment: deploymentForServer,
+            image: null,
+        });
     });
 
     policy.excludedImageNames.forEach((name) => {
@@ -491,32 +524,33 @@ function getFormattedServerPolicyFields(policy: ClientPolicy): Policy['policySec
     return policySections;
 }
 
-// Impure function assumes caller has cloned the scope!
-function trimPolicyScope(scope: PolicyScope) {
-    /* eslint-disable no-param-reassign */
-    if (typeof scope.cluster === 'string') {
-        scope.cluster = scope.cluster.trim();
+/**
+ * Trims key/value. Returns null when both are empty. Central treats a present but empty "label"
+ * message differently from null.
+ */
+function trimLabelToNullIfEmpty(
+    label: PolicyScopeLabel | null | undefined
+): PolicyScopeLabel | null {
+    if (label == null) {
+        return null;
     }
-
-    if (typeof scope.namespace === 'string') {
-        scope.namespace = scope.namespace.trim();
+    const key = (label.key ?? '').trim();
+    const value = (label.value ?? '').trim();
+    if (key === '' && value === '') {
+        return null;
     }
+    return { key, value };
+}
 
-    // TODO label key and value: make sure about empty string versus undefined.
-    /*
-    if (scope.label) {
-        if (typeof scope.label.key === 'string') {
-            scope.label.key = scope.label.key.trim();
-        }
-
-        if (typeof scope.label.value === 'string') {
-            scope.label.value = scope.label.value.trim();
-        }
-    }
-    */
-    /* eslint-enable no-param-reassign */
-
-    return scope;
+function trimPolicyScope(scope: PolicyScope): PolicyScope {
+    return {
+        ...scope,
+        cluster: typeof scope.cluster === 'string' ? scope.cluster.trim() : scope.cluster,
+        namespace: typeof scope.namespace === 'string' ? scope.namespace.trim() : scope.namespace,
+        label: trimLabelToNullIfEmpty(scope.label),
+        clusterLabel: trimLabelToNullIfEmpty(scope.clusterLabel),
+        namespaceLabel: trimLabelToNullIfEmpty(scope.namespaceLabel),
+    };
 }
 
 function trimClientWizardPolicy(policyUntrimmed: ClientPolicy): ClientPolicy {
@@ -536,7 +570,7 @@ function trimClientWizardPolicy(policyUntrimmed: ClientPolicy): ClientPolicy {
         for (let iSection = 0; iSection !== policy.policySections.length; iSection += 1) {
             const policySection = policy.policySections[iSection];
 
-            policySection.sectionName = policySection.sectionName.trim();
+            policySection.sectionName = policySection.sectionName?.trim();
 
             // TODO value: make sure about empty string versus undefined.
             /*
@@ -566,7 +600,7 @@ function trimClientWizardPolicy(policyUntrimmed: ClientPolicy): ClientPolicy {
     if (Array.isArray(policy.scope)) {
         // for instead of forEach to work around no-param-reassign lint error.
         for (let i = 0; i !== policy.scope.length; i += 1) {
-            trimPolicyScope(policy.scope[i]);
+            policy.scope[i] = trimPolicyScope(policy.scope[i]);
         }
     }
 
@@ -576,7 +610,7 @@ function trimClientWizardPolicy(policyUntrimmed: ClientPolicy): ClientPolicy {
             const excludedDeploymentScope = policy.excludedDeploymentScopes[i];
 
             if (excludedDeploymentScope.scope) {
-                trimPolicyScope(excludedDeploymentScope.scope);
+                excludedDeploymentScope.scope = trimPolicyScope(excludedDeploymentScope.scope);
             }
 
             if (typeof excludedDeploymentScope.name === 'string') {
@@ -629,43 +663,72 @@ export function getServerPolicy(policyUntrimmed: ClientPolicy): Policy {
     return serverPolicy;
 }
 
-export function getLifeCyclesUpdates(
-    values: ClientPolicy,
-    lifecycleStage: LifecycleStage,
-    isChecked: boolean
-) {
+export type ValidPolicyLifeCycle = ['BUILD'] | ['DEPLOY'] | ['BUILD', 'DEPLOY'] | ['RUNTIME'];
+
+export function isBuildPolicy(stages: LifecycleStage[]): stages is ['BUILD'] {
+    return isEqual(stages, ['BUILD']);
+}
+
+export function isDeployPolicy(lifecycleStages: LifecycleStage[]): lifecycleStages is ['DEPLOY'] {
+    return isEqual(lifecycleStages, ['DEPLOY']);
+}
+
+export function isBuildAndDeployPolicy(
+    lifecycleStages: LifecycleStage[]
+): lifecycleStages is ['BUILD', 'DEPLOY'] {
+    return isEqual(lifecycleStages, ['BUILD', 'DEPLOY']);
+}
+
+export function isRuntimePolicy(lifecycleStages: LifecycleStage[]): lifecycleStages is ['RUNTIME'] {
+    return isEqual(lifecycleStages, ['RUNTIME']);
+}
+
+export function getLifeCyclesUpdates<
+    T extends Pick<
+        ClientPolicy,
+        'lifecycleStages' | 'eventSource' | 'excludedImageNames' | 'enforcementActions'
+    >,
+>(values: T, selectedStages: ValidPolicyLifeCycle): T {
     /*
      * Set all changed values at once, because separate setFieldValue calls
      * for lifecycleStages and eventSource cause inconsistent incorrect validation.
      */
     const changedValues = cloneDeep(values);
-    if (isChecked) {
-        changedValues.lifecycleStages = [...values.lifecycleStages, lifecycleStage];
-    } else {
-        changedValues.lifecycleStages = values.lifecycleStages.filter(
-            (stage) => stage !== lifecycleStage
-        );
-        if (lifecycleStage === 'RUNTIME') {
-            changedValues.eventSource = 'NOT_APPLICABLE';
-        }
-        if (lifecycleStage === 'BUILD') {
-            changedValues.excludedImageNames = [];
-        }
-        changedValues.enforcementActions = filterEnforcementActionsForRemovedLifecycleStage(
-            lifecycleStage,
-            values.enforcementActions
-        );
+
+    if (!isRuntimePolicy(selectedStages)) {
+        changedValues.eventSource = 'NOT_APPLICABLE';
     }
+
+    if (!isBuildPolicy(selectedStages) && !isBuildAndDeployPolicy(selectedStages)) {
+        changedValues.excludedImageNames = [];
+    }
+
+    values.lifecycleStages.forEach((stage) => {
+        if (!selectedStages.some((validStage) => validStage === stage)) {
+            changedValues.enforcementActions = filterEnforcementActionsForRemovedLifecycleStage(
+                stage,
+                values.enforcementActions
+            );
+        }
+    });
+
+    changedValues.lifecycleStages = [...selectedStages];
     return changedValues;
 }
+
+const eventSourceToDescriptorsMap: Readonly<Record<PolicyEventSource, Descriptor[]>> = {
+    NOT_APPLICABLE: policyCriteriaDescriptors,
+    DEPLOYMENT_EVENT: policyCriteriaDescriptors,
+    AUDIT_LOG_EVENT: auditLogDescriptor,
+    NODE_EVENT: nodeEventDescriptor,
+};
 
 export function getPolicyDescriptors(
     isFeatureFlagEnabled: (string) => boolean,
     eventSource: PolicyEventSource,
     lifecycleStages: LifecycleStage[]
 ) {
-    const unfilteredDescriptors =
-        eventSource === 'AUDIT_LOG_EVENT' ? auditLogDescriptor : policyCriteriaDescriptors;
+    const unfilteredDescriptors = eventSourceToDescriptorsMap[eventSource];
 
     const descriptors = unfilteredDescriptors.filter((unfilteredDescriptor) => {
         const { featureFlagDependency } = unfilteredDescriptor;

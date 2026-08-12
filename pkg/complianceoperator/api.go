@@ -2,6 +2,7 @@ package complianceoperator
 
 import (
 	compv1alpha1 "github.com/ComplianceAsCode/compliance-operator/pkg/apis/compliance/v1alpha1"
+	"github.com/stackrox/rox/pkg/k8sapi"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 )
@@ -11,7 +12,10 @@ var (
 	groupVersion = compv1alpha1.SchemeGroupVersion
 
 	// List of required compliance operator CRDs.
-	requiredAPIResources []APIResource
+	requiredAPIResources []k8sapi.APIResource
+
+	// List of optional compliance operator CRDs.
+	optionalAPIResources []k8sapi.APIResource
 )
 
 // APIResources for compliance operator resources.
@@ -70,6 +74,12 @@ var (
 		Group:   GetGroupVersion().Group,
 		Version: GetGroupVersion().Version,
 	})
+	CustomRule = registerOptionalAPIResource(v1.APIResource{
+		Name:    "customrules",
+		Kind:    "CustomRule",
+		Group:   GetGroupVersion().Group,
+		Version: GetGroupVersion().Version,
+	})
 )
 
 // GetGroupVersion return the group version that uniquely represents the API set of compliance operator CRs.
@@ -78,35 +88,23 @@ func GetGroupVersion() schema.GroupVersion {
 }
 
 // GetRequiredResources returns the compliance operator API resources required by ACS.
-func GetRequiredResources() []APIResource {
+func GetRequiredResources() []k8sapi.APIResource {
 	return requiredAPIResources
 }
 
-// APIResource provides a wrapper around v1.APIResource.
-type APIResource struct {
-	v1.APIResource
+// GetOptionalResources returns the compliance operator API resources optionally used by ACS.
+func GetOptionalResources() []k8sapi.APIResource {
+	return optionalAPIResources
 }
 
-// GroupVersionKind returns the GroupVersionKind which uniquely identifies the resource kind.
-func (r *APIResource) GroupVersionKind() schema.GroupVersionKind {
-	return schema.GroupVersionKind{
-		Group:   r.Group,
-		Version: r.Version,
-		Kind:    r.Kind,
-	}
-}
-
-// GroupVersionResource returns the GroupVersionResource which uniquely identifies the resource.
-func (r *APIResource) GroupVersionResource() schema.GroupVersionResource {
-	return schema.GroupVersionResource{
-		Group:    r.Group,
-		Version:  r.Version,
-		Resource: r.Name,
-	}
-}
-
-func registerAPIResource(resource v1.APIResource) APIResource {
-	r := APIResource{resource}
+func registerAPIResource(resource v1.APIResource) k8sapi.APIResource {
+	r := k8sapi.APIResource{APIResource: resource}
 	requiredAPIResources = append(requiredAPIResources, r)
+	return r
+}
+
+func registerOptionalAPIResource(resource v1.APIResource) k8sapi.APIResource {
+	r := k8sapi.APIResource{APIResource: resource}
+	optionalAPIResources = append(optionalAPIResources, r)
 	return r
 }

@@ -6,19 +6,31 @@ import (
 	"io"
 	"io/fs"
 	"log"
+	"log/slog"
 	"net"
 	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/rs/zerolog"
+	"github.com/mitchellh/mapstructure"
+	"github.com/spf13/viper"
 	"github.com/stackrox/rox/pkg/buildinfo"
 	"github.com/stackrox/rox/pkg/utils"
 	"github.com/stackrox/rox/scanner/internal/version"
-	"gopkg.in/yaml.v3"
+)
+
+// MatcherReadiness labels the different readiness strategies Scanner can use.
+type MatcherReadiness string
+
+const (
+	// ReadinessDatabase makes the matcher ready when the database connection is established.
+	ReadinessDatabase MatcherReadiness = "database"
+	// ReadinessVulnerability makes the matcher ready when the vulnerabilities are loaded at least once.
+	ReadinessVulnerability MatcherReadiness = "vulnerability"
 )
 
 var (
@@ -32,12 +44,13 @@ var (
 				ConnString:   "host=/var/run/postgresql",
 				PasswordFile: "",
 			},
-			GetLayerTimeout:    Duration(time.Minute),
+			GetLayerTimeout:    time.Minute,
 			RepositoryToCPEURL: "https://security.access.redhat.com/data/metrics/repository-to-cpe.json",
 			NameToReposURL:     "https://security.access.redhat.com/data/metrics/container-name-repos-map.json",
 		},
 		Matcher: MatcherConfig{
-			Enable: true,
+			Enable:    true,
+			Readiness: ReadinessDatabase,
 			Database: Database{
 				ConnString:   "host=/var/run/postgresql",
 				PasswordFile: "",
@@ -51,21 +64,21 @@ var (
 		Proxy: ProxyConfig{
 			ConfigFile: "config.yaml",
 		},
-		LogLevel: LogLevel(zerolog.InfoLevel),
+		LogLevel: slog.LevelInfo,
 	}
 )
 
 // Config represents the Scanner configuration parameters.
 type Config struct {
 	// StackRoxServices indicates the Scanner is deployed alongside StackRox services.
-	StackRoxServices bool          `yaml:"stackrox_services"`
-	Indexer          IndexerConfig `yaml:"indexer"`
-	Matcher          MatcherConfig `yaml:"matcher"`
-	HTTPListenAddr   string        `yaml:"http_listen_addr"`
-	GRPCListenAddr   string        `yaml:"grpc_listen_addr"`
-	MTLS             MTLSConfig    `yaml:"mtls"`
-	Proxy            ProxyConfig   `yaml:"proxy"`
-	LogLevel         LogLevel      `yaml:"log_level"`
+	StackRoxServices bool          `mapstructure:"stackrox_services"`
+	Indexer          IndexerConfig `mapstructure:"indexer"`
+	Matcher          MatcherConfig `mapstructure:"matcher"`
+	HTTPListenAddr   string        `mapstructure:"http_listen_addr"`
+	GRPCListenAddr   string        `mapstructure:"grpc_listen_addr"`
+	MTLS             MTLSConfig    `mapstructure:"mtls"`
+	Proxy            ProxyConfig   `mapstructure:"proxy"`
+	LogLevel         slog.Level    `mapstructure:"log_level"`
 }
 
 func (c *Config) validate() error {
@@ -101,19 +114,19 @@ type IndexerConfig struct {
 	// StackRoxServices specifies whether Indexer is deployed alongside StackRox services.
 	StackRoxServices bool
 	// Database provides indexer's database configuration.
-	Database Database `yaml:"database"`
+	Database Database `mapstructure:"database"`
 	// Enable if false disables the Indexer service.
-	Enable bool `yaml:"enable"`
+	Enable bool `mapstructure:"enable"`
 	// GetLayerTimeout specifies the timeout duration of GET requests for layers
-	GetLayerTimeout Duration `yaml:"get_layer_timeout"`
+	GetLayerTimeout time.Duration `mapstructure:"get_layer_timeout"`
 	// RepositoryToCPEURL specifies the URL to query for repository-to-cpe.json.
-	RepositoryToCPEURL string `yaml:"repository_to_cpe_url"`
+	RepositoryToCPEURL string `mapstructure:"repository_to_cpe_url"`
 	// RepositoryToCPEURL specifies the location of the seed repository-to-cpe.json.
-	RepositoryToCPEFile string `yaml:"repository_to_cpe_file"`
+	RepositoryToCPEFile string `mapstructure:"repository_to_cpe_file"`
 	// NameToReposURL specifies the URL to query for container-name-repos-map.json.
-	NameToReposURL string `yaml:"name_to_repos_url"`
+	NameToReposURL string `mapstructure:"name_to_repos_url"`
 	// NameToReposFile specifies the location of the seed container-name-repos-map.json.
-	NameToReposFile string `yaml:"name_to_repos_file"`
+	NameToReposFile string `mapstructure:"name_to_repos_file"`
 }
 
 func (c *IndexerConfig) validate() error {
@@ -157,18 +170,36 @@ type MatcherConfig struct {
 	// StackRoxServices specifies whether Matcher is deployed alongside StackRox services.
 	StackRoxServices bool
 	// Database provides matcher's database configuration.
-	Database Database `yaml:"database"`
+	Database Database `mapstructure:"database"`
 	// Enable if false disables the Matcher service and vulnerability updater.
-	Enable bool `yaml:"enable"`
+	Enable bool `mapstructure:"enable"`
 	// IndexerAddr forces the matcher to retrieve index reports from a remote indexer
 	// instance at the specified address, instead of the local indexer (when the
 	// indexer is enabled).
-	IndexerAddr string `yaml:"indexer_addr"`
+	IndexerAddr string `mapstructure:"indexer_addr"`
 	// VulnerabilitiesURL specifies the URL to query for vulnerabilities.
-	VulnerabilitiesURL string `yaml:"vulnerabilities_url"`
+	VulnerabilitiesURL string `mapstructure:"vulnerabilities_url"`
+	// EnableRCVulnBundle, when true, attempts to use an RC vulnerability bundle before falling back to the GA bundle.
+	EnableRCVulnBundle bool `mapstructure:"enable_rc_vuln_bundle"`
+	// VulnerabilitiesURLs internal list of candidate URLs for vulnerability bundles, ordered by preference.
+	VulnerabilitiesURLs []string `mapstructure:"-"`
 	// RemoteIndexerEnabled internal and generated flag, true when the remote indexer is enabled.
-	RemoteIndexerEnabled bool
-	VulnerabilityVersion string `yaml:"vulnerability_version"`
+	RemoteIndexerEnabled bool `mapstructure:"-"`
+	// VulnerabilityVersion allows overwriting the default version.Version and
+	// version.VulnerabilityVersion (normally defined by the go build command).
+	VulnerabilityVersion string `mapstructure:"vulnerability_version"`
+	// Readiness determine the readiness type for the Matcher.
+	Readiness MatcherReadiness `mapstructure:"readiness"`
+	// VulnBundleAllowlist, when non-empty, restricts which vulnerability bundles
+	// are imported on each update cycle. An empty list imports all bundles.
+	// Bundle names are specified without file extension (e.g. "alpine", "nvd").
+	// For the full list of bundle names see the vulnerability updater exporter.
+	//
+	// When populated, names not in the list are skipped during import. This reduces
+	// the vulnerabilities loaded into the database, which speeds up update cycles
+	// but means vulnerabilities from excluded bundles will not be detected,
+	// leading to potentially incomplete scan results.
+	VulnBundleAllowlist []string `mapstructure:"vuln_bundle_allowlist"`
 }
 
 // resolveVersions returns values for ROX_VERSION and ROX_VULNERABILITY_VERSION
@@ -219,21 +250,53 @@ func (c *MatcherConfig) validate() error {
 		return fmt.Errorf("vulnerabilities_url: invalid URL: %w", err)
 	}
 
+	// Replace version placeholders.
 	roxVer, vulnVer := c.resolveVersions()
-	c.VulnerabilitiesURL = strings.ReplaceAll(c.VulnerabilitiesURL, "ROX_VERSION", roxVer)
-	c.VulnerabilitiesURL = strings.ReplaceAll(c.VulnerabilitiesURL, "ROX_VULNERABILITY_VERSION", vulnVer)
+	u := strings.ReplaceAll(c.VulnerabilitiesURL, "ROX_VERSION", roxVer)
+	c.VulnerabilitiesURLs = make([]string, 0, 2)
+	if c.EnableRCVulnBundle {
+		// Prioritize RC-based vulnerability URL.
+		c.VulnerabilitiesURLs = append(c.VulnerabilitiesURLs, strings.ReplaceAll(u, "ROX_VULNERABILITY_VERSION", vulnVer+"-rc"))
+	}
+	c.VulnerabilitiesURLs = append(c.VulnerabilitiesURLs, strings.ReplaceAll(u, "ROX_VULNERABILITY_VERSION", vulnVer))
+
+	if c.Readiness == "" {
+		return errors.New("readiness: cannot be empty")
+	}
+
+	switch c.Readiness {
+	case ReadinessDatabase, ReadinessVulnerability:
+	default:
+		return fmt.Errorf("readiness: invalid readiness type %q", c.Readiness)
+	}
+
+	c.VulnBundleAllowlist = NormalizeStringList(c.VulnBundleAllowlist)
 
 	return nil
+}
+
+// NormalizeStringList trims whitespace from each entry and drops empty strings.
+func NormalizeStringList(entries []string) []string {
+	if entries == nil {
+		return nil
+	}
+	result := make([]string, 0, len(entries))
+	for _, s := range entries {
+		if t := strings.TrimSpace(s); t != "" {
+			result = append(result, t)
+		}
+	}
+	return result
 }
 
 // Database provides database configuration for scanner backends.
 type Database struct {
 	// ConnString provides database DSN configuration.
-	ConnString string `yaml:"conn_string"`
+	ConnString string `mapstructure:"conn_string"`
 	// PasswordFile specifies the database password by reading from a file,
 	// only valid for the password to be specified in a file if not in
 	// the ConnString.
-	PasswordFile string `yaml:"password_file"`
+	PasswordFile string `mapstructure:"password_file"`
 }
 
 func (d *Database) validate() error {
@@ -264,7 +327,7 @@ func (d *Database) validate() error {
 // MTLSConfig configures mutual TLS
 type MTLSConfig struct {
 	// CertsDir if set changes the prefix to find mTLS certificates and keys
-	CertsDir string `yaml:"certs_dir"`
+	CertsDir string `mapstructure:"certs_dir"`
 }
 
 func (c *MTLSConfig) validate() error {
@@ -284,8 +347,8 @@ func (c *MTLSConfig) validate() error {
 
 // ProxyConfig configures HTTP proxies.
 type ProxyConfig struct {
-	ConfigDir  string `yaml:"config_dir"`
-	ConfigFile string `yaml:"config_file"`
+	ConfigDir  string `mapstructure:"config_dir"`
+	ConfigFile string `mapstructure:"config_file"`
 }
 
 func (c *ProxyConfig) validate() error {
@@ -325,17 +388,16 @@ func (c *ProxyConfig) validate() error {
 	return nil
 }
 
-// LogLevel is YAML serializable zerolog.Level
-type LogLevel zerolog.Level
+// LogLevel is YAML serializable slog.Level
+type LogLevel slog.Level
 
 // UnmarshalText implements YAML's TextUnmarshaler for LogLevel
 func (l *LogLevel) UnmarshalText(level []byte) error {
-	levelS := string(level)
-	zl, err := zerolog.ParseLevel(levelS)
+	sl, err := parseSlogLevel(string(level))
 	if err != nil {
-		return fmt.Errorf("unknown log_level string: %q", levelS)
+		return err
 	}
-	*l = LogLevel(zl)
+	*l = LogLevel(sl)
 	return nil
 }
 
@@ -353,14 +415,70 @@ func (d *Duration) UnmarshalText(dBytes []byte) error {
 	return nil
 }
 
-// Load parse and validates Scanner configuration.
+func parseSlogLevel(s string) (slog.Level, error) {
+	switch strings.ToLower(s) {
+	case "trace", "debug":
+		return slog.LevelDebug, nil
+	case "info", "":
+		return slog.LevelInfo, nil
+	case "warn", "warning":
+		return slog.LevelWarn, nil
+	case "error", "fatal", "panic":
+		return slog.LevelError, nil
+	default:
+		return slog.LevelInfo, fmt.Errorf("unknown log_level string: %q", s)
+	}
+}
+
+// stringToSlogLevelFunc returns a DecodeHookFunc that converts
+// strings to slog.Level.
+func stringToSlogLevelFunc() mapstructure.DecodeHookFunc {
+	return func(
+		f reflect.Type,
+		t reflect.Type,
+		data interface{}) (interface{}, error) {
+		if f.Kind() != reflect.String {
+			return data, nil
+		}
+		if t != reflect.TypeFor[slog.Level]() {
+			return data, nil
+		}
+		return parseSlogLevel(data.(string))
+	}
+}
+
+// Load loads Scanner configuration from the environment, and merge with a
+// configuration file unless its reader is nil.
 func Load(r io.Reader) (*Config, error) {
-	yd := yaml.NewDecoder(r)
-	yd.KnownFields(true)
+	v := viper.New()
+	// Our config is in YAML.
+	v.SetConfigType("yaml")
+	// Allow env vars, but use `_` rather than `.` as a field separator.
+	v.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
+	v.SetEnvPrefix("SCANNER_V4")
+	v.AutomaticEnv()
+	// Decode the default configuration into a configuration map using mapstruct, so
+	// we can initialize Viper's default keys (using MergeConfigMap).
+	cfgMap := make(map[string]any)
+	if err := mapstructure.Decode(defaultConfiguration, &cfgMap); err != nil {
+		return nil, fmt.Errorf("decoding default config: %w", err)
+	}
+	if err := v.MergeConfigMap(cfgMap); err != nil {
+		return nil, fmt.Errorf("merging default config: %w", err)
+	}
+	if r != nil {
+		// Merge the values from the configuration file, if provided.
+		if err := v.MergeConfig(r); err != nil {
+			return nil, fmt.Errorf("reading config file: %w", err)
+		}
+	}
 	cfg := defaultConfiguration
-	if err := yd.Decode(&cfg); err != nil {
-		msg := strings.TrimPrefix(err.Error(), `yaml: `)
-		return nil, fmt.Errorf("malformed yaml: %v", msg)
+	if err := v.UnmarshalExact(&cfg, viper.DecodeHook(mapstructure.ComposeDecodeHookFunc(
+		mapstructure.StringToTimeDurationHookFunc(),
+		mapstructure.StringToSliceHookFunc(","),
+		stringToSlogLevelFunc(),
+	))); err != nil {
+		return nil, fmt.Errorf("loading config file: %w", err)
 	}
 	if cfg.StackRoxServices {
 		cfg.Indexer.StackRoxServices = true
@@ -369,16 +487,17 @@ func Load(r io.Reader) (*Config, error) {
 	return &cfg, cfg.validate()
 }
 
-// Read loads Scanner configuration from a file.
+// Read loads Scanner configuration from the environment, and merge with a
+// configuration file unless its filename is empty.
 func Read(filename string) (*Config, error) {
-	if filename == "" {
-		cfg := defaultConfiguration
-		return &cfg, nil
+	var r io.ReadCloser
+	if filename != "" {
+		var err error
+		r, err = os.Open(filename)
+		if err != nil {
+			return nil, err
+		}
+		defer utils.IgnoreError(r.Close)
 	}
-	r, err := os.Open(filename)
-	if err != nil {
-		return nil, err
-	}
-	defer utils.IgnoreError(r.Close)
 	return Load(r)
 }

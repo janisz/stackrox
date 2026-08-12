@@ -1,8 +1,8 @@
-import { ContainerRuntimeType } from './containerRuntime.proto';
-import { ImageName } from './image.proto';
-import { MatchLabelsSelector } from './labels.proto';
-import { PermissionLevel } from './rbac.proto';
-import { Toleration } from './taints.proto';
+import type { ContainerRuntimeType } from './containerRuntime.proto';
+import type { ImageName } from './image.proto';
+import type { MatchLabelsSelector } from './labels.proto';
+import type { PermissionLevel } from './rbac.proto';
+import type { Toleration } from './taints.proto';
 
 export type ListDeployment = {
     id: string;
@@ -22,7 +22,7 @@ export type Deployment = {
     type: string;
     namespace: string;
     namespaceId: string;
-    orchestratorComponent: boolean;
+    orchestratorComponent: boolean; // unused - favor `platformComponent` instead
     replicas: string; // int64
     labels: Record<string, string>;
     podLabels: Record<string, string>;
@@ -48,16 +48,19 @@ export type Deployment = {
     platformComponent: boolean;
 };
 
+export type ContainerType = 'REGULAR' | 'INIT';
+
 export type Container = {
     id: string;
-    config: ContainerConfig;
+    config: ContainerConfig | null;
     image: ContainerImage;
-    securityContext: ContainerSecurityContext;
+    securityContext: ContainerSecurityContext | null;
     volumes: ContainerVolume[];
     ports: PortConfig[];
     secrets: EmbeddedSecret[];
-    resources: ContainerResources;
+    resources: ContainerResources | null;
     name: string;
+    type: ContainerType;
 };
 
 export type ContainerConfig = {
@@ -87,6 +90,7 @@ export type EnvVarSource =
 
 export type ContainerImage = {
     id: string;
+    idV2?: string;
     name: ImageName;
     notPullable: boolean;
 };
@@ -98,6 +102,7 @@ export type ContainerSecurityContext = {
     addCapabilities: string[];
     readOnlyRootFilesystem: boolean;
     seccompProfile: SeccompProfile | null;
+    allowPrivilegeEscalation: boolean;
 };
 
 export type SELinux = {

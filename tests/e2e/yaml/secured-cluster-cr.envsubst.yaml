@@ -6,8 +6,10 @@ spec:
   centralEndpoint: $central_endpoint
   clusterName: remote
   perNode:
-    collector:
-      collection: $collection_method
+    fileActivityMonitoring:
+      mode: $fam_mode_setting
+  processIndicators:
+    excludeNamespaceRegex: namespace-without-persistence
   scanner:
     scannerComponent: $scanner_component_setting
     analyzer:
@@ -29,3 +31,5 @@ spec:
         limits:
           cpu: 1000m
           memory: 4Gi
+  customize:
+    envVars:$customize_envVars

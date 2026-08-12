@@ -3,11 +3,11 @@ package extensions
 import (
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/stackrox/rox/operator/api/v1alpha1"
 	"github.com/stackrox/rox/operator/internal/types"
 	"github.com/stackrox/rox/operator/internal/utils/testutils"
-	"github.com/stackrox/rox/pkg/pointers"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	v1 "k8s.io/api/core/v1"
@@ -44,7 +44,7 @@ func TestReconcileDBPassword(t *testing.T) {
 			Namespace: testutils.TestNamespace,
 		},
 		Data: map[string][]byte{
-			"password": []byte(fmt.Sprintf("%s\n", pw1)),
+			"password": fmt.Appendf(nil, "%s\n", pw1),
 		},
 	}
 
@@ -54,7 +54,7 @@ func TestReconcileDBPassword(t *testing.T) {
 			Namespace: testutils.TestNamespace,
 		},
 		Data: map[string][]byte{
-			"password": []byte(fmt.Sprintf("%s\n", pw2)),
+			"password": fmt.Appendf(nil, "%s\n", pw2),
 		},
 	}
 
@@ -101,7 +101,7 @@ func TestReconcileDBPassword(t *testing.T) {
 		"If no central-db-password secret exists and no custom secret reference was specified, a password should be automatically generated": {
 			Spec: specWithAutogenPassword,
 			ExpectedCreatedSecrets: map[string]secretVerifyFunc{
-				canonicalCentralDBPasswordSecretName: func(t *testing.T, data types.SecretDataMap) {
+				canonicalCentralDBPasswordSecretName: func(t *testing.T, data types.SecretDataMap, _ *time.Time) {
 					_, err := passwordFromSecretData(data)
 					assert.NoError(t, err)
 				},
@@ -111,7 +111,7 @@ func TestReconcileDBPassword(t *testing.T) {
 			Spec:            specWithAutogenPassword,
 			ExistingManaged: []*v1.Secret{canonicalPWSecretWithPW1},
 			ExpectedCreatedSecrets: map[string]secretVerifyFunc{
-				canonicalCentralDBPasswordSecretName: func(t *testing.T, data types.SecretDataMap) {
+				canonicalCentralDBPasswordSecretName: func(t *testing.T, data types.SecretDataMap, _ *time.Time) {
 					pw, err := passwordFromSecretData(data)
 					require.NoError(t, err)
 					assert.Equal(t, pw1, pw)
@@ -122,7 +122,7 @@ func TestReconcileDBPassword(t *testing.T) {
 			Spec:            specWithAutogenPassword,
 			ExistingManaged: []*v1.Secret{canonicalPWSecretWithNoPassword},
 			ExpectedCreatedSecrets: map[string]secretVerifyFunc{
-				canonicalCentralDBPasswordSecretName: func(t *testing.T, data types.SecretDataMap) {
+				canonicalCentralDBPasswordSecretName: func(t *testing.T, data types.SecretDataMap, _ *time.Time) {
 					_, err := passwordFromSecretData(data)
 					assert.NoError(t, err)
 				},
@@ -141,7 +141,7 @@ func TestReconcileDBPassword(t *testing.T) {
 			Spec:     specWithUserSpecifiedPassword,
 			Existing: []*v1.Secret{customPWSecretWithPW1},
 			ExpectedCreatedSecrets: map[string]secretVerifyFunc{
-				canonicalCentralDBPasswordSecretName: func(t *testing.T, data types.SecretDataMap) {
+				canonicalCentralDBPasswordSecretName: func(t *testing.T, data types.SecretDataMap, _ *time.Time) {
 					pw, err := passwordFromSecretData(data)
 					require.NoError(t, err)
 					assert.Equal(t, pw1, pw)
@@ -153,7 +153,7 @@ func TestReconcileDBPassword(t *testing.T) {
 			Existing:        []*v1.Secret{customPWSecretWithPW1},
 			ExistingManaged: []*v1.Secret{canonicalPWSecretWithPW1},
 			ExpectedCreatedSecrets: map[string]secretVerifyFunc{
-				canonicalCentralDBPasswordSecretName: func(t *testing.T, data types.SecretDataMap) {
+				canonicalCentralDBPasswordSecretName: func(t *testing.T, data types.SecretDataMap, _ *time.Time) {
 					pw, err := passwordFromSecretData(data)
 					require.NoError(t, err)
 					assert.Equal(t, pw1, pw)
@@ -165,7 +165,7 @@ func TestReconcileDBPassword(t *testing.T) {
 			Existing:        []*v1.Secret{customPWSecretWithPW2},
 			ExistingManaged: []*v1.Secret{canonicalPWSecretWithPW1},
 			ExpectedCreatedSecrets: map[string]secretVerifyFunc{
-				canonicalCentralDBPasswordSecretName: func(t *testing.T, data types.SecretDataMap) {
+				canonicalCentralDBPasswordSecretName: func(t *testing.T, data types.SecretDataMap, _ *time.Time) {
 					pw, err := passwordFromSecretData(data)
 					require.NoError(t, err)
 					assert.Equal(t, pw2, pw)
@@ -207,7 +207,7 @@ func TestReconcileDBPassword(t *testing.T) {
 			Spec: v1alpha1.CentralSpec{
 				Central: &v1alpha1.CentralComponentSpec{
 					DB: &v1alpha1.CentralDBSpec{
-						ConnectionStringOverride: pointers.String("foo"),
+						ConnectionStringOverride: new("foo"),
 						PasswordSecret: &v1alpha1.LocalSecretReference{
 							Name: customPWSecretName,
 						},
@@ -220,7 +220,7 @@ func TestReconcileDBPassword(t *testing.T) {
 			Spec: v1alpha1.CentralSpec{
 				Central: &v1alpha1.CentralComponentSpec{
 					DB: &v1alpha1.CentralDBSpec{
-						ConnectionStringOverride: pointers.String("foo"),
+						ConnectionStringOverride: new("foo"),
 					},
 				},
 			},
@@ -230,7 +230,6 @@ func TestReconcileDBPassword(t *testing.T) {
 
 	for name, c := range cases {
 		t.Run(name, func(t *testing.T) {
-			t.Parallel()
 
 			testSecretReconciliation(t, reconcileCentralDBPassword, c)
 		})

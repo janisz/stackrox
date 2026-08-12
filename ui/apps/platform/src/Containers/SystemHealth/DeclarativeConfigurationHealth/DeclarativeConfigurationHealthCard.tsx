@@ -1,4 +1,5 @@
-import React, { useState, useEffect, ReactElement } from 'react';
+import { useEffect, useState } from 'react';
+import type { ReactElement } from 'react';
 import {
     Alert,
     Card,
@@ -8,15 +9,15 @@ import {
     Flex,
     FlexItem,
 } from '@patternfly/react-core';
-import { Table, Tbody, Td, Thead, Th, Tr } from '@patternfly/react-table';
+import { Table, Tbody, Td, Th, Thead, Tr } from '@patternfly/react-table';
 import pluralize from 'pluralize';
 
 import { fetchDeclarativeConfigurationsHealth } from 'services/DeclarativeConfigHealthService';
+import type { DeclarativeConfigHealth } from 'types/declarativeConfigHealth.proto';
 import { getDateTime } from 'utils/dateUtils';
 import { getAxiosErrorMessage } from 'utils/responseErrorUtils';
 
-import { ErrorIcon, healthIconMap, SpinnerIcon } from '../CardHeaderIcons';
-import { DeclarativeConfigHealth } from '../../../types/declarativeConfigHealth.proto';
+import { ErrorIcon, SpinnerIcon, healthIconMap } from '../CardHeaderIcons';
 
 type DeclarativeConfigurationHealthCardProps = {
     pollingCount: number;
@@ -54,20 +55,18 @@ function DeclarativeConfigurationHealthCard({
     const unhealthyItems = items.filter(({ status }) => status === 'UNHEALTHY');
     const unhealthyCount = unhealthyItems.length;
 
-    /* eslint-disable no-nested-ternary */
     const icon = isFetchingInitialRequest
         ? SpinnerIcon
         : errorMessageFetching
           ? ErrorIcon
           : healthIconMap[unhealthyCount === 0 ? 'success' : 'danger'];
-    /* eslint-enable no-nested-ternary */
 
     return (
         <Card isFullHeight isCompact>
             <CardHeader>
                 {
                     <>
-                        <Flex className="pf-v5-u-flex-grow-1">
+                        <Flex className="pf-v6-u-flex-grow-1">
                             <FlexItem>{icon}</FlexItem>
                             <FlexItem>
                                 <CardTitle component="h2">Declarative configuration</CardTitle>

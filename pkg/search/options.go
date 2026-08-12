@@ -40,6 +40,8 @@ var (
 
 	PolicyID           = newFieldLabel("Policy ID")
 	Enforcement        = newFieldLabel("Enforcement")
+	EnforcementAction  = newFieldLabel("Enforcement Action")
+	EnforcementCount   = newFieldLabel("Enforcement Count")
 	PolicyName         = newFieldLabel("Policy")
 	PolicyCategoryName = newFieldLabel("Policy Category")
 	PolicyCategoryID   = newFieldLabel("Policy Category ID")
@@ -54,6 +56,7 @@ var (
 	CVE                = newFieldLabel("CVE")
 	CVEType            = newFieldLabel("CVE Type")
 	CVEPublishedOn     = newFieldLabel("CVE Published On")
+	CVEFixAvailable    = newFieldLabel("CVE Fix Available Timestamp")
 	CVECreatedTime     = newFieldLabel("CVE Created Time")
 	CVESuppressed      = newFieldLabel("CVE Snoozed")
 	CVESuppressExpiry  = newFieldLabel("CVE Snooze Expiry")
@@ -64,6 +67,11 @@ var (
 	CVEOrphaned        = newFieldLabel("CVE Orphaned")
 	CVEOrphanedTime    = newFieldLabel("CVE Orphaned Time")
 	EPSSProbablity     = newFieldLabel("EPSS Probability")
+	AdvisoryName       = newFieldLabel("Advisory Name")
+	AdvisoryLink       = newFieldLabel("Advisory Link")
+	CisaKev            = newFieldLabel("CISA KEV")
+
+	CVEInfo = newFieldLabel("CVE Info")
 
 	Component                      = newFieldLabel("Component")
 	ComponentID                    = newFieldLabel("Component ID")
@@ -92,6 +100,7 @@ var (
 	ImageUser                      = newFieldLabel("Image User")
 	ImageCommand                   = newFieldLabel("Image Command")
 	ImageCVECount                  = newFieldLabel("Image CVE Count")
+	ImageComponentCount            = newFieldLabel("Image Component Count")
 	ImageEntrypoint                = newFieldLabel("Image Entrypoint")
 	ImageLabel                     = newFieldLabel("Image Label")
 	ImageVolumes                   = newFieldLabel("Image Volumes")
@@ -103,6 +112,28 @@ var (
 	LastUpdatedTime                = newFieldLabel("Last Updated")
 	ImageTopCVSS                   = newFieldLabel("Image Top CVSS")
 	NodeTopCVSS                    = newFieldLabel("Node Top CVSS")
+	ImageID                        = newFieldLabel("Image ID")
+	UnknownCVECount                = newFieldLabel("Unknown CVE Count")
+	FixableUnknownCVECount         = newFieldLabel("Fixable Unknown CVE Count")
+	CriticalCVECount               = newFieldLabel("Critical CVE Count")
+	FixableCriticalCVECount        = newFieldLabel("Fixable Critical CVE Count")
+	ImportantCVECount              = newFieldLabel("Important CVE Count")
+	FixableImportantCVECount       = newFieldLabel("Fixable Important CVE Count")
+	ModerateCVECount               = newFieldLabel("Moderate CVE Count")
+	FixableModerateCVECount        = newFieldLabel("Fixable Moderate CVE Count")
+	LowCVECount                    = newFieldLabel("Low CVE Count")
+	FixableLowCVECount             = newFieldLabel("Fixable Low CVE Count")
+
+	// Base Image
+	BaseImageId               = newFieldLabel("Base Image Id")
+	BaseImageRepository       = newFieldLabel("Base Image Repository")
+	BaseImageTag              = newFieldLabel("Base Image Tag")
+	BaseImageActive           = newFieldLabel("Base Image Active")
+	BaseImageManifestDigest   = newFieldLabel("Base Image Manifest Digest")
+	BaseImageFirstLayerDigest = newFieldLabel("Base Image First Layer Digest")
+	BaseImageLayerDigest      = newFieldLabel("Base Image Layer Digest")
+	BaseImageIndex            = newFieldLabel("Base Image Index")
+	BaseImageDiscoveredAt     = newFieldLabel("Base Image Discovered At")
 
 	// Deployment related fields
 	AddCapabilities              = newFieldLabel("Add Capabilities")
@@ -115,7 +146,9 @@ var (
 	ContainerID                  = newFieldLabel("Container ID")
 	ContainerImageDigest         = newFieldLabel("Container Image Digest")
 	ContainerName                = newFieldLabel("Container Name")
+	ContainerType                = newFieldLabel("Container Type")
 	DeploymentID                 = newFieldLabel("Deployment ID")
+	DeploymentHash               = newFieldLabel("Deployment Hash")
 	DeploymentName               = newFieldLabel("Deployment")
 	DeploymentLabel              = newFieldLabel("Deployment Label")
 	DeploymentType               = newFieldLabel("Deployment Type")
@@ -189,13 +222,19 @@ var (
 	PodLabel = newFieldLabel("Pod Label")
 
 	// ProcessIndicator Search fields
-	ProcessID           = newFieldLabel("Process ID")
-	ProcessExecPath     = newFieldLabel("Process Path")
-	ProcessName         = newFieldLabel("Process Name")
-	ProcessArguments    = newFieldLabel("Process Arguments")
-	ProcessAncestor     = newFieldLabel("Process Ancestor")
-	ProcessUID          = newFieldLabel("Process UID")
-	ProcessCreationTime = newFieldLabel("Process Creation Time")
+	ProcessID                 = newFieldLabel("Process ID")
+	ProcessExecPath           = newFieldLabel("Process Path")
+	ProcessName               = newFieldLabel("Process Name")
+	ProcessArguments          = newFieldLabel("Process Arguments")
+	ProcessAncestor           = newFieldLabel("Process Ancestor")
+	ProcessUID                = newFieldLabel("Process UID")
+	ProcessCreationTime       = newFieldLabel("Process Creation Time")
+	ProcessContainerStartTime = newFieldLabel("Process Container Start Time")
+
+	// FileActivity Search fields
+	EffectivePath = newFieldLabel("Effective Path")
+	ActualPath    = newFieldLabel("Actual Path")
+	FileOperation = newFieldLabel("File Operation")
 
 	// ProcessListeningOnPort Search fields
 	Closed     = newFieldLabel("Closed")
@@ -228,6 +267,7 @@ var (
 	ComplianceOperatorProfileName              = newFieldLabel("Compliance Profile Name")
 	ComplianceOperatorConfigProfileName        = newFieldLabel("Compliance Config Profile Name")
 	ComplianceOperatorProfileProductType       = newFieldLabel("Compliance Profile Product Type")
+	ComplianceOperatorProfileOperatorKind      = newFieldLabel("Compliance Profile Operator Kind")
 	ComplianceOperatorProfileVersion           = newFieldLabel("Compliance Profile Version")
 	ComplianceOperatorStandard                 = newFieldLabel("Compliance Standard")
 	ComplianceOperatorControl                  = newFieldLabel("Compliance Control")
@@ -237,6 +277,7 @@ var (
 	ComplianceOperatorCheckUID                 = newFieldLabel("Compliance Check UID")
 	ComplianceOperatorCheckName                = newFieldLabel("Compliance Check Name")
 	ComplianceOperatorCheckRationale           = newFieldLabel("Compliance Check Rationale")
+	ComplianceOperatorCheckLastStartedTime     = newFieldLabel("Compliance Check Last Started Time")
 	ComplianceOperatorScanUpdateTime           = newFieldLabel("Compliance Scan Config Last Updated Time")
 	ComplianceOperatorResultCreateTime         = newFieldLabel("Compliance Check Result Created Time")
 	ComplianceOperatorScanLastExecutedTime     = newFieldLabel("Compliance Scan Last Executed Time")
@@ -304,6 +345,7 @@ var (
 	ImageRiskScore      = newFieldLabel("Image Risk Score")
 	ComponentRiskScore  = newFieldLabel("Component Risk Score")
 	RiskSubjectType     = newFieldLabel("Risk Subject Type")
+	ComponentLayerType  = newFieldLabel("Component Layer Type")
 
 	PolicyLastUpdated = newFieldLabel("Policy Last Updated")
 
@@ -347,10 +389,24 @@ var (
 	FixableModerateSeverityCount  = newDerivedFieldLabelWithType("Fixable Moderate Severity Count", Severity, CustomFieldType, postgres.Integer)
 	LowSeverityCount              = newDerivedFieldLabelWithType("Low Severity Count", Severity, CustomFieldType, postgres.Integer)
 	FixableLowSeverityCount       = newDerivedFieldLabelWithType("Fixable Low Severity Count", Severity, CustomFieldType, postgres.Integer)
+	UnknownSeverityCount          = newDerivedFieldLabelWithType("Unknown Severity Count", Severity, CustomFieldType, postgres.Integer)
+	FixableUnknownSeverityCount   = newDerivedFieldLabelWithType("Fixable Unknown Severity Count", Severity, CustomFieldType, postgres.Integer)
 
 	// Max-based derived fields.  These fields are primarily used in pagination.  If used in a select it will correspond
 	// to the type of the reference field and simply provide the max function on that field.
-	ComplianceLastScanMax = newDerivedFieldLabel("Compliance Scan Last Executed Time Max", ComplianceOperatorScanLastExecutedTime, MaxDerivationType)
+	ComplianceLastScanMax            = newDerivedFieldLabel("Compliance Scan Last Executed Time Max", ComplianceOperatorScanLastExecutedTime, MaxDerivationType)
+	SeverityMax                      = newDerivedFieldLabel("Severity Max", Severity, MaxDerivationType)
+	CVSSMax                          = newDerivedFieldLabel("CVSS Max", CVSS, MaxDerivationType)
+	CVECreatedTimeMin                = newDerivedFieldLabel("CVE Created Time Min", CVECreatedTime, MinDerivationType)
+	EPSSProbablityMax                = newDerivedFieldLabel("EPSS Probability Max", EPSSProbablity, MaxDerivationType)
+	ImpactScoreMax                   = newDerivedFieldLabel("Impact Score Max", ImpactScore, MaxDerivationType)
+	FirstImageOccurrenceTimestampMin = newDerivedFieldLabel("First Image Occurrence Timestamp Min", FirstImageOccurrenceTimestamp, MinDerivationType)
+	VulnerabilityStateMax            = newDerivedFieldLabel("Vulnerability State Max", VulnerabilityState, MaxDerivationType)
+	NVDCVSSMax                       = newDerivedFieldLabel("NVD CVSS Max", NVDCVSS, MaxDerivationType)
+	CVEPublishedOnMin                = newDerivedFieldLabel("CVE Published On Min", CVEPublishedOn, MinDerivationType)
+	ComponentTopCVSSMax              = newDerivedFieldLabel("Component Top CVSS Max", ComponentTopCVSS, MaxDerivationType)
+	// This is the priority which is essentially a reverse sort of the risk score
+	ComponentPriorityMax = newDerivedFieldLabel("Component Risk Priority Score Max", ComponentRiskScore, MaxReverseSortDerivationType)
 
 	// External network sources fields
 	DefaultExternalSource    = newFieldLabel("Default External Source")
@@ -361,6 +417,8 @@ var (
 	ReportName     = newFieldLabel("Report Name")
 	ReportType     = newFieldLabel("Report Type")
 	ReportConfigID = newFieldLabel("Report Configuration ID")
+	// View Based report search fields
+	AreaOfConcern = newFieldLabel("Area Of Concern")
 
 	// Resource alerts search fields
 	ResourceName = newFieldLabel("Resource")
@@ -436,6 +494,16 @@ var (
 	// AuthProvider fields.
 	AuthProviderName = newFieldLabel("AuthProvider Name")
 
+	// Virtual Machine fields.
+	VirtualMachineID       = newFieldLabel("Virtual Machine ID")
+	VirtualMachineName     = newFieldLabel("Virtual Machine Name")
+	GuestOS                = newFieldLabel("Guest OS")
+	VirtualMachineState    = newFieldLabel("Virtual Machine State")
+	VirtualMachineScanID   = newFieldLabel("Virtual Machine Scan ID")
+	VirtualMachineScanTime = newFieldLabel("Virtual Machine Scan Time")
+	VirtualMachineScanOS   = newFieldLabel("Virtual Machine Scan OS")
+	VirtualMachineTopCVSS  = newFieldLabel("Virtual Machine Top CVSS")
+
 	// Test Search Fields
 	TestKey               = newFieldLabel("Test Key")
 	TestKey2              = newFieldLabel("Test Key 2")
@@ -449,6 +517,7 @@ var (
 	TestFloat             = newFieldLabel("Test Float")
 	TestLabels            = newFieldLabel("Test Labels")
 	TestTimestamp         = newFieldLabel("Test Timestamp")
+	TestTimestampTZ       = newFieldLabel("Test TimestampTZ")
 	TestEnum              = newFieldLabel("Test Enum")
 	TestEnumSlice         = newFieldLabel("Test Enum Slice")
 	TestNestedString      = newFieldLabel("Test Nested String")
@@ -458,6 +527,7 @@ var (
 	TestNestedInt64       = newFieldLabel("Test Nested Int64")
 	TestNested2Int64      = newFieldLabel("Test Nested Int64 2")
 	TestOneofNestedString = newFieldLabel("Test Oneof Nested String")
+	TestUUID              = newFieldLabel("Test UUID")
 
 	TestGrandparentID        = newFieldLabel("Test Grandparent ID")
 	TestGrandparentVal       = newFieldLabel("Test Grandparent Val")
@@ -489,6 +559,13 @@ var (
 	TestChild1P4Val          = newFieldLabel("Test Child1P4 Val")
 
 	TestShortCircuitID = newFieldLabel("Test ShortCircuit ID")
+
+	TestNoSerID        = newFieldLabel("Test NoSer ID")
+	TestNoSerName      = newFieldLabel("Test NoSer Name")
+	TestNoSerPriority  = newFieldLabel("Test NoSer Priority")
+	TestNoSerCreatedAt = newFieldLabel("Test NoSer Created At")
+	TestNoSerClusterID = newFieldLabel("Test NoSer Cluster ID")
+	TestNoSerTags      = newFieldLabel("Test NoSer Tags")
 
 	// Derived test fields
 	// The derived fields depending of fields with map and scalar data type array data structures are unsupported.
@@ -579,6 +656,10 @@ func (f FieldLabel) String() string {
 	return string(f)
 }
 
+func (f FieldLabel) ToUpper() string {
+	return strings.ToUpper(string(f))
+}
+
 func (f FieldLabel) Alias() string {
 	return strings.ToLower(strings.Join(strings.Fields(string(f)), "_"))
 }
@@ -607,4 +688,6 @@ const (
 	SimpleReverseSortDerivationType
 	MaxDerivationType
 	CustomFieldType
+	MinDerivationType
+	MaxReverseSortDerivationType
 )

@@ -29,7 +29,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/googlerpcStatus"
+              "$ref": "#/definitions/googleRpcStatus"
             }
           }
         },
@@ -51,7 +51,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/googlerpcStatus"
+              "$ref": "#/definitions/googleRpcStatus"
             }
           }
         },
@@ -68,6 +68,7 @@
         ]
       },
       "post": {
+        "summary": "PostCluster is deprecated. Use operator-based installation with CRS instead.",
         "operationId": "ClustersService_PostCluster",
         "responses": {
           "200": {
@@ -79,7 +80,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/googlerpcStatus"
+              "$ref": "#/definitions/googleRpcStatus"
             }
           }
         },
@@ -112,7 +113,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/googlerpcStatus"
+              "$ref": "#/definitions/googleRpcStatus"
             }
           }
         },
@@ -134,7 +135,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/googlerpcStatus"
+              "$ref": "#/definitions/googleRpcStatus"
             }
           }
         },
@@ -162,7 +163,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/googlerpcStatus"
+              "$ref": "#/definitions/googleRpcStatus"
             }
           }
         },
@@ -179,6 +180,7 @@
         ]
       },
       "put": {
+        "summary": "PutCluster is deprecated. Use operator-based installation with CRS instead.",
         "operationId": "ClustersService_PutCluster",
         "responses": {
           "200": {
@@ -190,7 +192,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/googlerpcStatus"
+              "$ref": "#/definitions/googleRpcStatus"
             }
           }
         },
@@ -353,8 +355,30 @@
           "items": {
             "type": "string"
           }
+        },
+        "admissionControllerFailOnError": {
+          "type": "boolean"
         }
-      }
+      },
+      "title": "Next tag: 33"
+    },
+    "DynamicClusterConfigProcessIndicatorsConfig": {
+      "type": "object",
+      "properties": {
+        "noPersistence": {
+          "type": "boolean",
+          "description": "Specifies whether to persist process indicators independently from\nother configuratons. If true, the filters above are ignored, and no\nprocess indicators are persisted. If false (the protobuf default for\nbooleans), process indicators are persisted according to\nnamespace_filter and exclude_openshift_ns."
+        },
+        "excludeNamespaceFilter": {
+          "type": "string",
+          "description": "A regex specifying to not persist process indicators from specified\nnamespaces. E.g. namespace_filter: \"test-.*\" will instruct Central to\nnot persist any process indicator coming from the \"test-filtering\"\nnamespace."
+        },
+        "excludeOpenshiftNs": {
+          "type": "boolean",
+          "description": "A short-cut to not persist process indicators from openshift namespaces.\nEquivalent to namespace_filter: \"openshift-.*\"."
+        }
+      },
+      "title": "Configure per-namespace persistence for ProcessIndicators"
     },
     "UpgradeProcessStatusUpgradeProcessType": {
       "type": "string",
@@ -385,7 +409,7 @@
       "default": "UPGRADE_INITIALIZING",
       "description": " - UPGRADER_LAUNCHING: In-progress states.\n - UPGRADE_COMPLETE: The success state.\nPLEASE NUMBER ALL IN-PROGRESS STATES ABOVE THIS\nAND ALL ERROR STATES BELOW THIS.\n - UPGRADE_INITIALIZATION_ERROR: Error states."
     },
-    "googlerpcStatus": {
+    "googleRpcStatus": {
       "type": "object",
       "properties": {
         "code": {
@@ -478,6 +502,15 @@
         }
       },
       "title": "AuditLogFileState tracks the last audit log event timestamp and ID that was collected by Compliance\nFor internal use only"
+    },
+    "storageAutoLockProcessBaselinesConfig": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "title": "More fields can be added later to control the feature at the\nnamespace level"
+        }
+      }
     },
     "storageAzureProviderMetadata": {
       "type": "object",
@@ -574,8 +607,12 @@
           "items": {
             "type": "string"
           }
+        },
+        "admissionControllerFailOnError": {
+          "type": "boolean"
         }
-      }
+      },
+      "title": "Next tag: 33"
     },
     "storageClusterCertExpiryStatus": {
       "type": "object",
@@ -686,6 +723,10 @@
         },
         "certExpiryStatus": {
           "$ref": "#/definitions/storageClusterCertExpiryStatus"
+        },
+        "sensorVersionCompatibility": {
+          "$ref": "#/definitions/storageSensorVersionCompatibility",
+          "description": "Computed at runtime, not persisted."
         }
       }
     },
@@ -786,6 +827,12 @@
         },
         "disableAuditLogs": {
           "type": "boolean"
+        },
+        "autoLockProcessBaselinesConfig": {
+          "$ref": "#/definitions/storageAutoLockProcessBaselinesConfig"
+        },
+        "processIndicators": {
+          "$ref": "#/definitions/DynamicClusterConfigProcessIndicatorsConfig"
         }
       },
       "description": "The difference between Static and Dynamic cluster config is that Dynamic values are sent over the Central to Sensor gRPC connection. This has the benefit of allowing for \"hot reloading\" of values without restarting Secured cluster components."
@@ -912,6 +959,19 @@
       },
       "description": "StackRoxDeploymentIdentification aims at uniquely identifying a StackRox Sensor deployment. It is used to determine\nwhether a sensor connection comes from a sensor pod that has restarted or was recreated (possibly after a network\npartition), or from a deployment in a different namespace or cluster."
     },
+    "storageSensorVersionCompatibility": {
+      "type": "string",
+      "enum": [
+        "SENSOR_VERSION_COMPATIBILITY_UNKNOWN",
+        "SENSOR_VERSION_COMPATIBILITY_MATCHED",
+        "SENSOR_VERSION_COMPATIBILITY_COMPATIBLE_BEHIND",
+        "SENSOR_VERSION_COMPATIBILITY_COMPATIBLE_AHEAD",
+        "SENSOR_VERSION_COMPATIBILITY_INCOMPATIBLE_BEHIND",
+        "SENSOR_VERSION_COMPATIBILITY_INCOMPATIBLE_AHEAD"
+      ],
+      "default": "SENSOR_VERSION_COMPATIBILITY_UNKNOWN",
+      "description": "SensorVersionCompatibility describes whether a sensor version is within\nthe compatible range of central. Derived from major.minor comparison.\nPatch versions are ignored.\n\n - SENSOR_VERSION_COMPATIBILITY_UNKNOWN: Sensor version is not available.\n - SENSOR_VERSION_COMPATIBILITY_MATCHED: Sensor's major.minor matches Central's major.minor.\n - SENSOR_VERSION_COMPATIBILITY_COMPATIBLE_BEHIND: Sensor is older than central but within the compatible range.\n - SENSOR_VERSION_COMPATIBILITY_COMPATIBLE_AHEAD: Sensor is newer than central but within the compatible range.\n - SENSOR_VERSION_COMPATIBILITY_INCOMPATIBLE_BEHIND: Sensor is older than central and outside the compatible range.\n - SENSOR_VERSION_COMPATIBILITY_INCOMPATIBLE_AHEAD: Sensor is newer than central and outside the compatible range."
+    },
     "storageStaticClusterConfig": {
       "type": "object",
       "properties": {
@@ -943,6 +1003,9 @@
           "type": "boolean"
         },
         "admissionControllerEvents": {
+          "type": "boolean"
+        },
+        "admissionControllerFailOnError": {
           "type": "boolean"
         }
       },

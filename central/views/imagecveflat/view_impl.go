@@ -1,0 +1,167 @@
+package imagecveflat
+
+import (
+	"context"
+	"sort"
+
+	imagev2common "github.com/stackrox/rox/central/imagev2/common"
+	"github.com/stackrox/rox/central/views"
+	"github.com/stackrox/rox/central/views/common"
+	v1 "github.com/stackrox/rox/generated/api/v1"
+	"github.com/stackrox/rox/pkg/contextutil"
+	"github.com/stackrox/rox/pkg/env"
+	"github.com/stackrox/rox/pkg/features"
+	"github.com/stackrox/rox/pkg/logging"
+	"github.com/stackrox/rox/pkg/postgres"
+	"github.com/stackrox/rox/pkg/postgres/walker"
+	"github.com/stackrox/rox/pkg/search"
+	pgSearch "github.com/stackrox/rox/pkg/search/postgres"
+	"github.com/stackrox/rox/pkg/search/postgres/aggregatefunc"
+)
+
+var (
+	queryTimeout = env.PostgresVMStatementTimeout.DurationSetting()
+	log          = logging.LoggerForModule()
+)
+
+type imageCVEFlatViewImpl struct {
+	schema *walker.Schema
+	db     postgres.DB
+}
+
+func (v *imageCVEFlatViewImpl) Count(ctx context.Context, q *v1.Query) (int, error) {
+	if err := common.ValidateQuery(q); err != nil {
+		return 0, err
+	}
+	q = imagev2common.WithRowsFromImageV2Only(q)
+
+	queryCtx, cancel := contextutil.ContextWithTimeoutIfNotExists(ctx, queryTimeout)
+	defer cancel()
+
+	return pgSearch.RunDistinctCountForSchema(queryCtx, v.db, v.schema, q, search.CVE)
+}
+
+func (v *imageCVEFlatViewImpl) Get(ctx context.Context, q *v1.Query, options views.ReadOptions) ([]CveFlat, error) {
+	if err := common.ValidateQuery(q); err != nil {
+		return nil, err
+	}
+	q = imagev2common.WithRowsFromImageV2Only(q)
+
+	// Avoid changing the passed query
+	cloned := q.CloneVT()
+	// Update the sort options to use aggregations if necessary as we are grouping by CVEs
+	cloned = common.UpdateSortAggs(cloned)
+
+	// Performance improvements to narrow aggregations performed
+	var cveIDsToFilter []string
+	var err error
+	if cloned.GetPagination().GetLimit() > 0 || cloned.GetPagination().GetOffset() > 0 {
+		cveIDsToFilter, err = v.getFilteredCVEs(ctx, cloned)
+		if err != nil {
+			log.Error(err)
+			return nil, err
+		}
+
+		if cloned.GetPagination() != nil && cloned.GetPagination().GetSortOptions() != nil {
+			// The CVE ID list that we get from the above query is paginated. So when we fetch the details and aggregates for those CVEs,
+			// we do not need to re-apply pagination limit and offset
+			cloned.Pagination = &v1.QueryPagination{SortOptions: cloned.GetPagination().GetSortOptions()}
+		}
+	}
+
+	queryCtx, cancel := contextutil.ContextWithTimeoutIfNotExists(ctx, queryTimeout)
+	defer cancel()
+
+	var ret []CveFlat
+	err = pgSearch.RunSelectRequestForSchemaFn[imageCVEFlatResponse](queryCtx, v.db, v.schema, withSelectCVEFlatResponseQuery(cloned, cveIDsToFilter, options), func(r *imageCVEFlatResponse) error {
+		// For each record, sort the IDs so that result looks consistent.
+		sort.SliceStable(r.CVEIDs, func(i, j int) bool {
+			return r.CVEIDs[i] < r.CVEIDs[j]
+		})
+		ret = append(ret, r)
+		return nil
+	})
+	if err != nil {
+		log.Error(err)
+		return nil, err
+	}
+	return ret, nil
+}
+
+func withSelectCVEIdentifiersQuery(q *v1.Query) *v1.Query {
+	cloned := q.CloneVT()
+	cloned.Selects = []*v1.QuerySelect{
+		search.NewQuerySelect(search.CVEID).Distinct().Proto(),
+	}
+	cloned.GroupBy = &v1.QueryGroupBy{
+		Fields: []string{search.CVE.String()},
+	}
+
+	return cloned
+}
+
+func withSelectCVEFlatResponseQuery(q *v1.Query, cveIDsToFilter []string, options views.ReadOptions) *v1.Query {
+	cloned := q.CloneVT()
+	if len(cveIDsToFilter) > 0 {
+		cloned = search.ConjunctionQuery(cloned, search.NewQueryBuilder().AddDocIDs(cveIDsToFilter...).ProtoQuery())
+		cloned.Pagination = q.GetPagination()
+	}
+
+	cloned.Selects = []*v1.QuerySelect{
+		search.NewQuerySelect(search.CVE).Proto(),
+		search.NewQuerySelect(search.CVEID).Distinct().Proto(),
+		search.NewQuerySelect(search.EPSSProbablity).AggrFunc(aggregatefunc.Max).Proto(),
+		search.NewQuerySelect(search.ImpactScore).AggrFunc(aggregatefunc.Max).Proto(),
+		search.NewQuerySelect(search.FirstImageOccurrenceTimestamp).AggrFunc(aggregatefunc.Min).Proto(),
+		search.NewQuerySelect(search.VulnerabilityState).AggrFunc(aggregatefunc.Max).Proto(),
+		search.NewQuerySelect(search.Severity).AggrFunc(aggregatefunc.Max).Proto(),
+	}
+	if !options.SkipGetTopCVSS {
+		cloned.Selects = append(cloned.Selects, search.NewQuerySelect(search.CVSS).AggrFunc(aggregatefunc.Max).Proto())
+	}
+	var searchField search.FieldLabel
+	if features.FlattenImageData.Enabled() {
+		searchField = search.ImageID
+	} else {
+		searchField = search.ImageSHA
+	}
+	if !options.SkipGetAffectedImages {
+		cloned.Selects = append(cloned.Selects, search.NewQuerySelect(searchField).AggrFunc(aggregatefunc.Count).Distinct().Proto())
+	}
+	if !options.SkipGetFirstDiscoveredInSystem {
+		cloned.Selects = append(cloned.Selects, search.NewQuerySelect(search.CVECreatedTime).AggrFunc(aggregatefunc.Min).Proto())
+	}
+	if !options.SkipPublishedDate {
+		cloned.Selects = append(cloned.Selects, search.NewQuerySelect(search.CVEPublishedOn).AggrFunc(aggregatefunc.Min).Proto())
+	}
+	if !options.SkipGetTopNVDCVSS {
+		cloned.Selects = append(cloned.Selects, search.NewQuerySelect(search.NVDCVSS).AggrFunc(aggregatefunc.Max).Proto())
+	}
+
+	cloned.GroupBy = &v1.QueryGroupBy{
+		Fields: []string{search.CVE.String()},
+	}
+
+	return cloned
+}
+
+func (v *imageCVEFlatViewImpl) getFilteredCVEs(ctx context.Context, q *v1.Query) ([]string, error) {
+	var cveIDsToFilter []string
+
+	queryCtx, cancel := contextutil.ContextWithTimeoutIfNotExists(ctx, queryTimeout)
+	defer cancel()
+
+	// TODO(@charmik) : Update the SQL query generator to not include 'ORDER BY' and 'GROUP BY' fields in the select clause (before where).
+	//  SQL syntax does not need those fields in the select clause. The below query for example would work fine
+	//  "SELECT JSONB_AGG(DISTINCT(image_cves.Id)) AS cve_id FROM image_cves GROUP BY image_cves.CveBaseInfo_Cve ORDER BY MAX(image_cves.Cvss) DESC LIMIT 20;"
+	err := pgSearch.RunSelectRequestForSchemaFn[imageCVEFlatResponse](queryCtx, v.db, v.schema, withSelectCVEIdentifiersQuery(q), func(r *imageCVEFlatResponse) error {
+		cveIDsToFilter = append(cveIDsToFilter, r.CVEIDs...)
+		return nil
+	})
+	if err != nil {
+		log.Error(err)
+		return nil, err
+	}
+
+	return cveIDsToFilter, nil
+}

@@ -1,8 +1,8 @@
-import React, { ReactElement } from 'react';
+import type { ReactElement } from 'react';
 import { Alert, Card, CardBody } from '@patternfly/react-core';
 import { Table, Tbody, Th, Tr } from '@patternfly/react-table';
 
-import { Cluster } from 'types/cluster.proto';
+import type { Cluster } from 'types/cluster.proto';
 
 import { getClusterBecauseOfStatusCounts, getClusterStatusCounts } from './ClustersHealth.utils';
 import ClustersHealthCardHeader from './ClustersHealthCardHeader';
@@ -11,22 +11,22 @@ import {
     TdHealthy,
     TdTotal,
     TdUnavailable,
-    TdUninitialized,
     TdUnhealthy,
+    TdUninitialized,
     TheadClustersHealth,
 } from './ClustersHealthTable';
 
-export type ClusterStatusTableProps = {
+export type ClusterStatusCardProps = {
     clusters: Cluster[];
     isFetchingInitialRequest: boolean;
     errorMessageFetching: string;
 };
 
-function ClusterStatusTable({
+function ClusterStatusCard({
     clusters,
     isFetchingInitialRequest,
     errorMessageFetching,
-}: ClusterStatusTableProps): ReactElement {
+}: ClusterStatusCardProps): ReactElement {
     const countsOverall =
         !isFetchingInitialRequest && !errorMessageFetching
             ? getClusterStatusCounts(clusters)
@@ -54,7 +54,6 @@ function ClusterStatusTable({
      * for table of countsOverall if not healthy: HEALTHY === 0 || UNHEALTHY !== 0 || DEGRADED !== 0
      */
 
-    /* eslint-disable no-nested-ternary */
     return (
         <Card isCompact>
             <ClustersHealthCardHeader
@@ -119,7 +118,6 @@ function ClusterStatusTable({
             ) : null}
         </Card>
     );
-    /* eslint-enable no-nested-ternary */
 }
 
-export default ClusterStatusTable;
+export default ClusterStatusCard;

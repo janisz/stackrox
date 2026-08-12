@@ -1,14 +1,13 @@
-import React, { ReactNode } from 'react';
+import type { ReactElement, ReactNode } from 'react';
 import {
-    Divider,
-    Toolbar,
-    ToolbarItem,
-    ToolbarContent,
     Pagination,
+    Toolbar,
+    ToolbarContent,
     ToolbarGroup,
+    ToolbarItem,
 } from '@patternfly/react-core';
 
-import { UseURLPaginationResult } from 'hooks/useURLPagination';
+import type { UseURLPaginationResult } from 'hooks/useURLPagination';
 
 import { DynamicTableLabel } from 'Components/DynamicIcon';
 
@@ -27,7 +26,7 @@ export type TableEntityToolbarProps = {
      * Any additional children to be rendered in the toolbar.
      *  These will be rendered between the entityToggleGroup and the pagination.
      */
-    children?: React.ReactNode;
+    children?: ReactNode;
 };
 
 /**
@@ -40,15 +39,14 @@ function TableEntityToolbar({
     tableRowCount,
     isFiltered,
     children,
-}: TableEntityToolbarProps) {
+}: TableEntityToolbarProps): ReactElement {
     const { page, perPage, setPage, setPerPage } = pagination;
     return (
         <>
             {filterToolbar}
-            <Divider component="div" />
             <Toolbar>
-                <ToolbarContent className="pf-v5-u-justify-content-space-between">
-                    <ToolbarGroup className="pf-v5-u-flex-grow-1">
+                <ToolbarContent>
+                    <ToolbarGroup className="pf-v6-u-flex-grow-1">
                         <ToolbarItem>{entityToggleGroup}</ToolbarItem>
                         {isFiltered && (
                             <ToolbarItem alignSelf="center">
@@ -56,7 +54,7 @@ function TableEntityToolbar({
                             </ToolbarItem>
                         )}
                     </ToolbarGroup>
-                    <ToolbarGroup align={{ default: 'alignLeft' }}>
+                    <ToolbarGroup align={{ default: 'alignStart' }}>
                         {children}
                         <ToolbarItem variant="pagination">
                             <Pagination

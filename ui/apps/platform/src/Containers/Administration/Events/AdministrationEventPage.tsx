@@ -1,10 +1,10 @@
-import React, { ReactElement, useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
+import type { ReactElement } from 'react';
 import {
     Alert,
     Breadcrumb,
     BreadcrumbItem,
     Bullseye,
-    Divider,
     Flex,
     PageSection,
     Spinner,
@@ -13,7 +13,8 @@ import {
 
 import BreadcrumbItemLink from 'Components/BreadcrumbItemLink';
 import PageTitle from 'Components/PageTitle';
-import { AdministrationEvent, getAdministrationEvent } from 'services/AdministrationEventsService';
+import { getAdministrationEvent } from 'services/AdministrationEventsService';
+import type { AdministrationEvent } from 'services/AdministrationEventsService';
 import { getAxiosErrorMessage } from 'utils/responseErrorUtils';
 import { administrationEventsBasePath } from 'routePaths';
 
@@ -46,22 +47,20 @@ function AdministrationEventPage({ id }: AdministrationEventPageProps): ReactEle
 
     const h1 = event ? event.domain : 'Administration event';
 
-    /* eslint-disable no-nested-ternary */
     return (
         <>
             <PageTitle title={`Administration events - ${h1}`} />
-            <PageSection component="div" variant="light">
+            <PageSection type="breadcrumb">
+                <Breadcrumb>
+                    <BreadcrumbItemLink to={administrationEventsBasePath}>
+                        Administration events
+                    </BreadcrumbItemLink>
+                    <BreadcrumbItem>{h1}</BreadcrumbItem>
+                </Breadcrumb>
+            </PageSection>
+            <PageSection component="div">
                 <Flex direction={{ default: 'column' }} spaceItems={{ default: 'spaceItemsXl' }}>
-                    <Flex direction={{ default: 'column' }}>
-                        <Breadcrumb>
-                            <BreadcrumbItemLink to={administrationEventsBasePath}>
-                                Administration events
-                            </BreadcrumbItemLink>
-                            <BreadcrumbItem>{h1}</BreadcrumbItem>
-                        </Breadcrumb>
-                        <Divider component="div" />
-                        <Title headingLevel="h1">{h1}</Title>
-                    </Flex>
+                    <Title headingLevel="h1">{h1}</Title>
                     {isLoading ? (
                         <Bullseye>
                             <Spinner />
@@ -82,7 +81,6 @@ function AdministrationEventPage({ id }: AdministrationEventPageProps): ReactEle
             </PageSection>
         </>
     );
-    /* eslint-enable no-nested-ternary */
 }
 
 export default AdministrationEventPage;

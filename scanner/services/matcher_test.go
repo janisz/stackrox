@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/quay/claircore"
+	"github.com/quay/claircore/test"
 	"github.com/quay/claircore/toolkit/types/cpe"
 	v4 "github.com/stackrox/rox/generated/internalapi/scanner/v4"
 	"github.com/stackrox/rox/pkg/grpc/testutils"
@@ -16,6 +17,8 @@ import (
 	matchermocks "github.com/stackrox/rox/scanner/matcher/mocks"
 	"github.com/stretchr/testify/suite"
 	"go.uber.org/mock/gomock"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 type matcherServiceTestSuite struct {
@@ -31,7 +34,7 @@ func TestMatcherServiceSuite(t *testing.T) {
 }
 func (s *matcherServiceTestSuite) SetupTest() {
 	s.mockCtrl = gomock.NewController(s.T())
-	s.ctx = context.Background()
+	s.ctx = test.Logging(s.T())
 	s.matcherMock = matchermocks.NewMockMatcher(s.mockCtrl)
 	s.indexerMock = indexermocks.NewMockIndexer(s.mockCtrl)
 }
@@ -94,7 +97,7 @@ func (s *matcherServiceTestSuite) Test_matcherService_GetVulnerabilities_empty_c
 		ir := &claircore.IndexReport{Success: true}
 		s.indexerMock.
 			EXPECT().
-			GetIndexReport(gomock.Any(), gomock.Eq(hashID)).
+			GetIndexReport(gomock.Any(), gomock.Eq(hashID), false).
 			Return(ir, true, nil)
 		s.matcherMock.
 			EXPECT().
@@ -114,15 +117,18 @@ func (s *matcherServiceTestSuite) Test_matcherService_GetVulnerabilities_empty_c
 			Contents: nil,
 		})
 		s.NoError(err)
-		protoassert.Equal(s.T(), res, &v4.VulnerabilityReport{
+		protoassert.Equal(s.T(), &v4.VulnerabilityReport{
 			HashId: hashID,
 			Contents: &v4.Contents{
-				Packages: []*v4.Package{
-					{Id: "1", Name: "Foobar", Cpe: emptyCPE, NormalizedVersion: &emptyNormalizedVersion},
+				Packages: map[string]*v4.Package{
+					"1": {Id: "1", Name: "Foobar", Kind: "unknown", Cpe: emptyCPE, NormalizedVersion: &emptyNormalizedVersion},
+				},
+				PackagesDEPRECATED: []*v4.Package{
+					{Id: "1", Name: "Foobar", Kind: "unknown", Cpe: emptyCPE, NormalizedVersion: &emptyNormalizedVersion},
 				},
 			},
 			Notes: []v4.VulnerabilityReport_Note{v4.VulnerabilityReport_NOTE_OS_UNKNOWN},
-		})
+		}, res)
 
 	})
 
@@ -146,20 +152,25 @@ func (s *matcherServiceTestSuite) Test_matcherService_GetVulnerabilities_empty_c
 		srv := NewMatcherService(s.matcherMock, nil)
 		res, err := srv.GetVulnerabilities(s.ctx, &v4.GetVulnerabilitiesRequest{
 			HashId: hashID,
-			Contents: &v4.Contents{Packages: []*v4.Package{
-				{Id: "1", Name: "Foobar", Cpe: emptyCPE},
-			}},
+			Contents: &v4.Contents{
+				Packages: map[string]*v4.Package{
+					"1": {Id: "1", Name: "Foobar", Cpe: emptyCPE},
+				},
+			},
 		})
 		s.NoError(err)
-		protoassert.Equal(s.T(), res, &v4.VulnerabilityReport{
+		protoassert.Equal(s.T(), &v4.VulnerabilityReport{
 			HashId: hashID,
 			Contents: &v4.Contents{
-				Packages: []*v4.Package{
-					{Id: "1", Name: "Foobar", Cpe: emptyCPE, NormalizedVersion: &emptyNormalizedVersion},
+				Packages: map[string]*v4.Package{
+					"1": {Id: "1", Name: "Foobar", Kind: "unknown", Cpe: emptyCPE, NormalizedVersion: &emptyNormalizedVersion},
+				},
+				PackagesDEPRECATED: []*v4.Package{
+					{Id: "1", Name: "Foobar", Kind: "unknown", Cpe: emptyCPE, NormalizedVersion: &emptyNormalizedVersion},
 				},
 			},
 			Notes: []v4.VulnerabilityReport_Note{v4.VulnerabilityReport_NOTE_OS_UNKNOWN},
-		})
+		}, res)
 
 	})
 }
@@ -232,6 +243,9 @@ func (s *matcherServiceTestSuite) Test_matcherService_notes() {
 			VersionID: "3.19",
 			Version:   "",
 		},
+		{
+			DID: "hummingbird",
+		},
 	}
 
 	srv := NewMatcherService(s.matcherMock, nil)
@@ -243,10 +257,27 @@ func (s *matcherServiceTestSuite) Test_matcherService_notes() {
 		Return(dists)
 	notes := srv.notes(s.ctx, &v4.VulnerabilityReport{
 		Contents: &v4.Contents{
-			Distributions: []*v4.Distribution{
-				{
+			Distributions: map[string]*v4.Distribution{
+				"0": {
 					Did:       "alpine",
 					VersionId: "3.18",
+				},
+			},
+		},
+	})
+	s.Empty(notes)
+
+	// Hummingbird supported via DID-only match (no VersionID in known dist).
+	s.matcherMock.
+		EXPECT().
+		GetKnownDistributions(gomock.Any()).
+		Return(dists)
+	notes = srv.notes(s.ctx, &v4.VulnerabilityReport{
+		Contents: &v4.Contents{
+			Distributions: map[string]*v4.Distribution{
+				"0": {
+					Did:       "hummingbird",
+					VersionId: "20251124",
 				},
 			},
 		},
@@ -260,8 +291,8 @@ func (s *matcherServiceTestSuite) Test_matcherService_notes() {
 		Return(dists)
 	notes = srv.notes(s.ctx, &v4.VulnerabilityReport{
 		Contents: &v4.Contents{
-			Distributions: []*v4.Distribution{
-				{
+			Distributions: map[string]*v4.Distribution{
+				"1": {
 					Did:       "debian",
 					VersionId: "8",
 				},
@@ -277,8 +308,8 @@ func (s *matcherServiceTestSuite) Test_matcherService_notes() {
 		Return([]claircore.Distribution{})
 	notes = srv.notes(s.ctx, &v4.VulnerabilityReport{
 		Contents: &v4.Contents{
-			Distributions: []*v4.Distribution{
-				{
+			Distributions: map[string]*v4.Distribution{
+				"2": {
 					Did:       "alpine",
 					VersionId: "3.18",
 				},
@@ -290,12 +321,12 @@ func (s *matcherServiceTestSuite) Test_matcherService_notes() {
 	// Unknown OS.
 	notes = srv.notes(s.ctx, &v4.VulnerabilityReport{
 		Contents: &v4.Contents{
-			Distributions: []*v4.Distribution{
-				{
+			Distributions: map[string]*v4.Distribution{
+				"2": {
 					Did:       "alpine",
 					VersionId: "3.18",
 				},
-				{
+				"3": {
 					Did:       "alpine",
 					VersionId: "3.19",
 				},
@@ -369,6 +400,84 @@ func (s *matcherServiceTestSuite) Test_matcherService_GetSBOM() {
 			Contents: &v4.Contents{},
 		})
 		s.Require().NoError(err)
-		s.Equal(res.Sbom, fakeSbomB)
+		s.Equal(res.GetSbom(), fakeSbomB)
+	})
+}
+
+func (s *matcherServiceTestSuite) Test_matcherService_ScanSBOM() {
+	// Minimal valid SPDX 2.3 JSON document.
+	validSPDX := []byte(`{
+		"spdxVersion": "SPDX-2.3",
+		"dataLicense": "CC0-1.0",
+		"SPDXID": "SPDXRef-DOCUMENT",
+		"name": "test",
+		"documentNamespace": "https://example.com/test",
+		"creationInfo": {
+			"created": "2024-01-01T00:00:00Z",
+			"creators": ["Tool: test"]
+		}
+	}`)
+
+	s.Run("error on nil request", func() {
+		srv := NewMatcherService(nil, nil)
+		_, err := srv.ScanSBOM(s.ctx, nil)
+		s.ErrorContains(err, "empty request")
+	})
+
+	s.Run("error on empty sbom", func() {
+		srv := NewMatcherService(nil, nil)
+		_, err := srv.ScanSBOM(s.ctx, &v4.ScanSBOMRequest{})
+		s.ErrorContains(err, "sbom is required")
+	})
+
+	s.Run("error on unsupported media type", func() {
+		srv := NewMatcherService(nil, nil)
+		_, err := srv.ScanSBOM(s.ctx, &v4.ScanSBOMRequest{
+			Sbom:      []byte("data"),
+			MediaType: "application/json",
+		})
+		s.ErrorContains(err, "unsupported media type")
+	})
+
+	s.Run("error when matcher not initialized", func() {
+		s.matcherMock.EXPECT().Initialized(gomock.Any()).Return(errors.New("not initialized"))
+		srv := NewMatcherService(s.matcherMock, nil)
+		_, err := srv.ScanSBOM(s.ctx, &v4.ScanSBOMRequest{
+			Sbom:      validSPDX,
+			MediaType: "application/spdx+json",
+		})
+		st, ok := status.FromError(err)
+		s.Require().True(ok)
+		s.Equal(codes.FailedPrecondition, st.Code())
+	})
+
+	s.Run("error on invalid sbom content", func() {
+		s.matcherMock.EXPECT().Initialized(gomock.Any()).Return(nil)
+		s.matcherMock.EXPECT().
+			DecodeSBOM(gomock.Any(), gomock.Any()).
+			Return(nil, errors.New("decode error"))
+		srv := NewMatcherService(s.matcherMock, nil)
+		_, err := srv.ScanSBOM(s.ctx, &v4.ScanSBOMRequest{
+			Sbom:      []byte("not valid json"),
+			MediaType: "application/spdx+json",
+		})
+		s.Error(err)
+	})
+
+	s.Run("success", func() {
+		s.matcherMock.EXPECT().Initialized(gomock.Any()).Return(nil)
+		s.matcherMock.EXPECT().
+			DecodeSBOM(gomock.Any(), gomock.Any()).
+			Return(&claircore.IndexReport{}, nil)
+		s.matcherMock.EXPECT().
+			GetVulnerabilities(gomock.Any(), gomock.Any()).
+			Return(&claircore.VulnerabilityReport{}, nil)
+		srv := NewMatcherService(s.matcherMock, nil)
+		res, err := srv.ScanSBOM(s.ctx, &v4.ScanSBOMRequest{
+			Sbom:      validSPDX,
+			MediaType: "application/spdx+json",
+		})
+		s.Require().NoError(err)
+		s.NotNil(res.GetVulnerabilityReport())
 	})
 }

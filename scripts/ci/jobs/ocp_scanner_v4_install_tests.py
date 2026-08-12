@@ -6,15 +6,19 @@ Run the Scanner V4 installation tests in an OCP cluster
 import os
 from runners import ClusterTestRunner
 from clusters import AutomationFlavorsCluster
+from common import enable_sfa_for_ocp
 from ci_tests import ScannerV4InstallTest
 from pre_tests import PreSystemTests
 from post_tests import PostClusterTest, FinalPost
 
 os.environ["ORCHESTRATOR_FLAVOR"] = "openshift"
+os.environ["KUBERNETES_PROVIDER"] = "ocp"
 os.environ["STORE_METRICS"] = "true"
 os.environ["ROX_BASELINE_GENERATION_DURATION"] = "5m"
-os.environ["ROX_SCANNER_V4"] = "true"
+os.environ["SCANNER_V4_VULN_READINESS"] = "false"
 os.environ["ENABLE_OPERATOR_TESTS"] = "true"
+
+enable_sfa_for_ocp()
 
 ClusterTestRunner(
     cluster=AutomationFlavorsCluster(),

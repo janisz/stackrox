@@ -4,11 +4,12 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"time"
 
-	"github.com/cenkalti/backoff/v3"
+	"github.com/cenkalti/backoff/v4"
 	"github.com/pkg/errors"
 	v1 "github.com/stackrox/rox/generated/api/v1"
 	v4 "github.com/stackrox/rox/generated/internalapi/scanner/v4"
@@ -53,6 +54,7 @@ var (
 	_ scannerTypes.Scanner                  = (*clairify)(nil)
 	_ scannerTypes.ImageVulnerabilityGetter = (*clairify)(nil)
 	_ scannerTypes.NodeScanner              = (*clairify)(nil)
+	_ io.Closer                             = (*clairify)(nil)
 
 	log             = logging.LoggerForModule()
 	scannerEndpoint = fmt.Sprintf("scanner.%s.svc", env.Namespace.Setting())
@@ -87,6 +89,7 @@ type clairify struct {
 	protoImageIntegration *storage.ImageIntegration
 	activeRegistries      registries.Set
 
+	gRPCConnection         *grpc.ClientConn
 	pingServiceClient      clairGRPCV1.PingServiceClient
 	imageScanServiceClient clairGRPCV1.ImageScanServiceClient
 	nodeScanServiceClient  clairGRPCV1.NodeScanServiceClient
@@ -104,7 +107,7 @@ func newScanner(protoImageIntegration *storage.ImageIntegration, activeRegistrie
 	if err := validateConfig(conf); err != nil {
 		return nil, err
 	}
-	endpoint := urlfmt.FormatURL(conf.Endpoint, urlfmt.InsecureHTTP, urlfmt.NoTrailingSlash)
+	endpoint := urlfmt.FormatURL(conf.GetEndpoint(), urlfmt.InsecureHTTP, urlfmt.NoTrailingSlash)
 
 	dialer := net.Dialer{
 		Timeout: 2 * time.Second,
@@ -140,6 +143,7 @@ func newScanner(protoImageIntegration *storage.ImageIntegration, activeRegistrie
 		protoImageIntegration: protoImageIntegration,
 		activeRegistries:      activeRegistries,
 
+		gRPCConnection:         gRPCConnection,
 		imageScanServiceClient: clairGRPCV1.NewImageScanServiceClient(gRPCConnection),
 
 		ScanSemaphore: scannerTypes.NewSemaphoreWithValue(numConcurrentScans),
@@ -191,6 +195,7 @@ func newNodeScanner(protoNodeIntegration *storage.NodeIntegration) (*clairify, e
 	return &clairify{
 		NodeScanSemaphore:      scannerTypes.NewNodeSemaphoreWithValue(defaultMaxConcurrentScans),
 		conf:                   conf,
+		gRPCConnection:         gRPCConnection,
 		pingServiceClient:      pingServiceClient,
 		nodeScanServiceClient:  scanServiceClient,
 		imageScanServiceClient: imageScanServiceClient,
@@ -206,6 +211,14 @@ func getTLSConfig() (*tls.Config, error) {
 		return nil, errors.Wrap(err, "failed to initialize TLS config")
 	}
 	return tlsConfig, nil
+}
+
+// Close closes the underlying gRPC connection.
+func (c *clairify) Close() error {
+	if c.gRPCConnection != nil {
+		return c.gRPCConnection.Close()
+	}
+	return nil
 }
 
 // Test initiates a test of the Clairify Scanner which verifies that we have the proper scan permissions
@@ -534,6 +547,7 @@ func newOrchestratorScanner(integration *storage.OrchestratorIntegration) (*clai
 	return &clairify{
 		ScanSemaphore:                 scannerTypes.NewSemaphoreWithValue(defaultMaxConcurrentScans),
 		conf:                          conf,
+		gRPCConnection:                gRPCConnection,
 		protoOrchestratorIntegration:  integration,
 		orchestratorScanServiceClient: clairGRPCV1.NewOrchestratorScanServiceClient(gRPCConnection),
 	}, nil
@@ -553,11 +567,11 @@ func (c *clairify) KubernetesScan(version string) (map[string][]*storage.Embedde
 	}
 
 	results := map[string][]*storage.EmbeddedVulnerability{
-		kubernetes.KubeAPIServer:         convertK8sVulns(resp.ApiserverVulnerabilities),
-		kubernetes.KubeAggregator:        convertK8sVulns(resp.AggregatorVulnerabilities),
-		kubernetes.KubeControllerManager: convertK8sVulns(resp.ControllerManagerVulnerabilities),
-		kubernetes.KubeScheduler:         convertK8sVulns(resp.SchedulerVulnerabilities),
-		kubernetes.Generic:               convertK8sVulns(resp.GenericVulnerabilities),
+		kubernetes.KubeAPIServer:         convertK8sVulns(resp.GetApiserverVulnerabilities()),
+		kubernetes.KubeAggregator:        convertK8sVulns(resp.GetAggregatorVulnerabilities()),
+		kubernetes.KubeControllerManager: convertK8sVulns(resp.GetControllerManagerVulnerabilities()),
+		kubernetes.KubeScheduler:         convertK8sVulns(resp.GetSchedulerVulnerabilities()),
+		kubernetes.Generic:               convertK8sVulns(resp.GetGenericVulnerabilities()),
 	}
 
 	return results, nil
@@ -594,7 +608,7 @@ func (c *clairify) OpenShiftScan(version string) ([]*storage.EmbeddedVulnerabili
 		return nil, err
 	}
 
-	results := convertVulnerabilities(resp.Vulnerabilities, storage.EmbeddedVulnerability_OPENSHIFT_VULNERABILITY)
+	results := convertVulnerabilities(resp.GetVulnerabilities(), storage.EmbeddedVulnerability_OPENSHIFT_VULNERABILITY)
 
 	return results, nil
 }

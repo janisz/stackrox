@@ -12,16 +12,11 @@ import (
 	"github.com/stackrox/rox/pkg/fixtures"
 	"github.com/stackrox/rox/pkg/k8sutil"
 	"github.com/stackrox/rox/pkg/kubernetes"
-	"github.com/stackrox/rox/pkg/pointers"
 	"github.com/stackrox/rox/pkg/sync"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-)
-
-var (
-	processPool = newProcessPool()
 )
 
 // ProcessPool stores processes by containerID using a map
@@ -45,13 +40,13 @@ func (p *ProcessPool) add(val *storage.ProcessSignal) {
 	defer p.lock.Unlock()
 
 	if p.Size < p.Capacity {
-		p.Processes[val.ContainerId] = append(p.Processes[val.ContainerId], val)
+		p.Processes[val.GetContainerId()] = append(p.Processes[val.GetContainerId()], val)
 		p.Size++
 	} else {
-		nprocess := len(p.Processes[val.ContainerId])
+		nprocess := len(p.Processes[val.GetContainerId()])
 		if nprocess > 0 {
 			randIdx := rand.Intn(nprocess)
-			p.Processes[val.ContainerId][randIdx] = val
+			p.Processes[val.GetContainerId()][randIdx] = val
 		}
 	}
 }
@@ -87,7 +82,7 @@ type deploymentResourcesToBeManaged struct {
 
 func createRandMap(stringSize, entries int) map[string]string {
 	m := make(map[string]string, entries)
-	for i := 0; i < entries; i++ {
+	for range entries {
 		m[randStringWithLength(stringSize)] = randStringWithLength(stringSize)
 	}
 	return m
@@ -95,7 +90,7 @@ func createRandMap(stringSize, entries int) map[string]string {
 
 func createMap(entries int) map[string]string {
 	m := make(map[string]string, entries)
-	for i := 0; i < entries; i++ {
+	for i := range entries {
 		m[fmt.Sprintf("key-%d", i)] = fmt.Sprintf("value-%d", i)
 	}
 	return m
@@ -126,7 +121,7 @@ func (w *WorkloadManager) getDeployment(workload DeploymentWorkload, idx int, de
 		namespace = "default"
 	}
 
-	labelsPool.add(namespace, labels)
+	w.labelsPool.add(namespace, labels)
 	namespacesWithDeploymentsPool.add(namespace)
 
 	var serviceAccount string
@@ -152,7 +147,7 @@ func (w *WorkloadManager) getDeployment(workload DeploymentWorkload, idx int, de
 			Annotations: createRandMap(16, 3),
 		},
 		Spec: appsv1.DeploymentSpec{
-			Replicas: pointers.Int32(int32(workload.PodWorkload.NumPods)),
+			Replicas: new(int32(workload.PodWorkload.NumPods)),
 			Selector: &metav1.LabelSelector{
 				MatchLabels: labels,
 			},
@@ -198,9 +193,9 @@ func (w *WorkloadManager) getDeployment(workload DeploymentWorkload, idx int, de
 						},
 					},
 					Containers:                   containers,
-					AutomountServiceAccountToken: pointers.Bool(true),
+					AutomountServiceAccountToken: new(true),
 					SecurityContext: &corev1.PodSecurityContext{
-						RunAsNonRoot: pointers.Bool(true),
+						RunAsNonRoot: new(true),
 					},
 					ServiceAccountName: serviceAccount,
 				},
@@ -214,7 +209,7 @@ func (w *WorkloadManager) getDeployment(workload DeploymentWorkload, idx int, de
 
 	var pods []*corev1.Pod
 	for i := 0; i < workload.PodWorkload.NumPods; i++ {
-		pod := getPod(rs, getID(podIDs, i+idx*workload.PodWorkload.NumPods))
+		pod := getPod(rs, getID(podIDs, i+idx*workload.PodWorkload.NumPods), w.ipPool, w.containerPool)
 		w.writeID(podPrefix, pod.UID)
 		pods = append(pods, pod)
 	}
@@ -260,7 +255,7 @@ func getReplicaSet(deployment *appsv1.Deployment, id string) *appsv1.ReplicaSet 
 	}
 }
 
-func getPod(replicaSet *appsv1.ReplicaSet, id string) *corev1.Pod {
+func getPod(replicaSet *appsv1.ReplicaSet, id string, ipPool *pool, containerPool *pool) *corev1.Pod {
 	pod := &corev1.Pod{
 		TypeMeta: metav1.TypeMeta{
 			Kind:       "Pod",
@@ -288,10 +283,10 @@ func getPod(replicaSet *appsv1.ReplicaSet, id string) *corev1.Pod {
 			StartTime: &metav1.Time{
 				Time: time.Now(),
 			},
-			PodIP: generateAndAddIPToPool(),
+			PodIP: generateAndAddIPToPool(ipPool),
 		},
 	}
-	populatePodContainerStatuses(pod)
+	populatePodContainerStatuses(pod, containerPool)
 	return pod
 }
 
@@ -390,13 +385,19 @@ func newTimerWithJitter(duration time.Duration) *time.Timer {
 // manageDeployment takes in the initial resources and then will recreate them when they are deleted
 // this function should be called with go w.manageDeployment
 func (w *WorkloadManager) manageDeployment(ctx context.Context, resources *deploymentResourcesToBeManaged) {
-	// Handle resources that were initialized for initial startup. These start up resources
-	// are like deploying Sensor into a new environment and syncing all objects
-	w.manageDeploymentLifecycle(ctx, resources)
+	defer w.wg.Done()
 
-	// The previous function returning means that the deployments, replicaset and pods were all deleted
-	// Now we recreate the objects again
-	for count := 0; resources.workload.NumLifecycles == 0 || count < resources.workload.NumLifecycles; count++ {
+	// NumLifecycles+1 is to handle the initial startup. These start up resources
+	// are like deploying Sensor into a new environment and syncing all objects.
+	for count := 0; resources.workload.NumLifecycles == 0 || count < resources.workload.NumLifecycles+1; count++ {
+		w.manageDeploymentLifecycle(ctx, resources)
+
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+
 		resources = w.getDeployment(resources.workload, 0, nil, nil, nil)
 		deployment, replicaSet, pods := resources.deployment, resources.replicaSet, resources.pods
 		if _, err := w.client.Kubernetes().AppsV1().Deployments(deployment.Namespace).Create(ctx, deployment, metav1.CreateOptions{}); err != nil {
@@ -410,7 +411,6 @@ func (w *WorkloadManager) manageDeployment(ctx context.Context, resources *deplo
 				log.Errorf("error creating pod: %v", err)
 			}
 		}
-		w.manageDeploymentLifecycle(ctx, resources)
 	}
 }
 
@@ -433,6 +433,9 @@ func (w *WorkloadManager) manageDeploymentLifecycle(ctx context.Context, resourc
 
 	for {
 		select {
+		case <-ctx.Done():
+			stopSig.Signal()
+			return
 		case <-timer.C:
 			stopSig.Signal()
 			if err := deploymentClient.Delete(ctx, deployment.Name, metav1.DeleteOptions{}); err != nil {
@@ -462,7 +465,7 @@ func (w *WorkloadManager) manageDeploymentLifecycle(ctx context.Context, resourc
 	}
 }
 
-func populatePodContainerStatuses(pod *corev1.Pod) {
+func populatePodContainerStatuses(pod *corev1.Pod, containerPool *pool) {
 	statuses := make([]corev1.ContainerStatus, 0, len(pod.Spec.Containers))
 	for _, container := range pod.Spec.Containers {
 		status := corev1.ContainerStatus{
@@ -484,7 +487,7 @@ func (w *WorkloadManager) managePod(ctx context.Context, deploymentSig *concurre
 	defer podDeadline.Stop()
 
 	podSig := concurrency.NewSignal()
-	go w.manageProcessesForPod(&podSig, podWorkload, pod)
+	go w.manageProcessesForPod(ctx, &podSig, podWorkload, pod)
 
 	client := w.client.Kubernetes().CoreV1().Pods(pod.Namespace)
 	cleanupPodFn := func(pod *corev1.Pod) {
@@ -492,16 +495,17 @@ func (w *WorkloadManager) managePod(ctx context.Context, deploymentSig *concurre
 			log.Errorf("error deleting pod: %v", err)
 		}
 		w.deleteID(podPrefix, pod.UID)
-		ipPool.remove(pod.Status.PodIP)
+		w.ipPool.remove(pod.Status.PodIP)
 
 		for _, cs := range pod.Status.ContainerStatuses {
-			containerPool.remove(getShortContainerID(cs.ContainerID))
+			w.removeContainerAndAssociatedObjects(getShortContainerID(cs.ContainerID))
 		}
 		podSig.Signal()
 	}
 	for {
 		select {
 		case <-ctx.Done():
+			podSig.Signal()
 			return
 		case <-deploymentSig.Done():
 			// Deployment has been deleted so delete pod
@@ -513,18 +517,25 @@ func (w *WorkloadManager) managePod(ctx context.Context, deploymentSig *concurre
 			// New pod name and UUID
 			pod.Name = randString()
 			pod.UID = newUUID()
-			pod.Status.PodIP = generateAndAddIPToPool()
-			populatePodContainerStatuses(pod)
+			pod.Status.PodIP = generateAndAddIPToPool(w.ipPool)
+			populatePodContainerStatuses(pod, w.containerPool)
 
 			if _, err := client.Create(ctx, pod, metav1.CreateOptions{}); err != nil {
 				log.Errorf("error creating pod: %v", err)
 			}
 			w.writeID(podPrefix, pod.UID)
 			podSig = concurrency.NewSignal()
-			go w.manageProcessesForPod(&podSig, podWorkload, pod)
+			go w.manageProcessesForPod(ctx, &podSig, podWorkload, pod)
 			podDeadline = newTimerWithJitter(podWorkload.LifecycleDuration)
 		}
 	}
+}
+
+func (w *WorkloadManager) removeContainerAndAssociatedObjects(containerID string) {
+	w.containerPool.remove(containerID)
+	// Clean up process and endpoint pools when container is removed
+	w.processPool.remove(containerID)
+	w.endpointPool.remove(containerID)
 }
 
 func getShortContainerID(id string) string {
@@ -532,7 +543,7 @@ func getShortContainerID(id string) string {
 	return containerid.ShortContainerIDFromInstanceID(runtimeID)
 }
 
-func (w *WorkloadManager) manageProcessesForPod(podSig *concurrency.Signal, podWorkload PodWorkload, pod *corev1.Pod) {
+func (w *WorkloadManager) manageProcessesForPod(ctx context.Context, podSig *concurrency.Signal, podWorkload PodWorkload, pod *corev1.Pod) {
 	processWorkload := podWorkload.ProcessWorkload
 
 	if processWorkload.ProcessInterval == 0 {
@@ -548,6 +559,9 @@ func (w *WorkloadManager) manageProcessesForPod(podSig *concurrency.Signal, podW
 	}
 	for {
 		select {
+		case <-ctx.Done():
+			podSig.Signal()
+			return
 		case <-ticker.C:
 			if !w.servicesInitialized.IsDone() {
 				continue
@@ -558,7 +572,7 @@ func (w *WorkloadManager) manageProcessesForPod(podSig *concurrency.Signal, podW
 			if processWorkload.ActiveProcesses {
 				for _, process := range getActiveProcesses(containerID) {
 					w.processes.Process(process)
-					processPool.add(process)
+					w.processPool.add(process)
 				}
 			} else {
 				// If less than the rate, then it's a bad process
@@ -567,7 +581,7 @@ func (w *WorkloadManager) manageProcessesForPod(podSig *concurrency.Signal, podW
 				} else {
 					goodProcess := getGoodProcess(containerID)
 					w.processes.Process(goodProcess)
-					processPool.add(goodProcess)
+					w.processPool.add(goodProcess)
 				}
 			}
 		case <-podSig.Done():

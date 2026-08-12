@@ -1,7 +1,10 @@
-import React, { useState, useEffect } from 'react';
-import { Link, useHistory } from 'react-router-dom';
+import { useEffect, useMemo, useState } from 'react';
+import type { ReactElement } from 'react';
+import { Link, useNavigate } from 'react-router-dom-v5-compat';
 import {
     Button,
+    Divider,
+    DropdownItem,
     Flex,
     FlexItem,
     PageSection,
@@ -13,12 +16,6 @@ import {
     Tooltip,
 } from '@patternfly/react-core';
 import {
-    Dropdown,
-    DropdownItem,
-    DropdownSeparator,
-    DropdownToggle,
-} from '@patternfly/react-core/deprecated';
-import {
     ActionsColumn,
     ExpandableRowContent,
     Table,
@@ -28,32 +25,42 @@ import {
     Thead,
     Tr,
 } from '@patternfly/react-table';
-import { CaretDownIcon } from '@patternfly/react-icons';
+import type { IAction } from '@patternfly/react-table';
 
-import { ListPolicy } from 'types/policy.proto';
+import type { ListPolicy } from 'types/policy.proto';
+import CompoundSearchFilter from 'Components/CompoundSearchFilter/components/CompoundSearchFilter';
+import CompoundSearchFilterLabels from 'Components/CompoundSearchFilter/components/CompoundSearchFilterLabels';
+import {
+    getSearchFilterConfigWithFeatureFlagDependency,
+    updateSearchFilter,
+} from 'Components/CompoundSearchFilter/utils/utils';
+import MenuDropdown from 'Components/PatternFly/MenuDropdown';
 import ConfirmationModal from 'Components/PatternFly/ConfirmationModal';
 import PolicyDisabledIconText from 'Components/PatternFly/IconText/PolicyDisabledIconText';
 import PolicySeverityIconText from 'Components/PatternFly/IconText/PolicySeverityIconText';
-import SearchFilterInput from 'Components/SearchFilterInput';
-import { ActionItem } from 'Containers/Violations/ViolationsTablePanel';
-import EnableDisableNotificationModal, {
-    EnableDisableType,
-} from 'Containers/Policies/Modal/EnableDisableNotificationModal';
+import TbodyUnified from 'Components/TableStateTemplates/TbodyUnified';
+import PolicyEvaluationFilterLabels from './PolicyEvaluationFilterLabels';
+import useFeatureFlags from 'hooks/useFeatureFlags';
 import useTableSelection from 'hooks/useTableSelection';
 import useSet from 'hooks/useSet';
-import { AlertVariantType } from 'hooks/patternfly/useToasts';
-import { UseURLSortResult } from 'hooks/useURLSort';
+import type { AlertVariantType } from 'hooks/patternfly/useToasts';
+import type { UseURLSortResult } from 'hooks/useURLSort';
 import { policiesBasePath } from 'routePaths';
-import { NotifierIntegration } from 'types/notifier.proto';
-import { SearchFilter } from 'types/search';
+import type { NotifierIntegration } from 'types/notifier.proto';
+import type { SearchFilter } from 'types/search';
+import type { TableUIState } from 'utils/getTableUIState';
+
+import EnableDisableNotificationModal from '../Modal/EnableDisableNotificationModal';
+import type { EnableDisableType } from '../Modal/EnableDisableNotificationModal';
 import {
-    LabelAndNotifierIdsForType,
     formatLifecycleStages,
     formatNotifierCountsWithLabelStrings,
     getLabelAndNotifierIdsForTypes,
     getPolicyOriginLabel,
     isExternalPolicy,
 } from '../policies.utils';
+import type { LabelAndNotifierIdsForType } from '../policies.utils';
+import { policySearchFilterConfig } from '../policiesSearchFilterConfig';
 
 import './PoliciesTable.css';
 
@@ -63,7 +70,7 @@ function isExternalPolicySelected(policies: ListPolicy[], selectedIds: string[])
 
 type PoliciesTableProps = {
     notifiers: NotifierIntegration[];
-    policies?: ListPolicy[];
+    tableState: TableUIState<ListPolicy>;
     fetchPoliciesHandler: () => void;
     addToast: (text: string, variant: AlertVariantType, content?: string) => void;
     hasWriteAccessForPolicy: boolean;
@@ -75,13 +82,12 @@ type PoliciesTableProps = {
     handleChangeSearchFilter: (searchFilter: SearchFilter) => void;
     onClickReassessPolicies: () => void;
     getSortParams: UseURLSortResult['getSortParams'];
-    searchFilter?: SearchFilter;
-    searchOptions: string[];
+    searchFilter: SearchFilter;
 };
 
 function PoliciesTable({
     notifiers,
-    policies = [],
+    tableState,
     fetchPoliciesHandler,
     addToast,
     hasWriteAccessForPolicy,
@@ -94,10 +100,19 @@ function PoliciesTable({
     onClickReassessPolicies,
     getSortParams,
     searchFilter,
-    searchOptions,
-}: PoliciesTableProps): React.ReactElement {
+}: PoliciesTableProps): ReactElement {
     const expandedRowSet = useSet<string>();
-    const history = useHistory();
+    const navigate = useNavigate();
+    const { isFeatureFlagEnabled } = useFeatureFlags();
+
+    const searchFilterConfig = useMemo(
+        () =>
+            getSearchFilterConfigWithFeatureFlagDependency(isFeatureFlagEnabled, [
+                policySearchFilterConfig,
+            ]),
+        [isFeatureFlagEnabled]
+    );
+
     const [labelAndNotifierIdsForTypes, setLabelAndNotifierIdsForTypes] = useState<
         LabelAndNotifierIdsForType[]
     >([]);
@@ -110,13 +125,13 @@ function PoliciesTable({
 
     const [enableDisableType, setEnableDisableType] = useState<EnableDisableType | null>(null);
 
-    // Handle Bulk Actions dropdown state.
-    const [isActionsOpen, setIsActionsOpen] = useState(false);
     // For sorting data client side
 
     useEffect(() => {
         setLabelAndNotifierIdsForTypes(getLabelAndNotifierIdsForTypes(notifiers));
     }, [notifiers]);
+
+    const policies = tableState.type === 'COMPLETE' ? tableState.data : [];
 
     // a map to keep track of row index within the table to the policy id
     // for checkbox selection after the table has been sorted
@@ -136,26 +151,12 @@ function PoliciesTable({
         getSelectedIds,
     } = useTableSelection(policies);
 
-    function onToggleActions(toggleOpen) {
-        setIsActionsOpen(toggleOpen);
-    }
-
-    function onSelectActions() {
-        setIsActionsOpen(false);
-    }
-
     function onEditPolicy(id: string) {
-        history.push({
-            pathname: `${policiesBasePath}/${id}`,
-            search: 'action=edit',
-        });
+        navigate(`${policiesBasePath}/${id}?action=edit`);
     }
 
     function onClonePolicy(id: string) {
-        history.push({
-            pathname: `${policiesBasePath}/${id}`,
-            search: 'action=clone',
-        });
+        navigate(`${policiesBasePath}/${id}?action=clone`);
     }
 
     const selectedIds = getSelectedIds();
@@ -164,14 +165,17 @@ function PoliciesTable({
     let numDisabled = 0;
     let numDeletable = 0;
     let numSaveable = 0;
-    selectedPolicies.forEach(({ disabled, isDefault }) => {
+    selectedPolicies.forEach((policy) => {
+        const { disabled, isDefault } = policy;
         if (disabled) {
             numDisabled += 1;
         } else {
             numEnabled += 1;
         }
-        if (!isDefault) {
+        if (!isDefault && !isExternalPolicy(policy)) {
             numDeletable += 1;
+        }
+        if (!isDefault) {
             numSaveable += 1;
         }
     });
@@ -216,119 +220,107 @@ function PoliciesTable({
             <PageSection isFilled id="policies-table">
                 <Toolbar>
                     <ToolbarContent>
-                        <ToolbarItem
-                            variant="search-filter"
-                            className="pf-v5-u-flex-grow-1 pf-v5-u-flex-shrink-1"
-                        >
-                            <SearchFilterInput
-                                className="w-full theme-light pf-search-shim"
-                                handleChangeSearchFilter={handleChangeSearchFilter}
-                                placeholder="Filter policies"
-                                searchCategory="POLICIES"
-                                searchFilter={searchFilter ?? {}}
-                                searchOptions={searchOptions}
+                        <CompoundSearchFilter
+                            config={searchFilterConfig}
+                            searchFilter={searchFilter}
+                            onSearch={(payload) => {
+                                handleChangeSearchFilter(updateSearchFilter(searchFilter, payload));
+                            }}
+                            defaultEntity={'Policy'}
+                        />
+                        <ToolbarItem className="pf-v6-u-w-100">
+                            <CompoundSearchFilterLabels
+                                attributesSeparateFromConfig={[]}
+                                config={searchFilterConfig}
+                                onFilterChange={handleChangeSearchFilter}
+                                searchFilter={searchFilter}
                             />
                         </ToolbarItem>
-                        <ToolbarGroup
-                            spaceItems={{ default: 'spaceItemsSm' }}
-                            variant="button-group"
-                        >
+                        <ToolbarGroup align={{ default: 'alignEnd' }} variant="action-group">
                             {hasWriteAccessForPolicy && (
                                 <ToolbarItem>
-                                    <Dropdown
+                                    <MenuDropdown
                                         data-testid="policies-bulk-actions-dropdown"
-                                        onSelect={onSelectActions}
-                                        toggle={
-                                            <DropdownToggle
-                                                isDisabled={!hasSelections}
-                                                toggleVariant="primary"
-                                                onToggle={(_event, toggleOpen) =>
-                                                    onToggleActions(toggleOpen)
-                                                }
-                                                toggleIndicator={CaretDownIcon}
-                                            >
-                                                Bulk actions
-                                            </DropdownToggle>
-                                        }
-                                        isOpen={isActionsOpen}
-                                        dropdownItems={[
-                                            <DropdownItem
-                                                key="Enable policies"
-                                                component="button"
-                                                isDisabled={numDisabled === 0}
-                                                onClick={() => enablePoliciesHandler(selectedIds)}
-                                            >
-                                                {`Enable policies (${numDisabled})`}
-                                            </DropdownItem>,
-                                            <DropdownItem
-                                                key="Disable policies"
-                                                component="button"
-                                                isDisabled={numEnabled === 0}
-                                                onClick={() => disablePoliciesHandler(selectedIds)}
-                                            >
-                                                {`Disable policies (${numEnabled})`}
-                                            </DropdownItem>,
-                                            <DropdownSeparator key="Separator-1" />,
-                                            <DropdownItem
-                                                key="Enable notification"
-                                                component="button"
-                                                onClick={() => {
-                                                    setEnableDisableType('enable');
-                                                }}
-                                            >
-                                                Enable notification
-                                            </DropdownItem>,
-                                            <DropdownItem
-                                                key="Disable notification"
-                                                component="button"
-                                                onClick={() => {
-                                                    setEnableDisableType('disable');
-                                                }}
-                                            >
-                                                Disable notification
-                                            </DropdownItem>,
-                                            <DropdownSeparator key="Separator-2" />,
-                                            <DropdownItem
-                                                key="Export policy"
-                                                component="button"
-                                                isDisabled={selectedPolicies.length === 0}
-                                                onClick={() =>
-                                                    exportPoliciesHandler(selectedIds, onClearAll)
-                                                }
-                                            >
-                                                {`Export policies (${selectedPolicies.length})`}
-                                            </DropdownItem>,
-                                            <DropdownItem
-                                                key="Save as Custom Resource"
-                                                component="button"
-                                                isDisabled={numSaveable === 0}
-                                                onClick={() =>
-                                                    setSavingIds(
-                                                        selectedPolicies
-                                                            .filter(({ isDefault }) => !isDefault)
-                                                            .map(({ id }) => id)
-                                                    )
-                                                }
-                                            >
-                                                {`Save as Custom Resources (${numSaveable})`}
-                                            </DropdownItem>,
-                                            <DropdownSeparator key="Separator" />,
-                                            <DropdownItem
-                                                key="Delete policy"
-                                                component="button"
-                                                isDisabled={numDeletable === 0}
-                                                onClick={() =>
-                                                    setDeletingIds(
-                                                        selectedPolicies
-                                                            .filter(({ isDefault }) => !isDefault)
-                                                            .map(({ id }) => id)
-                                                    )
-                                                }
-                                            >
-                                                {`Delete policies (${numDeletable})`}
-                                            </DropdownItem>,
-                                        ]}
-                                    />
+                                        toggleText="Bulk actions"
+                                        toggleVariant="primary"
+                                        isDisabled={!hasSelections}
+                                        popperProps={{
+                                            position: 'end',
+                                        }}
+                                    >
+                                        <DropdownItem
+                                            key="Enable policies"
+                                            isDisabled={numDisabled === 0}
+                                            onClick={() => enablePoliciesHandler(selectedIds)}
+                                        >
+                                            {`Enable policies (${numDisabled})`}
+                                        </DropdownItem>
+                                        <DropdownItem
+                                            key="Disable policies"
+                                            isDisabled={numEnabled === 0}
+                                            onClick={() => disablePoliciesHandler(selectedIds)}
+                                        >
+                                            {`Disable policies (${numEnabled})`}
+                                        </DropdownItem>
+                                        <Divider component="li" key="policy-management-separator" />
+                                        <DropdownItem
+                                            key="Enable notification"
+                                            onClick={() => {
+                                                setEnableDisableType('enable');
+                                            }}
+                                        >
+                                            Enable notification
+                                        </DropdownItem>
+                                        <DropdownItem
+                                            key="Disable notification"
+                                            onClick={() => {
+                                                setEnableDisableType('disable');
+                                            }}
+                                        >
+                                            Disable notification
+                                        </DropdownItem>
+                                        <Divider component="li" key="policy-export-separator" />
+                                        <DropdownItem
+                                            key="Export policy"
+                                            isDisabled={selectedPolicies.length === 0}
+                                            onClick={() =>
+                                                exportPoliciesHandler(selectedIds, onClearAll)
+                                            }
+                                        >
+                                            {`Export policies (${selectedPolicies.length})`}
+                                        </DropdownItem>
+                                        <DropdownItem
+                                            key="Save as Custom Resource"
+                                            isDisabled={numSaveable === 0}
+                                            onClick={() =>
+                                                setSavingIds(
+                                                    selectedPolicies
+                                                        .filter(({ isDefault }) => !isDefault)
+                                                        .map(({ id }) => id)
+                                                )
+                                            }
+                                        >
+                                            {`Save as Custom Resources (${numSaveable})`}
+                                        </DropdownItem>
+                                        <Divider component="li" key="policy-deletion-separator" />
+                                        <DropdownItem
+                                            key="Delete policy"
+                                            isDisabled={numDeletable === 0}
+                                            onClick={() =>
+                                                setDeletingIds(
+                                                    selectedPolicies
+                                                        .filter(
+                                                            (policy) =>
+                                                                !policy.isDefault &&
+                                                                !isExternalPolicy(policy)
+                                                        )
+                                                        .map(({ id }) => id)
+                                                )
+                                            }
+                                        >
+                                            {`Delete policies (${numDeletable})`}
+                                        </DropdownItem>
+                                    </MenuDropdown>
                                 </ToolbarItem>
                             )}
                             <ToolbarItem>
@@ -338,31 +330,30 @@ function PoliciesTable({
                                     </Button>
                                 </Tooltip>
                             </ToolbarItem>
+                            <ToolbarItem variant="pagination" align={{ default: 'alignEnd' }}>
+                                <Pagination
+                                    isCompact
+                                    isDisabled
+                                    itemCount={policies.length}
+                                    page={1}
+                                    perPage={policies.length}
+                                />
+                            </ToolbarItem>
                         </ToolbarGroup>
-                        <ToolbarItem variant="pagination" align={{ default: 'alignRight' }}>
-                            <Pagination
-                                isCompact
-                                isDisabled
-                                itemCount={policies.length}
-                                page={1}
-                                perPage={policies.length}
-                            />
-                        </ToolbarItem>
                     </ToolbarContent>
                 </Toolbar>
-                <Table isStickyHeader aria-label="Policies table" data-testid="policies-table">
-                    <Thead>
-                        <Tr>
-                            <Th>
-                                <span className="pf-v5-screen-reader">Row expansion</span>
-                            </Th>
-                            <Th
-                                select={{
-                                    onSelect: onSelectAll,
-                                    isSelected: allRowsSelected,
-                                }}
-                            />
-                            {/* columns.map(({ Header, width }) => {
+                <div style={{ overflowX: 'auto' }}>
+                    <Table isStickyHeader aria-label="Policies table" data-testid="policies-table">
+                        <Thead>
+                            <Tr>
+                                <Th screenReaderText="Row expansion" />
+                                <Th
+                                    select={{
+                                        onSelect: onSelectAll,
+                                        isSelected: allRowsSelected,
+                                    }}
+                                />
+                                {/* columns.map(({ Header, width }) => {
                                 // https://github.com/stackrox/stackrox/pull/10316
                                 // Move client-side sorting from PoliciesTable to PoliciesTablePage.
                                 // After the Policies API is paginated in the API,
@@ -389,163 +380,206 @@ function PoliciesTable({
                                     </Th>
                                 );
                             }) */}
-                            <Th modifier="wrap" sort={getSortParams('Policy')} width={30}>
-                                Policy
-                            </Th>
-                            <Th modifier="wrap" sort={getSortParams('Status')}>
-                                Status
-                            </Th>
-                            <Th modifier="wrap" sort={getSortParams('Origin')} width={20}>
-                                Origin
-                            </Th>
-                            <Th modifier="wrap" sort={getSortParams('Notifiers')}>
-                                Notifiers
-                            </Th>
-                            <Th modifier="wrap" sort={getSortParams('Severity')}>
-                                Severity
-                            </Th>
-                            <Th modifier="wrap" sort={getSortParams('Lifecycle')}>
-                                Lifecycle
-                            </Th>
-                            <Th>
-                                <span className="pf-v5-screen-reader">Row actions</span>
-                            </Th>
-                        </Tr>
-                    </Thead>
-                    {policies.map((policy) => {
-                        const {
-                            description,
-                            disabled,
-                            id,
-                            isDefault,
-                            lifecycleStages,
-                            name,
-                            notifiers: notifierIds,
-                            severity,
-                        } = policy;
-                        const isExpanded = expandedRowSet.has(id);
+                                <Th modifier="wrap" sort={getSortParams('Policy')} width={30}>
+                                    Policy
+                                </Th>
+                                <Th modifier="wrap" sort={getSortParams('Status')}>
+                                    Status
+                                </Th>
+                                <Th modifier="wrap" sort={getSortParams('Origin')} width={20}>
+                                    Origin
+                                </Th>
+                                <Th modifier="wrap" sort={getSortParams('Notifiers')}>
+                                    Notifiers
+                                </Th>
+                                <Th modifier="wrap" sort={getSortParams('Severity')}>
+                                    Severity
+                                </Th>
+                                <Th modifier="wrap" sort={getSortParams('Lifecycle')}>
+                                    Lifecycle
+                                </Th>
+                                <Th screenReaderText="Row actions" />
+                            </Tr>
+                        </Thead>
+                        <TbodyUnified
+                            tableState={tableState}
+                            colSpan={9}
+                            emptyProps={{
+                                title: 'No policies found',
+                                message: '',
+                            }}
+                            filteredEmptyProps={{
+                                onClearFilters: () => handleChangeSearchFilter({}),
+                            }}
+                            renderer={({ data }) =>
+                                data.map((policy) => {
+                                    const {
+                                        description,
+                                        disabled,
+                                        evaluationFilter,
+                                        id,
+                                        isDefault,
+                                        lifecycleStages,
+                                        name,
+                                        notifiers: notifierIds,
+                                        severity,
+                                    } = policy;
+                                    const isExpanded = expandedRowSet.has(id);
 
-                        const notifierCountsWithLabelStrings = formatNotifierCountsWithLabelStrings(
-                            labelAndNotifierIdsForTypes,
-                            notifierIds
-                        );
-                        const exportPolicyAction: ActionItem = {
-                            title: 'Export policy to JSON',
-                            onClick: () => exportPoliciesHandler([id]),
-                        };
-                        // Store as an array so that we can conditionally spread into actionItems
-                        // based on feature flag without having to deal with nulls
-                        const saveAsCustomResourceActionItems: ActionItem[] = !isDefault
-                            ? [
-                                  {
-                                      title: 'Save as Custom Resource',
-                                      onClick: () => setSavingIds([id]),
-                                  },
-                              ]
-                            : [];
-                        const actionItems = hasWriteAccessForPolicy
-                            ? [
-                                  {
-                                      title: 'Edit policy',
-                                      onClick: () => onEditPolicy(id),
-                                  },
-                                  {
-                                      title: 'Clone policy',
-                                      onClick: () => onClonePolicy(id),
-                                  },
-                                  disabled
-                                      ? {
-                                            title: 'Enable policy',
-                                            onClick: () => enablePoliciesHandler([id]),
-                                        }
-                                      : {
-                                            title: 'Disable policy',
-                                            onClick: () => disablePoliciesHandler([id]),
-                                        },
-                                  exportPolicyAction,
-                                  ...saveAsCustomResourceActionItems,
-                                  {
-                                      isSeparator: true,
-                                  },
-                                  {
-                                      title: isDefault
-                                          ? 'Cannot delete a default policy'
-                                          : 'Delete policy',
-                                      onClick: () => setDeletingIds([id]),
-                                      isDisabled: isDefault,
-                                  },
-                              ]
-                            : [exportPolicyAction, ...saveAsCustomResourceActionItems];
-                        const rowIndex = rowIdToIndex[id];
-                        return (
-                            <Tbody
-                                key={id}
-                                style={{
-                                    borderBottom: '1px solid var(--pf-v5-c-table--BorderColor)',
-                                }}
-                                isExpanded={isExpanded}
-                            >
-                                <Tr>
-                                    <Td
-                                        expand={{
-                                            rowIndex,
-                                            isExpanded,
-                                            onToggle: () => expandedRowSet.toggle(id),
-                                        }}
-                                    />
-                                    <Td
-                                        select={{
-                                            rowIndex,
-                                            onSelect,
-                                            isSelected: selected[rowIndex],
-                                        }}
-                                    />
-                                    <Td dataLabel="Policy">
-                                        <Link to={`${policiesBasePath}/${id}`}>{name}</Link>
-                                    </Td>
-                                    <Td dataLabel="Status">
-                                        <PolicyDisabledIconText isDisabled={disabled} />
-                                    </Td>
-                                    <Td dataLabel="Origin">{getPolicyOriginLabel(policy)}</Td>
-                                    <Td dataLabel="Notifiers">
-                                        {notifierCountsWithLabelStrings.length === 0 ? (
-                                            '-'
-                                        ) : (
-                                            <>
-                                                {notifierCountsWithLabelStrings.map(
-                                                    (notifierCountWithLabelString) => (
-                                                        <div
-                                                            key={notifierCountWithLabelString}
-                                                            className="pf-v5-u-text-nowrap"
-                                                        >
-                                                            {notifierCountWithLabelString}
-                                                        </div>
-                                                    )
-                                                )}
-                                            </>
-                                        )}
-                                    </Td>
-                                    <Td dataLabel="Severity">
-                                        <PolicySeverityIconText severity={severity} />
-                                    </Td>
-                                    <Td dataLabel="Lifecycle">
-                                        {formatLifecycleStages(lifecycleStages)}
-                                    </Td>
-                                    <Td isActionCell>
-                                        <ActionsColumn items={actionItems} />
-                                    </Td>
-                                </Tr>
-                                <Tr isExpanded={isExpanded}>
-                                    <Td />
-                                    <Td />
-                                    <Td colSpan={6}>
-                                        <ExpandableRowContent>{description}</ExpandableRowContent>
-                                    </Td>
-                                </Tr>
-                            </Tbody>
-                        );
-                    })}
-                </Table>
+                                    const notifierCountsWithLabelStrings =
+                                        formatNotifierCountsWithLabelStrings(
+                                            labelAndNotifierIdsForTypes,
+                                            notifierIds
+                                        );
+                                    const exportPolicyAction: IAction = {
+                                        title: 'Export policy to JSON',
+                                        onClick: () => exportPoliciesHandler([id]),
+                                    };
+                                    // Store as an array so that we can conditionally spread into actionItems
+                                    // based on feature flag without having to deal with nulls
+                                    const saveAsCustomResourceActionItem: IAction = {
+                                        title: isDefault
+                                            ? 'Cannot save as Custom Resource'
+                                            : 'Save as Custom Resource',
+                                        description: isDefault
+                                            ? 'Default policies cannot be saved as Custom Resource'
+                                            : '',
+                                        onClick: () => setSavingIds([id]),
+                                        isDisabled: isDefault,
+                                    };
+                                    const actionItems = hasWriteAccessForPolicy
+                                        ? [
+                                              {
+                                                  title: 'Edit policy',
+                                                  onClick: () => onEditPolicy(id),
+                                              },
+                                              {
+                                                  title: 'Clone policy',
+                                                  onClick: () => onClonePolicy(id),
+                                              },
+                                              disabled
+                                                  ? {
+                                                        title: 'Enable policy',
+                                                        onClick: () => enablePoliciesHandler([id]),
+                                                    }
+                                                  : {
+                                                        title: 'Disable policy',
+                                                        onClick: () => disablePoliciesHandler([id]),
+                                                    },
+                                              exportPolicyAction,
+                                              saveAsCustomResourceActionItem,
+                                              {
+                                                  isSeparator: true,
+                                              },
+                                              {
+                                                  title: isDefault
+                                                      ? 'Cannot delete a default policy'
+                                                      : isExternalPolicy(policy)
+                                                        ? 'Cannot delete an externally managed policy'
+                                                        : 'Delete policy',
+                                                  onClick: () => setDeletingIds([id]),
+                                                  isDisabled: isDefault || isExternalPolicy(policy),
+                                              },
+                                          ]
+                                        : [exportPolicyAction, saveAsCustomResourceActionItem];
+                                    const rowIndex = rowIdToIndex[id];
+                                    return (
+                                        <Tbody key={id} isExpanded={isExpanded}>
+                                            <Tr
+                                                style={
+                                                    isExpanded
+                                                        ? { borderBottom: 'none' }
+                                                        : undefined
+                                                }
+                                            >
+                                                <Td
+                                                    expand={{
+                                                        rowIndex,
+                                                        isExpanded,
+                                                        onToggle: () => expandedRowSet.toggle(id),
+                                                    }}
+                                                />
+                                                <Td
+                                                    select={{
+                                                        rowIndex,
+                                                        onSelect,
+                                                        isSelected: selected[rowIndex],
+                                                    }}
+                                                />
+                                                <Td dataLabel="Policy">
+                                                    <Flex
+                                                        spaceItems={{ default: 'spaceItemsSm' }}
+                                                        alignItems={{ default: 'alignItemsCenter' }}
+                                                    >
+                                                        <Link to={`${policiesBasePath}/${id}`}>
+                                                            {name}
+                                                        </Link>
+                                                        <PolicyEvaluationFilterLabels
+                                                            evaluationFilter={evaluationFilter}
+                                                        />
+                                                    </Flex>
+                                                </Td>
+                                                <Td dataLabel="Status">
+                                                    <PolicyDisabledIconText isDisabled={disabled} />
+                                                </Td>
+                                                <Td dataLabel="Origin">
+                                                    {getPolicyOriginLabel(policy)}
+                                                </Td>
+                                                <Td dataLabel="Notifiers">
+                                                    {notifierCountsWithLabelStrings.length === 0 ? (
+                                                        '-'
+                                                    ) : (
+                                                        <>
+                                                            {notifierCountsWithLabelStrings.map(
+                                                                (notifierCountWithLabelString) => (
+                                                                    <div
+                                                                        key={
+                                                                            notifierCountWithLabelString
+                                                                        }
+                                                                        className="pf-v6-u-text-nowrap"
+                                                                    >
+                                                                        {
+                                                                            notifierCountWithLabelString
+                                                                        }
+                                                                    </div>
+                                                                )
+                                                            )}
+                                                        </>
+                                                    )}
+                                                </Td>
+                                                <Td dataLabel="Severity">
+                                                    <PolicySeverityIconText severity={severity} />
+                                                </Td>
+                                                <Td dataLabel="Lifecycle">
+                                                    {formatLifecycleStages(lifecycleStages)}
+                                                </Td>
+                                                <Td isActionCell>
+                                                    <ActionsColumn
+                                                        items={actionItems}
+                                                        popperProps={{
+                                                            position: 'end',
+                                                            appendTo:
+                                                                document.querySelector('main'),
+                                                        }}
+                                                    />
+                                                </Td>
+                                            </Tr>
+                                            <Tr isExpanded={isExpanded}>
+                                                <Td />
+                                                <Td />
+                                                <Td colSpan={7}>
+                                                    <ExpandableRowContent>
+                                                        {description}
+                                                    </ExpandableRowContent>
+                                                </Td>
+                                            </Tr>
+                                        </Tbody>
+                                    );
+                                })
+                            }
+                        />
+                    </Table>
+                </div>
             </PageSection>
             <ConfirmationModal
                 title={`Delete policies? (${deletingIds.length})`}
@@ -596,7 +630,7 @@ function PoliciesTable({
                     <FlexItem>
                         <strong>Important</strong>: If you are committing the saved custom resource
                         to a source control repository, replace the policy name in the{' '}
-                        <code className="pf-v5-u-font-family-monospace">policyName</code> field to
+                        <code className="pf-v6-u-font-family-monospace">policyName</code> field to
                         avoid overwriting existing policies.
                     </FlexItem>
                 </Flex>

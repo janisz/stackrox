@@ -1,15 +1,13 @@
-import React, { ReactElement } from 'react';
-import { FormikContextType, useFormikContext } from 'formik';
+import type { ReactElement } from 'react';
+import { useFormikContext } from 'formik';
+import type { FormikContextType } from 'formik';
 import { Divider, Flex, FlexItem, Form, PageSection, Title } from '@patternfly/react-core';
 
 import NotifierConfigurationForm from 'Components/NotifierConfiguration/NotifierConfigurationForm';
 import usePermissions from 'hooks/usePermissions';
 
-import {
-    ScanConfigFormValues,
-    getBodyDefault,
-    getSubjectDefault,
-} from '../compliance.scanConfigs.utils';
+// import { getBodyDefault, getSubjectDefault } from '../compliance.scanConfigs.utils';
+import type { ScanConfigFormValues } from '../compliance.scanConfigs.utils';
 
 function ReportConfiguration(): ReactElement {
     const formik: FormikContextType<ScanConfigFormValues> = useFormikContext();
@@ -18,8 +16,8 @@ function ReportConfiguration(): ReactElement {
 
     return (
         <>
-            <PageSection variant="light" padding={{ default: 'noPadding' }}>
-                <Flex direction={{ default: 'column' }} className="pf-v5-u-py-lg pf-v5-u-px-lg">
+            <PageSection hasBodyWrapper={false} padding={{ default: 'noPadding' }}>
+                <Flex direction={{ default: 'column' }} className="pf-v6-u-py-lg pf-v6-u-px-lg">
                     <FlexItem>
                         <Title headingLevel="h2">Report</Title>
                     </FlexItem>
@@ -29,13 +27,13 @@ function ReportConfiguration(): ReactElement {
                 </Flex>
             </PageSection>
             <Divider component="div" />
-            <Form className="pf-v5-u-py-lg pf-v5-u-px-lg">
+            <Form className="pf-v6-u-py-lg pf-v6-u-px-lg">
                 <NotifierConfigurationForm
-                    customBodyDefault={getBodyDefault(formik.values.profiles)}
-                    customSubjectDefault={getSubjectDefault(
-                        formik.values.parameters.name,
-                        formik.values.profiles
-                    )}
+                    // customBodyDefault={getBodyDefault(formik.values.profiles)}
+                    // customSubjectDefault={getSubjectDefault(
+                    //     formik.values.parameters.name,
+                    //     formik.values.profiles
+                    // )}
                     errors={formik.errors}
                     fieldIdPrefixForFormikAndPatternFly="report.notifierConfigurations"
                     hasWriteAccessForIntegration={hasWriteAccessForIntegration}

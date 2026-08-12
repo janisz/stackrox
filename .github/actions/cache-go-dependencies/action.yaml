@@ -1,5 +1,14 @@
 name: Cache Go Dependencies
 description: Cache Go Dependencies
+inputs:
+  save:
+    description: Whether this job saves caches on pushes to the default branch.
+    required: false
+    default: 'true'
+  key-suffix:
+    description: Extra suffix for cache keys (use to distinguish matrix entries that share github.job).
+    required: false
+    default: ''
 runs:
   using: composite
   steps:
@@ -7,23 +16,119 @@ runs:
       id: cache-paths
       run: |
         echo "GOCACHE=$(go env GOCACHE)" >> "$GITHUB_OUTPUT"
-        echo "GOMODCACHE=$(go env GOMODCACHE)" >> "$GITHUB_OUTPUT"
+        echo "GOARCH=$(go env GOARCH)" >> "$GITHUB_OUTPUT"
+        echo "TAG=${{ github.sha }}" >> "$GITHUB_OUTPUT"
+        # Hash go.mod once for use in cache keys. When dependencies change,
+        # the GOCACHE must be invalidated because Go's module index caches
+        # parsed imports by (filename, mtime, size) and our fixed mtimes
+        # can cause stale cached imports when file content changes.
+        echo "GOMOD_HASH=$(sha256sum go.mod | cut -c1-16)" >> "$GITHUB_OUTPUT"
+        suffix="${{ inputs.key-suffix }}"
+        echo "KEY_SUFFIX=${suffix:+-$suffix}" >> "$GITHUB_OUTPUT"  # prepends dash if set
       shell: bash
 
-    - name: Cache Go Dependencies
-      uses: actions/cache@v4
+    - name: Cache Go Build (save)
+      if: inputs.save == 'true' && (github.event_name == 'push' && github.ref_name == github.event.repository.default_branch)
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # ratchet:actions/cache@v6.1.0
       with:
-        path: |
-          ${{ steps.cache-paths.outputs.GOMODCACHE }}
-        key: go-mod-v1-${{ hashFiles('**/go.sum') }}
+        path: ${{ steps.cache-paths.outputs.GOCACHE }}
+        key: go-build-v2-${{ github.job }}${{ steps.cache-paths.outputs.KEY_SUFFIX }}-${{ steps.cache-paths.outputs.GOARCH }}-${{ steps.cache-paths.outputs.GOMOD_HASH }}-${{ steps.cache-paths.outputs.TAG }}
+        restore-keys: |
+          go-build-v2-${{ github.job }}${{ steps.cache-paths.outputs.KEY_SUFFIX }}-${{ steps.cache-paths.outputs.GOARCH }}-${{ steps.cache-paths.outputs.GOMOD_HASH }}-
+          go-build-v2-${{ github.job }}${{ steps.cache-paths.outputs.KEY_SUFFIX }}-${{ steps.cache-paths.outputs.GOARCH }}-
 
-    - name: Cache Go Build
-      uses: actions/cache@v4
+    - name: Cache Go Build (restore)
+      if: ${{ !(inputs.save == 'true' && (github.event_name == 'push' && github.ref_name == github.event.repository.default_branch)) }}
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # ratchet:actions/cache/restore@v6.1.0
       with:
-        path: |
-          ${{ steps.cache-paths.outputs.GOCACHE }}
-        key: go-build-v1-${{ github.job }}-${{ hashFiles('**/go.sum') }}
+        path: ${{ steps.cache-paths.outputs.GOCACHE }}
+        key: go-build-v2-${{ github.job }}${{ steps.cache-paths.outputs.KEY_SUFFIX }}-${{ steps.cache-paths.outputs.GOARCH }}-${{ steps.cache-paths.outputs.GOMOD_HASH }}-${{ steps.cache-paths.outputs.TAG }}
+        restore-keys: |
+          go-build-v2-${{ github.job }}${{ steps.cache-paths.outputs.KEY_SUFFIX }}-${{ steps.cache-paths.outputs.GOARCH }}-${{ steps.cache-paths.outputs.GOMOD_HASH }}-
+          go-build-v2-${{ github.job }}${{ steps.cache-paths.outputs.KEY_SUFFIX }}-${{ steps.cache-paths.outputs.GOARCH }}-
 
-    - name: Download Go modules
-      run: make deps --always-make
+    - name: Mark GOCACHE entries for stale detection
+      run: |
+        gocache="${{ steps.cache-paths.outputs.GOCACHE }}"
+        if [[ -d "$gocache" ]]; then
+          # Backdate all cache entries to year 2000. During the build/test,
+          # Go's markUsed() updates mtimes of accessed entries to "now"
+          # (it always updates when mtime is >1 hour old). The post-step
+          # below trims entries still at year 2000 before cache save.
+          timeout 120 find "$gocache" -type f -exec touch -t 200001010000 {} + || true
+          # Protect trim.txt: if backdated, Go's built-in Trim() sees
+          # "last trim was in year 2000" and deletes ALL backdated entries
+          # before the build starts. Setting it to now prevents this.
+          echo "$(date +%s)" > "$gocache/trim.txt"
+          echo "Marked GOCACHE entries for stale detection"
+        fi
+      shell: bash
+
+    # Registered AFTER cache steps so the post-step runs BEFORE cache save
+    # (GHA runs post-steps in reverse registration order).
+    - name: Trim stale GOCACHE entries (post-step)
+      uses: gacts/run-and-post-run@598d7a875d5620e0457490555b5e18e46082aa47 # v1.4.0
+      with:
+        post: >
+          set +e;
+          gocache="$(go env GOCACHE)";
+          [[ -d "$gocache" ]] && [[ -f "$gocache/trim.txt" ]] || { echo "Skipping GOCACHE trim"; exit 0; };
+          before=$(du -sm "$gocache" 2>/dev/null | cut -f1);
+          cutoff=$(mktemp); touch -t 200001020000 "$cutoff";
+          find "$gocache" -type f ! -newer "$cutoff" -delete 2>/dev/null || true;
+          rm -f "$cutoff";
+          find "$gocache" -mindepth 1 -type d -empty -delete 2>/dev/null || true;
+          after=$(du -sm "$gocache" 2>/dev/null | cut -f1);
+          echo "GOCACHE trimmed: ${before:-0}MB -> ${after:-0}MB (removed $((${before:-0} - ${after:-0}))MB)"
+
+    - name: Clear test cache on non-PR runs
+      if: github.event_name != 'pull_request'
+      run: |
+        # Non-PR runs (master, release branches, nightlies) always run tests
+        # from scratch to catch real failures. go clean -testcache removes
+        # cached test results while preserving the compilation cache.
+        go clean -testcache
+        echo "Cleared test cache for fresh run"
+      shell: bash
+
+    - name: Stabilize file mtimes for Go test cache and module index
+      run: |
+        # Go's test cache and module index both validate inputs by
+        # (path, size, mtime) -- NOT content. Whatever mtime git checkout
+        # gives a file (which varies between runs) can make either cache
+        # serve a stale result when content changes but size doesn't (e.g.
+        # an import path swapped for one of equal length -- the golang-jwt
+        # v4->v5 incident). Derive each regular file's mtime from its git
+        # blob hash instead: same content always hashes to the same mtime
+        # (cache hit), different content to a different one (correctly
+        # invalidates). Reads the git index (git ls-files -s), so no
+        # history walk is needed -- works on any checkout depth.
+        #
+        # Spreads the hash across one year of seconds from 2001-01-01 --
+        # 31,536,000 distinct values. A stale hit needs BOTH an unchanged
+        # size (filename is fixed -- it's the same file -- already ruling
+        # out most edits) AND the new content's blob hash landing in the
+        # same 1-in-31.5M slot as the old one. No real same-size content
+        # change in this repo's history has ever landed in the same slot,
+        # including the motivating golang-jwt v4->v5 change itself (same
+        # length, different slot).
+        #
+        # Symlinks (mode 120000) and directories have no usable blob hash
+        # for this: a symlink's blob hash is its target path string, not
+        # file content, and utime() on a symlink path dereferences to the
+        # target anyway, so both get a fixed constant instead -- set
+        # first, so a symlink that happens to point at a tracked regular
+        # file doesn't clobber that file's content-derived mtime set
+        # afterward.
+        git ls-files -s | perl -lne '/^120000 \S+ \S+\t(.+)$/ and print $1' \
+          | xargs -r touch -t 200101010000
+        git ls-files | sed 's|/[^/]*$||' | sort -u | xargs touch -t 200101010000
+
+        git ls-files -s | perl -lne '
+            /^100\S+ (\S+) \S+\t(.+)$/ or next;
+            my $v = 0;
+            $v = ($v * 16 + hex $_) % 31536000 for split //, $1;
+            my $ts = 978307200 + $v;  # 2001-01-01T00:00:00Z + up to 1 year
+            utime $ts, $ts, $2;
+        '
       shell: bash

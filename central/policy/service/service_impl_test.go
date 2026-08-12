@@ -3,22 +3,28 @@ package service
 import (
 	"context"
 	_ "embed"
+	"errors"
 	"fmt"
 	"reflect"
 	"strings"
 	"testing"
 
-	"github.com/pkg/errors"
+	pkgErrors "github.com/pkg/errors"
 	clusterMocks "github.com/stackrox/rox/central/cluster/datastore/mocks"
 	lifecycleMocks "github.com/stackrox/rox/central/detection/lifecycle/mocks"
 	"github.com/stackrox/rox/central/policy/datastore/mocks"
 	connectionMocks "github.com/stackrox/rox/central/sensor/service/connection/mocks"
 	v1 "github.com/stackrox/rox/generated/api/v1"
 	"github.com/stackrox/rox/generated/storage"
+	"github.com/stackrox/rox/pkg/auth/permissions"
+	permissionsMocks "github.com/stackrox/rox/pkg/auth/permissions/mocks"
 	"github.com/stackrox/rox/pkg/booleanpolicy/fieldnames"
 	"github.com/stackrox/rox/pkg/booleanpolicy/policyversion"
+	accesscontrol "github.com/stackrox/rox/pkg/defaults/accesscontrol"
 	"github.com/stackrox/rox/pkg/errox"
 	"github.com/stackrox/rox/pkg/fixtures"
+	"github.com/stackrox/rox/pkg/grpc/authn"
+	authnMocks "github.com/stackrox/rox/pkg/grpc/authn/mocks"
 	mitreMocks "github.com/stackrox/rox/pkg/mitre/datastore/mocks"
 	"github.com/stackrox/rox/pkg/protoassert"
 	"github.com/stackrox/rox/pkg/search"
@@ -68,14 +74,15 @@ func (s *PolicyServiceTestSuite) SetupTest() {
 	s.tested = New(
 		s.policies,
 		s.clusters,
-		nil,
-		nil,
-		nil,
+		nil, // namespaces
+		nil, // deployments
+		nil, // networkPolicies
+		nil, // notifiers
 		s.mitreVectorStore,
-		nil,
+		nil, // reprocessor
 		s.mockLifecycleManager,
-		nil,
-		nil,
+		nil, // processor
+		nil, // metadataCache
 		s.mockConnectionManager,
 	)
 }
@@ -110,9 +117,9 @@ func makeError(errorID, errorString string) *v1.PolicyOperationError {
 func (s *PolicyServiceTestSuite) TestExportInvalidIDFails() {
 	ctx := context.Background()
 	mockErrors := []*v1.PolicyOperationError{
-		makeError(mockRequestOneID.PolicyIds[0], "not found"),
+		makeError(mockRequestOneID.GetPolicyIds()[0], "not found"),
 	}
-	s.policies.EXPECT().GetPolicies(ctx, mockRequestOneID.PolicyIds).Return(make([]*storage.Policy, 0), []int{0}, nil)
+	s.policies.EXPECT().GetPolicies(ctx, mockRequestOneID.GetPolicyIds()).Return(make([]*storage.Policy, 0), []int{0}, nil)
 	resp, err := s.tested.ExportPolicies(ctx, mockRequestOneID)
 	s.Nil(resp)
 	s.Error(err)
@@ -122,25 +129,25 @@ func (s *PolicyServiceTestSuite) TestExportInvalidIDFails() {
 func (s *PolicyServiceTestSuite) TestExportValidIDSucceeds() {
 	ctx := context.Background()
 	mockPolicy := &storage.Policy{
-		Id: mockRequestOneID.PolicyIds[0],
+		Id: mockRequestOneID.GetPolicyIds()[0],
 	}
-	s.policies.EXPECT().GetPolicies(ctx, mockRequestOneID.PolicyIds).Return([]*storage.Policy{mockPolicy}, nil, nil)
+	s.policies.EXPECT().GetPolicies(ctx, mockRequestOneID.GetPolicyIds()).Return([]*storage.Policy{mockPolicy}, nil, nil)
 	resp, err := s.tested.ExportPolicies(ctx, mockRequestOneID)
 	s.NoError(err)
 	s.NotNil(resp)
 	s.Len(resp.GetPolicies(), 1)
-	protoassert.Equal(s.T(), mockPolicy, resp.Policies[0])
+	protoassert.Equal(s.T(), mockPolicy, resp.GetPolicies()[0])
 }
 
 func (s *PolicyServiceTestSuite) TestExportMixedSuccessAndMissing() {
 	ctx := context.Background()
 	mockPolicy := &storage.Policy{
-		Id: mockRequestTwoIDs.PolicyIds[0],
+		Id: mockRequestTwoIDs.GetPolicyIds()[0],
 	}
 	mockErrors := []*v1.PolicyOperationError{
-		makeError(mockRequestTwoIDs.PolicyIds[1], "not found"),
+		makeError(mockRequestTwoIDs.GetPolicyIds()[1], "not found"),
 	}
-	s.policies.EXPECT().GetPolicies(ctx, mockRequestTwoIDs.PolicyIds).Return([]*storage.Policy{mockPolicy}, []int{1}, nil)
+	s.policies.EXPECT().GetPolicies(ctx, mockRequestTwoIDs.GetPolicyIds()).Return([]*storage.Policy{mockPolicy}, []int{1}, nil)
 	resp, err := s.tested.ExportPolicies(ctx, mockRequestTwoIDs)
 	s.Nil(resp)
 	s.Error(err)
@@ -150,10 +157,10 @@ func (s *PolicyServiceTestSuite) TestExportMixedSuccessAndMissing() {
 func (s *PolicyServiceTestSuite) TestExportMultipleFailures() {
 	ctx := context.Background()
 	mockErrors := []*v1.PolicyOperationError{
-		makeError(mockRequestTwoIDs.PolicyIds[0], "not found"),
-		makeError(mockRequestTwoIDs.PolicyIds[1], "not found"),
+		makeError(mockRequestTwoIDs.GetPolicyIds()[0], "not found"),
+		makeError(mockRequestTwoIDs.GetPolicyIds()[1], "not found"),
 	}
-	s.policies.EXPECT().GetPolicies(ctx, mockRequestTwoIDs.PolicyIds).Return(make([]*storage.Policy, 0), []int{0, 1}, nil)
+	s.policies.EXPECT().GetPolicies(ctx, mockRequestTwoIDs.GetPolicyIds()).Return(make([]*storage.Policy, 0), []int{0, 1}, nil)
 	resp, err := s.tested.ExportPolicies(ctx, mockRequestTwoIDs)
 	s.Nil(resp)
 	s.Error(err)
@@ -163,27 +170,26 @@ func (s *PolicyServiceTestSuite) TestExportMultipleFailures() {
 func (s *PolicyServiceTestSuite) TestExportedPolicyHasNoSortFields() {
 	ctx := context.Background()
 	mockPolicy := &storage.Policy{
-		Id:                 mockRequestOneID.PolicyIds[0],
+		Id:                 mockRequestOneID.GetPolicyIds()[0],
 		SORTName:           "abc",
 		SORTLifecycleStage: "def",
 	}
 	expectedPolicy := &storage.Policy{
-		Id: mockRequestOneID.PolicyIds[0],
+		Id: mockRequestOneID.GetPolicyIds()[0],
 	}
-	s.policies.EXPECT().GetPolicies(ctx, mockRequestOneID.PolicyIds).Return([]*storage.Policy{mockPolicy}, nil, nil)
+	s.policies.EXPECT().GetPolicies(ctx, mockRequestOneID.GetPolicyIds()).Return([]*storage.Policy{mockPolicy}, nil, nil)
 	resp, err := s.tested.ExportPolicies(ctx, mockRequestOneID)
 	s.NoError(err)
 	s.NotNil(resp)
 	s.Len(resp.GetPolicies(), 1)
-	protoassert.Equal(s.T(), expectedPolicy, resp.Policies[0])
+	protoassert.Equal(s.T(), expectedPolicy, resp.GetPolicies()[0])
 }
 
 func (s *PolicyServiceTestSuite) TestPoliciesHaveNoUnexpectedSORTFields() {
 	expectedSORTFields := set.NewStringSet("SORTLifecycleStage", "SORTEnforcement", "SORTName")
-	var policy *storage.Policy
-	policyType := reflect.TypeOf(policy).Elem()
+	policyType := reflect.TypeFor[storage.Policy]()
 	numFields := policyType.NumField()
-	for i := 0; i < numFields; i++ {
+	for i := range numFields {
 		fieldName := policyType.Field(i).Name
 		if strings.HasPrefix(fieldName, "SORT") {
 			s.Contains(expectedSORTFields, fieldName, "Found unexpected SORT field %s, SORT fields must be cleared in exported policies in removeInternal()", fieldName)
@@ -234,7 +240,7 @@ func (s *PolicyServiceTestSuite) TestListPoliciesHandlesQueryAndPagination() {
 	ctx := context.Background()
 	basePolicy := fixtures.GetPolicy()
 	policies := make([]*storage.Policy, 4)
-	for i := 0; i < 4; i++ {
+	for i := range 4 {
 		p := basePolicy.CloneVT()
 		p.Id = fmt.Sprintf("policy-%d", i)
 		policies = append(policies, p)
@@ -305,7 +311,7 @@ func (s *PolicyServiceTestSuite) TestListPoliciesHandlesQueryAndPagination() {
 			resp, err := s.tested.ListPolicies(ctx, c.request)
 			s.NoError(err)
 			s.NotNil(resp)
-			protoassert.SlicesEqual(s.T(), listPolicies, resp.Policies)
+			protoassert.SlicesEqual(s.T(), listPolicies, resp.GetPolicies())
 		})
 	}
 }
@@ -366,7 +372,7 @@ func (s *PolicyServiceTestSuite) TestImportPolicy() {
 		Policies: []*storage.Policy{importedPolicy},
 	})
 	s.NoError(err)
-	s.True(resp.AllSucceeded)
+	s.True(resp.GetAllSucceeded())
 	s.Require().Len(resp.GetResponses(), 1)
 	policyResp := resp.GetResponses()[0]
 	resultPolicy := policyResp.GetPolicy()
@@ -906,14 +912,14 @@ func (s *PolicyServiceTestSuite) TestDeletingDefaultPolicyIsBlocked() {
 
 	// arrange
 	mockPolicy := &storage.Policy{
-		Id:        mockRequestOneID.PolicyIds[0],
+		Id:        mockRequestOneID.GetPolicyIds()[0],
 		IsDefault: true,
 	}
-	s.policies.EXPECT().GetPolicy(ctx, mockPolicy.Id).Return(mockPolicy, true, nil)
-	expectedErr := errors.Wrap(errox.InvalidArgs, "A default policy cannot be deleted. (You can disable a default policy, but not delete it.)")
+	s.policies.EXPECT().GetPolicy(ctx, mockPolicy.GetId()).Return(mockPolicy, true, nil)
+	expectedErr := pkgErrors.Wrap(errox.InvalidArgs, "A default policy cannot be deleted. (You can disable a default policy, but not delete it.)")
 
 	// act
-	fakeResourceByIDRequest := &v1.ResourceByID{Id: mockPolicy.Id}
+	fakeResourceByIDRequest := &v1.ResourceByID{Id: mockPolicy.GetId()}
 	resp, err := s.tested.DeletePolicy(ctx, fakeResourceByIDRequest)
 
 	// assert
@@ -921,11 +927,65 @@ func (s *PolicyServiceTestSuite) TestDeletingDefaultPolicyIsBlocked() {
 	s.Require().Nil(resp)
 }
 
+func (s *PolicyServiceTestSuite) TestDeletingDeclarativePolicyIsBlocked() {
+	// arrange
+	mockRole := permissionsMocks.NewMockResolvedRole(s.mockCtrl)
+	mockRole.EXPECT().GetRoleName().Return(accesscontrol.Admin)
+
+	mockIdentity := authnMocks.NewMockIdentity(s.mockCtrl)
+	mockIdentity.EXPECT().Roles().Return([]permissions.ResolvedRole{mockRole})
+	ctx := authn.ContextWithIdentity(context.Background(), mockIdentity, s.T())
+
+	mockPolicy := &storage.Policy{
+		Id:     mockRequestOneID.GetPolicyIds()[0],
+		Source: storage.PolicySource_DECLARATIVE,
+	}
+	s.policies.EXPECT().GetPolicy(ctx, mockPolicy.GetId()).Return(mockPolicy, true, nil)
+
+	// act
+	fakeResourceByIDRequest := &v1.ResourceByID{Id: mockPolicy.GetId()}
+	resp, err := s.tested.DeletePolicy(ctx, fakeResourceByIDRequest)
+
+	// assert
+	s.Require().Error(err)
+	s.True(errors.Is(err, errox.NotAuthorized))
+	s.Require().Nil(resp)
+	s.Contains(err.Error(), "externally managed policy")
+}
+
+func (s *PolicyServiceTestSuite) TestDeletingDeclarativePolicyByConfigControllerSucceeds() {
+	// arrange
+	mockRole := permissionsMocks.NewMockResolvedRole(s.mockCtrl)
+	mockRole.EXPECT().GetRoleName().Return(accesscontrol.ConfigController)
+
+	mockIdentity := authnMocks.NewMockIdentity(s.mockCtrl)
+	mockIdentity.EXPECT().Roles().Return([]permissions.ResolvedRole{mockRole})
+	ctx := authn.ContextWithIdentity(context.Background(), mockIdentity, s.T())
+
+	mockPolicy := &storage.Policy{
+		Id:     mockRequestOneID.GetPolicyIds()[0],
+		Source: storage.PolicySource_DECLARATIVE,
+	}
+	s.policies.EXPECT().GetPolicy(ctx, mockPolicy.GetId()).Return(mockPolicy, true, nil)
+	s.policies.EXPECT().RemovePolicy(ctx, mockPolicy).Return(nil)
+	s.mockLifecycleManager.EXPECT().RemovePolicy(mockPolicy.GetId()).Return(nil)
+	s.policies.EXPECT().GetAllPolicies(gomock.Any()).Return(nil, nil)
+	s.mockConnectionManager.EXPECT().PreparePoliciesAndBroadcast(gomock.Any())
+
+	// act
+	fakeResourceByIDRequest := &v1.ResourceByID{Id: mockPolicy.GetId()}
+	resp, err := s.tested.DeletePolicy(ctx, fakeResourceByIDRequest)
+
+	// assert
+	s.NoError(err)
+	s.NotNil(resp)
+}
+
 func (s *PolicyServiceTestSuite) TestDeletingNonExistentPolicyDoesNothing() {
 	ctx := context.Background()
 
 	// arrange
-	mockPolicyID := mockRequestOneID.PolicyIds[0] // used only for the ID
+	mockPolicyID := mockRequestOneID.GetPolicyIds()[0] // used only for the ID
 	s.policies.EXPECT().GetPolicy(ctx, mockPolicyID).Return(nil, false, nil)
 
 	// act
@@ -941,10 +1001,10 @@ func (s *PolicyServiceTestSuite) TestDeletingPolicyErrOnDbError() {
 	ctx := context.Background()
 
 	// arrange
-	mockPolicyID := mockRequestOneID.PolicyIds[0] // used only for the ID
-	dbErr := errors.New("the deebee has failed you")
+	mockPolicyID := mockRequestOneID.GetPolicyIds()[0] // used only for the ID
+	dbErr := pkgErrors.New("the deebee has failed you")
 	s.policies.EXPECT().GetPolicy(ctx, mockPolicyID).Return(nil, true, dbErr)
-	expectedErr := errors.Wrap(dbErr, "DB error while trying to delete policy")
+	expectedErr := pkgErrors.Wrap(dbErr, "DB error while trying to delete policy")
 
 	// act
 	fakeResourceByIDRequest := &v1.ResourceByID{Id: mockPolicyID}

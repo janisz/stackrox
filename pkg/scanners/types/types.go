@@ -1,6 +1,9 @@
 package types
 
 import (
+	"context"
+	"io"
+
 	v1 "github.com/stackrox/rox/generated/api/v1"
 	v4 "github.com/stackrox/rox/generated/internalapi/scanner/v4"
 	"github.com/stackrox/rox/generated/storage"
@@ -34,8 +37,11 @@ type Scanner interface {
 
 // SBOM is the interface that contains the StackRox SBOM methods
 type SBOMer interface {
-	// GetSBOM to get sbom for an image
+	// GetSBOM to get SBOM for an image.
 	GetSBOM(image *storage.Image) ([]byte, bool, error)
+
+	// ScanSBOM to match vulnerabilities to components found in an SBOM.
+	ScanSBOM(ctx context.Context, reader io.Reader, mediatype string) (*v1.SBOMScanResponse, error)
 }
 
 // ScannerSBOMer represents a Scanner with SBOM generation capabilities. This
@@ -87,4 +93,14 @@ type OrchestratorScanner interface {
 	KubernetesScan(string) (map[string][]*storage.EmbeddedVulnerability, error)
 	OpenShiftScan(string) ([]*storage.EmbeddedVulnerability, error)
 	IstioScan(string) ([]*storage.EmbeddedVulnerability, error)
+}
+
+// VirtualMachineScanner is the interface all virtual machine scanners must implement
+//
+//go:generate mockgen-wrapper
+type VirtualMachineScanner interface {
+	NodeScanSemaphore
+	Name() string
+	GetVirtualMachineScan(vm *storage.VirtualMachine, indexReport *v4.IndexReport) (*storage.VirtualMachineScan, error)
+	Type() string
 }

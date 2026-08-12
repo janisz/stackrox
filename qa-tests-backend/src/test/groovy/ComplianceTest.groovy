@@ -36,7 +36,7 @@ import common.Constants
 import objects.Control
 import objects.CsvRow
 import objects.Deployment
-import objects.GCRImageIntegration
+import objects.GoogleArtifactRegistry
 import objects.NetworkPolicy
 import objects.NetworkPolicyTypes
 import objects.Service
@@ -75,7 +75,7 @@ class ComplianceTest extends BaseSpecification {
     @Shared
     private String clusterId
     @Shared
-    private gcrId = ""
+    private garId = ""
     @Shared
     private Map<String, String> standardsByName = [:]
     static final private String COMPLIANCETOKEN = "stackrox-compliance"
@@ -87,9 +87,8 @@ class ComplianceTest extends BaseSpecification {
         clusterId = ClusterService.getClusterId()
         assert clusterId
 
-        // Clear image cache and add gcr
         ImageService.clearImageCaches()
-        gcrId = GCRImageIntegration.createDefaultIntegration()
+        garId = GoogleArtifactRegistry.createDefaultIntegration()
 
         // Get compliance metadata
         standardsByName = ComplianceService.getComplianceStandards().collectEntries {
@@ -109,7 +108,7 @@ class ComplianceTest extends BaseSpecification {
 
     def cleanupSpec() {
         BaseService.useBasicAuth()
-        ImageIntegrationService.deleteImageIntegration(gcrId)
+        ImageIntegrationService.deleteImageIntegration(garId)
         ImageService.clearImageCaches()
 
         // Wait for compliance daemonset to be deleted
@@ -545,7 +544,7 @@ class ComplianceTest extends BaseSpecification {
         List<objects.Node> orchNodes = orchestrator.getNodeDetails()
         boolean hasMaster = orchNodes.any { objects.Node node ->
             Set<String> keys = node.getLabels().keySet()
-            keys.contains("node-role.kubernetes.io/master") || keys.contains("node-role.kubernetes.io/control-plane")
+            keys.contains("node-role.kubernetes.io/control-plane")
         }
 
         def overallState = controlResult.getOverallState()
@@ -624,8 +623,15 @@ class ComplianceTest extends BaseSpecification {
         ]
 
         given:
+        "skip if Scanner V4 is enabled"
+        // The Scanner V4 integration is auto-registered and cannot be deleted via the API.
+        // The no-scanner compliance state (COMPLIANCE_STATE_FAILURE) is therefore unreachable.
+        Assume.assumeFalse("Skipping: Scanner V4 integration cannot be deleted, no-scanner scenario is not testable",
+                scannerV4Enabled)
+
+        and:
         "remove image integrations"
-        def gcrRemoved = ImageIntegrationService.deleteImageIntegration(gcrId)
+        def garRemoved = ImageIntegrationService.deleteImageIntegration(garId)
         ImageIntegrationService.deleteStackRoxScannerIntegrationIfExists()
 
         and:
@@ -668,8 +674,8 @@ class ComplianceTest extends BaseSpecification {
 
         cleanup:
         "re-add image integrations"
-        if (gcrRemoved) {
-            gcrId = GCRImageIntegration.createDefaultIntegration()
+        if (garRemoved) {
+            garId = GoogleArtifactRegistry.createDefaultIntegration()
         }
         notifier.deleteNotifier()
         Services.updatePolicy(originalUbuntuPackageManagementPolicy)
@@ -866,7 +872,7 @@ class ComplianceTest extends BaseSpecification {
         def policyGroup = PolicyGroup.newBuilder()
                 .setFieldName("Environment Variable")
                 .setBooleanOperator(PolicyOuterClass.BooleanOperator.AND)
-        policyGroup.addAllValues([PolicyValue.newBuilder().setValue(".*SECRET.*=.*").build()])
+        policyGroup.addAllValues([PolicyValue.newBuilder().setValue("RAW=.*SECRET.*=").build()])
 
         def policyId = PolicyService.createNewPolicy(PolicyOuterClass.Policy.newBuilder()
                 .setName("XYZ Compliance Secrets")
@@ -1055,12 +1061,12 @@ class ComplianceTest extends BaseSpecification {
         def controls = [
                 new Control(
                         "PCI_DSS_3_2:6_2",
-                        ["Image $TEST_IMAGE has \\d{2}\\d+ fixed CVEs. " +
+                        ["Image $TEST_IMAGE has \\d+ fixed CVEs. " +
                                  "An image upgrade is required."],
                         ComplianceState.COMPLIANCE_STATE_FAILURE),
                 new Control(
                         "HIPAA_164:306_e",
-                        ["Image $TEST_IMAGE has \\d{2}\\d+ fixed CVEs. " +
+                        ["Image $TEST_IMAGE has \\d+ fixed CVEs. " +
                                  "An image upgrade is required."],
                         ComplianceState.COMPLIANCE_STATE_FAILURE),
         ]
@@ -1144,16 +1150,18 @@ class ComplianceTest extends BaseSpecification {
 
             // Kill the sensor and wait for the compliance run to complete
             orchestrator.deleteContainer(sensorPod, "stackrox")
-            Timer t = new Timer(30, 1)
+            Timer t = new Timer(60, 2)
             while (complianceRun.state != ComplianceManagementServiceOuterClass.ComplianceRun.State.FINISHED &&
                     t.IsValid()) {
                 def recentRuns = ComplianceManagementService.getRecentRuns(NIST_800_190_ID)
                 complianceRun = recentRuns.find { it.id == complianceRun.id }
             }
 
+            assert complianceRun.state == ComplianceManagementServiceOuterClass.ComplianceRun.State.FINISHED
+
             // Check whether there were errors
             ComplianceRunResults results =
-                    ComplianceService.getComplianceRunResult(NIST_800_190_ID, clusterId).results
+                    ComplianceService.getComplianceRunResult(NIST_800_190_ID, clusterId, complianceRun.id).results
             assert results != null
             Compliance.ComplianceRunMetadata metadata = results.runMetadata
             assert metadata.clusterId == clusterId

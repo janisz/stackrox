@@ -43,6 +43,10 @@ type enforcer struct {
 	stopper        concurrency.Stopper
 }
 
+func (e *enforcer) Name() string {
+	return "enforcer.enforcer"
+}
+
 func (e *enforcer) Capabilities() []centralsensor.SensorCapability {
 	return nil
 }
@@ -77,21 +81,23 @@ func (e *enforcer) ProcessAlertResults(action central.ResourceAction, stage stor
 		switch stage {
 		case storage.LifecycleStage_DEPLOY:
 			e.actionsC <- &central.SensorEnforcement{
-				Enforcement: a.GetEnforcement().Action,
+				Enforcement: a.GetEnforcement().GetAction(),
 				Resource: &central.SensorEnforcement_Deployment{
 					Deployment: generateDeploymentEnforcement(a),
 				},
 			}
 		case storage.LifecycleStage_RUNTIME:
-			if numProcesses := len(a.GetProcessViolation().GetProcesses()); numProcesses != 1 {
-				log.Errorf("Runtime alert on policy %q and deployment %q has %d process violations. Expected only 1", a.GetPolicy().GetName(), a.GetDeployment().GetName(), numProcesses)
+			podId, err := getRuntimePodId(a)
+			if err != nil {
+				log.Error(err)
 				continue
 			}
+
 			e.actionsC <- &central.SensorEnforcement{
-				Enforcement: a.GetEnforcement().Action,
+				Enforcement: a.GetEnforcement().GetAction(),
 				Resource: &central.SensorEnforcement_ContainerInstance{
 					ContainerInstance: &central.ContainerInstanceEnforcement{
-						PodId:                 a.GetProcessViolation().GetProcesses()[0].GetPodId(),
+						PodId:                 podId,
 						DeploymentEnforcement: generateDeploymentEnforcement(a),
 					},
 				},
@@ -100,7 +106,11 @@ func (e *enforcer) ProcessAlertResults(action central.ResourceAction, stage stor
 	}
 }
 
-func (e *enforcer) ProcessMessage(msg *central.MsgToSensor) error {
+func (e *enforcer) Accepts(msg *central.MsgToSensor) bool {
+	return msg.GetEnforcement() != nil
+}
+
+func (e *enforcer) ProcessMessage(_ context.Context, msg *central.MsgToSensor) error {
 	enforcement := msg.GetEnforcement()
 	if enforcement == nil {
 		return nil
@@ -124,9 +134,9 @@ func (e *enforcer) start() {
 	for {
 		select {
 		case action := <-e.actionsC:
-			f, ok := e.enforcementMap[action.Enforcement]
+			f, ok := e.enforcementMap[action.GetEnforcement()]
 			if !ok {
-				log.Errorf("unknown enforcement action: %s", action.Enforcement)
+				log.Errorf("unknown enforcement action: %s", action.GetEnforcement())
 				continue
 			}
 
@@ -147,9 +157,37 @@ func (e *enforcer) Start() error {
 	return nil
 }
 
-func (e *enforcer) Stop(_ error) {
+func (e *enforcer) Stop() {
 	e.stopper.Client().Stop()
 	_ = e.stopper.Client().Stopped().Wait()
 }
 
 func (e *enforcer) Notify(common.SensorComponentEvent) {}
+
+func getRuntimePodId(alert *storage.Alert) (string, error) {
+	isProcessAlert := alert.GetProcessViolation() != nil && len(alert.GetProcessViolation().GetProcesses()) > 0
+	fileAccessInfo := getFileAccessViolationInfo(alert)
+
+	if isProcessAlert && fileAccessInfo != nil {
+		return "", errors.New("Invalid alert state: must contain one of process violation or file violation")
+	}
+
+	if isProcessAlert {
+		return alert.GetProcessViolation().GetProcesses()[0].GetPodId(), nil
+	} else if fileAccessInfo != nil {
+		return fileAccessInfo.GetProcess().GetPodId(), nil
+	}
+
+	return "", errors.New("Invalid alert state: does not contain enforcable violations")
+}
+
+func getFileAccessViolationInfo(alert *storage.Alert) *storage.FileAccess {
+	if alert.GetViolations() == nil || len(alert.GetViolations()) != 1 {
+		// at this point any more than one violation is invalid; this is
+		// an unmerged alert that has just triggered from a single event.
+		return nil
+	}
+
+	// if its the wrong type, GetFileAccessInfo will return nil
+	return alert.GetViolations()[0].GetFileAccess()
+}

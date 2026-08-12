@@ -1,5 +1,4 @@
-import React from 'react';
-import { Flex, Title, LabelGroup, Label } from '@patternfly/react-core';
+import { Flex, Label, LabelGroup, Title } from '@patternfly/react-core';
 import { gql } from '@apollo/client';
 
 import { getDateTime } from 'utils/dateUtils';
@@ -50,7 +49,7 @@ function ClusterPageHeader({ data }: ClusterPageHeaderProps) {
 
     return (
         <Flex direction={{ default: 'column' }} alignItems={{ default: 'alignItemsFlexStart' }}>
-            <Title headingLevel="h1" className="pf-v5-u-mb-sm">
+            <Title headingLevel="h1" className="pf-v6-u-mb-sm">
                 {data.name}
             </Title>
             {numLabels > 0 && (

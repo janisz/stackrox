@@ -27,6 +27,7 @@ type TokenExchangerSet interface {
 	RemoveTokenExchanger(issuer string) error
 	GetTokenExchanger(issuer string) (TokenExchanger, bool)
 	RollbackExchanger(ctx context.Context, config *storage.AuthMachineToMachineConfig) error
+	HasExchangersConfigured() bool
 }
 
 // TokenExchangerFactory factory for creating a new token exchanger.
@@ -83,6 +84,11 @@ func (t *tokenExchangerSet) UpsertTokenExchanger(ctx context.Context, config *st
 		return pkgErrors.Wrapf(err, "creating token exchanger for config %s", config.GetId())
 	}
 
+	if config.GetType() == storage.AuthMachineToMachineConfig_KUBE_SERVICE_ACCOUNT {
+		if serviceAccountIssuer, _ := GetKubernetesIssuer(); serviceAccountIssuer != "" {
+			t.tokenExchangers[serviceAccountIssuer] = tokenExchanger
+		}
+	}
 	t.tokenExchangers[config.GetIssuer()] = tokenExchanger
 	return nil
 }
@@ -90,7 +96,10 @@ func (t *tokenExchangerSet) UpsertTokenExchanger(ctx context.Context, config *st
 // GetTokenExchanger retrieves a TokenExchanger based on the issuer.
 func (t *tokenExchangerSet) GetTokenExchanger(issuer string) (TokenExchanger, bool) {
 	tokenExchanger, exists := t.tokenExchangers[issuer]
-	return tokenExchanger, exists
+	if exists {
+		return tokenExchanger, exists
+	}
+	return nil, false
 }
 
 // RemoveTokenExchanger removes the token exchanger for the specific configuration ID.
@@ -126,4 +135,10 @@ func (t *tokenExchangerSet) RollbackExchanger(ctx context.Context, config *stora
 		return err
 	}
 	return t.UpsertTokenExchanger(ctx, config)
+}
+
+// HasExchangersConfigured returns true if there is at least one configured
+// exchanger.
+func (t *tokenExchangerSet) HasExchangersConfigured() bool {
+	return len(t.tokenExchangers) > 0
 }

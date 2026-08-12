@@ -1,5 +1,5 @@
-import React from 'react';
 import {
+    Content,
     Divider,
     Flex,
     PageSection,
@@ -7,7 +7,6 @@ import {
     Skeleton,
     Split,
     SplitItem,
-    Text,
     Title,
     pluralize,
 } from '@patternfly/react-core';
@@ -21,8 +20,8 @@ import { DynamicTableLabel } from 'Components/DynamicIcon';
 import useURLSort from 'hooks/useURLSort';
 import { createFilterTracker } from 'utils/analyticsEventTracking';
 import useAnalytics, { PLATFORM_CVE_FILTER_APPLIED } from 'hooks/useAnalytics';
-import { platformCVESearchFilterConfig } from 'Containers/Vulnerabilities/searchFilterConfig';
-import { SummaryCardLayout, SummaryCard } from '../../components/SummaryCardLayout';
+import { platformCVESearchFilterConfig } from '../../searchFilterConfig';
+import { SummaryCard, SummaryCardLayout } from '../../components/SummaryCardLayout';
 import { getHiddenStatuses, parseQuerySearchFilter } from '../../utils/searchUtils';
 import { DEFAULT_VM_PAGE_SIZE } from '../../constants';
 import AdvancedFiltersToolbar from '../../components/AdvancedFiltersToolbar';
@@ -76,15 +75,18 @@ function ClusterPageVulnerabilities({ clusterId }: ClusterPageVulnerabilitiesPro
 
     return (
         <>
-            <PageSection component="div" variant="light" className="pf-v5-u-py-md pf-v5-u-px-xl">
-                <Text>Review and triage vulnerability data scanned on this cluster</Text>
+            <PageSection component="div">
+                <Content component="p">
+                    Review and triage vulnerability data scanned on this cluster
+                </Content>
             </PageSection>
-            <PageSection isFilled className="pf-v5-u-display-flex pf-v5-u-flex-direction-column">
+            <Divider component="div" />
+            <PageSection hasBodyWrapper={false} isFilled>
                 <AdvancedFiltersToolbar
-                    className="pf-v5-u-pb-0 pf-v5-u-px-sm"
+                    className="pf-v6-u-pb-0 pf-v6-u-px-sm"
                     searchFilter={searchFilter}
                     searchFilterConfig={searchFilterConfig}
-                    cveStatusFilterField="CLUSTER CVE FIXABLE"
+                    cveStatusFilterField="Cluster CVE Fixable"
                     onFilterChange={(newFilter, searchPayload) => {
                         setSearchFilter(newFilter);
                         trackAppliedFilter(PLATFORM_CVE_FILTER_APPLIED, searchPayload);
@@ -113,41 +115,39 @@ function ClusterPageVulnerabilities({ clusterId }: ClusterPageVulnerabilitiesPro
                     />
                 </SummaryCardLayout>
                 <Divider component="div" />
-                <div className="pf-v5-u-flex-grow-1 pf-v5-u-background-color-100 pf-v5-u-p-lg">
-                    <Split className="pf-v5-u-pb-lg pf-v5-u-align-items-baseline">
-                        <SplitItem isFilled>
-                            <Flex alignItems={{ default: 'alignItemsCenter' }}>
-                                <Title headingLevel="h2" className="pf-v5-u-w-50">
-                                    {data ? (
-                                        `${pluralize(clusterVulnerabilityCount, 'result')} found`
-                                    ) : (
-                                        <Skeleton screenreaderText="Loading cluster vulnerability count" />
-                                    )}
-                                </Title>
-                                {isFiltered && <DynamicTableLabel />}
-                            </Flex>
-                        </SplitItem>
-                        <SplitItem>
-                            <Pagination
-                                itemCount={clusterVulnerabilityCount}
-                                perPage={perPage}
-                                page={page}
-                                onSetPage={(_, newPage) => setPage(newPage)}
-                                onPerPageSelect={(_, newPerPage) => {
-                                    setPerPage(newPerPage);
-                                }}
-                            />
-                        </SplitItem>
-                    </Split>
-                    <CVEsTable
-                        tableState={tableState}
-                        getSortParams={getSortParams}
-                        onClearFilters={() => {
-                            setSearchFilter({});
-                            setPage(1);
-                        }}
-                    />
-                </div>
+                <Split hasGutter className="pf-v6-u-align-items-baseline">
+                    <SplitItem isFilled>
+                        <Flex alignItems={{ default: 'alignItemsCenter' }}>
+                            <Title headingLevel="h2" className="pf-v6-u-w-50">
+                                {data ? (
+                                    `${pluralize(clusterVulnerabilityCount, 'result')} found`
+                                ) : (
+                                    <Skeleton screenreaderText="Loading cluster vulnerability count" />
+                                )}
+                            </Title>
+                            {isFiltered && <DynamicTableLabel />}
+                        </Flex>
+                    </SplitItem>
+                    <SplitItem>
+                        <Pagination
+                            itemCount={clusterVulnerabilityCount}
+                            perPage={perPage}
+                            page={page}
+                            onSetPage={(_, newPage) => setPage(newPage)}
+                            onPerPageSelect={(_, newPerPage) => {
+                                setPerPage(newPerPage);
+                            }}
+                        />
+                    </SplitItem>
+                </Split>
+                <CVEsTable
+                    tableState={tableState}
+                    getSortParams={getSortParams}
+                    onClearFilters={() => {
+                        setSearchFilter({});
+                        setPage(1);
+                    }}
+                />
             </PageSection>
         </>
     );

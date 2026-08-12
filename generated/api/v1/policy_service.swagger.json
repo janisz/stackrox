@@ -30,7 +30,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/googlerpcStatus"
+              "$ref": "#/definitions/googleRpcStatus"
             }
           }
         },
@@ -104,7 +104,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/googlerpcStatus"
+              "$ref": "#/definitions/googleRpcStatus"
             }
           }
         },
@@ -143,7 +143,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/googlerpcStatus"
+              "$ref": "#/definitions/googleRpcStatus"
             }
           }
         },
@@ -175,7 +175,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/googlerpcStatus"
+              "$ref": "#/definitions/googleRpcStatus"
             }
           }
         },
@@ -207,7 +207,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/googlerpcStatus"
+              "$ref": "#/definitions/googleRpcStatus"
             }
           }
         },
@@ -235,7 +235,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/googlerpcStatus"
+              "$ref": "#/definitions/googleRpcStatus"
             }
           }
         },
@@ -266,7 +266,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/googlerpcStatus"
+              "$ref": "#/definitions/googleRpcStatus"
             }
           }
         },
@@ -298,7 +298,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/googlerpcStatus"
+              "$ref": "#/definitions/googleRpcStatus"
             }
           }
         },
@@ -331,7 +331,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/googlerpcStatus"
+              "$ref": "#/definitions/googleRpcStatus"
             }
           }
         },
@@ -364,7 +364,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/googlerpcStatus"
+              "$ref": "#/definitions/googleRpcStatus"
             }
           }
         },
@@ -387,7 +387,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/googlerpcStatus"
+              "$ref": "#/definitions/googleRpcStatus"
             }
           }
         },
@@ -416,7 +416,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/googlerpcStatus"
+              "$ref": "#/definitions/googleRpcStatus"
             }
           }
         },
@@ -445,7 +445,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/googlerpcStatus"
+              "$ref": "#/definitions/googleRpcStatus"
             }
           }
         },
@@ -482,7 +482,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/googlerpcStatus"
+              "$ref": "#/definitions/googleRpcStatus"
             }
           }
         },
@@ -521,7 +521,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/googlerpcStatus"
+              "$ref": "#/definitions/googleRpcStatus"
             }
           }
         },
@@ -559,7 +559,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/googlerpcStatus"
+              "$ref": "#/definitions/googleRpcStatus"
             }
           }
         },
@@ -598,7 +598,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/googlerpcStatus"
+              "$ref": "#/definitions/googleRpcStatus"
             }
           }
         },
@@ -609,6 +609,39 @@
     }
   },
   "definitions": {
+    "DryRunResponseAlert": {
+      "type": "object",
+      "properties": {
+        "deployment": {
+          "type": "string"
+        },
+        "violations": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "ExclusionDeployment": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "scope": {
+          "$ref": "#/definitions/storageScope"
+        }
+      }
+    },
+    "ExclusionImage": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        }
+      }
+    },
     "PolicyMitreAttackVectors": {
       "type": "object",
       "properties": {
@@ -767,11 +800,15 @@
         },
         "source": {
           "$ref": "#/definitions/storagePolicySource"
+        },
+        "evaluationFilter": {
+          "$ref": "#/definitions/storageEvaluationFilter",
+          "description": "Pre-filters which entities the policy evaluates."
         }
       },
-      "title": "Next tag: 28"
+      "title": "Next tag: 29"
     },
-    "googlerpcStatus": {
+    "googleRpcStatus": {
       "type": "object",
       "properties": {
         "code": {
@@ -809,6 +846,14 @@
       ],
       "default": "OR"
     },
+    "storageContainerType": {
+      "type": "string",
+      "enum": [
+        "REGULAR",
+        "INIT"
+      ],
+      "default": "REGULAR"
+    },
     "storageEnforcementAction": {
       "type": "string",
       "enum": [
@@ -824,12 +869,25 @@
       "default": "UNSET_ENFORCEMENT",
       "description": " - FAIL_KUBE_REQUEST_ENFORCEMENT: FAIL_KUBE_REQUEST_ENFORCEMENT takes effect only if admission control webhook is enabled to listen on exec and port-forward events.\n - FAIL_DEPLOYMENT_CREATE_ENFORCEMENT: FAIL_DEPLOYMENT_CREATE_ENFORCEMENT takes effect only if admission control webhook is configured to enforce on object creates.\n - FAIL_DEPLOYMENT_UPDATE_ENFORCEMENT: FAIL_DEPLOYMENT_UPDATE_ENFORCEMENT takes effect only if admission control webhook is configured to enforce on object updates."
     },
+    "storageEvaluationFilter": {
+      "type": "object",
+      "properties": {
+        "skipContainerTypes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/storageContainerType"
+          }
+        }
+      },
+      "description": "EvaluationFilter pre-filters which entities a policy evaluates."
+    },
     "storageEventSource": {
       "type": "string",
       "enum": [
         "NOT_APPLICABLE",
         "DEPLOYMENT_EVENT",
-        "AUDIT_LOG_EVENT"
+        "AUDIT_LOG_EVENT",
+        "NODE_EVENT"
       ],
       "default": "NOT_APPLICABLE"
     },
@@ -840,33 +898,14 @@
           "type": "string"
         },
         "deployment": {
-          "$ref": "#/definitions/storageExclusionDeployment"
+          "$ref": "#/definitions/ExclusionDeployment"
         },
         "image": {
-          "$ref": "#/definitions/storageExclusionImage"
+          "$ref": "#/definitions/ExclusionImage"
         },
         "expiration": {
           "type": "string",
           "format": "date-time"
-        }
-      }
-    },
-    "storageExclusionDeployment": {
-      "type": "object",
-      "properties": {
-        "name": {
-          "type": "string"
-        },
-        "scope": {
-          "$ref": "#/definitions/storageScope"
-        }
-      }
-    },
-    "storageExclusionImage": {
-      "type": "object",
-      "properties": {
-        "name": {
-          "type": "string"
         }
       }
     },
@@ -934,6 +973,9 @@
         },
         "source": {
           "$ref": "#/definitions/storagePolicySource"
+        },
+        "evaluationFilter": {
+          "$ref": "#/definitions/storageEvaluationFilter"
         }
       }
     },
@@ -1105,9 +1147,13 @@
         },
         "source": {
           "$ref": "#/definitions/storagePolicySource"
+        },
+        "evaluationFilter": {
+          "$ref": "#/definitions/storageEvaluationFilter",
+          "description": "Pre-filters which entities the policy evaluates."
         }
       },
-      "title": "Next tag: 28"
+      "title": "Next tag: 29"
     },
     "storagePolicyGroup": {
       "type": "object",
@@ -1176,6 +1222,13 @@
           "type": "string"
         },
         "label": {
+          "$ref": "#/definitions/storageScopeLabel",
+          "title": "Deployment label."
+        },
+        "clusterLabel": {
+          "$ref": "#/definitions/storageScopeLabel"
+        },
+        "namespaceLabel": {
           "$ref": "#/definitions/storageScopeLabel"
         }
       }
@@ -1241,21 +1294,7 @@
           "type": "array",
           "items": {
             "type": "object",
-            "$ref": "#/definitions/v1DryRunResponseAlert"
-          }
-        }
-      }
-    },
-    "v1DryRunResponseAlert": {
-      "type": "object",
-      "properties": {
-        "deployment": {
-          "type": "string"
-        },
-        "violations": {
-          "type": "array",
-          "items": {
-            "type": "string"
+            "$ref": "#/definitions/DryRunResponseAlert"
           }
         }
       }

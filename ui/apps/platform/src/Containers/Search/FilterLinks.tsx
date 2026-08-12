@@ -1,13 +1,13 @@
-import React, { ReactElement } from 'react';
-import { Link } from 'react-router-dom';
+import type { ReactElement } from 'react';
+import { Link } from 'react-router-dom-v5-compat';
 import { Flex, FlexItem } from '@patternfly/react-core';
 
-import { SearchResultCategory } from 'services/SearchService';
-import { SearchFilter } from 'types/search';
+import type { SearchResultCategory } from 'services/SearchService';
+import type { SearchFilter } from 'types/search';
 import { getUrlQueryStringForSearchFilter } from 'utils/searchUtils';
 
 import NotApplicable from './NotApplicable';
-import { SearchResultCategoryMap } from './searchCategories';
+import type { SearchResultCategoryMap } from './searchCategories';
 
 type FilterLinksProps = {
     filterValue: string;
@@ -34,11 +34,17 @@ function FilterLinks({
 
         return (
             <Flex spaceItems={{ default: 'spaceItemsMd' }}>
-                {filterLinks.map(({ basePath, linkText }) => (
-                    <FlexItem key={linkText}>
-                        <Link to={`${basePath}?${queryString}`}>{linkText}</Link>
-                    </FlexItem>
-                ))}
+                {filterLinks.map(({ basePath, linkText, searchParams }) => {
+                    const extra = searchParams ? `${searchParams}&` : '';
+                    const separator = basePath.includes('?') ? '&' : '?';
+                    return (
+                        <FlexItem key={linkText}>
+                            <Link to={`${basePath}${separator}${extra}${queryString}`}>
+                                {linkText}
+                            </Link>
+                        </FlexItem>
+                    );
+                })}
             </Flex>
         );
     }

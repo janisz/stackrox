@@ -1,7 +1,8 @@
-import React, { ReactElement } from 'react';
+import { Fragment } from 'react';
+import type { ReactElement } from 'react';
 import { Card, CardBody, CardTitle, Title } from '@patternfly/react-core';
 
-import { Deployment } from 'types/deployment.proto';
+import type { Deployment } from 'types/deployment.proto';
 import PortDescriptionList from './PortDescriptionList';
 
 export type PortConfigurationProps = {
@@ -18,17 +19,17 @@ function PortConfiguration({ deployment }: PortConfigurationProps): ReactElement
         content = deployment.ports.map((port, i) => {
             /* eslint-disable react/no-array-index-key */
             return (
-                <React.Fragment key={i}>
-                    <Title headingLevel="h4" className="pf-v5-u-mb-md">{`ports[${i}]`}</Title>
+                <Fragment key={i}>
+                    <Title headingLevel="h4" className="pf-v6-u-mb-md">{`ports[${i}]`}</Title>
                     <PortDescriptionList port={port} />
-                </React.Fragment>
+                </Fragment>
             );
             /* eslint-enable react/no-array-index-key */
         });
     }
 
     return (
-        <Card isFlat>
+        <Card>
             <CardTitle component="h3">Port configuration</CardTitle>
             <CardBody>{content}</CardBody>
         </Card>

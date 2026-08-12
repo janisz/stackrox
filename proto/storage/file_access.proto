@@ -1,0 +1,103 @@
+syntax = "proto3";
+
+package storage;
+
+import "google/protobuf/timestamp.proto";
+import "storage/process_indicator.proto";
+
+option go_package = "./storage;storage";
+option java_package = "io.stackrox.proto.storage";
+
+// AclEntry represents a single POSIX ACL entry.
+message AclEntry {
+  // AclTag identifies the type of entity an ACL entry applies to.
+  enum AclTag {
+    ACL_TAG_UNSPECIFIED = 0;
+    ACL_TAG_USER_OBJ = 1; // Owner user permissions
+    ACL_TAG_USER = 2; // Specific user permissions
+    ACL_TAG_GROUP_OBJ = 3; // Owning group permissions
+    ACL_TAG_GROUP = 4; // Specific group permissions
+    ACL_TAG_MASK = 5; // Maximum effective permissions mask
+    ACL_TAG_OTHER = 6; // Everyone else
+  }
+
+  AclTag tag = 1;
+  // Permission bits (e.g. 7 = rwx, 6 = rw-, 4 = r--)
+  uint32 perm = 2;
+  // The uid or gid for ACL_TAG_USER / ACL_TAG_GROUP entries.
+  // Set to 0xFFFFFFFF when not applicable.
+  uint32 id = 3;
+}
+
+// AclType distinguishes access ACLs from default (inherited) ACLs.
+enum AclType {
+  ACL_TYPE_UNSPECIFIED = 0;
+  ACL_TYPE_ACCESS = 1; // Controls current permissions on the file
+  ACL_TYPE_DEFAULT = 2; // Inherited by new files created in a directory
+}
+
+// FileAccess contains fields related to arbitrary file accesses
+// performed by a given process. This activity can come from k8s, or
+// directly on a node.
+//
+// It is currently intended to be used in Sensor and for detection,
+// but will only be stored embedded in an Alert. As a result, it
+// does not currently define a primary key.
+message FileAccess {
+  message FileMetadata {
+    uint32 uid = 1;
+    uint32 gid = 2;
+    uint32 mode = 3;
+    string username = 4;
+    string group = 5;
+
+    // ACL-specific fields, populated only for ACL_CHANGE operations.
+    AclType acl_type = 6;
+    repeated AclEntry acl_entries = 7;
+    // The extended attribute name, populated for XATTR_SET and XATTR_REMOVE operations.
+    string xattr_name = 8;
+  }
+
+  message File {
+    // Relevant to deployment-based events, this is the path of a file in the
+    // container.
+    // e.g. if /etc/ is mounted to /tmp/etc/ in the container, and the passwd file
+    // is accessed from within the container: effective_path will be /tmp/etc/passwd
+    string effective_path = 1; // @gotags: search:"Effective Path"
+
+    // The path on the node file system. This is relevant to both deployment- and
+    // node-based events.
+    // e.g. if /etc/ is mounted to /tmp/etc/ in the container, and the passwd file
+    // is accessed from within the container: actual_path will be /etc/passwd
+    string actual_path = 2; // @gotags: search:"Actual Path"
+    FileMetadata meta = 3;
+  }
+
+  enum Operation {
+    CREATE = 0;
+    UNLINK = 1;
+    RENAME = 2;
+    PERMISSION_CHANGE = 3;
+    OWNERSHIP_CHANGE = 4;
+    OPEN = 5;
+    ACL_CHANGE = 6;
+    XATTR_SET = 7;
+    XATTR_REMOVE = 8;
+  }
+
+  File file = 1;
+  Operation operation = 2; // @gotags: search:"File Operation"
+
+  // specific to `RENAME` activity, the new location / metadata of the file.
+  File moved = 3; // @gotags: search:"-"
+
+  // When the file activity happened
+  google.protobuf.Timestamp timestamp = 4;
+
+  // The process that performed the action. May contain deployment/namespace
+  // information.
+  ProcessIndicator process = 5;
+
+  // The hostname/name of the node where the file activity occurred
+  string hostname = 6;
+}

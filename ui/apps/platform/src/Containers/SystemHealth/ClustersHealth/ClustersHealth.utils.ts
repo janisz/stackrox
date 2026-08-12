@@ -2,10 +2,10 @@ import {
     findUpgradeState,
     getCredentialExpirationStatus,
 } from 'Containers/Clusters/cluster.helpers';
-import { CertExpiryStatus } from 'Containers/Clusters/clusterTypes'; // TODO types/cluster.proto.ts
-import { Cluster } from 'types/cluster.proto';
+import type { CertExpiryStatus } from 'Containers/Clusters/clusterTypes'; // TODO types/cluster.proto.ts
+import type { Cluster } from 'types/cluster.proto';
 
-import { HealthVariant } from '../CardHeaderIcons';
+import type { HealthVariant } from '../CardHeaderIcons';
 
 export type ClusterStatus = 'HEALTHY' | 'UNHEALTHY' | 'DEGRADED' | 'UNAVAILABLE' | 'UNINITIALIZED';
 
@@ -36,7 +36,7 @@ export function getCertificateExpirationCounts(
                     break;
                 }
                 default: {
-                    const { certExpiryStatus } = cluster.status || {};
+                    const { certExpiryStatus } = cluster.status ?? {};
                     const key = getCredentialExpirationStatus(
                         certExpiryStatus as CertExpiryStatus,
                         currentDatetime
@@ -62,16 +62,16 @@ export function getSensorUpgradeCounts(clusters: Cluster[]): ClusterStatusCounts
                     break;
                 }
                 default: {
-                    const { upgradeStatus } = cluster.status || {};
+                    const { upgradeStatus } = cluster.status ?? {};
                     const upgradeState = findUpgradeState(upgradeStatus);
-                    /* eslint-disable no-nested-ternary */
+
                     const key =
                         upgradeState?.type === 'current'
                             ? 'HEALTHY'
                             : upgradeState?.type === 'failure'
                               ? 'UNHEALTHY'
                               : 'DEGRADED';
-                    /* eslint-enable no-nested-ternary */
+
                     counts[key] += 1;
                 }
             }

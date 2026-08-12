@@ -1,12 +1,16 @@
-import React, { ReactElement } from 'react';
+import type { ReactElement } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
 import { createStructuredSelector } from 'reselect';
-import { FeedbackModal, FeedbackLocale } from '@patternfly/react-user-feedback';
+import { FeedbackModal } from '@patternfly/react-user-feedback';
+import type { FeedbackLocale } from '@patternfly/react-user-feedback';
 
 import { getProductBranding } from 'constants/productBranding';
 import redFeedbackImage from 'images/feedback_illo.svg';
 import { selectors } from 'reducers';
 import { actions } from 'reducers/feedback';
+
+// Required for PatternFly v6 FeedbackModal styling
+import '@patternfly/react-user-feedback/dist/esm/Feedback/Feedback.css';
 
 const feedbackState = createStructuredSelector({
     feedback: selectors.feedbackSelector,

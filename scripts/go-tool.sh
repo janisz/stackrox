@@ -56,19 +56,45 @@ if [[ "$DEBUG_BUILD" != "yes" ]]; then
   ldflags+=(-s -w)
 fi
 
-if [[ "${CGO_ENABLED}" != 0 ]]; then
-  echo >&2 "CGO_ENABLED is not 0. Compiling with -linkmode=external"
-  ldflags+=('-linkmode=external')
-fi
-
 function invoke_go() {
-  tool="$1"
+  local tool="${1:?"invoke_go tool argument required"}"
   shift
+  local args=()
+  local cgo_ldflags=("${ldflags[@]}")
+  local cc_compiler=""
+  local cgo_enabled="${CGO_ENABLED:-0}"
+
+  args+=("-buildvcs=false")
+  args+=(-tags "$(tr , ' ' <<<"$GOTAGS")")
+
   if [[ "$RACE" == "true" ]]; then
-    CGO_ENABLED=1 go "$tool" -race -ldflags="${ldflags[*]}" -tags "$(tr , ' ' <<<"$GOTAGS")" "$@"
-  else
-    go "$tool" -ldflags="${ldflags[*]}" -tags "$(tr , ' ' <<<"$GOTAGS")" "$@"
+    echo >&2 "RACE==true, forcing CGO_ENABLED=1"
+    cgo_enabled=1
+    args+=("-race")
+
+    if command -v musl-gcc &> /dev/null; then
+      echo >&2 "Using musl-gcc for static linking to avoid GLIBC dependencies"
+      cc_compiler="musl-gcc"
+      cgo_ldflags+=('-extldflags=-static')
+    else
+      echo >&2 "musl-gcc not found, using default cc and linker (auto)"
+    fi
   fi
+
+  # -linkmode=external must be set for all CGO builds so the external linker
+  # (gcc or musl-gcc) is used. This check is inside invoke_go rather than at
+  # the top level because race builds override cgo_enabled to 1 after the
+  # environment is read.
+  if [[ "$cgo_enabled" != 0 ]]; then
+    echo >&2 "CGO_ENABLED=$cgo_enabled, adding -linkmode=external"
+    cgo_ldflags+=('-linkmode=external')
+  fi
+
+  args+=(-ldflags="${cgo_ldflags[*]}")
+
+  export CGO_ENABLED="$cgo_enabled"
+  [[ -n "$cc_compiler" ]] && export CC="$cc_compiler"
+  go "$tool" "${args[@]}" "$@"
 }
 
 function go_build() (
@@ -76,19 +102,19 @@ function go_build() (
   [[ -n "$GOOS" ]] || die "GOOS must be set"
   [[ -n "$GOARCH" ]] || die "GOARCH must be set"
 
+  dirs=()
   for main_srcdir in "$@"; do
-    if ! [[ "${main_srcdir}" =~ ^\.?/ ]]; then
-      main_srcdir="./${main_srcdir}"
+    if ! [[ "$main_srcdir" =~ ^\.?/ ]]; then
+      main_srcdir="./$main_srcdir"
     fi
-    bin_name="$(basename "$main_srcdir")"
-    output_file="bin/${GOOS}_${GOARCH}/${bin_name}"
-    if [[ "$GOOS" == "windows" ]]; then
-      output_file="${output_file}.exe"
-    fi
-    mkdir -p "$(dirname "$output_file")"
-    echo >&2 "Compiling Go source in ${main_srcdir} to ${output_file}"
-    invoke_go_build -o "$output_file" "$main_srcdir"
+    dirs+=("$main_srcdir")
   done
+
+  output="bin/${GOOS}_${GOARCH}"
+  mkdir -p "$output"
+
+  echo >&2 "Compiling Go source in ${dirs[*]} to ${output}"
+  invoke_go_build -o "$output" "${dirs[@]}"
 )
 
 function go_build_file() {

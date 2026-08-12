@@ -1,9 +1,10 @@
-import React, { ReactElement, useState } from 'react';
-import { Badge, Tab, TabContent, Tabs, TabTitleText } from '@patternfly/react-core';
+import { useState } from 'react';
+import type { ReactElement } from 'react';
+import { Badge, Tab, TabContent, TabTitleText, Tabs } from '@patternfly/react-core';
 
-import { LabelSelector, LabelSelectorsKey } from 'services/AccessScopesService';
+import type { LabelSelector, LabelSelectorsKey } from 'services/AccessScopesService';
 
-import { LabelSelectorsEditingState } from './accessScopes.utils';
+import type { LabelSelectorsEditingState } from './accessScopes.utils';
 import LabelSelectorCards from './LabelSelectorCards';
 
 export type LabelInclusionProps = {
@@ -42,7 +43,7 @@ function LabelInclusion({
                     title={
                         <TabTitleText>
                             Cluster
-                            <Badge isRead className="pf-v5-u-ml-sm">
+                            <Badge isRead className="pf-v6-u-ml-sm">
                                 {clusterLabelSelectors.length}
                             </Badge>
                         </TabTitleText>
@@ -54,41 +55,37 @@ function LabelInclusion({
                     title={
                         <TabTitleText>
                             Namespace
-                            <Badge isRead className="pf-v5-u-ml-sm">
+                            <Badge isRead className="pf-v6-u-ml-sm">
                                 {namespaceLabelSelectors.length}
                             </Badge>
                         </TabTitleText>
                     }
                 />
             </Tabs>
-            <TabContent
-                eventKey="clusterLabelSelectors"
-                id="clusterLabelSelectors"
-                hidden={activeKeyTab !== 'clusterLabelSelectors'}
-            >
-                <LabelSelectorCards
-                    labelSelectors={clusterLabelSelectors}
-                    labelSelectorsKey="clusterLabelSelectors"
-                    hasAction={hasAction}
-                    labelSelectorsEditingState={labelSelectorsEditingState}
-                    setLabelSelectorsEditingState={setLabelSelectorsEditingState}
-                    handleLabelSelectorsChange={handleLabelSelectorsChange}
-                />
-            </TabContent>
-            <TabContent
-                eventKey="namespaceLabelSelectors"
-                id="namespaceLabelSelectors"
-                hidden={activeKeyTab !== 'namespaceLabelSelectors'}
-            >
-                <LabelSelectorCards
-                    labelSelectors={namespaceLabelSelectors}
-                    labelSelectorsKey="namespaceLabelSelectors"
-                    hasAction={hasAction}
-                    labelSelectorsEditingState={labelSelectorsEditingState}
-                    setLabelSelectorsEditingState={setLabelSelectorsEditingState}
-                    handleLabelSelectorsChange={handleLabelSelectorsChange}
-                />
-            </TabContent>
+            {activeKeyTab === 'clusterLabelSelectors' && (
+                <TabContent eventKey="clusterLabelSelectors" id="clusterLabelSelectors">
+                    <LabelSelectorCards
+                        labelSelectors={clusterLabelSelectors}
+                        labelSelectorsKey="clusterLabelSelectors"
+                        hasAction={hasAction}
+                        labelSelectorsEditingState={labelSelectorsEditingState}
+                        setLabelSelectorsEditingState={setLabelSelectorsEditingState}
+                        handleLabelSelectorsChange={handleLabelSelectorsChange}
+                    />
+                </TabContent>
+            )}
+            {activeKeyTab === 'namespaceLabelSelectors' && (
+                <TabContent eventKey="namespaceLabelSelectors" id="namespaceLabelSelectors">
+                    <LabelSelectorCards
+                        labelSelectors={namespaceLabelSelectors}
+                        labelSelectorsKey="namespaceLabelSelectors"
+                        hasAction={hasAction}
+                        labelSelectorsEditingState={labelSelectorsEditingState}
+                        setLabelSelectorsEditingState={setLabelSelectorsEditingState}
+                        handleLabelSelectorsChange={handleLabelSelectorsChange}
+                    />
+                </TabContent>
+            )}
         </>
     );
 }

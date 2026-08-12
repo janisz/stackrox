@@ -16,6 +16,7 @@ func LightweightDeploymentImage() *storage.Image {
 			Registry: "docker.io",
 			Remote:   "library/nginx",
 			Tag:      "1.10",
+			FullName: "docker.io/library/nginx:1.10",
 		},
 		Metadata: &storage.ImageMetadata{
 			V1: &storage.V1Metadata{
@@ -163,5 +164,17 @@ func GetDeploymentWithImage(cluster, namespace string, image *storage.Image) *st
 	dep.Namespace = namespace
 	dep.NamespaceId = cluster + namespace
 	dep.Containers = append(dep.Containers, &storage.Container{Name: "supervulnerable", Image: types2.ToContainerImage(image)})
+	return dep
+}
+
+// GetDeploymentWithImageV2 returns a Mock Deployment with specified ImageV2.
+func GetDeploymentWithImageV2(cluster, namespace string, image *storage.ImageV2) *storage.Deployment {
+	dep := LightweightDeployment()
+	dep.Id = uuid.NewV4().String()
+	dep.ClusterName = cluster
+	dep.ClusterId = cluster
+	dep.Namespace = namespace
+	dep.NamespaceId = cluster + namespace
+	dep.Containers = append(dep.Containers, &storage.Container{Name: "supervulnerable", Image: types2.ToContainerImageV2(image)})
 	return dep
 }

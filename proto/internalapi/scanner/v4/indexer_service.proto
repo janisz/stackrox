@@ -6,6 +6,7 @@ syntax = "proto3";
 
 package scanner.v4;
 
+import "internalapi/scanner/v4/common.proto";
 import "internalapi/scanner/v4/index_report.proto";
 
 option go_package = "./internalapi/scanner/v4;v4";
@@ -27,6 +28,7 @@ message CreateIndexReportRequest {
 
 message GetIndexReportRequest {
   string hash_id = 1;
+  bool includeExternal = 2;
 }
 
 message HasIndexReportRequest {
@@ -44,6 +46,35 @@ message GetOrCreateIndexReportRequest {
   }
 }
 
+message StoreIndexReportRequest {
+  string hash_id = 1;
+  string indexer_version = 2;
+  Contents contents = 3;
+}
+
+message StoreIndexReportResponse {
+  string status = 1;
+}
+
+message GetRepositoryToCPEMappingRequest {
+  // If provided, indexer returns data only if modified since this timestamp.
+  // If empty, always returns the full data.
+  string if_modified_since = 1;
+}
+
+message RepositoryCPEInfo {
+  repeated string cpes = 1;
+}
+
+message GetRepositoryToCPEMappingResponse {
+  // True if data was returned, false if not modified since the requested time.
+  bool modified = 1;
+  // Timestamp to use in the next request's if_modified_since field.
+  string last_modified = 2;
+  // Maps repository names to their CPE information (empty if modified=false).
+  map<string, RepositoryCPEInfo> mapping = 3;
+}
+
 // Indexer service creates manifests and store index reports.
 service Indexer {
   // CreateIndexReport creates an index report for the specified resource and returns the report.
@@ -59,4 +90,10 @@ service Indexer {
 
   // HasIndexReport checks if an index report for the specified resource exists.
   rpc HasIndexReport(HasIndexReportRequest) returns (HasIndexReportResponse);
+
+  // StoreIndexReport stores an external index report to the datastore.
+  rpc StoreIndexReport(StoreIndexReportRequest) returns (StoreIndexReportResponse);
+
+  // GetRepositoryToCPEMapping returns the repository-to-CPE mapping used for RHEL package matching.
+  rpc GetRepositoryToCPEMapping(GetRepositoryToCPEMappingRequest) returns (GetRepositoryToCPEMappingResponse);
 }

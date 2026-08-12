@@ -1,16 +1,21 @@
 package certwatch
 
 import (
+	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
 	"sync/atomic"
-	"unsafe"
 
 	"github.com/pkg/errors"
 	"github.com/stackrox/rox/pkg/tlscheck"
 )
 
-var errNoTLSConfig = errors.New("no TLS config is available")
+var (
+	errNoTLSConfig = errors.New("no TLS config is available")
+
+	// sessionTicketKeyRotator is the function used to rotate session ticket keys. Used for testing.
+	sessionTicketKeyRotator = rotateSessionTicketKeys
+)
 
 // TLSConfigHolder holds a pointer to the tls.Config instance and provides an ability to update it in runtime.
 type TLSConfigHolder struct {
@@ -23,7 +28,7 @@ type TLSConfigHolder struct {
 
 	customTLSCertVerifier tlscheck.TLSCertVerifier
 
-	liveTLSConfig unsafe.Pointer
+	liveTLSConfig atomic.Pointer[tls.Config]
 }
 
 // NewTLSConfigHolder instantiates a new instance of TLSConfigHolder
@@ -62,11 +67,28 @@ func (c *TLSConfigHolder) UpdateTLSConfig() {
 		newTLSConfig.VerifyPeerCertificate = tlscheck.VerifyPeerCertFunc(newTLSConfig, c.customTLSCertVerifier)
 	}
 
-	atomic.StorePointer(&c.liveTLSConfig, (unsafe.Pointer)(newTLSConfig))
+	// Rotate session ticket keys to invalidate cached TLS sessions.
+	// Without this, clients could continue seeing the old certificate indefinitely.
+	if err := sessionTicketKeyRotator(newTLSConfig); err != nil {
+		log.Warnf("Failed to rotate session ticket keys during TLS config update: %v. Clients with cached sessions may see old certificates.", err)
+	}
+
+	c.liveTLSConfig.Store(newTLSConfig)
+}
+
+// rotateSessionTicketKeys generates and sets new session ticket keys for the TLS config.
+// Note: Calling SetSessionTicketKeys disables Go's automatic 24-hour session ticket key rotation.
+func rotateSessionTicketKeys(cfg *tls.Config) error {
+	var newKey [32]byte
+	if _, err := rand.Read(newKey[:]); err != nil {
+		return errors.Wrap(err, "generating session ticket key")
+	}
+	cfg.SetSessionTicketKeys([][32]byte{newKey})
+	return nil
 }
 
 func (c *TLSConfigHolder) liveConfig(_ *tls.ClientHelloInfo) (*tls.Config, error) {
-	liveCfg := (*tls.Config)(atomic.LoadPointer(&c.liveTLSConfig))
+	liveCfg := c.liveTLSConfig.Load()
 	if liveCfg == nil {
 		return nil, errNoTLSConfig
 	}

@@ -391,7 +391,7 @@ func createNestedPredicate(parentType reflect.Type, field reflect.StructField, p
 	switch parentType.Kind() {
 	case reflect.Array, reflect.Slice:
 		return createSliceNestedPredicate(parentType, field, pred)
-	case reflect.Ptr:
+	case reflect.Pointer:
 		return createPtrNestedPredicate(parentType, field, pred)
 	case reflect.Map:
 		return createMapNestedPredicate(parentType, field, pred)
@@ -423,7 +423,7 @@ func createSliceNestedPredicate(parentType reflect.Type, field reflect.StructFie
 		}
 		var results []*search.Result
 		length := instance.Len()
-		for i := 0; i < length; i++ {
+		for i := range length {
 			idx := instance.Index(i)
 			if res, matches := nested.Evaluate(idx); matches {
 				results = append(results, res)
@@ -495,14 +495,14 @@ func createMapNestedPredicate(parentType reflect.Type, field reflect.StructField
 func nilCheck(f reflect.Value) bool {
 	switch f.Kind() {
 	// Don't return nil for nil Reflect.Maps.  Map base predicates should operate on nil maps
-	case reflect.Ptr, reflect.UnsafePointer, reflect.Interface, reflect.Slice:
+	case reflect.Pointer, reflect.UnsafePointer, reflect.Interface, reflect.Slice:
 		return f.IsNil()
 	}
 	return false
 }
 
 var (
-	imageScanPtrType = reflect.TypeOf((*storage.ImageScan)(nil))
+	imageScanPtrType = reflect.TypeFor[*storage.ImageScan]()
 )
 
 func createStructFieldNestedPredicate(field reflect.StructField, structTy reflect.Type, pred internalPredicate) internalPredicate {
@@ -539,7 +539,7 @@ func createInterfaceFieldNestedPredicate(field reflect.StructField, pred interna
 			return nil, false
 		}
 		concrete := instance.Elem()
-		if concrete.Type().Kind() == reflect.Ptr {
+		if concrete.Type().Kind() == reflect.Pointer {
 			concrete = concrete.Elem()
 		}
 		if concrete.Type().Kind() != reflect.Struct {

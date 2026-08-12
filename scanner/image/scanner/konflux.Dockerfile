@@ -1,12 +1,4 @@
-ARG MAPPINGS_REGISTRY=registry.access.redhat.com
-ARG MAPPINGS_BASE_IMAGE=ubi8
-ARG MAPPINGS_BASE_TAG=latest
-ARG BASE_REGISTRY=registry.access.redhat.com
-ARG BASE_IMAGE=ubi8-minimal
-ARG BASE_TAG=latest
-
-
-FROM brew.registry.redhat.io/rh-osbs/openshift-golang-builder:rhel_8_1.23 AS builder
+FROM brew.registry.redhat.io/rh-osbs/openshift-golang-builder:rhel_9_golang_1.26@sha256:3ca2c34c83e6563fa574b7c7ecda92a5fdae2ec7a5f37a408e5e383947fb1957 AS builder
 
 ARG BUILD_TAG
 RUN if [[ "$BUILD_TAG" == "" ]]; then >&2 echo "error: required BUILD_TAG arg is unset"; exit 6; fi
@@ -24,8 +16,27 @@ WORKDIR /src
 
 RUN make -C scanner NODEPS=1 CGO_ENABLED=1 image/scanner/bin/scanner copy-scripts
 
+FROM registry.access.redhat.com/ubi9/ubi-micro:latest@sha256:7e7f79ab747bf2b452e3043dd89f388e92be4c7fdcc8b815b58adf6c99c39c95 AS ubi-micro-base
 
-FROM ${BASE_REGISTRY}/${BASE_IMAGE}:${BASE_TAG}
+FROM registry.access.redhat.com/ubi9/ubi:latest@sha256:d3e61197e0f96aee94872141b429f63eadb939de95a25fe6b504843f427b7a3f AS package_installer
+
+COPY --from=ubi-micro-base / /out/
+
+RUN dnf install -y \
+    --installroot=/out/ \
+    --releasever=9 \
+    --setopt=install_weak_deps=0 \
+    --setopt=reposdir=/etc/yum.repos.d \
+    --nodocs \
+    ca-certificates \
+    gzip \
+    less \
+    openssl \
+    tar && \
+    dnf clean all --installroot=/out/ && \
+    rm -rf /out/var/cache/dnf /out/var/cache/yum
+
+FROM ubi-micro-base
 
 ARG BUILD_TAG
 
@@ -37,7 +48,7 @@ LABEL \
     io.k8s.display-name="scanner-v4" \
     io.openshift.tags="rhacs,scanner-v4,stackrox" \
     maintainer="Red Hat, Inc." \
-    name="rhacs-scanner-v4-rhel8" \
+    name="advanced-cluster-security/rhacs-scanner-v4-rhel9" \
     # Custom Snapshot creation in `operator-bundle-pipeline` depends on source-location label to be set correctly.
     source-location="https://github.com/stackrox/stackrox" \
     summary="The image scanner v4 for Red Hat Advanced Cluster Security for Kubernetes" \
@@ -47,6 +58,8 @@ LABEL \
     # Release label is required by EC although has no practical semantics.
     # We also set it to not inherit one from a base stage in case it's RHEL or UBI.
     release="1"
+
+COPY --from=package_installer /out/ /
 
 COPY --from=builder \
     /src/scanner/image/scanner/scripts/entrypoint.sh \
@@ -63,17 +76,13 @@ COPY --from=builder \
 
 COPY .konflux/scanner-data/repository-to-cpe.json .konflux/scanner-data/container-name-repos-map.json /run/mappings/
 
-RUN microdnf upgrade --nobest && \
-    microdnf clean all && \
-    # (Optional) Remove line below to keep package management utilities
-    rpm -e --nodeps $(rpm -qa curl '*rpm*' '*dnf*' '*libsolv*' '*hawkey*' 'yum*') && \
-    rm -rf /var/cache/dnf /var/cache/yum && \
+RUN \
     chown -R 65534:65534 /tmp && \
     # The contents of paths mounted as emptyDir volumes in Kubernetes are saved
     # by the script `save-dir-contents` during the image build. The directory
     # contents are then restored by the script `restore-all-dir-contents`
     # during the container start.
-    chown -R 65534:65534 /etc/pki/ca-trust /etc/ssl && save-dir-contents /etc/pki/ca-trust /etc/ssl
+    chown -R 65534:65534 /etc/pki/ca-trust && save-dir-contents /etc/pki/ca-trust/source
 
 COPY LICENSE /licenses/LICENSE
 

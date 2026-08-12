@@ -1,0 +1,13 @@
+{
+  "name": "Bundesamt für Sicherheit in der Informationstechnik",
+  "provider": "Germany’s Federal Office for Information Security",
+  "shortName": "BSI",
+  "profiles": [
+    { "profileName": "ocp4-bsi" },
+    { "profileName": "ocp4-bsi-node" },
+    { "profileName": "ocp4-bsi-2022" },
+    { "profileName": "ocp4-bsi-node-2022" },
+    { "profileName": "rhcos4-bsi" },
+    { "profileName": "rhcos4-bsi-2022" }
+  ]
+}

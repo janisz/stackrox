@@ -1,22 +1,21 @@
-import React, { ReactElement } from 'react';
-import { Badge } from '@patternfly/react-core';
-import { SelectOption } from '@patternfly/react-core/deprecated';
-import { Table, Tbody, Td, Thead, Th, Tr } from '@patternfly/react-table';
+import type { ReactElement } from 'react';
+import { Badge, SelectOption } from '@patternfly/react-core';
+import { Table, Tbody, Td, Th, Thead, Tr } from '@patternfly/react-table';
 
 import SelectSingle from 'Components/SelectSingle';
+import {
+    deprecatedResourceRowStyle,
+    replacedResourceMapping,
+    resourceRemovalReleaseVersions,
+    resourceSubstitutions,
+} from 'constants/accessControl';
 import { accessControl as accessTypeLabels } from 'messages/common';
-import { PermissionsMap } from 'services/RolesService';
+import type { PermissionsMap } from 'services/RolesService';
+import type { ResourceName } from 'types/roleResources';
 
 import { ReadAccessIcon, WriteAccessIcon } from './AccessIcons';
 import { getReadAccessCount, getWriteAccessCount } from './permissionSets.utils';
 import { ResourceDescription } from './ResourceDescription';
-import {
-    replacedResourceMapping,
-    resourceRemovalReleaseVersions,
-    resourceSubstitutions,
-    deprecatedResourceRowStyle,
-} from '../../../constants/accessControl';
-import { ResourceName } from '../../../types/roleResources';
 
 export type PermissionsTableProps = {
     resourceToAccess: PermissionsMap;
@@ -37,20 +36,20 @@ function PermissionsTable({
                 <Tr>
                     <Th width={20}>
                         Resource
-                        <Badge isRead className="pf-v5-u-ml-sm">
+                        <Badge isRead className="pf-v6-u-ml-sm">
                             {resourceToAccessEntries.length}
                         </Badge>
                     </Th>
                     <Th width={40}>Description</Th>
                     <Th width={10}>
                         Read
-                        <Badge isRead className="pf-v5-u-ml-sm">
+                        <Badge isRead className="pf-v6-u-ml-sm">
                             {getReadAccessCount(resourceToAccess)}
                         </Badge>
                     </Th>
                     <Th width={10}>
                         Write
-                        <Badge isRead className="pf-v5-u-ml-sm">
+                        <Badge isRead className="pf-v6-u-ml-sm">
                             {getWriteAccessCount(resourceToAccess)}
                         </Badge>
                     </Th>
@@ -68,7 +67,7 @@ function PermissionsTable({
                         }
                     >
                         <Td dataLabel="Resource">
-                            <p className="pf-v5-u-font-weight-bold">{resource}</p>
+                            <p className="pf-v6-u-font-weight-bold">{resource}</p>
                             <p>
                                 {resourceSubstitutions[resource] && (
                                     <>Replaces {resourceSubstitutions[resource].join(', ')}</>

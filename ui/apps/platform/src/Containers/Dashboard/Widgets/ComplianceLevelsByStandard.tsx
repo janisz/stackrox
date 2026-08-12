@@ -1,42 +1,38 @@
-import React, { useMemo } from 'react';
-import { useLocation } from 'react-router-dom';
+import { useMemo } from 'react';
+import { Link, useLocation } from 'react-router-dom-v5-compat';
 import {
-    Button,
     EmptyState,
-    EmptyStateIcon,
     EmptyStateBody,
-    EmptyStateHeader,
     EmptyStateFooter,
     Flex,
     FlexItem,
     Form,
     FormGroup,
+    Title,
     ToggleGroup,
     ToggleGroupItem,
-    Title,
 } from '@patternfly/react-core';
 import { SyncIcon } from '@patternfly/react-icons';
 import { useQuery } from '@apollo/client';
 import isEqual from 'lodash/isEqual';
 import sortBy from 'lodash/sortBy';
 
-import LinkShim from 'Components/PatternFly/LinkShim';
 import WidgetCard from 'Components/PatternFly/WidgetCard';
 import useURLSearch from 'hooks/useURLSearch';
 import useWidgetConfig from 'hooks/useWidgetConfig';
-import { SearchFilter } from 'types/search';
+import type { SearchFilter } from 'types/search';
 
 import {
     getRequestQueryStringForSearchFilter,
     getUrlQueryStringForSearchFilter,
 } from 'utils/searchUtils';
-import entityTypes, { StandardEntityType, standardTypes } from 'constants/entityTypes';
+import entityTypes from 'constants/entityTypes';
+import type { StandardEntityType, standardTypes } from 'constants/entityTypes';
 import { AGGREGATED_RESULTS_ACROSS_ENTITIES } from 'queries/controls';
 import { complianceBasePath } from 'routePaths';
 import { standardLabels } from 'messages/standards';
-import ComplianceLevelsByStandardChart, {
-    ComplianceLevelByStandard,
-} from './ComplianceLevelsByStandardChart';
+import ComplianceLevelsByStandardChart from './ComplianceLevelsByStandardChart';
+import type { ComplianceLevelByStandard } from './ComplianceLevelsByStandardChart';
 import WidgetOptionsMenu from './WidgetOptionsMenu';
 import WidgetOptionsResetButton from './WidgetOptionsResetButton';
 
@@ -155,42 +151,58 @@ function ComplianceLevelsByStandard() {
             isLoading={loading && !complianceData}
             error={error}
             header={
-                <Flex direction={{ default: 'row' }}>
-                    <FlexItem grow={{ default: 'grow' }}>
+                <Flex
+                    direction={{ default: 'row' }}
+                    alignItems={{ default: 'alignItemsCenter' }}
+                    justifyContent={{ default: 'justifyContentSpaceBetween' }}
+                >
+                    <FlexItem>
                         <Title headingLevel="h2">Compliance by standard</Title>
                     </FlexItem>
-                    <FlexItem>
-                        {isOptionsChanged && (
-                            <WidgetOptionsResetButton onClick={() => updateConfig(defaultConfig)} />
-                        )}
-                        <WidgetOptionsMenu
-                            bodyContent={
-                                <Form>
-                                    <FormGroup fieldId={`${fieldIdPrefix}-sort-by`} label="Sort by">
-                                        <ToggleGroup aria-label="Sort coverage by ascending or descending percentage">
-                                            <ToggleGroupItem
-                                                text="Ascending"
-                                                buttonId={`${fieldIdPrefix}-sort-by-asc`}
-                                                isSelected={sortDataBy === 'asc'}
-                                                onChange={() => updateConfig({ sortDataBy: 'asc' })}
-                                            />
-                                            <ToggleGroupItem
-                                                text="Descending"
-                                                buttonId={`${fieldIdPrefix}-sort-by-desc`}
-                                                isSelected={sortDataBy === 'desc'}
-                                                onChange={() =>
-                                                    updateConfig({ sortDataBy: 'desc' })
-                                                }
-                                            />
-                                        </ToggleGroup>
-                                    </FormGroup>
-                                </Form>
-                            }
-                        />
-                        <Button variant="secondary" component={LinkShim} href={complianceBasePath}>
-                            View all
-                        </Button>
-                    </FlexItem>
+                    <Flex
+                        direction={{ default: 'row' }}
+                        alignItems={{ default: 'alignItemsCenter' }}
+                    >
+                        <FlexItem>
+                            <Link to={complianceBasePath}>View all</Link>
+                        </FlexItem>
+                        <FlexItem>
+                            {isOptionsChanged && (
+                                <WidgetOptionsResetButton
+                                    onClick={() => updateConfig(defaultConfig)}
+                                />
+                            )}
+                            <WidgetOptionsMenu
+                                bodyContent={
+                                    <Form>
+                                        <FormGroup
+                                            fieldId={`${fieldIdPrefix}-sort-by`}
+                                            label="Sort by"
+                                        >
+                                            <ToggleGroup aria-label="Sort coverage by ascending or descending percentage">
+                                                <ToggleGroupItem
+                                                    text="Ascending"
+                                                    buttonId={`${fieldIdPrefix}-sort-by-asc`}
+                                                    isSelected={sortDataBy === 'asc'}
+                                                    onChange={() =>
+                                                        updateConfig({ sortDataBy: 'asc' })
+                                                    }
+                                                />
+                                                <ToggleGroupItem
+                                                    text="Descending"
+                                                    buttonId={`${fieldIdPrefix}-sort-by-desc`}
+                                                    isSelected={sortDataBy === 'desc'}
+                                                    onChange={() =>
+                                                        updateConfig({ sortDataBy: 'desc' })
+                                                    }
+                                                />
+                                            </ToggleGroup>
+                                        </FormGroup>
+                                    </Form>
+                                }
+                            />
+                        </FlexItem>
+                    </Flex>
                 </Flex>
             }
         >
@@ -200,17 +212,18 @@ function ComplianceLevelsByStandard() {
                     complianceLevelsByStandard={complianceData.complianceLevelsByStandard}
                 />
             ) : (
-                <EmptyState className="pf-v5-u-h-100" variant="xs">
-                    <EmptyStateHeader
-                        titleText={
-                            Array.isArray(complianceData?.complianceStandards) &&
-                            complianceData.complianceStandards.length === 0
-                                ? 'No standards selected'
-                                : 'No results available.'
-                        }
-                        icon={<EmptyStateIcon className="pf-v5-u-font-size-xl" icon={SyncIcon} />}
-                        headingLevel="h3"
-                    />
+                <EmptyState
+                    headingLevel="h3"
+                    icon={SyncIcon}
+                    titleText={
+                        Array.isArray(complianceData?.complianceStandards) &&
+                        complianceData.complianceStandards.length === 0
+                            ? 'No standards selected'
+                            : 'No results available.'
+                    }
+                    className="pf-v6-u-h-100"
+                    variant="xs"
+                >
                     <EmptyStateBody>
                         {Array.isArray(complianceData?.complianceStandards) &&
                         complianceData.complianceStandards.length === 0
@@ -218,9 +231,7 @@ function ComplianceLevelsByStandard() {
                             : 'Run a scan on the Compliance page.'}
                     </EmptyStateBody>
                     <EmptyStateFooter>
-                        <Button component={LinkShim} href={complianceBasePath}>
-                            Go to compliance
-                        </Button>
+                        <Link to={complianceBasePath}>View Compliance Dashboard</Link>
                     </EmptyStateFooter>
                 </EmptyState>
             )}

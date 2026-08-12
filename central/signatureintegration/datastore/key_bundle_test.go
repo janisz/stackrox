@@ -1,0 +1,141 @@
+package datastore
+
+import (
+	"errors"
+	"fmt"
+	"testing"
+
+	storeMocks "github.com/stackrox/rox/central/signatureintegration/store/mocks"
+	"github.com/stackrox/rox/generated/storage"
+	"github.com/stackrox/rox/pkg/signatures"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"go.uber.org/mock/gomock"
+)
+
+const (
+	testPublicKeyPEM = `-----BEGIN PUBLIC KEY-----
+MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE16IoQbiiB5exTRLTkl2rn5FuyXys
+4TbDn4+GhQD1JmLZnAiA0cXktX+gFdxu/0JM9pcjjaqT7pdXztbBs78cXg==
+-----END PUBLIC KEY-----
+`
+	testPublicKeyPEM2 = `-----BEGIN PUBLIC KEY-----
+MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEQq1X/6XxCA4s0++8Tvl8k+Z0G/GN
+LKpdYJEldXnyRE4ppY5d7vnRZHvdZQMSE3KoRSMvVnzZtc9LTKLB3DlS/w==
+-----END PUBLIC KEY-----
+`
+)
+
+func redHatIntegrationMatcher() gomock.Matcher {
+	return gomock.Cond(func(x any) bool {
+		si, ok := x.(*storage.SignatureIntegration)
+		return ok && si.GetId() == signatures.DefaultRedHatIntegrationID
+	})
+}
+
+func validBundleJSON() []byte {
+	return fmt.Appendf(nil, `{"schemaVersion": "1.0", "cosignKeys": [{"name": "test-key-1", "publicKey": %q}]}`, testPublicKeyPEM)
+}
+
+func validBundleJSON2Keys() []byte {
+	return fmt.Appendf(nil, `{"schemaVersion": "1.0", "cosignKeys": [{"name": "test-key-1", "publicKey": %q}, {"name": "test-key-2", "publicKey": %q}]}`,
+		testPublicKeyPEM, testPublicKeyPEM2)
+}
+
+func TestStartKeyBundleWatcherDisabled(t *testing.T) {
+	t.Setenv("ROX_REDHAT_SIGNING_KEY_WATCH_INTERVAL", "0")
+
+	ctrl := gomock.NewController(t)
+	mockStore := storeMocks.NewMockSignatureIntegrationStore(ctrl)
+
+	old := bundleWatcher
+	defer func() { bundleWatcher = old }()
+	bundleWatcher = nil
+
+	startKeyBundleWatcher(mockStore)
+	assert.Nil(t, bundleWatcher)
+}
+
+func TestHandlerValidBundle(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	mockStore := storeMocks.NewMockSignatureIntegrationStore(ctrl)
+	mockStore.EXPECT().Upsert(gomock.Any(), redHatIntegrationMatcher()).Return(nil).Times(1)
+
+	handler := keyBundleHandler(mockStore)
+	err := handler(validBundleJSON())
+	assert.NoError(t, err)
+}
+
+func TestHandlerTwoKeys(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	mockStore := storeMocks.NewMockSignatureIntegrationStore(ctrl)
+	mockStore.EXPECT().Upsert(gomock.Any(), redHatIntegrationMatcher()).Return(nil).Times(1)
+
+	handler := keyBundleHandler(mockStore)
+	err := handler(validBundleJSON2Keys())
+	assert.NoError(t, err)
+}
+
+func TestHandlerInvalidBundleReturnsNil(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	mockStore := storeMocks.NewMockSignatureIntegrationStore(ctrl)
+
+	handler := keyBundleHandler(mockStore)
+	err := handler([]byte(`{"cosignKeys": []}`))
+	assert.NoError(t, err, "parse errors must return nil to suppress retry")
+}
+
+func TestHandlerMalformedJSONReturnsNil(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	mockStore := storeMocks.NewMockSignatureIntegrationStore(ctrl)
+
+	handler := keyBundleHandler(mockStore)
+	err := handler([]byte(`{not json`))
+	assert.NoError(t, err, "parse errors must return nil to suppress retry")
+}
+
+func TestHandlerNoSupportedKeysReturnsNil(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	mockStore := storeMocks.NewMockSignatureIntegrationStore(ctrl)
+
+	handler := keyBundleHandler(mockStore)
+	err := handler([]byte(`{"schemaVersion": "1.0", "pgpKeys": [{"name": "k", "armoredKey": "opaque"}]}`))
+	assert.NoError(t, err, "no-supported-keys errors must return nil to suppress retry")
+}
+
+func TestHandlerUpsertErrorReturnsError(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	mockStore := storeMocks.NewMockSignatureIntegrationStore(ctrl)
+	mockStore.EXPECT().
+		Upsert(gomock.Any(), redHatIntegrationMatcher()).
+		Return(errors.New("transient DB error")).
+		Times(1)
+
+	handler := keyBundleHandler(mockStore)
+	err := handler(validBundleJSON())
+	require.Error(t, err, "upsert errors must be returned to enable retry")
+	assert.Contains(t, err.Error(), "transient DB error")
+}
+
+func TestHandlerUpsertRetryOnFailure(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	mockStore := storeMocks.NewMockSignatureIntegrationStore(ctrl)
+
+	firstCall := mockStore.EXPECT().
+		Upsert(gomock.Any(), redHatIntegrationMatcher()).
+		Return(errors.New("transient DB error")).
+		Times(1)
+	mockStore.EXPECT().
+		Upsert(gomock.Any(), redHatIntegrationMatcher()).
+		Return(nil).
+		Times(1).
+		After(firstCall)
+
+	handler := keyBundleHandler(mockStore)
+
+	err := handler(validBundleJSON())
+	assert.Error(t, err, "first call should fail")
+
+	err = handler(validBundleJSON())
+	assert.NoError(t, err, "second call should succeed")
+}

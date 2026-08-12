@@ -2,6 +2,7 @@ package codegen
 
 import (
 	"reflect"
+	"slices"
 	"sort"
 	"strings"
 
@@ -50,7 +51,7 @@ func (ctx *walkState) walkUnions(p reflect.Type) (output []unionData) {
 			Name: camelCase(oneOf.GetName()),
 		}
 		for _, field := range des.GetField() {
-			if field.OneofIndex == nil || *field.OneofIndex != int32(i) {
+			if field.OneofIndex == nil || field.GetOneofIndex() != int32(i) {
 				continue
 			}
 			if field.GetType() != descriptorpb.FieldDescriptorProto_TYPE_MESSAGE {
@@ -95,7 +96,7 @@ func (ctx *walkState) walkType(typeDesc typeDescriptor) {
 	if ty.Implements(messageType) {
 		unions = ctx.walkUnions(ty)
 	}
-	for ty.Kind() == reflect.Ptr {
+	for ty.Kind() == reflect.Pointer {
 		ty = ty.Elem()
 	}
 	if _, ok := ctx.typeData[ty]; ok {
@@ -109,8 +110,8 @@ func (ctx *walkState) walkType(typeDesc typeDescriptor) {
 		td.IsInputType = true
 	}
 	if ty.Kind() == reflect.Struct {
-		for i := 0; i < ty.NumField(); i++ {
-			ctx.walkField(&td, ty, ty.Field(i))
+		for field := range ty.Fields() {
+			ctx.walkField(&td, ty, field)
 		}
 		sort.Slice(td.FieldData, func(i, j int) bool {
 			return td.FieldData[i].Name < td.FieldData[j].Name
@@ -138,12 +139,7 @@ func (ctx *walkState) walkField(td *typeData, p reflect.Type, sf reflect.StructF
 }
 
 func rejectedType(p reflect.Type, blacklist []reflect.Type) bool {
-	for _, t := range blacklist {
-		if t == p {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(blacklist, p)
 }
 
 func rejectedField(parentType reflect.Type, field reflect.StructField, blacklist []generator2.TypeAndField) bool {

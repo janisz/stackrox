@@ -10,26 +10,27 @@ import (
 	"github.com/pkg/errors"
 	"github.com/stackrox/rox/generated/storage"
 	"github.com/stackrox/rox/pkg/concurrency"
-	"github.com/stackrox/rox/pkg/cvss"
 	"github.com/stackrox/rox/pkg/delegatedregistry"
 	"github.com/stackrox/rox/pkg/env"
 	"github.com/stackrox/rox/pkg/errorhelpers"
 	"github.com/stackrox/rox/pkg/errox"
 	"github.com/stackrox/rox/pkg/features"
+	"github.com/stackrox/rox/pkg/images"
 	"github.com/stackrox/rox/pkg/images/cache"
 	"github.com/stackrox/rox/pkg/images/integration"
 	"github.com/stackrox/rox/pkg/images/utils"
 	"github.com/stackrox/rox/pkg/integrationhealth"
-	"github.com/stackrox/rox/pkg/openshift"
+	"github.com/stackrox/rox/pkg/logging"
 	"github.com/stackrox/rox/pkg/protocompat"
 	"github.com/stackrox/rox/pkg/protoconv"
 	"github.com/stackrox/rox/pkg/protoutils"
 	registryTypes "github.com/stackrox/rox/pkg/registries/types"
 	"github.com/stackrox/rox/pkg/sac"
-	"github.com/stackrox/rox/pkg/scanners/types"
+	"github.com/stackrox/rox/pkg/sac/resources"
 	scannerTypes "github.com/stackrox/rox/pkg/scanners/types"
 	"github.com/stackrox/rox/pkg/signatures"
 	"github.com/stackrox/rox/pkg/sync"
+	pkgUtils "github.com/stackrox/rox/pkg/utils"
 	scannerV1 "github.com/stackrox/scanner/generated/scanner/api/v1"
 	"golang.org/x/time/rate"
 )
@@ -41,11 +42,13 @@ const (
 
 var (
 	_ ImageEnricher = (*enricherImpl)(nil)
+
+	noImageScannersErr = errox.NotFound.CausedBy("no image scanners are integrated")
 )
 
 type enricherImpl struct {
-	cvesSuppressor   CVESuppressor
 	cvesSuppressorV2 CVESuppressor
+	cveInfoEnricher  CVEInfoEnricher
 	integrations     integration.Set
 
 	errorsPerRegistry  map[registryTypes.ImageRegistry]int32
@@ -62,7 +65,8 @@ type enricherImpl struct {
 	signatureVerifier          signatureVerifierForIntegrations
 	signatureFetcher           signatures.SignatureFetcher
 
-	imageGetter ImageGetter
+	baseImageGetter BaseImageGetter
+	imageGetter     ImageGetter
 
 	asyncRateLimiter *rate.Limiter
 
@@ -77,9 +81,10 @@ func (e *enricherImpl) EnrichWithVulnerabilities(image *storage.Image, component
 	if scanners.IsEmpty() {
 		return EnrichmentResult{
 			ScanResult: ScanNotDone,
-		}, errors.New("no image scanners are integrated")
+		}, noImageScannersErr
 	}
 
+	e.enrichWithBaseImage(context.Background(), image)
 	for _, imageScanner := range scanners.GetAll() {
 		scanner := imageScanner.GetScanner()
 		if vulnScanner, ok := scanner.(scannerTypes.ImageVulnerabilityGetter); ok {
@@ -94,6 +99,15 @@ func (e *enricherImpl) EnrichWithVulnerabilities(image *storage.Image, component
 					ScanResult: ScanNotDone,
 				}, errors.Wrapf(err, "retrieving image vulnerabilities from %s [%s]", scanner.Name(), scanner.Type())
 			}
+
+			// Enrich CVEs with timing metadata (FixAvailableTimestamp, FirstSystemOccurrence)
+			if e.cveInfoEnricher != nil {
+				if err := e.cveInfoEnricher.EnrichImageWithCVEInfo(context.Background(), image); err != nil {
+					log.Warnf("Failed to enrich CVEs from ImageCVEInfo: %v", err)
+				}
+			}
+
+			e.cvesSuppressorV2.EnrichImageWithSuppressedCVEs(image)
 
 			return EnrichmentResult{
 				ImageUpdated: res != ScanNotDone,
@@ -162,7 +176,8 @@ func (e *enricherImpl) delegateEnrichImage(ctx context.Context, enrichCtx Enrich
 	if exists && cachedImageIsValid(existingImg) {
 		updated := e.updateImageWithExistingImage(image, existingImg, enrichCtx.FetchOpt)
 		if updated {
-			e.cvesSuppressor.EnrichImageWithSuppressedCVEs(image)
+			// Image is cached, but we force base image detection in case base images tags were updated.
+			e.enrichWithBaseImage(ctx, image)
 			e.cvesSuppressorV2.EnrichImageWithSuppressedCVEs(image)
 			// Errors for signature verification will be logged, so we can safely ignore them for the time being.
 			_, _ = e.enrichWithSignatureVerificationData(ctx, enrichCtx, image)
@@ -174,7 +189,7 @@ func (e *enricherImpl) delegateEnrichImage(ctx context.Context, enrichCtx Enrich
 
 	// Send image to secured cluster for enrichment.
 	force := enrichCtx.FetchOpt.forceRefetchCachedValues() || enrichCtx.FetchOpt == UseImageNamesRefetchCachedValues
-	scannedImage, err := e.scanDelegator.DelegateScanImage(ctx, image.GetName(), clusterID, force)
+	scannedImage, err := e.scanDelegator.DelegateScanImage(ctx, image.GetName(), clusterID, enrichCtx.Namespace, force)
 	if err != nil {
 		return true, err
 	}
@@ -183,7 +198,13 @@ func (e *enricherImpl) delegateEnrichImage(ctx context.Context, enrichCtx Enrich
 	image.Reset()
 	protocompat.Merge(image, scannedImage)
 
-	e.cvesSuppressor.EnrichImageWithSuppressedCVEs(image)
+	// Enrich CVEs with timing metadata (FixAvailableTimestamp, FirstSystemOccurrence)
+	if e.cveInfoEnricher != nil {
+		if err := e.cveInfoEnricher.EnrichImageWithCVEInfo(ctx, image); err != nil {
+			log.Warnf("Failed to enrich CVEs from ImageCVEInfo: %v", err)
+		}
+	}
+
 	e.cvesSuppressorV2.EnrichImageWithSuppressedCVEs(image)
 	return true, nil
 }
@@ -209,7 +230,8 @@ func (e *enricherImpl) updateImageWithExistingImage(image *storage.Image, existi
 		return false
 	}
 
-	if existingImage.GetMetadata() != nil {
+	// Prefer metadata from image, it is more likely to be up to date compared to existing image.
+	if image.GetMetadata() == nil {
 		image.Metadata = existingImage.GetMetadata()
 	}
 	image.Notes = existingImage.GetNotes()
@@ -222,22 +244,71 @@ func (e *enricherImpl) updateImageWithExistingImage(image *storage.Image, existi
 	return e.useExistingScan(image, existingImage, option)
 }
 
+func (e *enricherImpl) enrichWithBaseImage(ctx context.Context, image *storage.Image) {
+	if !features.BaseImageDetection.Enabled() {
+		return
+	}
+	if image.GetMetadata() == nil {
+		log.Warnw("Matching image with base images failed as there's no image metadata",
+			logging.ImageID(image.GetId()),
+			logging.String("image_name", image.GetName().GetFullName()))
+		return
+	}
+	layers := image.GetMetadata().GetLayerShas()
+	if len(layers) == 0 {
+		log.Warnw("Matching image with base images failed as there's no image layer SHAs",
+			logging.ImageID(image.GetId()),
+			logging.String("image_name", image.GetName().GetFullName()))
+		return
+	}
+
+	adminCtx := sac.WithGlobalAccessScopeChecker(ctx,
+		sac.AllowFixedScopes(
+			sac.AccessModeScopeKeys(storage.Access_READ_ACCESS),
+			sac.ResourceScopeKeys(resources.ImageAdministration),
+		),
+	)
+
+	matchedBaseImages, err := e.baseImageGetter(adminCtx, layers)
+	if err != nil {
+		log.Warnw("Matching image with base images failed",
+			logging.ImageID(image.GetId()),
+			logging.Err(err),
+			logging.String("image_name", image.GetName().GetFullName()))
+		return
+	}
+
+	if len(matchedBaseImages) > 0 {
+		log.Debugw("Matching image with base images succeeded",
+			logging.ImageID(image.GetId()),
+			logging.String("image_name", image.GetName().GetFullName()))
+		image.BaseImageInfo = toBaseImageInfos(image.GetMetadata(), matchedBaseImages)
+	}
+}
+
 // EnrichImage enriches an image with the integration set present.
 func (e *enricherImpl) EnrichImage(ctx context.Context, enrichContext EnrichmentContext, image *storage.Image) (EnrichmentResult, error) {
-	if shouldDelegate, err := e.delegateEnrichImage(ctx, enrichContext, image); shouldDelegate {
-		// This enrichment should have been delegated, short circuit.
-		if err != nil {
+	shouldDelegate, err := e.delegateEnrichImage(ctx, enrichContext, image)
+	var delegateErr error
+	if shouldDelegate {
+		if err == nil {
+			return EnrichmentResult{ImageUpdated: true, ScanResult: ScanSucceeded}, nil
+		}
+		if errors.Is(err, delegatedregistry.ErrNoClusterSpecified) {
+			// Log the warning and try to keep enriching
+			log.Warnf("Skipping delegation for %q (ID %q): %v, enriching via Central", image.GetName().GetFullName(), image.GetId(), err)
+			delegateErr = errors.New("no cluster specified for delegated scanning and Central scan attempt failed")
+		} else {
+			// This enrichment should have been delegated, short circuit.
 			return EnrichmentResult{ImageUpdated: false, ScanResult: ScanNotDone}, err
 		}
-		return EnrichmentResult{ImageUpdated: true, ScanResult: ScanSucceeded}, nil
 	} else if err != nil {
 		log.Warnf("Error attempting to delegate: %v", err)
 	}
 
 	errorList := errorhelpers.NewErrorList("image enrichment")
-
-	imageNoteSet := make(map[storage.Image_Note]struct{}, len(image.Notes))
-	for _, note := range image.Notes {
+	imageNoteSet := make(map[storage.Image_Note]struct{}, len(image.GetNotes()))
+	for _, note := range image.GetNotes() {
 		imageNoteSet[note] = struct{}{}
 	}
 
@@ -258,11 +329,14 @@ func (e *enricherImpl) EnrichImage(ctx context.Context, enrichContext Enrichment
 	// registry could not be made. Instead of trying to scan the image / fetch signatures for it, we shall short-circuit
 	// here.
 	if err != nil {
-		errorList.AddError(err)
+		errorList.AddErrors(err, delegateErr)
 		return EnrichmentResult{ImageUpdated: didUpdateMetadata, ScanResult: ScanNotDone}, errorList.ToError()
 	}
 
 	updated = updated || didUpdateMetadata
+
+	e.enrichWithBaseImage(ctx, image)
+	updated = updated || len(image.GetBaseImageInfo()) > 0
 
 	// Update the image with existing values depending on the FetchOption provided or whether any are available.
 	// This makes sure that we fetch any existing image only once from database.
@@ -275,7 +349,7 @@ func (e *enricherImpl) EnrichImage(ctx context.Context, enrichContext Enrichment
 	} else {
 		delete(imageNoteSet, storage.Image_MISSING_SCAN_DATA)
 	}
-	updated = updated || scanResult != ScanNotDone
+	updated = updated || (scanResult != ScanNotDone && scanResult != ScanReused)
 
 	didUpdateSignature, err := e.enrichWithSignature(ctx, enrichContext, image)
 	errorList.AddError(err)
@@ -296,8 +370,18 @@ func (e *enricherImpl) EnrichImage(ctx context.Context, enrichContext Enrichment
 
 	updated = updated || didUpdateSigVerificationData
 
-	e.cvesSuppressor.EnrichImageWithSuppressedCVEs(image)
+	// Enrich CVEs with timing metadata (FixAvailableTimestamp, FirstSystemOccurrence)
+	if e.cveInfoEnricher != nil {
+		if err := e.cveInfoEnricher.EnrichImageWithCVEInfo(ctx, image); err != nil {
+			log.Warnf("Failed to enrich CVEs from ImageCVEInfo: %v", err)
+		}
+	}
+
 	e.cvesSuppressorV2.EnrichImageWithSuppressedCVEs(image)
+
+	if !errorList.Empty() {
+		errorList.AddError(delegateErr)
+	}
 
 	return EnrichmentResult{
 		ImageUpdated: updated,
@@ -306,7 +390,7 @@ func (e *enricherImpl) EnrichImage(ctx context.Context, enrichContext Enrichment
 }
 
 func setImageNotes(image *storage.Image, imageNoteSet map[storage.Image_Note]struct{}) {
-	image.Notes = image.Notes[:0]
+	image.Notes = image.GetNotes()[:0]
 	notes := make([]storage.Image_Note, 0, len(imageNoteSet))
 	for note := range imageNoteSet {
 		notes = append(notes, note)
@@ -333,10 +417,32 @@ func (e *enricherImpl) updateImageFromDatabase(ctx context.Context, img *storage
 	return e.updateImageWithExistingImage(img, existingImg, option)
 }
 
+// metadataIsValid returns true of the image's metadata is valid and doesn't need to be refreshed,
+// false otherwise.
+func (e *enricherImpl) metadataIsValid(image *storage.Image) bool {
+	if metadataIsOutOfDate(image.GetMetadata()) {
+		return false
+	}
+
+	dataSource := image.GetMetadata().GetDataSource()
+	if e.integrations.RegistrySet().Get(dataSource.GetId()) == nil {
+		// The integration referenced by the datasource does not exist. Metadata should be updated to
+		// re-populate the datasource increasing the chances of a successful scan.
+		return false
+	}
+
+	if dataSource.GetMirror() != "" {
+		// If the metadata was pulled from a mirror (which can only occur if the scan was previously delegated),
+		// the datasource needs to be updated to represent the correct registry.
+		return false
+	}
+
+	return true
+}
+
 func (e *enricherImpl) enrichWithMetadata(ctx context.Context, enrichmentContext EnrichmentContext, image *storage.Image) (bool, error) {
 	// Attempt to short-circuit before checking registries.
-	metadataOutOfDate := metadataIsOutOfDate(image.GetMetadata())
-	if !metadataOutOfDate {
+	if e.metadataIsValid(image) {
 		return false, nil
 	}
 
@@ -432,13 +538,6 @@ func getRef(image *storage.Image) string {
 	return image.GetName().GetFullName()
 }
 
-func imageIntegrationToDataSource(i *storage.ImageIntegration) *storage.DataSource {
-	return &storage.DataSource{
-		Id:   i.GetId(),
-		Name: i.GetName(),
-	}
-}
-
 func (e *enricherImpl) enrichImageWithRegistry(ctx context.Context, image *storage.Image, registry registryTypes.ImageRegistry) (bool, error) {
 	if !registry.Match(image.GetName()) {
 		return false, nil
@@ -463,10 +562,10 @@ func (e *enricherImpl) enrichImageWithRegistry(ctx context.Context, image *stora
 	cachedMetadata := metadata.CloneVT()
 	e.metadataCache.Add(getRef(image), cachedMetadata)
 	if image.GetId() == "" {
-		if digest := image.Metadata.GetV2().GetDigest(); digest != "" {
+		if digest := image.GetMetadata().GetV2().GetDigest(); digest != "" {
 			e.metadataCache.Add(digest, cachedMetadata)
 		}
-		if digest := image.Metadata.GetV1().GetDigest(); digest != "" {
+		if digest := image.GetMetadata().GetV1().GetDigest(); digest != "" {
 			e.metadataCache.Add(digest, cachedMetadata)
 		}
 	}
@@ -555,19 +654,14 @@ func (e *enricherImpl) useExistingSignatureVerificationData(img *storage.Image, 
 func (e *enricherImpl) useExistingImageName(img *storage.Image, existingImg *storage.Image, option FetchOption) {
 	// We only want to overwrite the top-level image name if we are ignoring cached values.
 	if !option.forceRefetchCachedValues() {
-		img.Name = existingImg.Name
+		img.Name = existingImg.GetName()
 	}
 }
 
 func (e *enricherImpl) enrichWithScan(ctx context.Context, enrichmentContext EnrichmentContext,
 	image *storage.Image, useExistingScan bool) (ScanResult, error) {
-	// Short-circuit if we are using existing values.
-	// We need to have a distinction between existing image values set
-	// from database and existing values from the received image. Existing image values set by database indicate the
-	// ScanResult ScanSucceeded, whereas existing values on the image that have not been set from database indicate the
-	// ScanResult ScanNotDone.
 	if useExistingScan {
-		return ScanSucceeded, nil
+		return ScanReused, nil
 	}
 
 	// Attempt to short-circuit before checking scanners.
@@ -582,7 +676,7 @@ func (e *enricherImpl) enrichWithScan(ctx context.Context, enrichmentContext Enr
 	errorList := errorhelpers.NewErrorList(fmt.Sprintf("error scanning image: %s", image.GetName().GetFullName()))
 	scanners := e.integrations.ScannerSet()
 	if !enrichmentContext.Internal && scanners.IsEmpty() {
-		errorList.AddError(errors.New("no image scanners are integrated"))
+		errorList.AddError(noImageScannersErr)
 		return ScanNotDone, errorList.ToError()
 	}
 
@@ -617,8 +711,8 @@ func (e *enricherImpl) enrichWithScan(ctx context.Context, enrichmentContext Enr
 			})
 			if currentScannerErrors >= consecutiveErrorThreshold { // update health
 				e.integrationHealthReporter.UpdateIntegrationHealthAsync(&storage.IntegrationHealth{
-					Id:            scanner.DataSource().Id,
-					Name:          scanner.DataSource().Name,
+					Id:            scanner.DataSource().GetId(),
+					Name:          scanner.DataSource().GetName(),
 					Type:          storage.IntegrationHealth_IMAGE_INTEGRATION,
 					Status:        storage.IntegrationHealth_UNHEALTHY,
 					LastTimestamp: protocompat.TimestampNow(),
@@ -627,7 +721,7 @@ func (e *enricherImpl) enrichWithScan(ctx context.Context, enrichmentContext Enr
 			}
 			errorList.AddError(err)
 
-			if features.ScannerV4.Enabled() && scanner.GetScanner().Type() == types.ScannerV4 {
+			if features.ScannerV4.Enabled() && scanner.GetScanner().Type() == scannerTypes.ScannerV4 {
 				// Do not try to scan with additional scanners if Scanner V4 enabled and fails to scan an image.
 				// This would result in Clairify scanners being skipped per sorting logic in `GetAll` of
 				// `pkg/scanners/set_impl.go`.
@@ -649,8 +743,8 @@ func (e *enricherImpl) enrichWithScan(ctx context.Context, enrichmentContext Enr
 				})
 			}
 			e.integrationHealthReporter.UpdateIntegrationHealthAsync(&storage.IntegrationHealth{
-				Id:            scanner.DataSource().Id,
-				Name:          scanner.DataSource().Name,
+				Id:            scanner.DataSource().GetId(),
+				Name:          scanner.DataSource().GetName(),
 				Type:          storage.IntegrationHealth_IMAGE_INTEGRATION,
 				Status:        storage.IntegrationHealth_HEALTHY,
 				LastTimestamp: protocompat.TimestampNow(),
@@ -760,8 +854,20 @@ func (e *enricherImpl) enrichWithSignature(ctx context.Context, enrichmentContex
 		return false, errors.Wrap(err, "fetching signature integrations")
 	}
 
-	// Short-circuit if no integrations are available.
-	if len(sigIntegrations) == 0 {
+	onlyRedHatSigIntegrationPresent := len(sigIntegrations) == 1 &&
+		sigIntegrations[0].GetId() == signatures.DefaultRedHatIntegrationID
+
+	// Short-circuit if
+	//	- no integrations are available, or
+	//	- only the default Red Hat sig integration exists, and this is not a Red Hat image
+	if len(sigIntegrations) == 0 || (onlyRedHatSigIntegrationPresent && !utils.IsRedHatImage(img)) {
+		description := "No signature integration available"
+		if onlyRedHatSigIntegrationPresent {
+			description = fmt.Sprintf("Only Red Hat signature integration available and %q is not a Red Hat image",
+				img.GetName().GetFullName())
+		}
+
+		log.Debugf("%s, skipping signature enrichment", description)
 		// Contrary to the signature verification step we will retain existing signatures.
 		return false, nil
 	}
@@ -818,7 +924,7 @@ func (e *enricherImpl) enrichWithSignature(ctx context.Context, enrichmentContex
 			if !errors.Is(err, errox.NotAuthorized) {
 				log.Errorf("Error fetching image signatures for image %q: %v", imgName, err)
 			} else {
-				// Log errox.NotAuthorized erros only in debug mode, since we expect them to occur often.
+				// Log errox.NotAuthorized errors only in debug mode, since we expect them to occur often.
 				log.Debugf("Unauthorized error fetching image signatures for image %q: %v",
 					imgName, err)
 			}
@@ -883,49 +989,6 @@ func (e *enricherImpl) getRegistriesForContext(ctx EnrichmentContext) ([]registr
 	return registries, nil
 }
 
-func registryNames(registries []registryTypes.ImageRegistry) []string {
-	names := make([]string, 0, len(registries))
-	for _, reg := range registries {
-		names = append(names, reg.Name())
-	}
-	return names
-}
-
-// filterRegistriesBySource will filter the registries based on the following conditions:
-// 1. If the registry is autogenerated
-// 2. If the integration's source matches with the EnrichmentContext.Source
-// Note that this function WILL modify the input array.
-func filterRegistriesBySource(requestSource *RequestSource, registries []registryTypes.ImageRegistry) {
-	if !features.SourcedAutogeneratedIntegrations.Enabled() {
-		return
-	}
-
-	filteredRegistries := registries[:0]
-	for _, registry := range registries {
-		integration := registry.Source()
-		if !integration.GetAutogenerated() {
-			filteredRegistries = append(filteredRegistries, registry)
-			continue
-		}
-		source := integration.GetSource()
-		if source.GetClusterId() != requestSource.ClusterID {
-			continue
-		}
-		// Check if the integration source is the global OpenShift registry
-		if openshift.GlobalPullSecretIntegration(integration) {
-			filteredRegistries = append(filteredRegistries, registry)
-			continue
-		}
-		if source.GetNamespace() != requestSource.Namespace {
-			continue
-		}
-		if !requestSource.ImagePullSecrets.Contains(source.GetImagePullSecretName()) {
-			continue
-		}
-		filteredRegistries = append(filteredRegistries, registry)
-	}
-}
-
 func checkForMatchingImageIntegrations(registries []registryTypes.ImageRegistry, image *storage.Image) error {
 	for _, name := range image.GetNames() {
 		for _, registry := range registries {
@@ -938,14 +1001,6 @@ func checkForMatchingImageIntegrations(registries []registryTypes.ImageRegistry,
 		"an image integration for %q", image.GetName().GetFullName())
 }
 
-func normalizeVulnerabilities(scan *storage.ImageScan) {
-	for _, c := range scan.GetComponents() {
-		for _, v := range c.GetVulns() {
-			v.Severity = cvss.VulnToSeverity(cvss.NewFromEmbeddedVulnerability(v))
-		}
-	}
-}
-
 func (e *enricherImpl) enrichImageWithScanner(ctx context.Context, image *storage.Image, imageScanner scannerTypes.ImageScannerWithDataSource) (ScanResult, error) {
 	scanner := imageScanner.GetScanner()
 
@@ -954,11 +1009,14 @@ func (e *enricherImpl) enrichImageWithScanner(ctx context.Context, image *storag
 	}
 
 	sema := scanner.MaxConcurrentScanSemaphore()
-	err := sema.Acquire(ctx, 1)
-	if err != nil {
+	if err := acquireSemaphoreWithMetrics(sema, ctx); err != nil {
 		return ScanNotDone, errors.Wrapf(err, "acquiring max concurrent scan semaphore with scanner %q", scanner.Name())
 	}
-	defer sema.Release(1)
+
+	defer func() {
+		sema.Release(1)
+		images.ScanSemaphoreHoldingSize.WithLabelValues("central", "central-image-enricher", "n/a").Dec()
+	}()
 
 	scanStartTime := time.Now()
 	scan, err := scanner.GetScan(image)
@@ -1000,6 +1058,9 @@ func FillScanStats(i *storage.Image) {
 	var fixedByProvided bool
 	var imageTopCVSS float32
 	vulns := make(map[string]bool)
+	// This enriches the incoming component.  When enriching any additional component fields,
+	// be sure to update `ComponentIDV2` to ensure enriched fields like `SetTopCVSS` are not
+	// included in the hash calculation
 	for _, c := range i.GetScan().GetComponents() {
 		var componentTopCVSS float32
 		var hasVulns bool
@@ -1055,4 +1116,96 @@ func FillScanStats(i *storage.Image) {
 			FixableCves: numFixableVulns,
 		}
 	}
+}
+
+// toBaseImageInfos converts matched BaseImage objects to BaseImageInfo for storage in the image.
+// It computes the max layer index based on the first base image's metadata.
+func toBaseImageInfos(metadata *storage.ImageMetadata, baseImages []*storage.BaseImage) []*storage.BaseImageInfo {
+	if len(baseImages) == 0 {
+		return nil
+	}
+
+	// Verify all base images have the same layer count.
+	// If not, this indicates a bug in the matcher (e.g., returning nested base images).
+	firstLayerCount := len(baseImages[0].GetLayers())
+	for _, bi := range baseImages[1:] {
+		if len(bi.GetLayers()) != firstLayerCount {
+			pkgUtils.Should(errors.Errorf(
+				"base images have inconsistent layer counts: %s has %d layers, %s has %d layers",
+				baseImages[0].GetId(), firstLayerCount, bi.GetId(), len(bi.GetLayers())))
+			break
+		}
+	}
+
+	maxIndex, err := resolveLayerBoundary(metadata, firstLayerCount)
+	if err != nil {
+		log.Warnw("Failed to resolve base image layer boundary, ignoring base image matches",
+			logging.String("base_image_id", baseImages[0].GetId()),
+			logging.Err(err))
+		return nil
+	}
+
+	infos := make([]*storage.BaseImageInfo, 0, len(baseImages))
+	for _, bi := range baseImages {
+		infos = append(infos, &storage.BaseImageInfo{
+			BaseImageId:       bi.GetId(),
+			BaseImageFullName: fmt.Sprintf("%s:%s", bi.GetRepository(), bi.GetTag()),
+			BaseImageDigest:   bi.GetManifestDigest(),
+			Created:           bi.GetCreated(),
+			MaxLayerIndex:     int32(maxIndex),
+		})
+	}
+	return infos
+}
+
+// resolveLayerBoundary converts the base image's content layer count to the
+// manifest index of its last layer.
+//
+// Components use manifest indices (which include empty layers), while base image
+// layer counts exclude empty layers. This function bridges that gap by recounting
+// the last layer index using empty layers when the image has V2 metadata.
+func resolveLayerBoundary(metadata *storage.ImageMetadata, baseImageLayerCount int) (int, error) {
+	if baseImageLayerCount <= 0 {
+		return 0, errors.New("base image has no content layers")
+	}
+
+	metadataLayers := metadata.GetV1().GetLayers()
+	layerIndex := baseImageLayerCount - 1
+
+	// If V1 layer metadata is available and V2 exists, account for empty
+	// layers by finding the actual manifest index.
+	if len(metadataLayers) > 0 && metadata.GetV2() != nil {
+		contentIndex := 0
+		for i, l := range metadataLayers {
+			if l.GetEmpty() {
+				continue
+			}
+			if contentIndex == layerIndex {
+				return i, nil
+			}
+			contentIndex++
+		}
+		return 0, fmt.Errorf(
+			"base image claims %d content layers but image only has %d non-empty layers",
+			baseImageLayerCount, contentIndex)
+	}
+
+	// V1-only, or V2 without V1 layer metadata: content index equals manifest
+	// index directly. Use LayerShas for validation since it always contains
+	// content layers.
+	layerCount := len(metadata.GetLayerShas())
+	if layerCount == 0 {
+		// This is not expected, but since an empty layer SHA list should never match, we
+		// attempt to check layer count based on V1 manifest layer count.
+		layerCount = len(metadataLayers)
+	}
+	if layerCount == 0 {
+		return 0, errors.New("invalid base image match: image has no layer metadata")
+	}
+	if layerIndex >= layerCount {
+		return 0, fmt.Errorf(
+			"invalid base image match: base image claims %d layers but image only has %d",
+			baseImageLayerCount, layerCount)
+	}
+	return layerIndex, nil
 }

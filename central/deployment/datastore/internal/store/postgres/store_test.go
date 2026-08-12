@@ -44,10 +44,6 @@ func (s *DeploymentsStoreSuite) SetupTest() {
 	s.NoError(err)
 }
 
-func (s *DeploymentsStoreSuite) TearDownSuite() {
-	s.testDB.Teardown(s.T())
-}
-
 func (s *DeploymentsStoreSuite) TestStore() {
 	ctx := sac.WithAllAccess(context.Background())
 
@@ -99,6 +95,11 @@ func (s *DeploymentsStoreSuite) TestStore() {
 	}
 
 	s.NoError(store.UpsertMany(ctx, deployments))
+
+	foundDeployments, missing, err := store.GetMany(ctx, deploymentIDs)
+	s.NoError(err)
+	s.Empty(missing)
+	protoassert.ElementsMatch(s.T(), deployments, foundDeployments)
 
 	deploymentCount, err = store.Count(ctx, search.EmptyQuery())
 	s.NoError(err)
@@ -276,6 +277,25 @@ func (s *DeploymentsStoreSuite) TestSACWalk() {
 				return nil
 			}
 			err := s.store.Walk(testCase.context, getIDs)
+			assert.NoError(t, err)
+			assert.ElementsMatch(t, testCase.expectedIdentifiers, identifiers)
+		})
+	}
+}
+
+func (s *DeploymentsStoreSuite) TestSACGetByQueryFn() {
+	objA, objB, testCases := s.getTestData(storage.Access_READ_ACCESS)
+	s.Require().NoError(s.store.Upsert(withAllAccessCtx, objA))
+	s.Require().NoError(s.store.Upsert(withAllAccessCtx, objB))
+
+	for name, testCase := range testCases {
+		s.T().Run(fmt.Sprintf("with %s", name), func(t *testing.T) {
+			identifiers := []string{}
+			getIDs := func(obj *storage.Deployment) error {
+				identifiers = append(identifiers, obj.GetId())
+				return nil
+			}
+			err := s.store.GetByQueryFn(testCase.context, nil, getIDs)
 			assert.NoError(t, err)
 			assert.ElementsMatch(t, testCase.expectedIdentifiers, identifiers)
 		})

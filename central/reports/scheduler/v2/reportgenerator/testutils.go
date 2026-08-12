@@ -16,13 +16,13 @@ import (
 func testNamespaces(clusters []*storage.Cluster, namespacesPerCluster int) []*storage.NamespaceMetadata {
 	namespaces := make([]*storage.NamespaceMetadata, 0)
 	for _, cluster := range clusters {
-		for i := 0; i < namespacesPerCluster; i++ {
+		for i := range namespacesPerCluster {
 			namespaceName := fmt.Sprintf("ns%d", i+1)
 			namespaces = append(namespaces, &storage.NamespaceMetadata{
 				Id:          uuid.NewV4().String(),
 				Name:        namespaceName,
-				ClusterId:   cluster.Id,
-				ClusterName: cluster.Name,
+				ClusterId:   cluster.GetId(),
+				ClusterName: cluster.GetName(),
 			})
 		}
 	}
@@ -44,9 +44,9 @@ func testDeploymentsWithImages(namespaces []*storage.NamespaceMetadata, numDeplo
 	images := make([]*storage.Image, 0, capacity)
 
 	for _, namespace := range namespaces {
-		for i := 0; i < numDeploymentsPerNamespace; i++ {
-			depName := fmt.Sprintf("%s_%s_dep%d", namespace.ClusterName, namespace.Name, i)
-			image := testImage(depName)
+		for i := range numDeploymentsPerNamespace {
+			depName := fmt.Sprintf("%s_%s_dep%d", namespace.GetClusterName(), namespace.GetName(), i)
+			image := testImage(depName, map[string]string{"app": "test"}, "docker.io")
 			deployment := testDeployment(depName, namespace, image)
 			deployments = append(deployments, deployment)
 			images = append(images, image)
@@ -59,10 +59,10 @@ func testDeployment(deploymentName string, namespace *storage.NamespaceMetadata,
 	return &storage.Deployment{
 		Name:        deploymentName,
 		Id:          uuid.NewV4().String(),
-		ClusterName: namespace.ClusterName,
-		ClusterId:   namespace.ClusterId,
-		Namespace:   namespace.Name,
-		NamespaceId: namespace.Id,
+		ClusterName: namespace.GetClusterName(),
+		ClusterId:   namespace.GetClusterId(),
+		Namespace:   namespace.GetName(),
+		NamespaceId: namespace.GetId(),
 		Containers: []*storage.Container{
 			{
 				Name:  fmt.Sprintf("%s_container", deploymentName),
@@ -74,20 +74,38 @@ func testDeployment(deploymentName string, namespace *storage.NamespaceMetadata,
 
 func testWatchedImages(numImages int) []*storage.Image {
 	images := make([]*storage.Image, 0, numImages)
-	for i := 0; i < numImages; i++ {
+	for i := range numImages {
 		imgNamePrefix := fmt.Sprintf("w%d", i)
-		image := testImage(imgNamePrefix)
+		image := testImage(imgNamePrefix, map[string]string{"app": "watch"}, "quay.io")
 		images = append(images, image)
 	}
 	return images
 }
 
-func testImage(prefix string) *storage.Image {
+func testImage(prefix string, labels map[string]string, registry string) *storage.Image {
 	t, err := protocompat.ConvertTimeToTimestampOrError(time.Unix(0, 1000))
 	utils.CrashOnError(err)
+	nvdCvss := &storage.CVSSScore{
+		Source: storage.Source_SOURCE_NVD,
+		CvssScore: &storage.CVSSScore_Cvssv3{
+			Cvssv3: &storage.CVSSV3{
+				Score: 10,
+			},
+		},
+	}
 	return &storage.Image{
-		Id:   fmt.Sprintf("%s_img", prefix),
-		Name: &storage.ImageName{FullName: fmt.Sprintf("%s_img", prefix)},
+		Id: fmt.Sprintf("%s_img", prefix),
+		Name: &storage.ImageName{
+			FullName: fmt.Sprintf("%s_img", prefix),
+			Registry: registry,
+			Remote:   fmt.Sprintf("library/%s_img", prefix),
+			Tag:      "latest",
+		},
+		Metadata: &storage.ImageMetadata{
+			V1: &storage.V1Metadata{
+				Labels: labels,
+			},
+		},
 		SetComponents: &storage.Image_Components{
 			Components: 1,
 		},
@@ -98,21 +116,74 @@ func testImage(prefix string) *storage.Image {
 			ScanTime: t,
 			Components: []*storage.EmbeddedImageScanComponent{
 				{
-					Name:    fmt.Sprintf("%s_img_comp", prefix),
-					Version: "1.0",
+					Name:     fmt.Sprintf("%s_img_comp", prefix),
+					Version:  "1.0",
+					Source:   storage.SourceType_OS,
+					Location: "/usr/lib",
 					Vulns: []*storage.EmbeddedVulnerability{
 						{
 							Cve: fmt.Sprintf("CVE-fixable_critical-%s_img_comp", prefix),
 							SetFixedBy: &storage.EmbeddedVulnerability_FixedBy{
 								FixedBy: "1.1",
 							},
-							Severity: storage.VulnerabilitySeverity_CRITICAL_VULNERABILITY_SEVERITY,
-							Link:     "link",
+							CvssMetrics: []*storage.CVSSScore{nvdCvss},
+							Advisory: &storage.Advisory{
+								Name: "RHSA-2025-CVE-fixable",
+								Link: "test-rhsa-link",
+							},
+							Severity:              storage.VulnerabilitySeverity_CRITICAL_VULNERABILITY_SEVERITY,
+							Link:                  "link",
+							Cvss:                  9.0,
+							State:                 storage.VulnerabilityState_OBSERVED,
+							FirstSystemOccurrence: t,
+							FirstImageOccurrence:  t,
+							NvdCvss:               8.5,
+							Epss: &storage.EPSS{
+								EpssProbability: 0.7,
+								EpssPercentile:  0.8,
+							},
+							CvssV2: &storage.CVSSV2{
+								Vector:              "AV:N/AC:L/Au:N/C:P/I:P/A:P",
+								Score:               7.5,
+								ExploitabilityScore: 10.0,
+								ImpactScore:         6.4,
+							},
+							CvssV3: &storage.CVSSV3{
+								Vector:              "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H",
+								Score:               9.8,
+								ExploitabilityScore: 3.9,
+								ImpactScore:         5.9,
+							},
 						},
 						{
 							Cve:      fmt.Sprintf("CVE-nonFixable_low-%s_img_comp", prefix),
 							Severity: storage.VulnerabilitySeverity_LOW_VULNERABILITY_SEVERITY,
 							Link:     "link",
+							Advisory: &storage.Advisory{
+								Name: "RHSA-2025-CVE-fixable",
+								Link: "test-rhsa-link",
+							},
+							Cvss:                  2.0,
+							State:                 storage.VulnerabilityState_OBSERVED,
+							FirstSystemOccurrence: t,
+							FirstImageOccurrence:  t,
+							NvdCvss:               1.8,
+							Epss: &storage.EPSS{
+								EpssProbability: 0.1,
+								EpssPercentile:  0.2,
+							},
+							CvssV2: &storage.CVSSV2{
+								Vector:              "AV:L/AC:H/Au:N/C:P/I:N/A:N",
+								Score:               1.9,
+								ExploitabilityScore: 1.9,
+								ImpactScore:         2.9,
+							},
+							CvssV3: &storage.CVSSV3{
+								Vector:              "CVSS:3.1/AV:L/AC:H/PR:L/UI:N/S:U/C:L/I:N/A:N",
+								Score:               2.3,
+								ExploitabilityScore: 1.0,
+								ImpactScore:         1.4,
+							},
 						},
 					},
 				},
@@ -198,5 +269,37 @@ func testReportSnapshot(collectionID string,
 		Id:   collectionID,
 		Name: collectionID,
 	}
+	return snap
+}
+
+func testViewBasedReportSnapshot(query string, scopeRules []*storage.SimpleAccessScope_Rules) *storage.ReportSnapshot {
+	snap := fixtures.GetReportSnapshot()
+	snap.Filter = &storage.ReportSnapshot_ViewBasedVulnReportFilters{
+		ViewBasedVulnReportFilters: &storage.ViewBasedVulnerabilityReportFilters{
+			Query:            query,
+			AccessScopeRules: scopeRules,
+		},
+	}
+	return snap
+}
+
+func testEntityScopeReportSnapshot(entityScope *storage.EntityScope, query string,
+	imageTypes []storage.VulnerabilityReportFilters_ImageType,
+	scopeRules []*storage.SimpleAccessScope_Rules) *storage.ReportSnapshot {
+	snap := fixtures.GetReportSnapshot()
+	filters := &storage.VulnerabilityReportFilters{
+		ImageTypes:       imageTypes,
+		AccessScopeRules: scopeRules,
+		Query:            query,
+	}
+	snap.Filter = &storage.ReportSnapshot_VulnReportFilters{
+		VulnReportFilters: filters,
+	}
+	snap.ResourceScope = &storage.ResourceScope{
+		ScopeReference: &storage.ResourceScope_EntityScope{
+			EntityScope: entityScope,
+		},
+	}
+	snap.Collection = nil
 	return snap
 }

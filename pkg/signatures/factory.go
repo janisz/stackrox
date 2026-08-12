@@ -8,9 +8,9 @@ import (
 	"github.com/stackrox/rox/pkg/env"
 	"github.com/stackrox/rox/pkg/logging"
 	"github.com/stackrox/rox/pkg/protoconv"
-	"github.com/stackrox/rox/pkg/protoutils"
 	registryTypes "github.com/stackrox/rox/pkg/registries/types"
 	"github.com/stackrox/rox/pkg/retry"
+	"github.com/stackrox/rox/pkg/sync"
 )
 
 var (
@@ -27,7 +27,8 @@ type SignatureVerifier interface {
 
 // SignatureFetcher is responsible for fetching raw signatures supporting multiple specific signature formats.
 type SignatureFetcher interface {
-	FetchSignatures(ctx context.Context, image *storage.Image, fullImageName string, registry registryTypes.Registry) ([]*storage.Signature, error)
+	FetchSignatures(ctx context.Context, image *storage.Image, fullImageName string,
+		registry registryTypes.Registry, retryOpts ...retry.OptionsModifier) ([]*storage.Signature, error)
 }
 
 // NewSignatureVerifier creates a new signature verifier capable of verifying signatures against the provided config.
@@ -72,6 +73,7 @@ func VerifyAgainstSignatureIntegration(ctx context.Context, integration *storage
 	}
 	// Right now, we will duplicate the verification result for each SignatureVerifier contained within an image
 	// signature, ensuring all errors are properly returned to the caller.
+	// The result description is rendered in the signature verification tab of the image UI page.
 	if err != nil {
 		verificationResult.Description = err.Error()
 	}
@@ -90,11 +92,14 @@ func VerifyAgainstSignatureIntegrations(ctx context.Context, integrations []*sto
 		return nil
 	}
 
-	var results []*storage.ImageSignatureVerificationResult
-	for _, integration := range integrations {
-		verificationResults := VerifyAgainstSignatureIntegration(ctx, integration, image)
-		results = append(results, verificationResults)
+	results := make([]*storage.ImageSignatureVerificationResult, len(integrations))
+	var wg sync.WaitGroup
+	for index, integration := range integrations {
+		wg.Go(func() {
+			results[index] = VerifyAgainstSignatureIntegration(ctx, integration, image)
+		})
 	}
+	wg.Wait()
 	return results
 }
 
@@ -117,35 +122,14 @@ func FetchImageSignaturesWithRetries(ctx context.Context, fetcher SignatureFetch
 		return nil, nil
 	}
 
-	var fetchedSignatures []*storage.Signature
-	var err error
-	err = retry.WithRetry(func() error {
-		fetchedSignatures, err = fetchAndAppendSignatures(ctx, fetcher, image, fullImageName, registry, fetchedSignatures)
-		return err
-	},
-		retry.Tries(2),
+	retryOpts := []retry.OptionsModifier{
+		retry.WithContext(ctx),
+		retry.Tries(5),
 		retry.OnlyRetryableErrors(),
 		retry.BetweenAttempts(func(_ int) {
 			time.Sleep(500 * time.Millisecond)
-		}))
-
-	return fetchedSignatures, err
-}
-
-func fetchAndAppendSignatures(ctx context.Context, fetcher SignatureFetcher, image *storage.Image,
-	fullImageName string, registry registryTypes.Registry, fetchedSignatures []*storage.Signature) ([]*storage.Signature, error) {
-	sigFetchCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-
-	sigs, err := fetcher.FetchSignatures(sigFetchCtx, image, fullImageName, registry)
-	if err != nil {
-		return nil, err
+		}),
 	}
 
-	for _, sig := range sigs {
-		if !protoutils.SliceContains(sig, fetchedSignatures) {
-			fetchedSignatures = append(fetchedSignatures, sig)
-		}
-	}
-	return fetchedSignatures, nil
+	return fetcher.FetchSignatures(ctx, image, fullImageName, registry, retryOpts...)
 }

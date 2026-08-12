@@ -1,10 +1,10 @@
-import React, { ReactElement, useState } from 'react';
-import { useHistory } from 'react-router-dom';
+import { useState } from 'react';
+import type { ReactElement } from 'react';
+import { useNavigate } from 'react-router-dom-v5-compat';
 import {
     ActionGroup,
     Alert,
     Button,
-    Divider,
     Flex,
     Form,
     FormGroup,
@@ -13,27 +13,22 @@ import {
     HelperTextItem,
     PageSection,
     Radio,
+    SelectOption,
     TextInput,
 } from '@patternfly/react-core';
-import { Select, SelectOption } from '@patternfly/react-core/deprecated';
 import { useFormik } from 'formik';
 import * as yup from 'yup';
 
 import FormLabelGroup from 'Components/PatternFly/FormLabelGroup';
-import useSelectToggle from 'hooks/patternfly/useSelectToggle';
+import SelectSingle from 'Components/SelectSingle/SelectSingle';
 import useAnalytics, { DOWNLOAD_INIT_BUNDLE } from 'hooks/useAnalytics';
 import { generateClusterInitBundle } from 'services/ClustersService'; // ClusterInitBundle
 import { getAxiosErrorMessage } from 'utils/responseErrorUtils';
 
 import InitBundlesHeader from './InitBundlesHeader';
 
-import {
-    InstallationKey,
-    PlatformKey,
-    downloadBundle,
-    installationOptions,
-    platformOptions,
-} from './InitBundleForm.utils';
+import { downloadBundle, installationOptions, platformOptions } from './InitBundleForm.utils';
+import type { InstallationKey, PlatformKey } from './InitBundleForm.utils';
 
 export type InitBundleFormValues = {
     installation: InstallationKey;
@@ -59,13 +54,21 @@ const validationSchema: yup.ObjectSchema<InitBundleFormValues> = yup.object().sh
             'Name can have only the following characters: letters, digits, period, underscore, hyphen (but no spaces)'
         )
         .required('Bundle name is required'),
-    installation: yup.string().trim().required(), // Select
-    platform: yup.string().trim().required(), // Radio
+    installation: yup
+        .string<InstallationKey>()
+        .trim()
+        .oneOf(Object.keys(installationOptions) as InstallationKey[])
+        .required(),
+    platform: yup
+        .string<PlatformKey>()
+        .trim()
+        .oneOf(Object.keys(platformOptions) as PlatformKey[])
+        .required(),
 });
 
 function InitBundleForm(): ReactElement {
     const { analyticsTrack } = useAnalytics();
-    const history = useHistory();
+    const navigate = useNavigate();
     const [errorMessage, setErrorMessage] = useState('');
     const {
         errors,
@@ -73,7 +76,6 @@ function InitBundleForm(): ReactElement {
         isSubmitting,
         isValid,
         setFieldValue,
-        setValues,
         submitForm,
         touched,
         values,
@@ -97,10 +99,9 @@ function InitBundleForm(): ReactElement {
         validateOnMount: true, // disable Next when Name is empty
         validationSchema,
     });
-    const { isOpen, onToggle } = useSelectToggle();
 
     function goBack() {
-        history.goBack(); // to InputBundlesTable or NoClustersPage
+        navigate(-1); // to InputBundlesTable or NoClustersPage
     }
 
     // return setWhatever solves problem reported by typescript-eslint no-floating-promises
@@ -109,23 +110,18 @@ function InitBundleForm(): ReactElement {
         return setFieldValue(event.target.id, value);
     }
 
-    function onChangePlatform(value) {
-        return setValues({
-            installation: value === 'OpenShift' ? 'Operator' : 'Helm',
-            name: values.name, // redundant but function requires all values
-            platform: value,
-        });
+    function onChangePlatform(value: string) {
+        return setFieldValue('platform', value);
     }
 
-    function onSelectInstallation(value) {
+    function onSelectInstallation(_id: string, value: string) {
         return setFieldValue('installation', value);
     }
 
     return (
         <>
             <InitBundlesHeader title="Create bundle" />
-            <Divider component="div" />
-            <PageSection variant="light">
+            <PageSection>
                 <Flex direction={{ default: 'column' }}>
                     <Form>
                         <FormLabelGroup
@@ -174,34 +170,26 @@ function InitBundleForm(): ReactElement {
                             label="Installation method for secured cluster services"
                             isRequired
                         >
-                            <Select
-                                variant="single"
+                            <SelectSingle
+                                id="installation"
+                                value={values.installation}
+                                handleSelect={onSelectInstallation}
                                 toggleAriaLabel="Installation method menu toggle"
                                 aria-label="Select an installation method"
-                                isDisabled={values.platform !== 'OpenShift'}
-                                onToggle={(_e, v) => onToggle(v)}
-                                onSelect={(_event, value) => onSelectInstallation(value)}
-                                selections={values.installation}
-                                isOpen={isOpen}
-                                // className="pf-v5-u-flex-basis-0"
                             >
-                                {Object.entries(installationOptions)
-                                    .filter(
-                                        ([installationKey]) =>
-                                            values.platform === 'OpenShift' ||
-                                            installationKey !== 'Operator'
-                                    )
-                                    .map(([installationKey, installationLabel]) => (
+                                {Object.entries(installationOptions).map(
+                                    ([installationKey, installationLabel]) => (
                                         <SelectOption key={installationKey} value={installationKey}>
                                             {installationLabel}
                                         </SelectOption>
-                                    ))}
-                            </Select>
+                                    )
+                                )}
+                            </SelectSingle>
                             <FormHelperText>
                                 <HelperText>
                                     <HelperTextItem>
-                                        You can use one bundle to secure multiple clusters that have
-                                        the same installation method.
+                                        You can use a single init bundle to register multiple
+                                        clusters.
                                     </HelperTextItem>
                                 </HelperText>
                             </FormHelperText>

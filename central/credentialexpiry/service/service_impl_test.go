@@ -171,16 +171,15 @@ func TestGetScannerV4CertExpiry(t *testing.T) {
 			} else {
 				require.NoError(t, err)
 				if tc.expiryExpected == nil {
-					assert.Nil(t, actual.Expiry)
+					assert.Nil(t, actual.GetExpiry())
 				} else {
 					expectedExpiry, err := protocompat.ConvertTimeToTimestampOrError(*tc.expiryExpected)
 					require.NoError(t, err)
-					assert.Equal(t, expectedExpiry.AsTime(), actual.Expiry.AsTime())
+					assert.Equal(t, expectedExpiry.AsTime(), actual.GetExpiry().AsTime())
 				}
 			}
 		})
 	}
-
 }
 
 func genGetExpiryFunc(expiries map[mtls.Subject]*time.Time) func(context.Context, mtls.Subject, *tls.Config, string) (*time.Time, error) {

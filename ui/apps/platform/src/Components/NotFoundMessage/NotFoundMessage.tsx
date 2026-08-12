@@ -1,11 +1,10 @@
-import React, { ReactElement } from 'react';
-import { Link } from 'react-router-dom';
+import type { ReactElement } from 'react';
+import { Link } from 'react-router-dom-v5-compat';
 import {
     Bullseye,
     Button,
     EmptyState,
     EmptyStateBody,
-    EmptyStateHeader,
     EmptyStateFooter,
 } from '@patternfly/react-core';
 
@@ -27,9 +26,8 @@ const NotFoundMessage = ({
     const isButtonVisible = actionText && onClick;
     const isLinkVisible = actionText && url;
     return (
-        <Bullseye className="pf-v5-u-flex-grow-1">
-            <EmptyState>
-                <EmptyStateHeader titleText={title} headingLevel="h1" />
+        <Bullseye className="pf-v6-u-flex-grow-1">
+            <EmptyState headingLevel="h1" titleText={title}>
                 <EmptyStateFooter>
                     {message && <EmptyStateBody>{message}</EmptyStateBody>}
                     {isButtonVisible && (

@@ -1,22 +1,27 @@
 package mappers
 
 import (
-	"context"
+	"encoding/json"
+	"slices"
+	"strings"
 	"testing"
 	"time"
 
 	nvdschema "github.com/facebookincubator/nvdtools/cveapi/nvd/schema"
 	"github.com/quay/claircore"
 	"github.com/quay/claircore/enricher/epss"
+	"github.com/quay/claircore/enricher/kev"
+	"github.com/quay/claircore/test"
+	"github.com/quay/claircore/toolkit/types"
 	"github.com/quay/claircore/toolkit/types/cpe"
 	v4 "github.com/stackrox/rox/generated/internalapi/scanner/v4"
-	"github.com/stackrox/rox/pkg/env"
 	"github.com/stackrox/rox/pkg/features"
 	"github.com/stackrox/rox/pkg/protoassert"
 	"github.com/stackrox/rox/pkg/protocompat"
 	"github.com/stackrox/rox/pkg/protoconv"
 	"github.com/stackrox/rox/pkg/scannerv4/enricher/csaf"
 	"github.com/stackrox/rox/pkg/scannerv4/updater/manual"
+	"github.com/stackrox/rox/pkg/testutils"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -191,6 +196,7 @@ func Test_ToProtoV4VulnerabilityReport(t *testing.T) {
 						DistributionId:     "sample vuln distribution id",
 						RepositoryId:       "sample vuln repository id",
 						FixedInVersion:     "sample vuln fixed in",
+						Updater:            "rhel8",
 					},
 					"1": {
 						Id:                 "1",
@@ -204,6 +210,7 @@ func Test_ToProtoV4VulnerabilityReport(t *testing.T) {
 						DistributionId:     "sample vuln distribution id",
 						RepositoryId:       "sample vuln repository id 2",
 						FixedInVersion:     "sample vuln fixed in",
+						Updater:            "rhel8",
 					},
 				},
 				PackageVulnerabilities: map[string]*v4.StringList{
@@ -268,6 +275,7 @@ func Test_ToProtoV4VulnerabilityReport(t *testing.T) {
 						DistributionId:     "sample vuln distribution id",
 						RepositoryId:       "sample vuln repository id",
 						FixedInVersion:     "sample vuln fixed in",
+						Updater:            "rhel8",
 					},
 					"1": {
 						Id:                 "1",
@@ -281,6 +289,7 @@ func Test_ToProtoV4VulnerabilityReport(t *testing.T) {
 						DistributionId:     "sample vuln distribution id",
 						RepositoryId:       "sample vuln repository id 2",
 						FixedInVersion:     "sample vuln fixed in",
+						Updater:            "rhel8-2",
 					},
 				},
 				PackageVulnerabilities: map[string]*v4.StringList{
@@ -293,9 +302,9 @@ func Test_ToProtoV4VulnerabilityReport(t *testing.T) {
 			wantErr: "",
 		},
 	}
-	ctx := context.Background()
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
+			ctx := test.Logging(t)
 			got, err := ToProtoV4VulnerabilityReport(ctx, tt.arg)
 			if tt.wantErr == "" {
 				assert.NoError(t, err)
@@ -308,7 +317,7 @@ func Test_ToProtoV4VulnerabilityReport(t *testing.T) {
 }
 
 func Test_ToProtoV4VulnerabilityReport_FilterNodeJS(t *testing.T) {
-	t.Setenv(env.ScannerV4PartialNodeJSSupport.EnvVar(), "true")
+	t.Setenv(features.ScannerV4PartialNodeJSSupport.EnvVar(), "true")
 
 	now := time.Now()
 	protoNow, err := protocompat.ConvertTimeToTimestampOrError(now)
@@ -400,7 +409,7 @@ func Test_ToProtoV4VulnerabilityReport_FilterNodeJS(t *testing.T) {
 					},
 				},
 				Contents: &v4.Contents{
-					Packages: []*v4.Package{
+					PackagesDEPRECATED: []*v4.Package{
 						{
 							Id:      "1",
 							Name:    "nodejs1",
@@ -408,7 +417,29 @@ func Test_ToProtoV4VulnerabilityReport_FilterNodeJS(t *testing.T) {
 							NormalizedVersion: &v4.NormalizedVersion{
 								V: []int32{0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
 							},
-							Cpe: emptyCPE,
+							Kind: "unknown",
+							Cpe:  emptyCPE,
+						},
+					},
+					Packages: map[string]*v4.Package{
+						"1": {
+							Id:      "1",
+							Name:    "nodejs1",
+							Version: "1",
+							NormalizedVersion: &v4.NormalizedVersion{
+								V: []int32{0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+							},
+							Kind: "unknown",
+							Cpe:  emptyCPE,
+						},
+					},
+					EnvironmentsDEPRECATED: map[string]*v4.Environment_List{
+						"1": {
+							Environments: []*v4.Environment{
+								{
+									PackageDb: "nodejs:/app/nodejs1",
+								},
+							},
 						},
 					},
 					Environments: map[string]*v4.Environment_List{
@@ -425,15 +456,370 @@ func Test_ToProtoV4VulnerabilityReport_FilterNodeJS(t *testing.T) {
 			wantErr: "",
 		},
 	}
-	ctx := context.Background()
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
+			ctx := test.Logging(t)
 			got, err := ToProtoV4VulnerabilityReport(ctx, tt.arg)
 			if tt.wantErr == "" {
 				assert.NoError(t, err)
 			} else {
 				assert.ErrorContains(t, err, tt.wantErr)
 			}
+			protoassert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+func TestToProtoV4VulnerabilityReport_FilterRHCCLayers(t *testing.T) {
+	testutils.MustUpdateFeature(t, features.ScannerV4RedHatLayers, true)
+
+	layerA := claircore.MustParseDigest("sha256:" + strings.Repeat("a", 64))
+	layerB := claircore.MustParseDigest("sha256:" + strings.Repeat("b", 64))
+
+	tests := map[string]struct {
+		arg     *claircore.VulnerabilityReport
+		want    *v4.VulnerabilityReport
+		wantErr string
+	}{
+		"filter non-RPM packages in Red Hat layers": {
+			arg: &claircore.VulnerabilityReport{
+				Hash: claircore.MustParseDigest("sha256:9124cd5256c6d674f6b11a4d01fea8148259be1f66ca2cf9dfbaafc83c31874e"),
+				Vulnerabilities: map[string]*claircore.Vulnerability{
+					"0": {
+						ID:      "0",
+						Name:    "0",
+						Updater: "rhel-vex",
+					},
+					"1": {
+						ID:      "1",
+						Name:    "1",
+						Updater: "rhel-vex",
+					},
+					"2": {
+						ID:      "2",
+						Name:    "2",
+						Updater: "something else",
+					},
+					"3": {
+						ID:      "3",
+						Name:    "3",
+						Updater: "something different",
+					},
+				},
+				Packages: map[string]*claircore.Package{
+					"0": {
+						ID:      "0",
+						Name:    "my go binary",
+						Version: "0",
+					},
+					"1": {
+						ID:      "1",
+						Name:    "my java jar",
+						Version: "1",
+					},
+					"2": {
+						ID:      "2",
+						Name:    "my python egg",
+						Version: "2",
+					},
+					"3": {
+						ID:      "3",
+						Name:    "my ruby gem",
+						Version: "3",
+					},
+				},
+				Repositories: map[string]*claircore.Repository{
+					"0": {
+						ID:   "0",
+						Name: "Red Hat Container Catalog",
+						URI:  `https://catalog.redhat.com/software/containers/explore`,
+					},
+					"something else": {
+						ID:   "1",
+						Name: "something else",
+						Key:  "rhel-cpe-repository",
+						URI:  "somethingelse.com",
+					},
+				},
+				Environments: map[string][]*claircore.Environment{
+					"0": {
+						{
+							RepositoryIDs: []string{"0", "something else"},
+							IntroducedIn:  layerA,
+						},
+					},
+					"1": {
+						{
+							RepositoryIDs: []string{"something else"},
+							IntroducedIn:  layerB,
+						},
+					},
+					"2": {
+						{
+							RepositoryIDs: []string{"0"},
+							IntroducedIn:  layerA,
+						},
+					},
+					"3": {
+						{
+							RepositoryIDs: []string{"something else"},
+							IntroducedIn:  layerB,
+						},
+					},
+				},
+				PackageVulnerabilities: map[string][]string{
+					"0": {"2", "0", "3", "1"},
+					"1": {"1", "2"},
+					"2": {"2", "3"},
+					"3": {"0", "1", "2", "3"},
+				},
+			},
+			want: &v4.VulnerabilityReport{
+				// Converter doesn't set HashId to empty.
+				HashId: "",
+				Vulnerabilities: map[string]*v4.VulnerabilityReport_Vulnerability{
+					"0": {
+						Id:      "0",
+						Name:    "0",
+						Updater: "rhel-vex",
+					},
+					"1": {
+						Id:      "1",
+						Name:    "1",
+						Updater: "rhel-vex",
+					},
+					"2": {
+						Id:      "2",
+						Name:    "2",
+						Updater: "something else",
+					},
+					"3": {
+						Id:      "3",
+						Name:    "3",
+						Updater: "something different",
+					},
+				},
+				PackageVulnerabilities: map[string]*v4.StringList{
+					"0": {
+						Values: []string{"0", "1"},
+					},
+					"1": {
+						Values: []string{"1", "2"},
+					},
+					"3": {
+						Values: []string{"0", "1", "2", "3"},
+					},
+				},
+				Contents: &v4.Contents{
+					Packages: map[string]*v4.Package{
+						"0": {
+							Id:      "0",
+							Name:    "my go binary",
+							Version: "0",
+							NormalizedVersion: &v4.NormalizedVersion{
+								V: []int32{0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+							},
+							Kind: "unknown",
+							Cpe:  emptyCPE,
+						},
+						"1": {
+							Id:      "1",
+							Name:    "my java jar",
+							Version: "1",
+							NormalizedVersion: &v4.NormalizedVersion{
+								V: []int32{0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+							},
+							Kind: "unknown",
+							Cpe:  emptyCPE,
+						},
+						"2": {
+							Id:      "2",
+							Name:    "my python egg",
+							Version: "2",
+							NormalizedVersion: &v4.NormalizedVersion{
+								V: []int32{0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+							},
+							Kind: "unknown",
+							Cpe:  emptyCPE,
+						},
+						"3": {
+							Id:      "3",
+							Name:    "my ruby gem",
+							Version: "3",
+							NormalizedVersion: &v4.NormalizedVersion{
+								V: []int32{0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+							},
+							Kind: "unknown",
+							Cpe:  emptyCPE,
+						},
+					},
+					PackagesDEPRECATED: []*v4.Package{
+						{
+							Id:      "0",
+							Name:    "my go binary",
+							Version: "0",
+							NormalizedVersion: &v4.NormalizedVersion{
+								V: []int32{0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+							},
+							Kind: "unknown",
+							Cpe:  emptyCPE,
+						},
+						{
+							Id:      "1",
+							Name:    "my java jar",
+							Version: "1",
+							NormalizedVersion: &v4.NormalizedVersion{
+								V: []int32{0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+							},
+							Kind: "unknown",
+							Cpe:  emptyCPE,
+						},
+						{
+							Id:      "2",
+							Name:    "my python egg",
+							Version: "2",
+							NormalizedVersion: &v4.NormalizedVersion{
+								V: []int32{0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+							},
+							Kind: "unknown",
+							Cpe:  emptyCPE,
+						},
+						{
+							Id:      "3",
+							Name:    "my ruby gem",
+							Version: "3",
+							NormalizedVersion: &v4.NormalizedVersion{
+								V: []int32{0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+							},
+							Kind: "unknown",
+							Cpe:  emptyCPE,
+						},
+					},
+					Repositories: map[string]*v4.Repository{
+						"0": {
+							Id:   "0",
+							Name: "Red Hat Container Catalog",
+							Uri:  `https://catalog.redhat.com/software/containers/explore`,
+							Cpe:  emptyCPE,
+						},
+						"something else": {
+							Id:   "1",
+							Name: "something else",
+							Key:  "rhel-cpe-repository",
+							Uri:  "somethingelse.com",
+							Cpe:  emptyCPE,
+						},
+					},
+					RepositoriesDEPRECATED: []*v4.Repository{
+						{
+							Id:   "0",
+							Name: "Red Hat Container Catalog",
+							Uri:  `https://catalog.redhat.com/software/containers/explore`,
+							Cpe:  emptyCPE,
+						},
+						{
+							Id:   "1",
+							Name: "something else",
+							Key:  "rhel-cpe-repository",
+							Uri:  "somethingelse.com",
+							Cpe:  emptyCPE,
+						},
+					},
+					Environments: map[string]*v4.Environment_List{
+						"0": {
+							Environments: []*v4.Environment{
+								{
+									RepositoryIds: []string{"0", "something else"},
+									IntroducedIn:  layerA.String(),
+								},
+							},
+						},
+						"1": {
+							Environments: []*v4.Environment{
+								{
+									RepositoryIds: []string{"something else"},
+									IntroducedIn:  layerB.String(),
+								},
+							},
+						},
+						"2": {
+							Environments: []*v4.Environment{
+								{
+									RepositoryIds: []string{"0"},
+									IntroducedIn:  layerA.String(),
+								},
+							},
+						},
+						"3": {
+							Environments: []*v4.Environment{
+								{
+									RepositoryIds: []string{"something else"},
+									IntroducedIn:  layerB.String(),
+								},
+							},
+						},
+					},
+					EnvironmentsDEPRECATED: map[string]*v4.Environment_List{
+						"0": {
+							Environments: []*v4.Environment{
+								{
+									RepositoryIds: []string{"0", "1"},
+									IntroducedIn:  layerA.String(),
+								},
+							},
+						},
+						"1": {
+							Environments: []*v4.Environment{
+								{
+									RepositoryIds: []string{"1"},
+									IntroducedIn:  layerB.String(),
+								},
+							},
+						},
+						"2": {
+							Environments: []*v4.Environment{
+								{
+									RepositoryIds: []string{"0"},
+									IntroducedIn:  layerA.String(),
+								},
+							},
+						},
+						"3": {
+							Environments: []*v4.Environment{
+								{
+									RepositoryIds: []string{"1"},
+									IntroducedIn:  layerB.String(),
+								},
+							},
+						},
+					},
+				},
+			},
+			wantErr: "",
+		},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			ctx := test.Logging(t)
+			got, err := ToProtoV4VulnerabilityReport(ctx, tt.arg)
+			if tt.wantErr != "" {
+				assert.ErrorContains(t, err, tt.wantErr)
+				return
+			}
+			assert.NoError(t, err)
+
+			// The assert library cannot compare elements in slices like the ones below
+			// while ignoring order. So, sort each slice.
+			for _, pkgVulns := range got.GetPackageVulnerabilities() {
+				slices.Sort(pkgVulns.GetValues())
+			}
+			slices.SortFunc(got.GetContents().GetPackagesDEPRECATED(), func(a, b *v4.Package) int {
+				return strings.Compare(a.GetId(), b.GetId())
+			})
+			slices.SortFunc(got.GetContents().GetRepositoriesDEPRECATED(), func(a, b *v4.Repository) int {
+				return strings.Compare(a.GetId(), b.GetId())
+			})
+
 			protoassert.Equal(t, tt.want, got)
 		})
 	}
@@ -454,7 +840,7 @@ func Test_ToClairCoreIndexReport(t *testing.T) {
 		},
 		"when content package has source with source then error": {
 			arg: &v4.Contents{
-				Packages: []*v4.Package{
+				PackagesDEPRECATED: []*v4.Package{
 					{
 						Id:  "sample package",
 						Cpe: "cpe:2.3:a:redhat:scanner:4:*:el9:*:*:*:*:*",
@@ -470,7 +856,7 @@ func Test_ToClairCoreIndexReport(t *testing.T) {
 		},
 		"when content package has invalid CPE then error": {
 			arg: &v4.Contents{
-				Packages: []*v4.Package{
+				PackagesDEPRECATED: []*v4.Package{
 					{
 						Id:  "sample package",
 						Cpe: "something that is not a cpe",
@@ -481,7 +867,7 @@ func Test_ToClairCoreIndexReport(t *testing.T) {
 		},
 		"when distribution contains invalid cpe then error": {
 			arg: &v4.Contents{
-				Distributions: []*v4.Distribution{
+				DistributionsDEPRECATED: []*v4.Distribution{
 					{
 						Cpe: "something that is not a cpe",
 					},
@@ -491,7 +877,7 @@ func Test_ToClairCoreIndexReport(t *testing.T) {
 		},
 		"when repository contains invalid cpe then error": {
 			arg: &v4.Contents{
-				Repositories: []*v4.Repository{
+				RepositoriesDEPRECATED: []*v4.Repository{
 					{
 						Cpe: "something that is not a cpe",
 					},
@@ -502,8 +888,8 @@ func Test_ToClairCoreIndexReport(t *testing.T) {
 
 		"when all fields are valid then return success": {
 			arg: &v4.Contents{
-				Packages: []*v4.Package{
-					{
+				Packages: map[string]*v4.Package{
+					"sample pkg id": {
 						Id:      "sample pkg id",
 						Name:    "sample pkg name",
 						Version: "sample pkg version",
@@ -511,7 +897,7 @@ func Test_ToClairCoreIndexReport(t *testing.T) {
 							Kind: "test",
 							V:    []int32{1, 2, 3, 4, 5, 6, 7, 8, 9, 0},
 						},
-						Kind: "sample pkg kind",
+						Kind: "binary",
 						Source: &v4.Package{
 							Id:   "sample source id",
 							Name: "sample source name",
@@ -524,7 +910,42 @@ func Test_ToClairCoreIndexReport(t *testing.T) {
 						Cpe:            "cpe:2.3:a:redhat:scanner:4:*:el9:*:*:*:*:*",
 					},
 				},
-				Distributions: []*v4.Distribution{
+				PackagesDEPRECATED: []*v4.Package{
+					{
+						Id:      "sample pkg id",
+						Name:    "sample pkg name",
+						Version: "sample pkg version",
+						NormalizedVersion: &v4.NormalizedVersion{
+							Kind: "test",
+							V:    []int32{1, 2, 3, 4, 5, 6, 7, 8, 9, 0},
+						},
+						Kind: "binary",
+						Source: &v4.Package{
+							Id:   "sample source id",
+							Name: "sample source name",
+							Cpe:  "cpe:2.3:a:redhat:scanner:4:*:el9:*:*:*:*:*",
+						},
+						PackageDb:      "sample pkg db",
+						RepositoryHint: "sample pkg repo hint",
+						Module:         "sample pkg module",
+						Arch:           "sample pkg arch",
+						Cpe:            "cpe:2.3:a:redhat:scanner:4:*:el9:*:*:*:*:*",
+					},
+				},
+				Distributions: map[string]*v4.Distribution{
+					"sample dist id": {
+						Id:              "sample dist id",
+						Did:             "sample dist did",
+						Name:            "sample dist name",
+						Version:         "sample dist version",
+						VersionCodeName: "sample dist version codename",
+						VersionId:       "sample dist version id",
+						Arch:            "sample dist arch",
+						Cpe:             "cpe:2.3:a:redhat:scanner:4:*:el9:*:*:*:*:*",
+						PrettyName:      "sample dist pretty",
+					},
+				},
+				DistributionsDEPRECATED: []*v4.Distribution{
 					{
 						Id:              "sample dist id",
 						Did:             "sample dist did",
@@ -537,7 +958,16 @@ func Test_ToClairCoreIndexReport(t *testing.T) {
 						PrettyName:      "sample dist pretty",
 					},
 				},
-				Repositories: []*v4.Repository{
+				Repositories: map[string]*v4.Repository{
+					"sample id": {
+						Id:   "sample id",
+						Name: "sample name",
+						Key:  "sample key",
+						Uri:  "sample URI",
+						Cpe:  "cpe:2.3:a:redhat:scanner:4:*:el9:*:*:*:*:*",
+					},
+				},
+				RepositoriesDEPRECATED: []*v4.Repository{
 					{
 						Id:   "sample id",
 						Name: "sample name",
@@ -567,7 +997,7 @@ func Test_ToClairCoreIndexReport(t *testing.T) {
 						ID:      "sample pkg id",
 						Name:    "sample pkg name",
 						Version: "sample pkg version",
-						Kind:    "sample pkg kind",
+						Kind:    types.BinaryPackage,
 						Source: &claircore.Package{
 							ID:   "sample source id",
 							Name: "sample source name",
@@ -648,7 +1078,7 @@ func Test_toProtoV4Package(t *testing.T) {
 				ID:             "sample id",
 				Name:           "sample name",
 				Version:        "sample version",
-				Kind:           "sample kind",
+				Kind:           types.BinaryPackage,
 				Source:         nil,
 				PackageDB:      "sample package db",
 				Filepath:       "sample file path",
@@ -669,7 +1099,7 @@ func Test_toProtoV4Package(t *testing.T) {
 					Kind: "test",
 					V:    []int32{1, 2, 3, 4, 5, 6, 7, 8, 9, 0},
 				},
-				Kind:           "sample kind",
+				Kind:           "binary",
 				Source:         nil,
 				PackageDb:      "sample package db",
 				RepositoryHint: "sample hint",
@@ -694,7 +1124,7 @@ func Test_toProtoV4Package(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := toProtoV4Package(tt.arg)
+			got, err := v4Package(tt.arg)
 			if tt.wantErr != "" {
 				assert.ErrorContains(t, err, tt.wantErr)
 				assert.Nil(t, tt.want)
@@ -715,7 +1145,7 @@ func Test_toProtoV4Package(t *testing.T) {
 				},
 			},
 		}
-		got, err := toProtoV4Package(arg)
+		got, err := v4Package(arg)
 		assert.Nil(t, got)
 		assert.ErrorContains(t, err, "source specifies source")
 	})
@@ -764,7 +1194,8 @@ func Test_toProtoV4Distribution(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := toProtoV4Distribution(tt.arg)
+			got, err := v4Distribution(tt.arg)
+			assert.NoError(t, err)
 			protoassert.Equal(t, tt.want, got)
 		})
 	}
@@ -799,7 +1230,8 @@ func Test_toProtoV4Repository(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := toProtoV4Repository(tt.arg)
+			got, err := v4Repository(tt.arg)
+			assert.NoError(t, err)
 			protoassert.Equal(t, tt.want, got)
 		})
 	}
@@ -837,7 +1269,7 @@ func Test_toProtoV4Environment(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := toProtoV4Environment(tt.arg)
+			got := v4Environment(tt.arg)
 			protoassert.Equal(t, tt.want, got)
 			if tt.want != nil && tt.want.RepositoryIds != nil {
 				assert.NotEqual(t, &tt.want.RepositoryIds, &got.RepositoryIds)
@@ -868,20 +1300,42 @@ func Test_toProtoV4Contents(t *testing.T) {
 				},
 			},
 			want: &v4.Contents{
-				Packages: []*v4.Package{{
-					Cpe: emptyCPE,
+				Packages: map[string]*v4.Package{
+					"sample pkg": {
+						Kind: "unknown",
+						Cpe:  emptyCPE,
+						NormalizedVersion: &v4.NormalizedVersion{
+							Kind: "",
+							V:    make([]int32, 10),
+						},
+					},
+				},
+				PackagesDEPRECATED: []*v4.Package{{
+					Kind: "unknown",
+					Cpe:  emptyCPE,
 					NormalizedVersion: &v4.NormalizedVersion{
 						Kind: "",
 						V:    make([]int32, 10),
 					},
 				}},
-				Distributions: []*v4.Distribution{{
+				Distributions: map[string]*v4.Distribution{
+					"sample dist": {Cpe: emptyCPE},
+				},
+				DistributionsDEPRECATED: []*v4.Distribution{{
 					Cpe: emptyCPE,
 				}},
-				Repositories: []*v4.Repository{{
+				Repositories: map[string]*v4.Repository{
+					"sample repo": {Cpe: emptyCPE},
+				},
+				RepositoriesDEPRECATED: []*v4.Repository{{
 					Cpe: emptyCPE,
 				}},
 				Environments: map[string]*v4.Environment_List{
+					"sample env": {
+						Environments: []*v4.Environment{{}},
+					},
+				},
+				EnvironmentsDEPRECATED: map[string]*v4.Environment_List{
 					"sample env": {
 						Environments: []*v4.Environment{{}},
 					},
@@ -982,6 +1436,7 @@ func Test_toProtoV4VulnerabilitiesMapWithEPSS(t *testing.T) {
 							Url:    "https://nvd.nist.gov/vuln/detail/CVE-1234-567",
 						},
 					},
+					Updater: "unknown updater",
 				},
 			},
 		},
@@ -1051,6 +1506,7 @@ func Test_toProtoV4VulnerabilitiesMapWithEPSS(t *testing.T) {
 					Cvss:        nil,
 					CvssMetrics: nil,
 					Link:        "https://access.redhat.com/errata/RHSA-2021:1234",
+					Updater:     "rhel-vex",
 				},
 				"bar": {
 					EpssMetrics: &v4.VulnerabilityReport_Vulnerability_EPSS{
@@ -1065,6 +1521,7 @@ func Test_toProtoV4VulnerabilitiesMapWithEPSS(t *testing.T) {
 					Cvss:        nil,
 					CvssMetrics: nil,
 					Link:        "https://access.redhat.com/errata/RHSA-2021:1234",
+					Updater:     "rhel-vex",
 				},
 			},
 		},
@@ -1116,22 +1573,153 @@ func Test_toProtoV4VulnerabilitiesMapWithEPSS(t *testing.T) {
 							Url:    "https://nvd.nist.gov/vuln/detail/CVE-5678-1234",
 						},
 					},
+					Updater: "unknown updater",
 					// No EpssMetrics because epssItems has no entry for CVE-5678-1234
 				},
 			},
 		},
 	}
 
-	ctx := context.Background()
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
+			ctx := test.Logging(t)
 			enableRedHatCVEs := "false"
 			t.Setenv(features.ScannerV4RedHatCVEs.EnvVar(), enableRedHatCVEs)
-			enableEPSS := "true"
-			t.Setenv(features.EPSSScore.EnvVar(), enableEPSS)
-			got, err := toProtoV4VulnerabilitiesMap(ctx, tt.ccVulnerabilities, tt.nvdVulns, tt.epssItems, nil)
+			got, err := toProtoV4VulnerabilitiesMap(ctx, tt.ccVulnerabilities, tt.nvdVulns, tt.epssItems, nil, nil)
 			assert.NoError(t, err)
 			protoassert.MapEqual(t, tt.want, got)
+		})
+	}
+}
+
+func Test_toProtoV4VulnerabilitiesMapWithExploit(t *testing.T) {
+	now := time.Now()
+	protoNow, err := protocompat.ConvertTimeToTimestampOrError(now)
+	require.NoError(t, err)
+
+	tests := map[string]struct {
+		ccVulnerabilities map[string]*claircore.Vulnerability
+		exploits          map[string]map[string]*kev.Entry
+		want              map[string]*v4.VulnerabilityReport_Vulnerability
+	}{
+		"basic": {
+			ccVulnerabilities: map[string]*claircore.Vulnerability{
+				"foo": {
+					ID:     "foo",
+					Name:   "CVE-1234-567",
+					Issued: now,
+				},
+				"bar": {
+					ID:     "bar",
+					Name:   "CVE-1234-568",
+					Issued: now,
+				},
+			},
+			exploits: map[string]map[string]*kev.Entry{
+				"foo": {
+					"CVE-1234-567": &kev.Entry{
+						CVE:                        "CVE-1234-567",
+						VulnerabilityName:          "bad news",
+						CatalogVersion:             "2025.10.01",
+						DateAdded:                  "2025-09-20",
+						ShortDescription:           "This is a bad vulnerability",
+						RequiredAction:             "hide",
+						DueDate:                    "2025-10-12",
+						KnownRansomwareCampaignUse: "Known",
+					},
+				},
+			},
+			want: map[string]*v4.VulnerabilityReport_Vulnerability{
+				"foo": {
+					Id:     "foo",
+					Issued: protoNow,
+					Name:   "CVE-1234-567",
+					Exploit: &v4.VulnerabilityReport_Vulnerability_CISAExploit{
+						CatalogVersion:             "2025.10.01",
+						DateAdded:                  "2025-09-20",
+						ShortDescription:           "This is a bad vulnerability",
+						RequiredAction:             "hide",
+						DueDate:                    "2025-10-12",
+						KnownRansomwareCampaignUse: "Known",
+					},
+				},
+				"bar": {
+					Id:     "bar",
+					Issued: protoNow,
+					Name:   "CVE-1234-568",
+				},
+			},
+		},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			ctx := test.Logging(t)
+			got, err := toProtoV4VulnerabilitiesMap(ctx, tt.ccVulnerabilities, nil, nil, nil, tt.exploits)
+			assert.NoError(t, err)
+			protoassert.MapEqual(t, tt.want, got)
+		})
+	}
+}
+
+func Test_cveKEV(t *testing.T) {
+	entryJSON := func(vulnToEntries map[string][]kev.Entry) json.RawMessage {
+		data, err := json.Marshal(vulnToEntries)
+		require.NoError(t, err)
+		return data
+	}
+	tests := map[string]struct {
+		enrichments map[string][]json.RawMessage
+		want        map[string]map[string]*kev.Entry
+		wantErr     bool
+	}{
+		"nil enrichments": {
+			enrichments: nil,
+		},
+		"no kev enrichment": {
+			enrichments: map[string][]json.RawMessage{
+				"other": {json.RawMessage(`{}`)},
+			},
+		},
+		"malformed payload": {
+			enrichments: map[string][]json.RawMessage{
+				kev.Type: {json.RawMessage(`malformed`)},
+			},
+			wantErr: true,
+		},
+		"empty items": {
+			enrichments: map[string][]json.RawMessage{
+				kev.Type: {json.RawMessage(`{}`)},
+			},
+		},
+		"multiple entries per vulnerability": {
+			enrichments: map[string][]json.RawMessage{
+				kev.Type: {entryJSON(map[string][]kev.Entry{
+					"foo": {
+						{CVE: "CVE-1234-567", DateAdded: "2025-09-20"},
+						{CVE: "CVE-1234-568", DateAdded: "2025-09-21"},
+					},
+					"bar": {},
+				})},
+			},
+			want: map[string]map[string]*kev.Entry{
+				"foo": {
+					"CVE-1234-567": {CVE: "CVE-1234-567", DateAdded: "2025-09-20"},
+					"CVE-1234-568": {CVE: "CVE-1234-568", DateAdded: "2025-09-21"},
+				},
+			},
+		},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			ctx := test.Logging(t)
+			got, err := cveKEV(ctx, tt.enrichments)
+			if tt.wantErr {
+				assert.Error(t, err)
+				return
+			}
+			assert.NoError(t, err)
+			assert.Equal(t, tt.want, got)
 		})
 	}
 }
@@ -1187,6 +1775,48 @@ func Test_toProtoV4VulnerabilitiesMap(t *testing.T) {
 				"foo": {
 					Issued:         protoNow,
 					FixedInVersion: "1.2.3",
+				},
+			},
+		},
+		"when vuln with introduced&lastAffected fixedIn then return empty": {
+			ccVulnerabilities: map[string]*claircore.Vulnerability{
+				"foo": {
+					Issued:         now,
+					FixedInVersion: "introduced=9.0.13&lastAffected=9.0.62",
+				},
+			},
+			want: map[string]*v4.VulnerabilityReport_Vulnerability{
+				"foo": {
+					Issued:         protoNow,
+					FixedInVersion: "",
+				},
+			},
+		},
+		"when vuln with lastAffected fixedIn then return empty": {
+			ccVulnerabilities: map[string]*claircore.Vulnerability{
+				"foo": {
+					Issued:         now,
+					FixedInVersion: "lastAffected=9.0.62",
+				},
+			},
+			want: map[string]*v4.VulnerabilityReport_Vulnerability{
+				"foo": {
+					Issued:         protoNow,
+					FixedInVersion: "",
+				},
+			},
+		},
+		"when vuln with introduced fixedIn then return empty": {
+			ccVulnerabilities: map[string]*claircore.Vulnerability{
+				"foo": {
+					Issued:         now,
+					FixedInVersion: "introduced=9.0.13",
+				},
+			},
+			want: map[string]*v4.VulnerabilityReport_Vulnerability{
+				"foo": {
+					Issued:         protoNow,
+					FixedInVersion: "",
 				},
 			},
 		},
@@ -1250,6 +1880,7 @@ func Test_toProtoV4VulnerabilitiesMap(t *testing.T) {
 							Url:    "https://access.redhat.com/security/cve/CVE-1234-567",
 						},
 					},
+					Updater: "rhel-vex",
 				},
 			},
 		},
@@ -1285,6 +1916,7 @@ func Test_toProtoV4VulnerabilitiesMap(t *testing.T) {
 							Url:    "https://access.redhat.com/security/cve/CVE-2013-12342",
 						},
 					},
+					Updater: "rhel-vex",
 				},
 			},
 		},
@@ -1300,6 +1932,7 @@ func Test_toProtoV4VulnerabilitiesMap(t *testing.T) {
 				"foo": {
 					Issued:   protoNow,
 					Severity: "invalid cvss2 vector",
+					Updater:  "rhel-vex",
 				},
 			},
 		},
@@ -1315,6 +1948,7 @@ func Test_toProtoV4VulnerabilitiesMap(t *testing.T) {
 				"foo": {
 					Issued:   protoNow,
 					Severity: "invalid cvss3 vector",
+					Updater:  "rhel-vex",
 				},
 			},
 		},
@@ -1350,6 +1984,7 @@ func Test_toProtoV4VulnerabilitiesMap(t *testing.T) {
 							Url:    "https://osv.dev/vulnerability/CVE-2024-1234",
 						},
 					},
+					Updater: "osv/sample-updater",
 				},
 			},
 		},
@@ -1367,6 +2002,7 @@ func Test_toProtoV4VulnerabilitiesMap(t *testing.T) {
 					Issued:             protoNow,
 					NormalizedSeverity: v4.VulnerabilityReport_Vulnerability_SEVERITY_LOW,
 					Severity:           "LOW",
+					Updater:            "osv/sample-updater",
 				},
 			},
 		},
@@ -1420,6 +2056,7 @@ func Test_toProtoV4VulnerabilitiesMap(t *testing.T) {
 							Url:    "https://nvd.nist.gov/vuln/detail/CVE-1234-567",
 						},
 					},
+					Updater: "unknown updater",
 				},
 			},
 		},
@@ -1473,6 +2110,7 @@ func Test_toProtoV4VulnerabilitiesMap(t *testing.T) {
 							Url:    "https://nvd.nist.gov/vuln/detail/CVE-1234-567",
 						},
 					},
+					Updater: "osv/sample-updater",
 				},
 			},
 		},
@@ -1523,6 +2161,7 @@ func Test_toProtoV4VulnerabilitiesMap(t *testing.T) {
 							Url:    "https://nvd.nist.gov/vuln/detail/CVE-1234-567",
 						},
 					},
+					Updater: "unknown updater",
 				},
 			},
 		},
@@ -1544,9 +2183,10 @@ func Test_toProtoV4VulnerabilitiesMap(t *testing.T) {
 			},
 			want: map[string]*v4.VulnerabilityReport_Vulnerability{
 				"foo": {
-					Id:     "foo",
-					Name:   "CVE-2021-44228",
-					Issued: proto2021,
+					Id:      "foo",
+					Name:    "CVE-2021-44228",
+					Issued:  proto2021,
+					Updater: "unknown updater",
 				},
 			},
 		},
@@ -1603,6 +2243,7 @@ func Test_toProtoV4VulnerabilitiesMap(t *testing.T) {
 							Url:    "https://nvd.nist.gov/vuln/detail/CVE-2021-44228",
 						},
 					},
+					Updater: manual.UpdaterName,
 				},
 			},
 		},
@@ -1695,6 +2336,8 @@ func Test_toProtoV4VulnerabilitiesMap(t *testing.T) {
 							Url:    "https://nvd.nist.gov/vuln/detail/CVE-2021-44228",
 						},
 					},
+					Updater:   "rhel-vex",
+					FixedDate: protoNow,
 				},
 			},
 		},
@@ -1731,8 +2374,12 @@ func Test_toProtoV4VulnerabilitiesMap(t *testing.T) {
 			enableRedHatCVEs: true,
 			want: map[string]*v4.VulnerabilityReport_Vulnerability{
 				"foo": {
-					Id:                 "foo",
-					Name:               "CVE-2021-44228",
+					Id:   "foo",
+					Name: "CVE-2021-44228",
+					Advisory: &v4.VulnerabilityReport_Advisory{
+						Name: "RHSA-2021:5132",
+						Link: "https://access.redhat.com/errata/RHSA-2021:5132",
+					},
 					Link:               "https://access.redhat.com/security/cve/CVE-2021-44228 https://access.redhat.com/errata/RHSA-2021:5132",
 					Issued:             protoNow,
 					Severity:           "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H",
@@ -1763,6 +2410,7 @@ func Test_toProtoV4VulnerabilitiesMap(t *testing.T) {
 							Url:    "https://nvd.nist.gov/vuln/detail/CVE-2021-44228",
 						},
 					},
+					Updater: "rhel-vex",
 				},
 			},
 		},
@@ -1838,6 +2486,8 @@ func Test_toProtoV4VulnerabilitiesMap(t *testing.T) {
 							Url:    "https://access.redhat.com/errata/RHSA-2024:10775",
 						},
 					},
+					Updater:   "rhel-vex",
+					FixedDate: protoNow,
 				},
 				"bar": {
 					Id:                 "bar",
@@ -1865,20 +2515,22 @@ func Test_toProtoV4VulnerabilitiesMap(t *testing.T) {
 							Url:    "https://access.redhat.com/errata/RHSA-2024:10775",
 						},
 					},
+					Updater:   "rhel-vex",
+					FixedDate: protoNow,
 				},
 			},
 		},
 	}
-	ctx := context.Background()
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
+			ctx := test.Logging(t)
 			enableRedHatCVEs := "false"
 			if tt.enableRedHatCVEs {
 				enableRedHatCVEs = "true"
 			}
 			t.Setenv(features.ScannerV4RedHatCVEs.EnvVar(), enableRedHatCVEs)
 			// EPSS scores are intentionally not covered here
-			got, err := toProtoV4VulnerabilitiesMap(ctx, tt.ccVulnerabilities, tt.nvdVulns, nil, tt.advisories)
+			got, err := toProtoV4VulnerabilitiesMap(ctx, tt.ccVulnerabilities, tt.nvdVulns, nil, tt.advisories, nil)
 			assert.NoError(t, err)
 			protoassert.MapEqual(t, tt.want, got)
 		})
@@ -1886,7 +2538,7 @@ func Test_toProtoV4VulnerabilitiesMap(t *testing.T) {
 }
 
 func Test_convertToNormalizedSeverity(t *testing.T) {
-	ctx := context.Background()
+	ctx := test.Logging(t)
 	// Check all severities can be mapped.
 	for i := 0; i <= int(claircore.Critical); i++ {
 		ccS := claircore.Severity(i)
@@ -1901,6 +2553,73 @@ func Test_convertToNormalizedSeverity(t *testing.T) {
 	}
 	// Test nothing was added without us knowing.
 	assert.Equal(t, int(claircore.Critical), 5)
+}
+
+func Test_v4Environments(t *testing.T) {
+	testcases := []struct {
+		name               string
+		envs               map[string][]*claircore.Environment
+		repos              map[string]*claircore.Repository
+		expected           map[string]*v4.Environment_List
+		expectedDeprecated map[string]*v4.Environment_List
+	}{
+		{
+			name: "basic",
+			envs: map[string][]*claircore.Environment{
+				"0": {
+					{
+						PackageDB:     "root/buildinfo/Dockerfile-ubi8-minimal-8.10-1295.1749680713",
+						IntroducedIn:  claircore.MustParseDigest("sha256:001c8f2552be07ef548604a8c45411bbb3a2694efbcb9be4f6d99723b97c7179"),
+						RepositoryIDs: []string{"rhel-8-for-x86_64-baseos-rpms", "rhel-8-for-x86_64-appstream-rpms"},
+					},
+				},
+			},
+			repos: map[string]*claircore.Repository{
+				"rhel-8-for-x86_64-baseos-rpms": {
+					ID:   "0",
+					Name: "rhel-8-for-x86_64-baseos-rpms",
+					Key:  "rhel-cpe-repository",
+					CPE:  cpe.MustUnbind("cpe:2.3:o:redhat:enterprise_linux:8:*:baseos:*:*:*:*:*"),
+				},
+				"rhel-8-for-x86_64-appstream-rpms": {
+					ID:   "1",
+					Name: "rhel-8-for-x86_64-appstream-rpms",
+					Key:  "rhel-cpe-repository",
+					CPE:  cpe.MustUnbind("cpe:2.3:a:redhat:enterprise_linux:8:*:appstream:*:*:*:*:*"),
+				},
+			},
+			expected: map[string]*v4.Environment_List{
+				"0": {
+					Environments: []*v4.Environment{
+						{
+							PackageDb:     "root/buildinfo/Dockerfile-ubi8-minimal-8.10-1295.1749680713",
+							IntroducedIn:  "sha256:001c8f2552be07ef548604a8c45411bbb3a2694efbcb9be4f6d99723b97c7179",
+							RepositoryIds: []string{"rhel-8-for-x86_64-baseos-rpms", "rhel-8-for-x86_64-appstream-rpms"},
+						},
+					},
+				},
+			},
+			expectedDeprecated: map[string]*v4.Environment_List{
+				"0": {
+					Environments: []*v4.Environment{
+						{
+							PackageDb:     "root/buildinfo/Dockerfile-ubi8-minimal-8.10-1295.1749680713",
+							IntroducedIn:  "sha256:001c8f2552be07ef548604a8c45411bbb3a2694efbcb9be4f6d99723b97c7179",
+							RepositoryIds: []string{"0", "1"},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	for _, tc := range testcases {
+		t.Run(tc.name, func(t *testing.T) {
+			envs, envsDeprecated := v4Environments(tc.envs, tc.repos)
+			protoassert.MapEqual(t, tc.expected, envs)
+			protoassert.MapEqual(t, tc.expectedDeprecated, envsDeprecated)
+		})
+	}
 }
 
 func Test_vulnerabilityName(t *testing.T) {
@@ -2002,6 +2721,44 @@ func Test_vulnerabilityName(t *testing.T) {
 	})
 }
 
+func Test_advisory(t *testing.T) {
+	testutils.MustUpdateFeature(t, features.ScannerV4RedHatCVEs, true)
+	testcases := map[string]struct {
+		vuln     *claircore.Vulnerability
+		expected *v4.VulnerabilityReport_Advisory
+	}{
+		"non-VEX": {
+			vuln: &claircore.Vulnerability{
+				Links:   "https://access.redhat.com/security/cve/CVE-2023-25761 https://access.redhat.com/errata/RHSA-2023:1866 https://access.redhat.com/security/cve/CVE-2023-25762",
+				Updater: "not-vex",
+			},
+			expected: nil,
+		},
+		"no RHSA": {
+			vuln: &claircore.Vulnerability{
+				Links:   "https://access.redhat.com/security/cve/CVE-2023-25761 https://access.redhat.com/security/cve/CVE-2023-25762",
+				Updater: "rhel-vex",
+			},
+			expected: nil,
+		},
+		"RHSA": {
+			vuln: &claircore.Vulnerability{
+				Links:   "https://access.redhat.com/security/cve/CVE-2023-25761 https://access.redhat.com/errata/RHSA-2023:1866 https://access.redhat.com/security/cve/CVE-2023-25762",
+				Updater: "rhel-vex",
+			},
+			expected: &v4.VulnerabilityReport_Advisory{
+				Name: "RHSA-2023:1866",
+				Link: "https://access.redhat.com/errata/RHSA-2023:1866",
+			},
+		},
+	}
+	for name, testcase := range testcases {
+		t.Run(name, func(t *testing.T) {
+			protoassert.Equal(t, testcase.expected, advisory(testcase.vuln))
+		})
+	}
+}
+
 func Test_versionID(t *testing.T) {
 	tests := map[string]struct {
 		d         *claircore.Distribution
@@ -2020,6 +2777,31 @@ func Test_versionID(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			versionID := VersionID(tt.d)
 			assert.Equal(t, tt.versionID, versionID)
+		})
+	}
+}
+
+func TestIsVersionAgnostic(t *testing.T) {
+	tests := map[string]struct {
+		did  string
+		want bool
+	}{
+		"hummingbird is version-agnostic": {
+			did:  "hummingbird",
+			want: true,
+		},
+		"rhel is not version-agnostic": {
+			did:  "rhel",
+			want: false,
+		},
+		"empty DID is not version-agnostic": {
+			did:  "",
+			want: false,
+		},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			assert.Equal(t, tt.want, IsVersionAgnostic(tt.did))
 		})
 	}
 }
@@ -2421,6 +3203,61 @@ func Test_dedupeAdvisories(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			got := dedupeAdvisories(tt.vulnIDs, tt.vulns)
 			assert.ElementsMatch(t, tt.expected, got)
+		})
+	}
+}
+
+func Test_PackageKindRoundTrip(t *testing.T) {
+	// This test documents backward compatibility for Package.Kind conversion.
+	// Old ClairCore used string Kind with values "binary" and "source".
+	// New ClairCore uses types.PackageKind (uint enum).
+	// The proto uses string, so we need to ensure round-trip conversion works.
+	testCases := []struct {
+		name         string
+		protoKind    string
+		expectedKind types.PackageKind
+		roundTrip    string
+	}{
+		{
+			name:         "binary round-trips (old ClairCore value)",
+			protoKind:    "binary",
+			expectedKind: types.BinaryPackage,
+			roundTrip:    "binary",
+		},
+		{
+			name:         "source round-trips (old ClairCore value)",
+			protoKind:    "source",
+			expectedKind: types.SourcePackage,
+			roundTrip:    "source",
+		},
+		{
+			name:         "empty normalizes to unknown",
+			protoKind:    "",
+			expectedKind: types.UnknownPackage,
+			roundTrip:    "unknown",
+		},
+		{
+			name:         "ancestry works (new value for VEX)",
+			protoKind:    "ancestry",
+			expectedKind: types.AncestryPackage,
+			roundTrip:    "ancestry",
+		},
+		{
+			name:         "unknown round-trips",
+			protoKind:    "unknown",
+			expectedKind: types.UnknownPackage,
+			roundTrip:    "unknown",
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			// Proto → ClairCore
+			got := toPackageKind(tc.protoKind)
+			assert.Equal(t, tc.expectedKind, got)
+
+			// ClairCore → Proto (round-trip)
+			assert.Equal(t, tc.roundTrip, got.String())
 		})
 	}
 }

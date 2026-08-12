@@ -2,17 +2,13 @@ package generate
 
 import (
 	"encoding/json"
-	"fmt"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/pkg/errors"
 	"github.com/spf13/cobra"
 	"github.com/stackrox/rox/generated/storage"
 	"github.com/stackrox/rox/pkg/apiparams"
-	"github.com/stackrox/rox/pkg/errox"
-	"github.com/stackrox/rox/pkg/istioutils"
 	"github.com/stackrox/rox/roxctl/common"
 	"github.com/stackrox/rox/roxctl/common/environment"
 	"github.com/stackrox/rox/roxctl/common/flags"
@@ -44,20 +40,6 @@ func (cmd *scannerGenerateCommand) construct(c *cobra.Command) {
 }
 
 func (cmd *scannerGenerateCommand) validate() error {
-	// Validate supported Istio versions.
-	if cmd.apiParams.IstioVersion != "" {
-		for _, istioVersion := range istioutils.ListKnownIstioVersions() {
-			if cmd.apiParams.IstioVersion == istioVersion {
-				return nil
-			}
-		}
-
-		return errox.InvalidArgs.Newf(
-			"unsupported Istio version %q used for argument %q. Use one of the following: [%s]",
-			cmd.apiParams.IstioVersion, "--"+istioSupportArg, strings.Join(istioutils.ListKnownIstioVersions(), "|"),
-		)
-	}
-
 	return nil
 }
 
@@ -104,17 +86,15 @@ func Command(cliEnvironment environment.Environment) *cobra.Command {
 		},
 	}
 
-	c.PersistentFlags().Var(clustertype.Value(storage.ClusterType_KUBERNETES_CLUSTER), "cluster-type", "Type of cluster the scanner will run on (k8s, openshift)")
+	c.PersistentFlags().Var(clustertype.Value(storage.ClusterType_KUBERNETES_CLUSTER), "cluster-type", "Type of cluster the scanner will run on (k8s, openshift).")
 
-	c.Flags().StringVar(&scannerGenerateCmd.outputDir, "output-dir", "", "Output directory for scanner bundle (leave blank for default)")
-	c.Flags().StringVar(&scannerGenerateCmd.apiParams.ScannerImage, flags.FlagNameScannerImage, "", "Scanner image to use (leave blank to use server default)")
-	c.Flags().StringVar(&scannerGenerateCmd.apiParams.ScannerV4Image, flags.FlagNameScannerV4Image, "", "Scanner V4 image to use (leave blank to use server default)")
-	c.Flags().StringVar(&scannerGenerateCmd.apiParams.ScannerV4DBImage, flags.FlagNameScannerV4DBImage, "", "Scanner V4 DB image to use (leave blank to use server default)")
+	c.Flags().StringVar(&scannerGenerateCmd.outputDir, "output-dir", "", "Output directory for scanner bundle (leave blank for default).")
+	c.Flags().StringVar(&scannerGenerateCmd.apiParams.ScannerImage, flags.FlagNameScannerImage, "", "Scanner image to use (leave blank to use server default).")
+	c.Flags().StringVar(&scannerGenerateCmd.apiParams.ScannerV4Image, flags.FlagNameScannerV4Image, "", "Scanner V4 image to use (leave blank to use server default).")
+	c.Flags().StringVar(&scannerGenerateCmd.apiParams.ScannerV4DBImage, flags.FlagNameScannerV4DBImage, "", "Scanner V4 DB image to use (leave blank to use server default).")
 	c.Flags().StringVar(&scannerGenerateCmd.apiParams.IstioVersion, istioSupportArg, "",
-		fmt.Sprintf(
-			"Generate deployment files supporting the given Istio version. Valid versions: %s",
-			strings.Join(istioutils.ListKnownIstioVersions(), ", ")))
-	c.PersistentFlags().BoolVar(&scannerGenerateCmd.enablePodSecurityPolicies, "enable-pod-security-policies", false, "Create PodSecurityPolicy resources (for pre-v1.25 Kubernetes)")
+		"Istio version when deploying into an Istio-enabled cluster (has no effect; ACS now automatically prevents Istio sidecar injection).")
+	c.PersistentFlags().BoolVar(&scannerGenerateCmd.enablePodSecurityPolicies, "enable-pod-security-policies", false, "Create PodSecurityPolicy resources (for pre-v1.25 Kubernetes).")
 
 	flags.AddTimeout(c)
 	flags.AddRetryTimeout(c)

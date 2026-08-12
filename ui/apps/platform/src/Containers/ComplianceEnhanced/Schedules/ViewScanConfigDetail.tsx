@@ -1,4 +1,5 @@
-import React, { useState } from 'react';
+import { useState } from 'react';
+import type { ReactElement } from 'react';
 import {
     Alert,
     AlertActionCloseButton,
@@ -6,25 +7,24 @@ import {
     BreadcrumbItem,
     Card,
     CardBody,
-    Divider,
     Flex,
     FlexItem,
     PageSection,
     Tab,
-    Tabs,
     TabTitleText,
+    Tabs,
     Title,
 } from '@patternfly/react-core';
-import { useParams } from 'react-router-dom';
+import { useParams } from 'react-router-dom-v5-compat';
 
 import { complianceEnhancedSchedulesPath } from 'routePaths';
 import useAlert from 'hooks/useAlert';
 import useURLStringUnion from 'hooks/useURLStringUnion';
 import {
-    ComplianceScanConfigurationStatus,
     runComplianceReport,
     runComplianceScanConfiguration,
 } from 'services/ComplianceScanConfigurationService';
+import type { ComplianceScanConfigurationStatus } from 'services/ComplianceScanConfigurationService';
 import { getAxiosErrorMessage } from 'utils/responseErrorUtils';
 import PageTitle from 'Components/PageTitle';
 import BreadcrumbItemLink from 'Components/BreadcrumbItemLink';
@@ -38,8 +38,6 @@ import useWatchLastSnapshotForComplianceReports from './hooks/useWatchLastSnapsh
 
 type ViewScanConfigDetailProps = {
     hasWriteAccessForCompliance: boolean;
-    isReportJobsEnabled: boolean;
-    isComplianceReportingEnabled: boolean;
     scanConfig?: ComplianceScanConfigurationStatus;
     isLoading: boolean;
     error?: Error | string | null;
@@ -50,13 +48,11 @@ const allReportJobsTabId = 'ComplianceScanConfigReportJobs';
 
 function ViewScanConfigDetail({
     hasWriteAccessForCompliance,
-    isReportJobsEnabled,
-    isComplianceReportingEnabled,
     scanConfig,
     isLoading,
     error = null,
-}: ViewScanConfigDetailProps): React.ReactElement {
-    const { scanConfigId } = useParams();
+}: ViewScanConfigDetailProps): ReactElement {
+    const { scanConfigId } = useParams() as { scanConfigId: string };
     const { analyticsTrack } = useAnalytics();
 
     const [activeScanConfigTab, setActiveScanConfigTab] = useURLStringUnion(
@@ -143,7 +139,7 @@ function ViewScanConfigDetail({
     return (
         <>
             <PageTitle title="Compliance Scan Schedule Details" />
-            <PageSection variant="light" className="pf-v5-u-py-md">
+            <PageSection type="breadcrumb">
                 <Breadcrumb>
                     <BreadcrumbItemLink to={complianceEnhancedSchedulesPath}>
                         Scan schedules
@@ -153,14 +149,10 @@ function ViewScanConfigDetail({
                     )}
                 </Breadcrumb>
             </PageSection>
-            <Divider component="div" />
-            <PageSection variant="light" padding={{ default: 'noPadding' }}>
+            <PageSection>
                 {!isLoading && !error && scanConfig && (
                     <>
-                        <Flex
-                            alignItems={{ default: 'alignItemsCenter' }}
-                            className="pf-v5-u-py-lg pf-v5-u-px-lg"
-                        >
+                        <Flex alignItems={{ default: 'alignItemsCenter' }}>
                             <FlexItem flex={{ default: 'flex_1' }}>
                                 <Title headingLevel="h1">{scanConfig.scanName}</Title>
                             </FlexItem>
@@ -173,8 +165,6 @@ function ViewScanConfigDetail({
                                         isScanning={isTriggeringRescan}
                                         isReportStatusPending={isReportStatusPending}
                                         scanConfigResponse={scanConfig}
-                                        isReportJobsEnabled={isReportJobsEnabled}
-                                        isComplianceReportingEnabled={isComplianceReportingEnabled}
                                     />
                                 </FlexItem>
                             )}
@@ -185,7 +175,7 @@ function ViewScanConfigDetail({
                                 component="p"
                                 variant={alertObj.type}
                                 isInline
-                                className="pf-v5-u-mb-lg pf-v5-u-mx-lg"
+                                className="pf-v6-u-mt-lg"
                                 actionClose={<AlertActionCloseButton onClose={clearAlertObj} />}
                             >
                                 {alertObj.children}
@@ -194,52 +184,47 @@ function ViewScanConfigDetail({
                     </>
                 )}
             </PageSection>
-            {isReportJobsEnabled && (
-                <PageSection variant="light" className="pf-v5-u-py-0">
-                    <Tabs
-                        activeKey={activeScanConfigTab}
-                        onSelect={(_e, tab) => {
-                            setActiveScanConfigTab(tab);
-                            if (tab === 'ALL_REPORT_JOBS') {
-                                analyticsTrack('Compliance Report Jobs Table Viewed');
-                            }
-                        }}
-                        aria-label="Scan schedule details tabs"
-                    >
-                        <Tab
-                            tabContentId={configDetailsTabId}
-                            eventKey="CONFIGURATION_DETAILS"
-                            title={<TabTitleText>Configuration details</TabTitleText>}
-                        />
-                        <Tab
-                            tabContentId={allReportJobsTabId}
-                            eventKey="ALL_REPORT_JOBS"
-                            title={<TabTitleText>All report jobs</TabTitleText>}
-                            actions={<ReportJobsHelpAction reportType="Scan schedule" />}
-                        />
-                    </Tabs>
-                </PageSection>
-            )}
+            <PageSection type="tabs">
+                <Tabs
+                    activeKey={activeScanConfigTab}
+                    onSelect={(_e, tab) => {
+                        setActiveScanConfigTab(tab);
+                        if (tab === 'ALL_REPORT_JOBS') {
+                            analyticsTrack('Compliance Report Jobs Table Viewed');
+                        }
+                    }}
+                    aria-label="Scan schedule details tabs"
+                    usePageInsets
+                >
+                    <Tab
+                        tabContentId={configDetailsTabId}
+                        eventKey="CONFIGURATION_DETAILS"
+                        title={<TabTitleText>Configuration details</TabTitleText>}
+                    />
+                    <Tab
+                        tabContentId={allReportJobsTabId}
+                        eventKey="ALL_REPORT_JOBS"
+                        title={<TabTitleText>All report jobs</TabTitleText>}
+                        actions={<ReportJobsHelpAction reportType="Scan schedule" />}
+                    />
+                </Tabs>
+            </PageSection>
             {activeScanConfigTab === 'CONFIGURATION_DETAILS' && (
-                <PageSection isCenterAligned id={configDetailsTabId}>
-                    <Card isFlat>
+                <PageSection hasBodyWrapper={false} isCenterAligned id={configDetailsTabId}>
+                    <Card>
                         <CardBody>
                             <ConfigDetails
                                 isLoading={isLoading}
                                 error={error}
                                 scanConfig={scanConfig}
-                                isComplianceReportingEnabled={isComplianceReportingEnabled}
                             />
                         </CardBody>
                     </Card>
                 </PageSection>
             )}
             {activeScanConfigTab === 'ALL_REPORT_JOBS' && scanConfig?.id && (
-                <PageSection isCenterAligned id={allReportJobsTabId}>
-                    <ReportJobs
-                        scanConfigId={scanConfig.id}
-                        isComplianceReportingEnabled={isComplianceReportingEnabled}
-                    />
+                <PageSection id={allReportJobsTabId}>
+                    <ReportJobs scanConfigId={scanConfig.id} />
                 </PageSection>
             )}
         </>

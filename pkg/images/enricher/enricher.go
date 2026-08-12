@@ -72,7 +72,9 @@ type EnrichmentContext struct {
 	// Used to override the delegated registry configuration.
 	ClusterID string
 
-	// Namespace contains the name of the namespace used to filter NetworkPolicies for Deployments.
+	// Namespace is used for context information in the enrichment. It may be specified to:
+	// - Filter NetworkPolicies for Deployments.
+	// - Read pull secrets from a namespace in the delegated cluster to access the image registry.
 	Namespace string
 
 	Source *RequestSource
@@ -113,8 +115,16 @@ const (
 	ScanTriggered
 	// ScanSucceeded denotes that the image was successfully scanned.
 	ScanSucceeded
+	// ScanReused denotes that an existing scan from the database was reused unchanged.
+	ScanReused
 )
 
+// HasScanData reports whether usable scan data is present on the image.
+func (s ScanResult) HasScanData() bool {
+	return s == ScanSucceeded || s == ScanReused
+}
+
+// TODO(ROX-30117): Remove this and use the ImageEnricherV2 interface after ImageV2 model is fully rolled out.
 // ImageEnricher provides functions for enriching images with integrations.
 //
 //go:generate mockgen-wrapper
@@ -131,11 +141,27 @@ type ImageEnricher interface {
 
 // CVESuppressor provides enrichment for suppressed CVEs for an image's components.
 type CVESuppressor interface {
+	// TODO(ROX-30117): Remove this and use the EnrichImageV2WithSuppressedCVEs after ImageV2 model is fully rolled out.
 	EnrichImageWithSuppressedCVEs(image *storage.Image)
+
+	EnrichImageV2WithSuppressedCVEs(image *storage.ImageV2)
 }
 
+// CVEInfoEnricher provides enrichment for CVE timing metadata (FixAvailableTimestamp and FirstSystemOccurrence).
+type CVEInfoEnricher interface {
+	// EnrichImageWithCVEInfo enriches a V1 image's CVEs with timing metadata from the ImageCVEInfo lookup table.
+	EnrichImageWithCVEInfo(ctx context.Context, image *storage.Image) error
+
+	// EnrichImageV2WithCVEInfo enriches a V2 image's CVEs with timing metadata from the ImageCVEInfo lookup table.
+	EnrichImageV2WithCVEInfo(ctx context.Context, image *storage.ImageV2) error
+}
+
+// TODO(ROX-30117): Remove this and use ImageGetterV2 after ImageV2 model is fully rolled out.
 // ImageGetter will be used to retrieve a specific image from the datastore.
 type ImageGetter func(ctx context.Context, id string) (*storage.Image, bool, error)
+
+// BaseImageGetter will be used to get base images of a given image
+type BaseImageGetter func(ctx context.Context, layers []string) ([]*storage.BaseImage, error)
 
 // SignatureIntegrationGetter will be used to retrieve all available signature integrations.
 type SignatureIntegrationGetter func(ctx context.Context) ([]*storage.SignatureIntegration, error)
@@ -146,12 +172,12 @@ type signatureVerifierForIntegrations func(ctx context.Context, integrations []*
 
 // New returns a new ImageEnricher instance for the given subsystem.
 // (The subsystem is just used for Prometheus metrics.)
-func New(cvesSuppressor CVESuppressor, cvesSuppressorV2 CVESuppressor, is integration.Set, subsystem pkgMetrics.Subsystem, metadataCache cache.ImageMetadata,
+func New(cvesSuppressorV2 CVESuppressor, cveInfoEnricher CVEInfoEnricher, is integration.Set, subsystem pkgMetrics.Subsystem, metadataCache cache.ImageMetadata, baseImageGetter BaseImageGetter,
 	imageGetter ImageGetter, healthReporter integrationhealth.Reporter,
 	signatureIntegrationGetter SignatureIntegrationGetter, scanDelegator delegatedregistry.Delegator) ImageEnricher {
 	enricher := &enricherImpl{
-		cvesSuppressor:   cvesSuppressor,
 		cvesSuppressorV2: cvesSuppressorV2,
+		cveInfoEnricher:  cveInfoEnricher,
 		integrations:     is,
 
 		// number of consecutive errors per registry or scanner to ascertain health of the integration
@@ -166,7 +192,8 @@ func New(cvesSuppressor CVESuppressor, cvesSuppressorV2 CVESuppressor, is integr
 		signatureVerifier:          signatures.VerifyAgainstSignatureIntegrations,
 		signatureFetcher:           signatures.NewSignatureFetcher(),
 
-		imageGetter: imageGetter,
+		baseImageGetter: baseImageGetter,
+		imageGetter:     imageGetter,
 
 		asyncRateLimiter: rate.NewLimiter(rate.Every(1*time.Second), 5),
 

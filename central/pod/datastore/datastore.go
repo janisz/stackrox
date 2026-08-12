@@ -3,7 +3,6 @@ package datastore
 import (
 	"context"
 
-	"github.com/stackrox/rox/central/pod/datastore/internal/search"
 	pgStore "github.com/stackrox/rox/central/pod/datastore/internal/store/postgres"
 	piDS "github.com/stackrox/rox/central/processindicator/datastore"
 	plopDS "github.com/stackrox/rox/central/processlisteningonport/datastore"
@@ -23,6 +22,7 @@ type DataStore interface {
 	SearchRawPods(ctx context.Context, q *v1.Query) ([]*storage.Pod, error)
 
 	GetPod(ctx context.Context, id string) (*storage.Pod, bool, error)
+	GetDeploymentIDsByDigest(ctx context.Context, digest string) ([]string, error)
 	WalkByQuery(ctx context.Context, q *v1.Query, fn func(p *storage.Pod) error) error
 
 	UpsertPod(ctx context.Context, pod *storage.Pod) error
@@ -31,8 +31,7 @@ type DataStore interface {
 }
 
 // NewPostgresDB creates a pod datastore based on Postgres
-func NewPostgresDB(db postgres.DB, indicators piDS.DataStore, plops plopDS.DataStore, processFilter filter.Filter) (DataStore, error) {
+func NewPostgresDB(db postgres.DB, indicators piDS.DataStore, plops plopDS.DataStore, processFilter filter.Filter) DataStore {
 	store := pgStore.New(db)
-	searcher := search.New(store)
-	return newDatastoreImpl(store, searcher, indicators, plops, processFilter), nil
+	return newDatastoreImpl(store, indicators, plops, processFilter)
 }

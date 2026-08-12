@@ -3,17 +3,14 @@ package resolvers
 import (
 	"context"
 	"sort"
-	"strings"
 
 	"github.com/graph-gophers/graphql-go"
-	"github.com/pkg/errors"
 	complianceStandards "github.com/stackrox/rox/central/compliance/standards"
 	"github.com/stackrox/rox/central/graphql/resolvers/inputtypes"
 	v1 "github.com/stackrox/rox/generated/api/v1"
 	"github.com/stackrox/rox/generated/storage"
 	"github.com/stackrox/rox/pkg/grpc/authz/interceptor"
 	"github.com/stackrox/rox/pkg/k8srbac"
-	"github.com/stackrox/rox/pkg/pointers"
 	"github.com/stackrox/rox/pkg/search"
 	"github.com/stackrox/rox/pkg/set"
 )
@@ -295,53 +292,20 @@ func paginate[T any](pv *v1.QueryPagination, slice []T, err error) ([]T, error) 
 	return slice[offset:end], nil
 }
 
-func getImageIDFromIfImageShaQuery(ctx context.Context, resolver *Resolver, args RawQuery) (string, error) {
-	query, err := args.AsV1QueryOrEmpty()
-	if err != nil {
-		return "", err
-	}
-
-	query, filtered := search.FilterQuery(query, func(bq *v1.BaseQuery) bool {
-		matchFieldQuery, ok := bq.GetQuery().(*v1.BaseQuery_MatchFieldQuery)
-		if ok {
-			if strings.EqualFold(matchFieldQuery.MatchFieldQuery.GetField(), search.ImageSHA.String()) {
-				return true
-			}
-		}
-		return false
-	})
-
-	if !filtered || query == search.EmptyQuery() {
-		return "", nil
-	}
-
-	res, err := resolver.ImageDataStore.Search(ctx, query)
-	if err != nil {
-		return "", err
-	}
-	if len(res) != 1 {
-		return "", errors.Errorf(
-			"received %d images in query response when 1 image was expected. Please check the query",
-			len(res))
-	}
-
-	return res[0].ID, nil
-}
-
 // V1RawQueryAsResolverQuery parse v1.RawQuery into inputtypes.RawQuery and inputtypes.Pagination queries used by graphQL resolvers.
 func V1RawQueryAsResolverQuery(rQ *v1.RawQuery) (RawQuery, PaginatedQuery) {
 	if rQ.GetPagination() == nil {
-		return RawQuery{pointers.String(rQ.GetQuery()), nil}, PaginatedQuery{Query: pointers.String(rQ.GetQuery())}
+		return RawQuery{new(rQ.GetQuery()), nil}, PaginatedQuery{Query: new(rQ.GetQuery())}
 	}
 
-	return RawQuery{pointers.String(rQ.GetQuery()), nil}, PaginatedQuery{
-		Query: pointers.String(rQ.GetQuery()),
+	return RawQuery{new(rQ.GetQuery()), nil}, PaginatedQuery{
+		Query: new(rQ.GetQuery()),
 		Pagination: &inputtypes.Pagination{
-			Limit:  pointers.Int32(rQ.GetPagination().GetLimit()),
-			Offset: pointers.Int32(rQ.GetPagination().GetOffset()),
+			Limit:  new(rQ.GetPagination().GetLimit()),
+			Offset: new(rQ.GetPagination().GetOffset()),
 			SortOption: &inputtypes.SortOption{
-				Field:    pointers.String(rQ.GetPagination().GetSortOption().GetField()),
-				Reversed: pointers.Bool(rQ.GetPagination().GetSortOption().GetReversed()),
+				Field:    new(rQ.GetPagination().GetSortOption().GetField()),
+				Reversed: new(rQ.GetPagination().GetSortOption().GetReversed()),
 			},
 		},
 	}
@@ -360,7 +324,7 @@ func logErrorOnQueryContainingField(query *v1.Query, label search.FieldLabel, re
 // FilterFieldFromRawQuery removes the given field from RawQuery
 func FilterFieldFromRawQuery(rq RawQuery, label search.FieldLabel) RawQuery {
 	return RawQuery{
-		Query: pointers.String(search.FilterFields(rq.String(), func(field string) bool {
+		Query: new(search.FilterFields(rq.String(), func(field string) bool {
 			return label.String() != field
 		})),
 		ScopeQuery: rq.ScopeQuery,
@@ -378,23 +342,4 @@ func (resolver *Resolver) processWithAuditLog(ctx context.Context, req interface
 		go resolver.AuditLogger.SendAuditMessage(ctx, req, method, interceptor.AuthStatus{}, err)
 	}
 	return resp, err
-}
-
-func getImageIDFromQuery(q *v1.Query) string {
-	if q == nil {
-		return ""
-	}
-	var imageID string
-	search.ApplyFnToAllBaseQueries(q, func(bq *v1.BaseQuery) {
-		matchFieldQuery, ok := bq.GetQuery().(*v1.BaseQuery_MatchFieldQuery)
-		if !ok {
-			return
-		}
-		if strings.EqualFold(matchFieldQuery.MatchFieldQuery.GetField(), search.ImageSHA.String()) {
-			imageID = matchFieldQuery.MatchFieldQuery.Value
-			imageID = strings.TrimRight(imageID, `"`)
-			imageID = strings.TrimLeft(imageID, `"`)
-		}
-	})
-	return imageID
 }

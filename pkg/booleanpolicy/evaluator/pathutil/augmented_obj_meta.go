@@ -134,7 +134,7 @@ func (o *AugmentedObjMeta) addPathsForSearchTags(parentType, currentType reflect
 	switch currentType.Kind() {
 	case reflect.Struct:
 		o.addPathsForSearchTagsFromStruct(currentType, pathUntilThisObj, pathWithinThisObj, outputMap, seenAugmentKeys)
-	case reflect.Ptr, reflect.Array, reflect.Slice:
+	case reflect.Pointer, reflect.Array, reflect.Slice:
 		o.addPathsForSearchTags(currentType, currentType.Elem(), pathUntilThisObj, pathWithinThisObj, outputMap, seenAugmentKeys)
 	case reflect.Interface:
 		// assume that the interface type is a OneOf field, because everything else compiled from a proto will be a Ptr to a
@@ -176,8 +176,7 @@ func (o *AugmentedObjMeta) addPathsForSearchTagsFromStruct(currentType reflect.T
 	}
 
 	// Next, go over the fields of the struct. These are the statically defined fields that exist in the struct.
-	for i := 0; i < currentType.NumField(); i++ {
-		field := currentType.Field(i)
+	for field := range currentType.Fields() {
 		if _, inAugmented := augmentedFields[field.Name]; inAugmented {
 			// Skip this field -- it has been clobbered by an augment.
 			continue

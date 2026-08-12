@@ -1,8 +1,7 @@
-import React from 'react';
 import { ExclamationCircleIcon } from '@patternfly/react-icons';
 
 import EmptyStateTemplate from 'Components/EmptyStateTemplate';
-import { EmptyStateTemplateProps } from 'Components/EmptyStateTemplate/EmptyStateTemplate';
+import type { EmptyStateTemplateProps } from 'Components/EmptyStateTemplate/EmptyStateTemplate';
 import { getAxiosErrorMessage } from 'utils/responseErrorUtils';
 import { TbodyFullCentered } from './TbodyFullCentered';
 
@@ -27,7 +26,7 @@ export function TbodyError({
                 headingLevel={headingLevel}
                 title={title}
                 icon={ExclamationCircleIcon}
-                iconClassName="pf-v5-u-danger-color-100"
+                status="danger"
             >
                 {message ?? getAxiosErrorMessage(error)}
             </EmptyStateTemplate>

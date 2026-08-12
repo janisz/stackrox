@@ -2,6 +2,7 @@ package translation
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"regexp"
 	"strings"
@@ -10,20 +11,24 @@ import (
 	"github.com/jeremywohl/flatten"
 	platform "github.com/stackrox/rox/operator/api/v1alpha1"
 	"github.com/stackrox/rox/operator/internal/images"
+	"github.com/stackrox/rox/operator/internal/utils"
 	"github.com/stackrox/rox/operator/internal/utils/testutils"
 	testingUtils "github.com/stackrox/rox/operator/internal/values/testing"
 	"github.com/stackrox/rox/operator/internal/values/translation"
+	"github.com/stackrox/rox/pkg/features"
+	pkgKubernetes "github.com/stackrox/rox/pkg/kubernetes"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
 	"helm.sh/helm/v3/pkg/chartutil"
 	v1 "k8s.io/api/core/v1"
 	storagev1 "k8s.io/api/storage/v1"
+	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/utils/pointer"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	ctrlClient "sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -81,7 +86,7 @@ func TestReadBaseValues(t *testing.T) {
 func TestTranslateShouldCreateConfigFingerprint(t *testing.T) {
 	sc := platform.SecuredCluster{
 		Spec: platform.SecuredClusterSpec{
-			ClusterName: "my-cluster",
+			ClusterName: new("my-cluster"),
 		},
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace: "stackrox",
@@ -120,13 +125,23 @@ func (s *TranslationTestSuite) TestTranslate() {
 		args args
 		want chartutil.Values
 	}{
-		"minimal spec": {
+		"scannerV4 with explicit Default value is treated as not-specified": {
 			args: args{
 				client: newDefaultFakeClient(t),
 				sc: platform.SecuredCluster{
-					ObjectMeta: metav1.ObjectMeta{Namespace: "stackrox"},
 					Spec: platform.SecuredClusterSpec{
-						ClusterName: "test-cluster",
+						ClusterName: new("test-cluster"),
+						ScannerV4: &platform.LocalScannerV4ComponentSpec{
+							ScannerComponent: platform.LocalScannerV4ComponentDefault.Pointer(),
+						},
+					},
+					ObjectMeta: metav1.ObjectMeta{
+						Namespace: "stackrox",
+					},
+					Defaults: platform.SecuredClusterSpec{
+						ScannerV4: &platform.LocalScannerV4ComponentSpec{
+							ScannerComponent: platform.LocalScannerV4ComponentAutoSense.Pointer(),
+						},
 					},
 				},
 			},
@@ -134,19 +149,133 @@ func (s *TranslationTestSuite) TestTranslate() {
 				"clusterName":   "test-cluster",
 				"ca":            map[string]string{"cert": "ca central content"},
 				"createSecrets": false,
-				"admissionControl": map[string]interface{}{
-					"dynamic": map[string]interface{}{
-						"enforceOnCreates": true,
-						"enforceOnUpdates": true,
-					},
-					"listenOnCreates": true,
-					"listenOnUpdates": true,
+				"scanner": map[string]interface{}{
+					"disable": false,
 				},
+				"scannerV4": map[string]interface{}{
+					"disable": false,
+					"db": map[string]interface{}{
+						"persistence": map[string]interface{}{
+							"persistentVolumeClaim": map[string]interface{}{
+								"createClaim": true,
+							},
+						},
+					},
+				},
+				"sensor": map[string]interface{}{
+					"localImageScanning": map[string]string{
+						"enabled": "true",
+					},
+				},
+				"monitoring": map[string]interface{}{
+					"openshift": map[string]interface{}{
+						"enabled": true,
+					},
+				},
+			},
+		},
+		"defaults are being used for enabling Scanner V4": {
+			args: args{
+				client: newDefaultFakeClient(t),
+				sc: platform.SecuredCluster{
+					Spec: platform.SecuredClusterSpec{
+						ClusterName: new("test-cluster"),
+					},
+					ObjectMeta: metav1.ObjectMeta{
+						Namespace: "stackrox",
+					},
+					Defaults: platform.SecuredClusterSpec{
+						ScannerV4: &platform.LocalScannerV4ComponentSpec{
+							ScannerComponent: platform.LocalScannerV4AutoSense.Pointer(),
+						},
+					},
+				},
+			},
+			want: chartutil.Values{
+				"clusterName":   "test-cluster",
+				"ca":            map[string]string{"cert": "ca central content"},
+				"createSecrets": false,
+				"scanner": map[string]interface{}{
+					"disable": false,
+				},
+				"scannerV4": map[string]interface{}{
+					"disable": false,
+					"db": map[string]interface{}{
+						"persistence": map[string]interface{}{
+							"persistentVolumeClaim": map[string]interface{}{
+								"createClaim": true,
+							},
+						},
+					},
+				},
+				"sensor": map[string]interface{}{
+					"localImageScanning": map[string]string{
+						"enabled": "true",
+					},
+				},
+				"monitoring": map[string]interface{}{
+					"openshift": map[string]interface{}{
+						"enabled": true,
+					},
+				},
+			},
+		},
+
+		"defaults are being used for disabling Scanner V4": {
+			args: args{
+				client: newDefaultFakeClient(t),
+				sc: platform.SecuredCluster{
+					Spec: platform.SecuredClusterSpec{
+						ClusterName: new("test-cluster"),
+					},
+					ObjectMeta: metav1.ObjectMeta{
+						Namespace: "stackrox",
+					},
+					Defaults: platform.SecuredClusterSpec{
+						ScannerV4: &platform.LocalScannerV4ComponentSpec{
+							ScannerComponent: platform.LocalScannerV4ComponentDisabled.Pointer(),
+						},
+					},
+				},
+			},
+			want: chartutil.Values{
+				"clusterName":   "test-cluster",
+				"ca":            map[string]string{"cert": "ca central content"},
+				"createSecrets": false,
 				"scanner": map[string]interface{}{
 					"disable": false,
 				},
 				"scannerV4": map[string]interface{}{
 					"disable": true,
+				},
+				"sensor": map[string]interface{}{
+					"localImageScanning": map[string]string{
+						"enabled": "true",
+					},
+				},
+				"monitoring": map[string]interface{}{
+					"openshift": map[string]interface{}{
+						"enabled": true,
+					},
+				},
+			},
+		},
+		"minimal spec": {
+			args: args{
+				client: newDefaultFakeClient(t),
+				sc: platform.SecuredCluster{
+					ObjectMeta: metav1.ObjectMeta{Namespace: "stackrox"},
+					Spec: platform.SecuredClusterSpec{
+						ClusterName: new("test-cluster"),
+					},
+				},
+			},
+			want: chartutil.Values{
+				"clusterName":   "test-cluster",
+				"ca":            map[string]string{"cert": "ca central content"},
+				"createSecrets": false,
+				"scanner": map[string]interface{}{
+					"disable": false,
 				},
 				"sensor": map[string]interface{}{
 					"localImageScanning": map[string]string{
@@ -166,7 +295,7 @@ func (s *TranslationTestSuite) TestTranslate() {
 				sc: platform.SecuredCluster{
 					ObjectMeta: metav1.ObjectMeta{Namespace: "stackrox"},
 					Spec: platform.SecuredClusterSpec{
-						ClusterName: "test-cluster",
+						ClusterName: new("test-cluster"),
 						Scanner: &platform.LocalScannerComponentSpec{
 							ScannerComponent: platform.LocalScannerComponentDisabled.Pointer(),
 						},
@@ -180,14 +309,6 @@ func (s *TranslationTestSuite) TestTranslate() {
 				"clusterName":   "test-cluster",
 				"ca":            map[string]string{"cert": "ca central content"},
 				"createSecrets": false,
-				"admissionControl": map[string]interface{}{
-					"dynamic": map[string]interface{}{
-						"enforceOnCreates": true,
-						"enforceOnUpdates": true,
-					},
-					"listenOnCreates": true,
-					"listenOnUpdates": true,
-				},
 				"scanner": map[string]interface{}{
 					"disable": true,
 				},
@@ -208,7 +329,12 @@ func (s *TranslationTestSuite) TestTranslate() {
 				sc: platform.SecuredCluster{
 					ObjectMeta: metav1.ObjectMeta{Namespace: "stackrox"},
 					Spec: platform.SecuredClusterSpec{
-						ClusterName: "test-cluster",
+						ClusterName: new("test-cluster"),
+					},
+					Defaults: platform.SecuredClusterSpec{
+						ScannerV4: &platform.LocalScannerV4ComponentSpec{
+							ScannerComponent: platform.LocalScannerV4AutoSense.Pointer(),
+						},
 					},
 				},
 			},
@@ -216,16 +342,16 @@ func (s *TranslationTestSuite) TestTranslate() {
 				"clusterName":   "test-cluster",
 				"ca":            map[string]string{"cert": "ca central content"},
 				"createSecrets": false,
-				"admissionControl": map[string]interface{}{
-					"dynamic": map[string]interface{}{
-						"enforceOnCreates": true,
-						"enforceOnUpdates": true,
-					},
-					"listenOnCreates": true,
-					"listenOnUpdates": true,
-				},
 				"scanner": map[string]interface{}{
 					"disable": false,
+				},
+				"scannerV4": map[string]interface{}{
+					"disable": false,
+					"db": map[string]interface{}{
+						"persistence": map[string]interface{}{
+							"none": true,
+						},
+					},
 				},
 				"sensor": map[string]interface{}{
 					"localImageScanning": map[string]interface{}{
@@ -237,9 +363,6 @@ func (s *TranslationTestSuite) TestTranslate() {
 						"enabled": true,
 					},
 				},
-				"scannerV4": map[string]interface{}{
-					"disable": true,
-				},
 			},
 		},
 		"local scanner autosense no suppression": {
@@ -248,7 +371,7 @@ func (s *TranslationTestSuite) TestTranslate() {
 				sc: platform.SecuredCluster{
 					ObjectMeta: metav1.ObjectMeta{Namespace: "stackrox"},
 					Spec: platform.SecuredClusterSpec{
-						ClusterName: "test-cluster",
+						ClusterName: new("test-cluster"),
 					},
 				},
 			},
@@ -256,19 +379,8 @@ func (s *TranslationTestSuite) TestTranslate() {
 				"clusterName":   "test-cluster",
 				"ca":            map[string]string{"cert": "ca central content"},
 				"createSecrets": false,
-				"admissionControl": map[string]interface{}{
-					"dynamic": map[string]interface{}{
-						"enforceOnCreates": true,
-						"enforceOnUpdates": true,
-					},
-					"listenOnCreates": true,
-					"listenOnUpdates": true,
-				},
 				"scanner": map[string]interface{}{
 					"disable": false,
-				},
-				"scannerV4": map[string]interface{}{
-					"disable": true,
 				},
 				"sensor": map[string]interface{}{
 					"localImageScanning": map[string]string{
@@ -291,8 +403,8 @@ func (s *TranslationTestSuite) TestTranslate() {
 						Namespace: "stackrox",
 					},
 					Spec: platform.SecuredClusterSpec{
-						ClusterName:     "test-cluster",
-						CentralEndpoint: "central.test:443",
+						ClusterName:     new("test-cluster"),
+						CentralEndpoint: new("central.test:443"),
 						Sensor: &platform.SensorComponentSpec{
 							DeploymentSpec: platform.DeploymentSpec{
 								Tolerations: []*v1.Toleration{
@@ -308,12 +420,9 @@ func (s *TranslationTestSuite) TestTranslate() {
 							},
 						},
 						AdmissionControl: &platform.AdmissionControlComponentSpec{
-							ListenOnCreates:      pointer.Bool(true),
-							ListenOnUpdates:      pointer.Bool(false),
-							ListenOnEvents:       pointer.Bool(true),
-							ContactImageScanners: platform.ScanIfMissing.Pointer(),
-							TimeoutSeconds:       pointer.Int32(4),
-							Bypass:               platform.BypassBreakGlassAnnotation.Pointer(),
+							Enforcement:   new(platform.PolicyEnforcementEnabled),
+							Bypass:        platform.BypassBreakGlassAnnotation.Pointer(),
+							FailurePolicy: new(platform.FailurePolicyFail),
 							DeploymentSpec: platform.DeploymentSpec{
 								Resources: &v1.ResourceRequirements{
 									Limits: v1.ResourceList{
@@ -360,8 +469,7 @@ func (s *TranslationTestSuite) TestTranslate() {
 						},
 						PerNode: &platform.PerNodeSpec{
 							Collector: &platform.CollectorContainerSpec{
-								ImageFlavor: platform.ImageFlavorRegular.Pointer(),
-								Collection:  platform.CollectionCOREBPF.Pointer(),
+								Collection: platform.CollectionCOREBPF.Pointer(),
 							},
 							TaintToleration: platform.TaintTolerate.Pointer(),
 							Compliance: &platform.ContainerSpec{
@@ -385,7 +493,7 @@ func (s *TranslationTestSuite) TestTranslate() {
 						},
 						Monitoring: &platform.GlobalMonitoring{
 							OpenShiftMonitoring: &platform.OpenShiftMonitoring{
-								Enabled: true,
+								Enabled: new(true),
 							},
 						},
 						Scanner: &platform.LocalScannerComponentSpec{
@@ -490,8 +598,8 @@ func (s *TranslationTestSuite) TestTranslate() {
 							DB: &platform.ScannerV4DB{
 								Persistence: &platform.ScannerV4Persistence{
 									PersistentVolumeClaim: &platform.ScannerV4PersistentVolumeClaim{
-										ClaimName:        pointer.String("scanner-v4-db-pvc"),
-										StorageClassName: pointer.String("test-sc1"),
+										ClaimName:        new("scanner-v4-db-pvc"),
+										StorageClassName: new("test-sc1"),
 									},
 								},
 								DeploymentSpec: platform.DeploymentSpec{
@@ -545,7 +653,7 @@ func (s *TranslationTestSuite) TestTranslate() {
 								},
 							},
 						},
-						RegistryOverride: "my.registry.override.com",
+						RegistryOverride: new("my.registry.override.com"),
 					},
 				},
 			},
@@ -589,15 +697,10 @@ func (s *TranslationTestSuite) TestTranslate() {
 				},
 				"admissionControl": map[string]interface{}{
 					"dynamic": map[string]interface{}{
-						"enforceOnCreates": true,
-						"enforceOnUpdates": false,
-						"scanInline":       true,
-						"disableBypass":    false,
-						"timeout":          4,
+						"disableBypass": false,
 					},
-					"listenOnCreates": true,
-					"listenOnUpdates": false,
-					"listenOnEvents":  true,
+					"enforce":       true,
+					"failurePolicy": "Fail",
 					"nodeSelector": map[string]interface{}{
 						"admission-ctrl-node-selector1": "admission-ctrl-node-selector-val1",
 						"admission-ctrl-node-selector2": "admission-ctrl-node-selector-val2",
@@ -835,11 +938,10 @@ func (s *TranslationTestSuite) TestTranslate() {
 				sc: platform.SecuredCluster{
 					ObjectMeta: metav1.ObjectMeta{Namespace: "stackrox"},
 					Spec: platform.SecuredClusterSpec{
-						ClusterName: "test-cluster",
+						ClusterName: new("test-cluster"),
 						PerNode: &platform.PerNodeSpec{
 							Collector: &platform.CollectorContainerSpec{
-								ImageFlavor: platform.ImageFlavorRegular.Pointer(),
-								Collection:  platform.CollectionEBPF.Pointer(),
+								Collection: platform.CollectionEBPF.Pointer(),
 							},
 						},
 					},
@@ -853,19 +955,8 @@ func (s *TranslationTestSuite) TestTranslate() {
 					"forceCollectionMethod": true,
 					"collectionMethod":      "CORE_BPF",
 				},
-				"admissionControl": map[string]interface{}{
-					"dynamic": map[string]interface{}{
-						"enforceOnCreates": true,
-						"enforceOnUpdates": true,
-					},
-					"listenOnCreates": true,
-					"listenOnUpdates": true,
-				},
 				"scanner": map[string]interface{}{
 					"disable": false,
-				},
-				"scannerV4": map[string]interface{}{
-					"disable": true,
 				},
 				"sensor": map[string]interface{}{
 					"localImageScanning": map[string]string{
@@ -876,6 +967,111 @@ func (s *TranslationTestSuite) TestTranslate() {
 					"openshift": map[string]interface{}{
 						"enabled": true,
 					},
+				},
+			},
+		},
+		"process baseline auto-locking enabled": {
+			args: args{
+				client: newDefaultFakeClient(t),
+				sc: platform.SecuredCluster{
+					ObjectMeta: metav1.ObjectMeta{Namespace: "stackrox"},
+					Spec: platform.SecuredClusterSpec{
+						ClusterName: new("test-cluster"),
+						ProcessBaselines: &platform.ProcessBaselinesSpec{
+							AutoLock: platform.ProcessBaselinesAutoLockModeEnabled.Pointer(),
+						},
+					},
+				},
+			},
+			want: chartutil.Values{
+				"clusterName":   "test-cluster",
+				"ca":            map[string]string{"cert": "ca central content"},
+				"createSecrets": false,
+				"scanner": map[string]interface{}{
+					"disable": false,
+				},
+				"sensor": map[string]interface{}{
+					"localImageScanning": map[string]string{
+						"enabled": "true",
+					},
+				},
+				"monitoring": map[string]interface{}{
+					"openshift": map[string]interface{}{
+						"enabled": true,
+					},
+				},
+				"autoLockProcessBaselines": map[string]interface{}{
+					"enabled": true,
+				},
+			},
+		},
+		"process baseline auto-locking disabled": {
+			args: args{
+				client: newDefaultFakeClient(t),
+				sc: platform.SecuredCluster{
+					ObjectMeta: metav1.ObjectMeta{Namespace: "stackrox"},
+					Spec: platform.SecuredClusterSpec{
+						ClusterName: new("test-cluster"),
+						ProcessBaselines: &platform.ProcessBaselinesSpec{
+							AutoLock: platform.ProcessBaselinesAutoLockModeDisabled.Pointer(),
+						},
+					},
+				},
+			},
+			want: chartutil.Values{
+				"clusterName":   "test-cluster",
+				"ca":            map[string]string{"cert": "ca central content"},
+				"createSecrets": false,
+				"scanner": map[string]interface{}{
+					"disable": false,
+				},
+				"sensor": map[string]interface{}{
+					"localImageScanning": map[string]string{
+						"enabled": "true",
+					},
+				},
+				"monitoring": map[string]interface{}{
+					"openshift": map[string]interface{}{
+						"enabled": true,
+					},
+				},
+				"autoLockProcessBaselines": map[string]interface{}{
+					"enabled": false,
+				},
+			},
+		},
+		"runtime data control persistence enabled": {
+			args: args{
+				client: newDefaultFakeClient(t),
+				sc: platform.SecuredCluster{
+					ObjectMeta: metav1.ObjectMeta{Namespace: "stackrox"},
+					Spec: platform.SecuredClusterSpec{
+						ClusterName: new("test-cluster"),
+						ProcessIndicators: &platform.ProcessIndicatorsSpec{
+							Persistence: platform.ProcessIndicatorConfigEnabled.Pointer(),
+						},
+					},
+				},
+			},
+			want: chartutil.Values{
+				"clusterName":   "test-cluster",
+				"ca":            map[string]string{"cert": "ca central content"},
+				"createSecrets": false,
+				"scanner": map[string]interface{}{
+					"disable": false,
+				},
+				"sensor": map[string]interface{}{
+					"localImageScanning": map[string]string{
+						"enabled": "true",
+					},
+				},
+				"monitoring": map[string]interface{}{
+					"openshift": map[string]interface{}{
+						"enabled": true,
+					},
+				},
+				"processIndicators": map[string]interface{}{
+					"noPersistence": false,
 				},
 			},
 		},
@@ -999,6 +1195,165 @@ func TestTranslatePartialMatch(t *testing.T) {
 	}
 }
 
+func (s *TranslationTestSuite) TestGetCABundleFromConfigMap() {
+	const testNamespace = "stackrox-sensor"
+
+	tests := []struct {
+		name           string
+		configMap      *v1.ConfigMap
+		expectedResult string
+		expectedError  bool
+	}{
+		{
+			name:           "ConfigMap does not exist should return empty string without error",
+			configMap:      nil,
+			expectedResult: "",
+			expectedError:  false,
+		},
+		{
+			name: "ConfigMap exists but missing ca-bundle.pem key should return error",
+			configMap: createCaBundleConfigMap(testNamespace, map[string]string{
+				"other-key": "some-value",
+			}),
+			expectedResult: "",
+			expectedError:  true,
+		},
+		{
+			name: "ConfigMap exists with empty ca-bundle.pem should return error",
+			configMap: createCaBundleConfigMap(testNamespace, map[string]string{
+				pkgKubernetes.TLSCABundleKey: "",
+			}),
+			expectedResult: "",
+			expectedError:  true,
+		},
+		{
+			name: "ConfigMap exists with valid CA bundle should return the bundle",
+			configMap: createCaBundleConfigMap(testNamespace, map[string]string{
+				pkgKubernetes.TLSCABundleKey: "test-data",
+			}),
+			expectedResult: "test-data",
+			expectedError:  false,
+		},
+	}
+
+	for _, tt := range tests {
+		s.T().Run(tt.name, func(t *testing.T) {
+			var objects []ctrlClient.Object
+			if tt.configMap != nil {
+				objects = append(objects, tt.configMap)
+			}
+			client := testutils.NewFakeClientBuilder(t, objects...).Build()
+			translator := New(client, client)
+
+			sc := platform.SecuredCluster{
+				ObjectMeta: metav1.ObjectMeta{
+					Namespace: testNamespace,
+				},
+			}
+
+			result, err := translator.getCABundleFromConfigMap(context.Background(), sc)
+
+			if tt.expectedError {
+				assert.Error(t, err)
+			} else {
+				assert.NoError(t, err)
+			}
+
+			assert.Equal(t, tt.expectedResult, result)
+		})
+	}
+}
+
+func (s *TranslationTestSuite) TestTranslateWithCABundle() {
+	const testNamespace = "stackrox-sensor"
+
+	createClientWithCustomConfigMap := func(t *testing.T, hasConfigMap bool, configMapData map[string]string) ctrlClient.Client {
+		objects := append(defaultObjectsWithNamespace(testNamespace), defaultStorageClasses...)
+
+		if hasConfigMap {
+			cm := createCaBundleConfigMap(testNamespace, configMapData)
+			objects = append(objects, cm)
+		}
+
+		return testutils.NewFakeClientBuilder(t, objects...).Build()
+	}
+
+	createClientWithConfigMap := func(t *testing.T, hasConfigMap bool, configMapData string) ctrlClient.Client {
+		return createClientWithCustomConfigMap(t, hasConfigMap, map[string]string{pkgKubernetes.TLSCABundleKey: configMapData})
+	}
+
+	tests := []struct {
+		name              string
+		setupClient       func(t *testing.T) ctrlClient.Client
+		expectedCAValue   string
+		expectError       bool
+		expectedErrorText string
+	}{
+		{
+			name: "no ConfigMap should use default CA from secrets",
+			setupClient: func(t *testing.T) ctrlClient.Client {
+				return createClientWithConfigMap(t, false, "")
+			},
+			expectedCAValue: "ca central content",
+			expectError:     false,
+		},
+		{
+			name: "ConfigMap with CA bundle should use bundle instead of secret",
+			setupClient: func(t *testing.T) ctrlClient.Client {
+				return createClientWithConfigMap(t, true, "test-data")
+			},
+			expectedCAValue: "test-data",
+			expectError:     false,
+		},
+		{
+			name: "ConfigMap with empty CA bundle should fail translation",
+			setupClient: func(t *testing.T) ctrlClient.Client {
+				return createClientWithConfigMap(t, true, "")
+			},
+			expectedCAValue:   "",
+			expectError:       true,
+			expectedErrorText: "CA bundle is empty",
+		},
+		{
+			name: "ConfigMap missing ca-bundle.pem key should fail translation",
+			setupClient: func(t *testing.T) ctrlClient.Client {
+				return createClientWithCustomConfigMap(t, true, map[string]string{
+					"other-key": "some-value",
+				})
+			},
+			expectedCAValue:   "",
+			expectError:       true,
+			expectedErrorText: "key \"ca-bundle.pem\" not found",
+		},
+	}
+
+	for _, tt := range tests {
+		s.T().Run(tt.name, func(t *testing.T) {
+			client := tt.setupClient(t)
+			translator := Translator{client: client, direct: client}
+
+			sc := platform.SecuredCluster{
+				ObjectMeta: metav1.ObjectMeta{Namespace: testNamespace},
+				Spec: platform.SecuredClusterSpec{
+					ClusterName: new("test-cluster"),
+				},
+			}
+
+			result, err := translator.translate(context.Background(), sc)
+
+			if tt.expectError {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.expectedErrorText)
+			} else {
+				require.NoError(t, err)
+				caValue, err := result.PathValue("ca.cert")
+				require.NoError(t, err)
+				assert.Equal(t, tt.expectedCAValue, caValue)
+			}
+		})
+	}
+}
+
 func toUnstructured(sc platform.SecuredCluster) (*unstructured.Unstructured, error) {
 	obj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(&sc)
 	if err != nil {
@@ -1008,10 +1363,18 @@ func toUnstructured(sc platform.SecuredCluster) (*unstructured.Unstructured, err
 }
 
 var defaultObjects = []ctrlClient.Object{
-	createSecret(sensorTLSSecretName),
-	createSecret(collectorTLSSecretName),
-	createSecret(admissionControlTLSSecretName),
+	createSecret(sensorTLSSecretName, "stackrox"),
+	createSecret(collectorTLSSecretName, "stackrox"),
+	createSecret(admissionControlTLSSecretName, "stackrox"),
 	testutils.ValidClusterVersion,
+}
+
+func defaultObjectsWithNamespace(namespace string) []ctrlClient.Object {
+	return []ctrlClient.Object{
+		createSecret(sensorTLSSecretName, namespace),
+		createSecret(collectorTLSSecretName, namespace),
+		createSecret(admissionControlTLSSecretName, namespace),
+	}
 }
 
 var defaultStorageClasses = []ctrlClient.Object{
@@ -1021,7 +1384,7 @@ var defaultStorageClasses = []ctrlClient.Object{
 	&storagev1.StorageClass{ObjectMeta: metav1.ObjectMeta{
 		Name: "test-sc2",
 		Annotations: map[string]string{
-			translation.DefaultStorageClassAnnotationKey: "true",
+			utils.DefaultStorageClassAnnotationKey: "true",
 		},
 	}},
 }
@@ -1046,13 +1409,13 @@ func newDefaultFakeClientWithoutStorageClass(t *testing.T) ctrlClient.Client {
 	return testutils.NewFakeClientBuilder(t, defaultObjects...).Build()
 }
 
-func createSecret(name string) *v1.Secret {
+func createSecret(name, namespace string) *v1.Secret {
 	serviceName := strings.TrimSuffix(name, "-tls")
 
 	return &v1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
-			Namespace: "stackrox",
+			Namespace: namespace,
 		},
 		Data: map[string][]byte{
 			"ca.pem":                                []byte(`ca central content`),
@@ -1060,4 +1423,172 @@ func createSecret(name string) *v1.Secret {
 			fmt.Sprintf("%s-cert.pem", serviceName): []byte(`cert content`),
 		},
 	}
+}
+
+func createCaBundleConfigMap(namespace string, data map[string]string) *v1.ConfigMap {
+	return &v1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      pkgKubernetes.TLSCABundleConfigMapName,
+			Namespace: namespace,
+		},
+		Data: data,
+	}
+}
+
+func TestDeploymentDefaults(t *testing.T) {
+	componentPaths := []testingUtils.ComponentPath{
+		{Name: "sensor", NodeSelectorPath: "sensor.nodeSelector", TolerationsPath: "sensor.tolerations"},
+		{Name: "admissionControl", NodeSelectorPath: "admissionControl.nodeSelector", TolerationsPath: "admissionControl.tolerations"},
+		{Name: "scanner", NodeSelectorPath: "scanner.nodeSelector", TolerationsPath: "scanner.tolerations"},
+		{Name: "scanner-db", NodeSelectorPath: "scanner.dbNodeSelector", TolerationsPath: "scanner.dbTolerations"},
+		{Name: "scannerV4-indexer", NodeSelectorPath: "scannerV4.indexer.nodeSelector", TolerationsPath: "scannerV4.indexer.tolerations"},
+		{Name: "scannerV4-db", NodeSelectorPath: "scannerV4.db.nodeSelector", TolerationsPath: "scannerV4.db.tolerations"},
+	}
+
+	tests := map[string]struct {
+		securedCluster platform.SecuredCluster
+		expectations   testingUtils.SchedulingExpectations
+	}{
+		"pinToNodes InfraRole": {
+			securedCluster: platform.SecuredCluster{
+				ObjectMeta: metav1.ObjectMeta{Namespace: "stackrox"},
+				Spec: platform.SecuredClusterSpec{
+					ClusterName: new("test-cluster"),
+					ScannerV4: &platform.LocalScannerV4ComponentSpec{
+						ScannerComponent: new(platform.LocalScannerV4ComponentAutoSense),
+					},
+					Customize: &platform.CustomizeSpec{
+						DeploymentDefaults: &platform.DeploymentDefaultsSpec{
+							PinToNodes: new(platform.PinToNodesInfraRole),
+						},
+					},
+				},
+			},
+			expectations: testingUtils.NewSchedulingExpectations(componentPaths, testingUtils.InfraScheduling),
+		},
+		"explicit nodeSelector and tolerations": {
+			securedCluster: platform.SecuredCluster{
+				ObjectMeta: metav1.ObjectMeta{Namespace: "stackrox"},
+				Spec: platform.SecuredClusterSpec{
+					ClusterName: new("test-cluster"),
+					ScannerV4: &platform.LocalScannerV4ComponentSpec{
+						ScannerComponent: new(platform.LocalScannerV4ComponentAutoSense),
+					},
+					Customize: &platform.CustomizeSpec{
+						DeploymentDefaults: &platform.DeploymentDefaultsSpec{
+							NodeSelector: map[string]string{"global-label": "global-value"},
+							Tolerations: []*v1.Toleration{
+								{Key: "global-taint", Operator: v1.TolerationOpExists},
+							},
+						},
+					},
+				},
+			},
+			expectations: testingUtils.NewSchedulingExpectations(componentPaths, testingUtils.GlobalScheduling),
+		},
+		"component-specific overrides global": {
+			securedCluster: platform.SecuredCluster{
+				ObjectMeta: metav1.ObjectMeta{Namespace: "stackrox"},
+				Spec: platform.SecuredClusterSpec{
+					ClusterName: new("test-cluster"),
+					ScannerV4: &platform.LocalScannerV4ComponentSpec{
+						ScannerComponent: new(platform.LocalScannerV4ComponentAutoSense),
+					},
+					Sensor: &platform.SensorComponentSpec{
+						DeploymentSpec: platform.DeploymentSpec{
+							NodeSelector: map[string]string{"sensor-label": "sensor-value"},
+							Tolerations: []*v1.Toleration{
+								{Key: "sensor-taint", Effect: v1.TaintEffectNoExecute},
+							},
+						},
+					},
+					Customize: &platform.CustomizeSpec{
+						DeploymentDefaults: &platform.DeploymentDefaultsSpec{
+							NodeSelector: map[string]string{"global-label": "global-value"},
+							Tolerations: []*v1.Toleration{
+								{Key: "global-taint", Operator: v1.TolerationOpExists},
+							},
+						},
+					},
+				},
+			},
+			expectations: testingUtils.NewSchedulingExpectations(componentPaths, testingUtils.GlobalScheduling).
+				WithOverride("sensor", testingUtils.SchedulingExpectation{
+					NodeSelector: map[string]any{"sensor-label": "sensor-value"},
+					Tolerations:  []any{map[string]any{"effect": "NoExecute", "key": "sensor-taint"}},
+				}),
+		},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			client := newDefaultFakeClient(t)
+			translator := Translator{client: client, direct: client}
+			values, err := translator.translate(t.Context(), tt.securedCluster)
+			require.NoError(t, err)
+
+			flatValues, err := flatten.Flatten(values, "", flatten.DotStyle)
+			require.NoError(t, err)
+
+			for _, path := range componentPaths {
+				t.Run(path.Name, func(t *testing.T) {
+					exp := tt.expectations[path.Name]
+					flatExpected, err := flatten.Flatten(map[string]any{
+						path.NodeSelectorPath: exp.NodeSelector,
+						path.TolerationsPath:  exp.Tolerations,
+					}, "", flatten.DotStyle)
+					require.NoError(t, err)
+
+					for k, v := range flatExpected {
+						assert.Equal(t, v, flatValues[k], "mismatch at %s", k)
+					}
+				})
+			}
+
+			// Collector is a DaemonSet and does not inherit deployment scheduling defaults
+			assert.Nil(t, flatValues["collector.nodeSelector"], "collector should not have nodeSelector from deployment defaults")
+			assert.Nil(t, flatValues["collector.tolerations"], "collector should not have tolerations from deployment defaults")
+		})
+	}
+}
+
+func TestConsolePluginValues(t *testing.T) {
+	t.Setenv(features.OCPConsoleIntegration.EnvVar(), "true")
+
+	t.Run("enabled when API available", func(t *testing.T) {
+		client := testutils.NewFakeClientBuilderWithConsolePluginListError(t, nil).Build()
+		translator := Translator{client: client, direct: client}
+
+		v := translator.getConsolePluginValues(context.Background())
+		vals, err := v.Build()
+		require.NoError(t, err)
+
+		enabled, err := vals.PathValue("enabled")
+		require.NoError(t, err)
+		assert.Equal(t, true, enabled)
+	})
+
+	t.Run("disabled when API not available", func(t *testing.T) {
+		noMatchErr := &meta.NoKindMatchError{
+			GroupKind: schema.GroupKind{Group: "console.openshift.io", Kind: "ConsolePlugin"},
+		}
+		client := testutils.NewFakeClientBuilderWithConsolePluginListError(t, noMatchErr).Build()
+		translator := Translator{client: client, direct: client}
+
+		v := translator.getConsolePluginValues(context.Background())
+		vals, err := v.Build()
+		require.NoError(t, err)
+
+		_, err = vals.PathValue("enabled")
+		assert.Error(t, err, "enabled should not be set when API is not available")
+	})
+
+	t.Run("error when API check fails", func(t *testing.T) {
+		client := testutils.NewFakeClientBuilderWithConsolePluginListError(t, errors.New("RBAC error")).Build()
+		translator := Translator{client: client, direct: client}
+
+		v := translator.getConsolePluginValues(context.Background())
+		_, err := v.Build()
+		assert.Error(t, err, "should return error when API check fails")
+	})
 }

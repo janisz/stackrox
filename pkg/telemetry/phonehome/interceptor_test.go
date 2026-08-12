@@ -69,13 +69,15 @@ func (s *interceptorTestSuite) TestAddGrpcInterceptor() {
 			value: "test value",
 		},
 	}
-	cfg := &Config{
-		ClientID:  "test",
-		GroupType: "TEST",
-		telemeter: s.mockTelemeter,
-	}
+	c := newClientFromConfig(&config{
+		clientID:   "test",
+		groups:     []telemeter.Option{telemeter.WithGroup("test", "TEST")},
+		storageKey: "test-key",
+	})
+	c.telemeter = s.mockTelemeter
+	c.gatherer = &nilGatherer{}
 
-	cfg.AddInterceptorFunc("TestEvent", func(rp *RequestParams, props map[string]any) bool {
+	c.AddInterceptorFuncs("TestEvent", func(rp *RequestParams, props map[string]any) bool {
 		if rp.Path == testRP.Path {
 			if tr, ok := rp.GRPCReq.(*testRequest); ok {
 				props["Property"] = tr.value
@@ -86,9 +88,13 @@ func (s *interceptorTestSuite) TestAddGrpcInterceptor() {
 
 	s.mockTelemeter.EXPECT().Track("TestEvent", map[string]any{
 		"Property": "test value",
-	}, matchOptions(telemeter.WithUserID(cfg.HashUserAuthID(nil)), telemeter.WithGroups("TEST", ""))).Times(1)
+	}, matchOptions(
+		telemeter.WithUserID(c.config.HashUserAuthID(nil)),
+		telemeter.WithGroup("test", "TEST"))).Times(1)
 
-	cfg.track(testRP)
+	c.GrantConsent()
+	defer c.WithdrawConsent()
+	c.track(testRP)
 }
 
 func (s *interceptorTestSuite) TestAddHttpInterceptor() {
@@ -101,13 +107,16 @@ func (s *interceptorTestSuite) TestAddHttpInterceptor() {
 	req, err := http.NewRequest(http.MethodPost, "https://test"+testRP.Path+"?test_key=test_value", nil)
 	s.NoError(err)
 	testRP.HTTPReq = req
-	cfg := &Config{
-		ClientID:  "test",
-		GroupType: "TEST",
-		telemeter: s.mockTelemeter,
-	}
+	c := newClientFromConfig(&config{
+		clientID:   "test",
+		groups:     []telemeter.Option{telemeter.WithGroup("test", "TEST")},
+		storageKey: "test-key",
+	})
+	c.telemeter = s.mockTelemeter
+	c.gatherer = &nilGatherer{}
+	c.WithdrawConsent()
 
-	cfg.AddInterceptorFunc("TestEvent", func(rp *RequestParams, props map[string]any) bool {
+	c.AddInterceptorFuncs("TestEvent", func(rp *RequestParams, props map[string]any) bool {
 		if rp.Path == testRP.Path {
 			props["Property"] = rp.HTTPReq.FormValue("test_key")
 		}
@@ -118,20 +127,24 @@ func (s *interceptorTestSuite) TestAddHttpInterceptor() {
 	mockID.EXPECT().UID().Return("id").Times(2)
 	s.mockTelemeter.EXPECT().Track("TestEvent", map[string]any{
 		"Property": "test_value",
-	}, matchOptions(telemeter.WithUserID(cfg.HashUserAuthID(mockID)), telemeter.WithGroups("TEST", ""))).Times(1)
+	}, matchOptions(
+		telemeter.WithUserID(c.config.HashUserAuthID(mockID)),
+		telemeter.WithGroup("test", "TEST"))).Times(1)
 
-	cfg.track(testRP)
+	c.GrantConsent()
+	defer c.WithdrawConsent()
+	c.track(testRP)
 }
 
 func (s *interceptorTestSuite) TestGrpcRequestInfo() {
 	testRP := &RequestParams{
 		Code:    0,
 		Path:    "/v1.Test",
-		Headers: withUserAgent(s.T(), nil, "test"),
+		Headers: withUserAgent("test"),
 	}
 
 	md := metadata.New(nil)
-	md.Set(userAgentHeaderKey, testRP.Headers(userAgentHeaderKey)...)
+	md.Set(userAgentHeaderKey, testRP.Headers.Get(userAgentHeaderKey)...)
 	ctx := peer.NewContext(context.Background(), &peer.Peer{Addr: &net.UnixAddr{Net: "pipe"}})
 
 	rih := requestinfo.NewRequestInfoHandler()
@@ -143,15 +156,25 @@ func (s *interceptorTestSuite) TestGrpcRequestInfo() {
 	s.Equal(testRP.Code, rp.Code)
 	s.Nil(rp.UserID)
 	s.Equal("request", rp.GRPCReq)
-	s.Equal(testRP.Headers(userAgentHeaderKey), rp.Headers(userAgentHeaderKey))
+	s.Equal(testRP.Headers.Get(userAgentHeaderKey), rp.Headers.Get(userAgentHeaderKey))
+
+	// Verify that gRPC metadata lowercase keys are canonicalized so that
+	// glob patterns with canonical case (e.g., "User-Agent") match.
+	ua := rp.Headers.Get("User-Agent")
+	s.NoError(err)
+	s.Equal([]string{"test"}, ua)
+
+	matching := rp.Headers.GetMatching("User-*", "*")
+	s.Equal(map[string][]string{"User-Agent": {"test"}}, matching)
 }
 
 func (s *interceptorTestSuite) TestGrpcWithHTTPRequestInfo() {
-	req, _ := http.NewRequest("PATCH", "/wrapped/http", nil)
+	req, _ := http.NewRequest(http.MethodPatch, "/wrapped/http", nil)
 	req.Header.Add(userAgentHeaderKey, "user")
 	rih := requestinfo.NewRequestInfoHandler()
 	ctx := peer.NewContext(context.Background(), &peer.Peer{Addr: &net.UnixAddr{Net: "pipe"}})
 	md := rih.AnnotateMD(ctx, req)
+	// Simulate the gRPC transport User-Agent (set via grpc.WithUserAgent).
 	md.Set(userAgentHeaderKey, "gateway")
 
 	ctx, err := rih.UpdateContextForGRPC(metadata.NewIncomingContext(ctx, md))
@@ -159,11 +182,58 @@ func (s *interceptorTestSuite) TestGrpcWithHTTPRequestInfo() {
 
 	rp := getGRPCRequestDetails(ctx, err, "ignored grpc method", "request")
 	s.Equal(http.StatusOK, rp.Code)
-	s.Equal([]string{"gateway", "user"}, rp.Headers(userAgentHeaderKey))
+	// Original HTTP User-Agent + gRPC transport agent merged under one key.
+	s.Equal([]string{"user", "gateway"}, rp.Headers.Get(userAgentHeaderKey))
 	s.Nil(rp.UserID)
 	s.Equal("request", rp.GRPCReq)
 	s.Equal("/wrapped/http", rp.Path)
 	s.Equal(http.MethodPatch, rp.Method)
+}
+
+func (s *interceptorTestSuite) TestGrpcWithHTTPRequestInfo_UserAgentVariants() {
+	cases := map[string]struct {
+		httpUserAgent []string // User-Agent values on the HTTP request.
+		mdUserAgent   []string // User-Agent values in gRPC metadata (transport agent).
+		expected      []string // Expected merged User-Agent values in the result.
+	}{
+		"HTTP and gRPC transport User-Agent": {
+			httpUserAgent: []string{"curl/8.0"},
+			mdUserAgent:   []string{"Rox Central/4.11 grpc-go/1.80.0"},
+			expected:      []string{"curl/8.0", "Rox Central/4.11 grpc-go/1.80.0"},
+		},
+		"only HTTP User-Agent": {
+			httpUserAgent: []string{"curl/8.0"},
+			expected:      []string{"curl/8.0"},
+		},
+		"only gRPC transport User-Agent": {
+			mdUserAgent: []string{"grpc-go/1.80.0"},
+			expected:    []string{"grpc-go/1.80.0"},
+		},
+		"no User-Agent anywhere": {
+			expected: nil,
+		},
+	}
+	for name, tc := range cases {
+		s.Run(name, func() {
+			req, _ := http.NewRequest(http.MethodGet, "/test", nil)
+			req.Header.Del(userAgentHeaderKey)
+			for _, ua := range tc.httpUserAgent {
+				req.Header.Add(userAgentHeaderKey, ua)
+			}
+			rih := requestinfo.NewRequestInfoHandler()
+			ctx := peer.NewContext(context.Background(), &peer.Peer{Addr: &net.UnixAddr{Net: "pipe"}})
+			md := rih.AnnotateMD(ctx, req)
+			if tc.mdUserAgent != nil {
+				md.Set(userAgentHeaderKey, tc.mdUserAgent...)
+			}
+
+			ctx, err := rih.UpdateContextForGRPC(metadata.NewIncomingContext(ctx, md))
+			s.NoError(err)
+
+			rp := getGRPCRequestDetails(ctx, err, "ignored", "request")
+			s.Equal(tc.expected, rp.Headers.Get(userAgentHeaderKey))
+		})
+	}
 }
 
 type testBody struct {
@@ -202,18 +272,18 @@ func (s *interceptorTestSuite) TestHttpRequestInfo() {
 	testRP := &RequestParams{
 		UserID:  mockID,
 		Code:    200,
-		Headers: withUserAgent(s.T(), nil, "test"),
+		Headers: withUserAgent("test"),
 		Path:    "/v1/test",
 	}
 
 	req, err := http.NewRequest(http.MethodPost, "https://test"+testRP.Path+"?test_key=test_value", nil)
 	s.NoError(err)
-	req.Header.Add(userAgentHeaderKey, testRP.Headers(userAgentHeaderKey)[0])
+	req.Header.Add(userAgentHeaderKey, testRP.Headers.Get(userAgentHeaderKey)[0])
 
 	ctx := authn.ContextWithIdentity(context.Background(), testRP.UserID, nil)
 	rp := getHTTPRequestDetails(ctx, req, 200)
 	s.Equal(testRP.Path, rp.Path)
 	s.Equal(testRP.Code, rp.Code)
 	s.Equal(mockID, rp.UserID)
-	s.Equal(testRP.Headers(userAgentHeaderKey), rp.Headers(userAgentHeaderKey))
+	s.Equal(testRP.Headers.Get(userAgentHeaderKey), rp.Headers.Get(userAgentHeaderKey))
 }

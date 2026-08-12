@@ -1,31 +1,27 @@
-import React, { useCallback } from 'react';
+import { useCallback } from 'react';
 import {
-    PageSection,
-    Title,
-    Text,
-    Button,
-    Flex,
-    FlexItem,
-    Divider,
     Alert,
     AlertActionCloseButton,
     AlertGroup,
+    Button,
+    Content,
+    Flex,
+    FlexItem,
+    PageSection,
+    Title,
 } from '@patternfly/react-core';
 
 import PageTitle from 'Components/PageTitle';
 import LinkShim from 'Components/PatternFly/LinkShim';
 import { collectionsBasePath } from 'routePaths';
 import useRestQuery from 'hooks/useRestQuery';
-import {
-    Collection,
-    deleteCollection,
-    getCollectionCount,
-    listCollections,
-} from 'services/CollectionsService';
+import { deleteCollection, getCollectionCount, listCollections } from 'services/CollectionsService';
+import type { Collection } from 'services/CollectionsService';
 import useURLSearch from 'hooks/useURLSearch';
 import useURLPagination from 'hooks/useURLPagination';
 import useURLSort from 'hooks/useURLSort';
-import useToasts, { Toast } from 'hooks/patternfly/useToasts';
+import useToasts from 'hooks/patternfly/useToasts';
+import type { Toast } from 'hooks/patternfly/useToasts';
 import { getAxiosErrorMessage } from 'utils/responseErrorUtils';
 import CollectionsTable from './CollectionsTable';
 
@@ -85,14 +81,14 @@ function CollectionsTablePage({ hasWriteAccessForCollections }: CollectionsTable
     return (
         <>
             <PageTitle title="Collections" />
-            <PageSection variant="light">
+            <PageSection>
                 <Flex alignItems={{ default: 'alignItemsCenter' }}>
-                    <FlexItem flex={{ default: 'flex_1' }}>
+                    <Flex direction={{ default: 'column' }}>
                         <Title headingLevel="h1">Collections</Title>
-                        <Text>
+                        <Content component="p">
                             Configure deployment collections to associate with other workflows
-                        </Text>
-                    </FlexItem>
+                        </Content>
+                    </Flex>
                     {hasWriteAccessForCollections && (
                         <FlexItem align={{ default: 'alignRight' }}>
                             <Button
@@ -106,7 +102,6 @@ function CollectionsTablePage({ hasWriteAccessForCollections }: CollectionsTable
                     )}
                 </Flex>
             </PageSection>
-            <Divider component="div" />
             <PageSection>
                 <CollectionsTable
                     isLoading={isLoading}

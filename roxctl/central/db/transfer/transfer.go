@@ -5,7 +5,6 @@ import (
 	"io"
 	"net/http"
 	"os"
-	"sync/atomic"
 	"time"
 
 	"github.com/pkg/errors"
@@ -37,24 +36,24 @@ func (r *progressWatchReader) Read(p []byte) (int, error) {
 
 	count, err := r.reader.Read(p)
 	if err == nil {
-		atomic.StoreInt64((*int64)(&r.lastActivity), int64(timestamp.Now()))
+		r.lastActivity.StoreAtomic(timestamp.Now())
 		r.progressBar.IncrBy(len(p))
 	}
 
-	return count, err
+	return count, err //nolint:wrapcheck // we should not wrap EOF as it has special meaning and is not handled everywhere properly with errors.Is
 }
 
 func (r *progressWatchReader) Close() error {
 	if rc, ok := r.reader.(io.ReadCloser); ok {
-		return rc.Close()
+		return errors.Wrap(rc.Close(), "closing reader")
 	}
 	r.progressBar.SetTotal(r.progressBar.Current(), true)
-	atomic.StoreInt64((*int64)(&r.lastActivity), int64(timestamp.InfiniteFuture))
+	r.lastActivity.StoreAtomic(timestamp.InfiniteFuture)
 	return nil
 }
 
 func (r *progressWatchReader) GetLastActivityTime() time.Time {
-	ts := timestamp.MicroTS(atomic.LoadInt64((*int64)(&r.lastActivity)))
+	ts := r.lastActivity.LoadAtomic()
 	if ts == timestamp.InfiniteFuture {
 		return time.Now()
 	}

@@ -1,16 +1,14 @@
 import static util.Helpers.withRetry
 
-import io.stackrox.proto.storage.PolicyOuterClass
 import io.stackrox.proto.storage.PolicyOuterClass.LifecycleStage
 import io.stackrox.proto.storage.PolicyOuterClass.Policy
-import io.stackrox.proto.storage.ScopeOuterClass
 
 import objects.Deployment
 import objects.GenericNotifier
-import services.CVEService
 import services.ImageService
 import services.PolicyService
 
+import org.junit.Assume
 import spock.lang.IgnoreIf
 import spock.lang.Tag
 import spock.lang.Unroll
@@ -27,6 +25,10 @@ class ImageManagementTest extends BaseSpecification {
         "rhacs-eng/qa":"rhacs-eng/qa-multi-arch")
     private static final String WGET_IMAGE_TAG = ((Env.REMOTE_CLUSTER_ARCH == "x86_64") ?
         "struts-app":"trigger-policy-violations-most-v1")
+
+    def setupSpec() {
+        ImageService.waitForScannerIntegration()
+    }
 
     def cleanupSpec() {
         orchestrator.deleteNamespace(TEST_NAMESPACE)
@@ -76,7 +78,7 @@ class ImageManagementTest extends BaseSpecification {
         // "90-Day Image Age"             | "stackroxacr.azurecr.io" | "nginx"               | "1.12"       | ""
         "Ubuntu Package Manager in Image" | "quay.io"     | "rhacs-eng/qa-multi-arch"        | "struts-app" | ""
         "Curl in Image"                   | "quay.io"     | "rhacs-eng/qa-multi-arch"        | "struts-app" | ""
-        "Fixable CVSS >= 7"               | "quay.io"     | "rhacs-eng/qa-multi-arch"        | "nginx-1.12" | ""
+        "Fixable CVSS >= 7"               | "quay.io"     | "rhacs-eng/qa-multi-arch"        | "nginx-2.0.3" | ""
         "Wget in Image"                   | "quay.io"     | WGET_IMAGE_NS                  | WGET_IMAGE_TAG | ""
         "Apache Struts: CVE-2017-5638"    | "quay.io"     | "rhacs-eng/qa-multi-arch"        | "struts-app" | ""
     }
@@ -87,7 +89,7 @@ class ImageManagementTest extends BaseSpecification {
         def img = ImageService.scanImage(
             "quay.io/rhacs-eng/qa-multi-arch:ubuntu-latest" +
                 "@sha256:64483f3496c1373bfd55348e88694d1c4d0c9b660dee6bfef5e12f43b9933b30", false) // 14.04
-        assert img.scan.componentsList.stream().find { x -> x.name == "eglibc" } != null
+        assert img.scan.componentsList.stream().find { x -> x.name == "cron" } != null
 
         img = ImageService.scanImage(
             "quay.io/rhacs-eng/qa-multi-arch:ubuntu-latest" +
@@ -95,17 +97,20 @@ class ImageManagementTest extends BaseSpecification {
 
         expect:
         assert img.scan != null
-        assert img.scan.componentsList.stream().find { x -> x.name == "eglibc" } == null
+        assert img.scan.componentsList.stream().find { x -> x.name == "cron" } == null
     }
 
     @Unroll
     @Tag("BAT")
     @IgnoreIf({ Env.getTestTarget() == "bat-test" && data.flaky })
-    def "Verify image scan finds correct base OS - #qaImageTag"() {
+    def "Verify image scan finds correct base OS - StackRox Scanner - #qaImageTag"() {
         when:
+        Assume.assumeFalse(scannerV4Enabled)
         def img = ImageService.scanImage("quay.io/rhacs-eng/qa:$qaImageTag", false)
+
         then:
         assert img.scan.operatingSystem == expected
+
         where:
         "Data inputs are: "
 
@@ -120,6 +125,31 @@ class ImageManagementTest extends BaseSpecification {
         "ubi9-slf4j"           | "rhel:9"         | false
         "apache-server"        | "ubuntu:14.04"   | false
         "ubuntu-22.10-openssl" | "ubuntu:22.10"   | false
+    }
+
+    @Unroll
+    @Tag("BAT")
+    @IgnoreIf({ Env.getTestTarget() == "bat-test" && data.flaky })
+    def "Verify image scan finds correct base OS - Scanner V4 - #qaImageTag"() {
+        when:
+        Assume.assumeTrue(scannerV4Enabled)
+        def img = ImageService.scanImage("quay.io/rhacs-eng/qa:$qaImageTag", false)
+
+        then:
+        assert img.scan.operatingSystem == expected
+
+        where:
+        "Data inputs are: "
+
+        qaImageTag             | expected       | flaky
+        "nginx-1.19-alpine"    | "alpine:3.13"  | true
+        // We explicitly do not support Fedora at this time.
+        FEDORA_28              | "unknown"      | false
+        "nginx-1-9"            | "debian:8"     | false
+        "nginx-1-17-1"         | "debian:9"     | false
+        "ubi9-slf4j"           | "rhel:9"       | false
+        "apache-server"        | "ubuntu:14.04" | false
+        "ubuntu-22.10-openssl" | "ubuntu:22.10" | false
     }
 
     @Unroll
@@ -184,53 +214,6 @@ class ImageManagementTest extends BaseSpecification {
 
     @Unroll
     @Tag("BAT")
-    @IgnoreIf({ Env.ROX_VULN_MGMT_UNIFIED_CVE_DEFERRAL == "true" })
-    def "Verify CVE snoozing applies to build time detection"() {
-        given:
-        "Create policy looking for a specific CVE applying to build time"
-        PolicyOuterClass.Policy policy = PolicyOuterClass.Policy.newBuilder()
-                .setName("Matching CVE (CVE-2019-14697)")
-                .addLifecycleStages(LifecycleStage.BUILD)
-                .addCategories("Testing")
-                .setSeverity(PolicyOuterClass.Severity.HIGH_SEVERITY)
-                .addPolicySections(
-                        PolicyOuterClass.PolicySection.newBuilder().addPolicyGroups(
-                                PolicyOuterClass.PolicyGroup.newBuilder()
-                                        .setFieldName("CVE")
-                                        .addValues(PolicyOuterClass.PolicyValue.newBuilder().setValue("CVE-2019-14697")
-                                                .build()).build()
-                        ).build()
-                )
-                .clearScope()
-                .addScope(ScopeOuterClass.Scope.newBuilder().setNamespace(TEST_NAMESPACE))
-                .build()
-        policy = PolicyService.createAndFetchPolicy(policy)
-        def scanResults = Services.requestBuildImageScan("quay.io", "rhacs-eng/qa", "kube-compose-controller-v0.4.23")
-        assert scanResults.alertsList.find { x -> x.policy.id == policy.id } != null
-
-        when:
-        "Suppress CVE and check that it violates"
-        def cve = "CVE-2019-14697"
-        CVEService.suppressImageCVE(cve)
-        scanResults = Services.requestBuildImageScan("quay.io", "rhacs-eng/qa", "kube-compose-controller-v0.4.23")
-        assert scanResults.alertsList.find { y -> y.policy.id == policy.id } == null
-
-        and:
-        "Unsuppress CVE"
-        CVEService.unsuppressImageCVE(cve)
-        scanResults = Services.requestBuildImageScan("quay.io", "rhacs-eng/qa", "kube-compose-controller-v0.4.23")
-
-        then:
-        "Verify unsuppressing lets the CVE show up again"
-        assert scanResults.alertsList.find { z -> z.policy.id == policy.id } != null
-
-        cleanup:
-        "Delete policy"
-        PolicyService.deletePolicy(policy.id)
-    }
-
-    @Unroll
-    @Tag("BAT")
     def "Verify risk is properly being attributed to scanned images"() {
         when:
         "Scan an image and then grab the image data"
@@ -239,7 +222,8 @@ class ImageManagementTest extends BaseSpecification {
         then:
         "Assert that riskScore is non-zero"
         withRetry(10, 3) {
-            def image = ImageService.getImage(TEST_IMAGE_SHA)
+            def imageId = flattenImageDataEnabled ? TEST_IMAGE_V2_ID : TEST_IMAGE_SHA
+            def image = ImageService.getImage(imageId)
             assert image != null && image.riskScore != 0
         }
     }
@@ -262,7 +246,8 @@ class ImageManagementTest extends BaseSpecification {
         then:
         "Assert that riskScore is non-zero"
         withRetry(10, 3) {
-            def image = ImageService.getImage(TEST_IMAGE_SHA)
+            def imageId = flattenImageDataEnabled ? TEST_IMAGE_V2_ID : TEST_IMAGE_SHA
+            def image = ImageService.getImage(imageId)
             assert image != null && image.riskScore != 0
         }
 
@@ -276,51 +261,9 @@ class ImageManagementTest extends BaseSpecification {
                 getVulnsList().find { it.cve == "CVE-2010-0928" } != null
     }
 
-    @Unroll
-    @Tag("BAT")
-    @IgnoreIf({ Env.ROX_VULN_MGMT_UNIFIED_CVE_DEFERRAL == "true" })
-    def "Verify image scan results when CVEs are suppressed: "() {
-        given:
-        "Scan image"
-        def image = ImageService.scanImage(TEST_IMAGE, true)
-        assert hasOpenSSLVuln(image)
-
-        image = ImageService.getImage(image.id, true)
-        assert hasOpenSSLVuln(image)
-
-        def cve = "CVE-2010-0928"
-        CVEService.suppressImageCVE(cve)
-
-        when:
-        def scanIncludeSnoozed = ImageService.scanImage(TEST_IMAGE, true)
-        assert hasOpenSSLVuln(scanIncludeSnoozed)
-
-        def scanExcludedSnoozed = ImageService.scanImage(TEST_IMAGE, false)
-        assert !hasOpenSSLVuln(scanExcludedSnoozed)
-
-        def getIncludeSnoozed  = ImageService.getImage(image.id, true)
-        assert hasOpenSSLVuln(getIncludeSnoozed)
-
-        def getExcludeSnoozed  = ImageService.getImage(image.id, false)
-        assert !hasOpenSSLVuln(getExcludeSnoozed)
-
-        CVEService.unsuppressImageCVE(cve)
-
-        def unsuppressedScan = ImageService.scanImage(TEST_IMAGE, false)
-        def unsuppressedGet  = ImageService.getImage(image.id, false)
-
-        then:
-
-        assert hasOpenSSLVuln(unsuppressedScan)
-        assert hasOpenSSLVuln(unsuppressedGet)
-
-        cleanup:
-        // Should be able to call this multiple times safely in case of any failures previously
-        CVEService.unsuppressImageCVE(cve)
-    }
-
     @Tag("BAT")
     @Tag("Integration")
+    @IgnoreIf({ Env.IS_BYODB })
     def "Verify CI/CD Integration Endpoint with notifications"() {
         when:
         "Clone and scope the policy for test"

@@ -48,10 +48,6 @@ func (s *HashesStoreSuite) SetupTest() {
 	s.NoError(err)
 }
 
-func (s *HashesStoreSuite) TearDownSuite() {
-	s.testDB.Teardown(s.T())
-}
-
 func (s *HashesStoreSuite) TestStore() {
 	ctx := sac.WithAllAccess(context.Background())
 
@@ -103,6 +99,11 @@ func (s *HashesStoreSuite) TestStore() {
 	}
 
 	s.NoError(store.UpsertMany(ctx, hashs))
+
+	foundHashs, missing, err := store.GetMany(ctx, hashIDs)
+	s.NoError(err)
+	s.Empty(missing)
+	protoassert.ElementsMatch(s.T(), hashs, foundHashs)
 
 	hashCount, err = store.Count(ctx, search.EmptyQuery())
 	s.NoError(err)

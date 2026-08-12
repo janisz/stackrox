@@ -68,7 +68,7 @@ func (t *teams) getAlertSection(alert *storage.Alert) section {
 		facts = append(facts, fact{Name: "ID", Value: alertID})
 	}
 
-	alertLink := notifiers.AlertLink(t.Notifier.UiEndpoint, alert)
+	alertLink := notifiers.AlertLink(t.Notifier.GetUiEndpoint(), alert)
 	if len(alertLink) > 0 {
 		facts = append(facts, fact{Name: "URL", Value: alertLink})
 	}
@@ -211,7 +211,7 @@ func (t *teams) getViolationSection(alert *storage.Alert) (section, error) {
 }
 
 func (t *teams) getSectionFacts(policySections []*storage.PolicySection) []fact {
-	var facts []fact
+	facts := make([]fact, 0, len(policySections))
 	for _, section := range policySections {
 		sectionName := "Section "
 		if section.GetSectionName() != "" {
@@ -229,7 +229,7 @@ func (t *teams) getSectionFacts(policySections []*storage.PolicySection) []fact 
 }
 
 func groupsToString(groups []*storage.PolicyGroup) string {
-	var groupStrings []string
+	groupStrings := make([]string, 0, len(groups))
 	for _, group := range groups {
 		var op string
 		if group.GetBooleanOperator() == storage.BooleanOperator_OR {
@@ -247,7 +247,7 @@ func groupsToString(groups []*storage.PolicyGroup) string {
 }
 
 func valueListToString(values []*storage.PolicyValue, opString string) string {
-	var valueList []string
+	valueList := make([]string, 0, len(values))
 	for _, value := range values {
 		valueList = append(valueList, value.GetValue())
 	}
@@ -388,7 +388,7 @@ func (t *teams) Test(ctx context.Context) *notifiers.NotifierError {
 }
 
 func (t *teams) postMessage(ctx context.Context, url string, jsonPayload []byte) error {
-	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(jsonPayload))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewBuffer(jsonPayload))
 	if err != nil {
 		return err
 	}

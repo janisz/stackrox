@@ -41,10 +41,6 @@ func (s *APITokensStoreSuite) SetupTest() {
 	s.NoError(err)
 }
 
-func (s *APITokensStoreSuite) TearDownSuite() {
-	s.testDB.Teardown(s.T())
-}
-
 func (s *APITokensStoreSuite) TestStore() {
 	ctx := sac.WithAllAccess(context.Background())
 
@@ -96,6 +92,11 @@ func (s *APITokensStoreSuite) TestStore() {
 	}
 
 	s.NoError(store.UpsertMany(ctx, tokenMetadatas))
+
+	foundTokenMetadatas, missing, err := store.GetMany(ctx, tokenMetadataIDs)
+	s.NoError(err)
+	s.Empty(missing)
+	protoassert.ElementsMatch(s.T(), tokenMetadatas, foundTokenMetadatas)
 
 	tokenMetadataCount, err = store.Count(ctx, search.EmptyQuery())
 	s.NoError(err)

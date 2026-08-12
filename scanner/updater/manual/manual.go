@@ -4,8 +4,11 @@ package manual
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"os"
@@ -14,10 +17,10 @@ import (
 	"github.com/pkg/errors"
 	"github.com/quay/claircore"
 	"github.com/quay/claircore/libvuln/driver"
-	"github.com/quay/zlog"
+	"github.com/quay/claircore/toolkit/types"
 	"github.com/stackrox/rox/pkg/scannerv4/updater/manual"
 	"github.com/stackrox/rox/pkg/utils"
-	yaml "gopkg.in/yaml.v3"
+	"go.yaml.in/yaml/v3"
 )
 
 // Vulnerability represents a manually entered vulnerability found int vulns.yaml.
@@ -74,8 +77,6 @@ func (u *updater) Name() string {
 
 // Fetch fetching data from a configurable URI.
 func (u *updater) Fetch(ctx context.Context, fingerprint driver.Fingerprint) (io.ReadCloser, driver.Fingerprint, error) {
-	ctx = zlog.ContextWithValues(ctx, "component", "updater/manual/manual.Fetch")
-
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.updateURL.String(), nil)
 	if err != nil {
 		return nil, "", fmt.Errorf("failed to create request: %w", err)
@@ -87,7 +88,7 @@ func (u *updater) Fetch(ctx context.Context, fingerprint driver.Fingerprint) (io
 	}
 	defer func() {
 		if err := resp.Body.Close(); err != nil {
-			zlog.Error(ctx).Err(err).Msg("failed to close response body")
+			slog.ErrorContext(ctx, "failed to close response body", "reason", err)
 		}
 	}()
 
@@ -98,28 +99,47 @@ func (u *updater) Fetch(ctx context.Context, fingerprint driver.Fingerprint) (io
 	if err != nil {
 		return nil, "", errors.Wrap(err, "creating scanner defs file")
 	}
-	zlog.Debug(ctx).
-		Str("filename", out.Name()).
-		Msg("opened temporary file for output")
+	slog.DebugContext(ctx, "opened temporary file for output", "filename", out.Name())
 
+	// Remove the file, as we do not need it anymore. We just need the pointer.
 	utils.IgnoreError(func() error {
 		return os.RemoveAll(out.Name())
 	})
-	_, err = io.Copy(out, resp.Body)
 
+	// doClose specifies if we should close the temp file.
+	// This flag ensures the file is always closed upon error (+ when the fingerprint matches).
+	doClose := true
+	defer func() {
+		if doClose {
+			utils.IgnoreError(out.Close)
+		}
+	}()
+
+	hash := sha256.New()
+	tr := io.TeeReader(resp.Body, hash)
+
+	_, err = io.Copy(out, tr)
 	if err != nil {
-		utils.IgnoreError(out.Close)
 		return nil, "", fmt.Errorf("failed to write to temporary file: %w", err)
 	}
 
+	algo := "sha256:"
+	checksum := make([]byte, len(algo)+hex.EncodedLen(sha256.Size))
+	copy(checksum, algo)
+	hex.Encode(checksum[len(algo):], hash.Sum(nil))
+
+	if string(checksum) == string(fingerprint) {
+		// Nothing has changed, so don't bother updating.
+		return nil, fingerprint, driver.Unchanged
+	}
+
 	if _, err = out.Seek(0, io.SeekStart); err != nil {
-		utils.IgnoreError(out.Close)
 		return nil, "", fmt.Errorf("seek failed: %w", err)
 	}
-	zlog.Info(ctx).
-		Str("dir", out.Name()).
-		Msg("fetched manual vulnerability yaml file")
-	return out, "", nil
+
+	slog.InfoContext(ctx, "fetched manual vulnerability yaml file", "filename", out.Name(), "fingerprint", string(checksum))
+	doClose = false
+	return out, driver.Fingerprint(checksum), nil
 }
 
 // Parse parsing the fetched yaml file into vulnerabilities.
@@ -157,7 +177,7 @@ func (u *updater) Parse(ctx context.Context, rc io.ReadCloser) ([]*claircore.Vul
 			NormalizedSeverity: severity(v.NormalizedSeverity),
 			Package: &claircore.Package{
 				Name:           v.Package.Name,
-				Kind:           claircore.BINARY,
+				Kind:           types.BinaryPackage,
 				RepositoryHint: v.Package.RepositoryHint,
 			},
 			FixedInVersion: v.FixedInVersion,
@@ -169,15 +189,12 @@ func (u *updater) Parse(ctx context.Context, rc io.ReadCloser) ([]*claircore.Vul
 		clairVulns = append(clairVulns, cv)
 	}
 
-	zlog.Info(ctx).
-		Int("count", len(clairVulns)).
-		Msg("All manual vulnerabilities parsed")
+	slog.InfoContext(ctx, "All manual vulnerabilities parsed", "count", len(clairVulns))
 	return clairVulns, nil
 }
 
 // UpdaterSet initializes an updater set with a configured updater based on provided URI and client.
 func UpdaterSet(ctx context.Context, uri string) (driver.UpdaterSet, error) {
-	ctx = zlog.ContextWithValues(ctx, "component", "updater/manual/manual.UpdaterSet")
 	res := driver.NewUpdaterSet()
 	u, err := NewUpdater(client, uri)
 	if err != nil {
@@ -187,8 +204,6 @@ func UpdaterSet(ctx context.Context, uri string) (driver.UpdaterSet, error) {
 	if err := res.Add(u); err != nil {
 		return res, fmt.Errorf("failed to create new updater set: %w", err)
 	}
-	zlog.Info(ctx).
-		Str("url", u.updateURL.String()).
-		Msg("created manual updater set")
+	slog.InfoContext(ctx, "created manual updater set", "url", u.updateURL.String())
 	return res, nil
 }

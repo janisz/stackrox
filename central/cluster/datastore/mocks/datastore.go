@@ -17,6 +17,7 @@ import (
 	central "github.com/stackrox/rox/generated/internalapi/central"
 	storage "github.com/stackrox/rox/generated/storage"
 	concurrency "github.com/stackrox/rox/pkg/concurrency"
+	effectiveaccessscope "github.com/stackrox/rox/pkg/sac/effectiveaccessscope"
 	search "github.com/stackrox/rox/pkg/search"
 	gomock "go.uber.org/mock/gomock"
 )
@@ -121,6 +122,21 @@ func (mr *MockDataStoreMockRecorder) GetCluster(ctx, id any) *gomock.Call {
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetCluster", reflect.TypeOf((*MockDataStore)(nil).GetCluster), ctx, id)
 }
 
+// GetClusterLabels mocks base method.
+func (m *MockDataStore) GetClusterLabels(ctx context.Context, clusterID string) (map[string]string, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "GetClusterLabels", ctx, clusterID)
+	ret0, _ := ret[0].(map[string]string)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// GetClusterLabels indicates an expected call of GetClusterLabels.
+func (mr *MockDataStoreMockRecorder) GetClusterLabels(ctx, clusterID any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetClusterLabels", reflect.TypeOf((*MockDataStore)(nil).GetClusterLabels), ctx, clusterID)
+}
+
 // GetClusterName mocks base method.
 func (m *MockDataStore) GetClusterName(ctx context.Context, id string) (string, bool, error) {
 	m.ctrl.T.Helper()
@@ -153,18 +169,18 @@ func (mr *MockDataStoreMockRecorder) GetClusters(ctx any) *gomock.Call {
 }
 
 // GetClustersForSAC mocks base method.
-func (m *MockDataStore) GetClustersForSAC(ctx context.Context) ([]*storage.Cluster, error) {
+func (m *MockDataStore) GetClustersForSAC() ([]effectiveaccessscope.Cluster, error) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "GetClustersForSAC", ctx)
-	ret0, _ := ret[0].([]*storage.Cluster)
+	ret := m.ctrl.Call(m, "GetClustersForSAC")
+	ret0, _ := ret[0].([]effectiveaccessscope.Cluster)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
 
 // GetClustersForSAC indicates an expected call of GetClustersForSAC.
-func (mr *MockDataStoreMockRecorder) GetClustersForSAC(ctx any) *gomock.Call {
+func (mr *MockDataStoreMockRecorder) GetClustersForSAC() *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetClustersForSAC", reflect.TypeOf((*MockDataStore)(nil).GetClustersForSAC), ctx)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetClustersForSAC", reflect.TypeOf((*MockDataStore)(nil).GetClustersForSAC))
 }
 
 // LookupOrCreateClusterFromConfig mocks base method.
@@ -180,6 +196,21 @@ func (m *MockDataStore) LookupOrCreateClusterFromConfig(ctx context.Context, clu
 func (mr *MockDataStoreMockRecorder) LookupOrCreateClusterFromConfig(ctx, clusterID, bundleID, hello any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "LookupOrCreateClusterFromConfig", reflect.TypeOf((*MockDataStore)(nil).LookupOrCreateClusterFromConfig), ctx, clusterID, bundleID, hello)
+}
+
+// MatchProcessIndicator mocks base method.
+func (m *MockDataStore) MatchProcessIndicator(ctx context.Context, indicator *storage.ProcessIndicator) (bool, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "MatchProcessIndicator", ctx, indicator)
+	ret0, _ := ret[0].(bool)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// MatchProcessIndicator indicates an expected call of MatchProcessIndicator.
+func (mr *MockDataStoreMockRecorder) MatchProcessIndicator(ctx, indicator any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "MatchProcessIndicator", reflect.TypeOf((*MockDataStore)(nil).MatchProcessIndicator), ctx, indicator)
 }
 
 // RemoveCluster mocks base method.

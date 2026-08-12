@@ -1,5 +1,5 @@
-import React from 'react';
-import { FormikContextType, useFormikContext } from 'formik';
+import { useFormikContext } from 'formik';
+import type { FormikContextType } from 'formik';
 import {
     Alert,
     Badge,
@@ -13,15 +13,14 @@ import {
 } from '@patternfly/react-core';
 
 import NotifierConfigurationView from 'Components/NotifierConfiguration/NotifierConfigurationView';
-import useFeatureFlags from 'hooks/useFeatureFlags';
-import { ComplianceIntegration } from 'services/ComplianceIntegrationService';
+import type { ComplianceIntegration } from 'services/ComplianceIntegrationService';
 
 import {
     convertFormikParametersToSchedule,
     getBodyDefault,
     getSubjectDefault,
-    ScanConfigFormValues,
 } from '../compliance.scanConfigs.utils';
+import type { ScanConfigFormValues } from '../compliance.scanConfigs.utils';
 import ScanConfigParametersView from '../components/ScanConfigParametersView';
 import ScanConfigProfilesView from '../components/ScanConfigProfilesView';
 
@@ -34,8 +33,6 @@ export type ReviewConfigProps = {
 
 function ReviewConfig({ clusters, errorMessage }: ReviewConfigProps) {
     const { values: formikValues }: FormikContextType<ScanConfigFormValues> = useFormikContext();
-    const { isFeatureFlagEnabled } = useFeatureFlags();
-    const isComplianceReportingEnabled = isFeatureFlagEnabled('ROX_COMPLIANCE_REPORTING');
 
     const scanSchedule = convertFormikParametersToSchedule(formikValues.parameters);
 
@@ -49,8 +46,8 @@ function ReviewConfig({ clusters, errorMessage }: ReviewConfigProps) {
 
     return (
         <>
-            <PageSection variant="light" padding={{ default: 'noPadding' }}>
-                <Flex direction={{ default: 'column' }} className="pf-v5-u-py-lg pf-v5-u-px-lg">
+            <PageSection hasBodyWrapper={false} padding={{ default: 'noPadding' }}>
+                <Flex direction={{ default: 'column' }} className="pf-v6-u-py-lg pf-v6-u-px-lg">
                     <FlexItem>
                         <Title headingLevel="h2">Review</Title>
                     </FlexItem>
@@ -71,7 +68,7 @@ function ReviewConfig({ clusters, errorMessage }: ReviewConfigProps) {
             <Flex
                 direction={{ default: 'column' }}
                 spaceItems={{ default: 'spaceItemsLg' }}
-                className="pf-v5-u-pt-lg pf-v5-u-px-lg"
+                className="pf-v6-u-pt-lg pf-v6-u-px-lg"
             >
                 <ScanConfigParametersView
                     headingLevel={headingLevel}
@@ -94,22 +91,21 @@ function ReviewConfig({ clusters, errorMessage }: ReviewConfigProps) {
                     headingLevel={headingLevel}
                     profiles={formikValues.profiles}
                 />
-                {isComplianceReportingEnabled && (
-                    <NotifierConfigurationView
-                        headingLevel={headingLevel}
-                        customBodyDefault={getBodyDefault(formikValues.profiles)}
-                        customSubjectDefault={getSubjectDefault(
-                            formikValues.parameters.name,
-                            formikValues.profiles
-                        )}
-                        notifierConfigurations={formikValues.report.notifierConfigurations}
-                    />
-                )}
+                <NotifierConfigurationView
+                    headingLevel={headingLevel}
+                    customBodyDefault={getBodyDefault(formikValues.profiles)}
+                    customSubjectDefault={getSubjectDefault(
+                        formikValues.parameters.name,
+                        formikValues.profiles
+                    )}
+                    notifierConfigurations={formikValues.report.notifierConfigurations}
+                />
                 <Alert
                     variant="info"
                     title="Save for new versus existing scan schedule"
                     component="p"
                     isInline
+                    className="pf-v6-u-mb-lg"
                 >
                     Compliance Operator runs a new scan schedule immediately upon creation, but does
                     not run until scheduled time when you save changes to an existing scan schedule.

@@ -1,36 +1,28 @@
-import React from 'react';
-import {
-    Button,
-    Divider,
-    Flex,
-    FlexItem,
-    PageSection,
-    PageSectionVariants,
-    Title,
-} from '@patternfly/react-core';
-import { ActionsColumn, Table, Thead, Tbody, Tr, Th, Td } from '@patternfly/react-table';
-import { useParams, Link } from 'react-router-dom';
+import type { ReactElement } from 'react';
+import { Button, Divider, Flex, FlexItem, PageSection, Title } from '@patternfly/react-core';
+import { ActionsColumn, Table, Tbody, Td, Th, Thead, Tr } from '@patternfly/react-table';
+import { Link, useNavigate } from 'react-router-dom-v5-compat';
 import pluralize from 'pluralize';
 
-import EmptyStateTemplate from 'Components/EmptyStateTemplate';
 import LinkShim from 'Components/PatternFly/LinkShim';
 import useFeatureFlags from 'hooks/useFeatureFlags';
 import useTableSelection from 'hooks/useTableSelection';
 import { allEnabled } from 'utils/featureFlagUtils';
 import TableCellValue from 'Components/TableCellValue/TableCellValue';
-import { isUserResource } from 'Containers/AccessControl/traits';
-import useIntegrationPermissions from '../hooks/useIntegrationPermissions';
+import TbodyUnified from 'Components/TableStateTemplates/TbodyUnified';
+import type { TableUIState } from 'utils/getTableUIState';
+import { isUserResource } from 'utils/traits.utils';
+import usePermissions from 'hooks/usePermissions';
 import usePageState from '../hooks/usePageState';
-import { Integration, getIsAPIToken, getIsClusterInitBundle } from '../utils/integrationUtils';
+import { getIsAPIToken } from '../utils/integrationUtils';
+import type { Integration, IntegrationSource, IntegrationType } from '../utils/integrationUtils';
 import tableColumnDescriptor from '../utils/tableColumnDescriptor';
-import DownloadCAConfigBundle from './DownloadCAConfigBundle';
+
+const emptyIntegrations: Integration[] = [];
 
 function getNewButtonText(type) {
     if (type === 'apitoken') {
         return 'Generate token';
-    }
-    if (type === 'clusterInitBundle') {
-        return 'Generate bundle';
     }
     if (type === 'machineAccess') {
         return 'Create configuration';
@@ -39,23 +31,31 @@ function getNewButtonText(type) {
 }
 
 type IntegrationsTableProps = {
-    integrations: Integration[];
+    tableState: TableUIState<Integration>;
     hasMultipleDelete: boolean;
     onDeleteIntegrations: (integration) => void;
     onTriggerBackup: (integrationId) => void;
     isReadOnly?: boolean;
+    isCreationDisabled?: boolean;
+    source: IntegrationSource;
+    type: IntegrationType;
 };
 
 function IntegrationsTable({
-    integrations,
+    tableState,
     hasMultipleDelete,
     onDeleteIntegrations,
     onTriggerBackup,
     isReadOnly,
-}: IntegrationsTableProps): React.ReactElement {
-    const permissions = useIntegrationPermissions();
-    const { source, type } = useParams();
+    isCreationDisabled,
+    source,
+    type,
+}: IntegrationsTableProps): ReactElement {
+    const navigate = useNavigate();
+    const { hasReadWriteAccess } = usePermissions();
+    const hasWritePermission = hasReadWriteAccess('Integration');
     const { getPathToCreate, getPathToEdit, getPathToViewDetails } = usePageState();
+    const integrations = tableState?.type === 'COMPLETE' ? tableState.data : emptyIntegrations;
     const {
         selected,
         allRowsSelected,
@@ -76,7 +76,6 @@ function IntegrationsTable({
     });
 
     const isAPIToken = getIsAPIToken(source, type);
-    const isClusterInitBundle = getIsClusterInitBundle(source, type);
 
     function onDeleteIntegrationHandler() {
         const ids = getSelectedIds();
@@ -85,9 +84,11 @@ function IntegrationsTable({
 
     const newButtonText = getNewButtonText(type);
 
+    const colSpan = (hasMultipleDelete && !isReadOnly ? 1 : 0) + columns.length + 1;
+
     return (
         <>
-            <PageSection variant="light">
+            <PageSection hasBodyWrapper={false}>
                 <Flex>
                     <FlexItem alignSelf={{ default: 'alignSelfCenter' }}>
                         <Title headingLevel="h2">
@@ -98,7 +99,7 @@ function IntegrationsTable({
                         <Flex>
                             {hasSelections &&
                                 hasMultipleDelete &&
-                                permissions[source].write &&
+                                hasWritePermission &&
                                 !isReadOnly && (
                                     <FlexItem>
                                         <Button
@@ -110,12 +111,7 @@ function IntegrationsTable({
                                         </Button>
                                     </FlexItem>
                                 )}
-                            {isClusterInitBundle && (
-                                <FlexItem>
-                                    <DownloadCAConfigBundle />
-                                </FlexItem>
-                            )}
-                            {permissions[source].write && !isReadOnly && (
+                            {hasWritePermission && !isReadOnly && !isCreationDisabled && (
                                 <FlexItem>
                                     <Button
                                         variant="primary"
@@ -132,37 +128,36 @@ function IntegrationsTable({
                 </Flex>
             </PageSection>
             <Divider component="div" />
-            <PageSection
-                isFilled
-                padding={{ default: 'noPadding' }}
-                variant={PageSectionVariants.light}
-            >
-                {integrations.length > 0 ? (
-                    <Table variant="compact" isStickyHeader>
-                        <Thead>
-                            <Tr>
-                                {hasMultipleDelete && !isReadOnly && (
-                                    <Th
-                                        select={{
-                                            onSelect: onSelectAll,
-                                            isSelected: allRowsSelected,
-                                        }}
-                                    />
-                                )}
-                                {columns.map((column) => {
-                                    return (
-                                        <Th key={column.Header} modifier="wrap">
-                                            {column.Header}
-                                        </Th>
-                                    );
-                                })}
-                                <Th>
-                                    <span className="pf-v5-screen-reader">Row actions</span>
-                                </Th>
-                            </Tr>
-                        </Thead>
-                        <Tbody>
-                            {integrations.map((integration, rowIndex) => {
+            <PageSection isFilled padding={{ default: 'noPadding' }}>
+                <Table variant="compact" isStickyHeader>
+                    <Thead>
+                        <Tr>
+                            {hasMultipleDelete && !isReadOnly && (
+                                <Th
+                                    select={{
+                                        onSelect: onSelectAll,
+                                        isSelected: allRowsSelected,
+                                    }}
+                                />
+                            )}
+                            {columns.map((column) => {
+                                return (
+                                    <Th key={column.Header} modifier="wrap">
+                                        {column.Header}
+                                    </Th>
+                                );
+                            })}
+                            <Th screenReaderText="Row actions" />
+                        </Tr>
+                    </Thead>
+                    <TbodyUnified
+                        tableState={tableState}
+                        colSpan={colSpan}
+                        emptyProps={{
+                            message: 'No integrations of this type are currently configured',
+                        }}
+                        renderer={({ data }) =>
+                            data.map((integration, rowIndex) => {
                                 const { id } = integration;
                                 const canTriggerBackup =
                                     integration.type === 's3' ||
@@ -175,17 +170,14 @@ function IntegrationsTable({
                                         isHidden: !canTriggerBackup,
                                     },
                                     {
-                                        title: (
-                                            <Link to={getPathToEdit(source, type, id)}>
-                                                Edit integration
-                                            </Link>
-                                        ),
-                                        isHidden: isAPIToken || isClusterInitBundle,
+                                        title: 'Edit integration',
+                                        onClick: () => navigate(getPathToEdit(source, type, id)),
+                                        isHidden: isAPIToken,
                                     },
                                     {
                                         title: (
-                                            <div className="pf-v5-u-danger-color-100">
-                                                Delete Integration
+                                            <div className="pf-v6-u-text-color-status-danger">
+                                                Delete integration
                                             </div>
                                         ),
                                         onClick: () => onDeleteIntegrations([integration.id]),
@@ -195,69 +187,69 @@ function IntegrationsTable({
                                     return !actionItem?.isHidden;
                                 });
                                 return (
-                                    <Tr key={integration.id}>
-                                        {hasMultipleDelete && !isReadOnly && (
-                                            <Td
-                                                key={integration.id}
-                                                select={{
-                                                    rowIndex,
-                                                    onSelect,
-                                                    isSelected: selected[rowIndex],
-                                                }}
-                                            />
-                                        )}
-                                        {columns.map((column) => {
-                                            if (
-                                                column.Header === 'Name' ||
-                                                (type === 'machineAccess' &&
-                                                    column.Header === 'Configuration')
-                                            ) {
+                                    <Tbody key={integration.id}>
+                                        <Tr>
+                                            {hasMultipleDelete && !isReadOnly && (
+                                                <Td
+                                                    key={integration.id}
+                                                    select={{
+                                                        rowIndex,
+                                                        onSelect,
+                                                        isSelected: selected[rowIndex],
+                                                    }}
+                                                />
+                                            )}
+                                            {columns.map((column) => {
+                                                if (
+                                                    column.Header === 'Name' ||
+                                                    (type === 'machineAccess' &&
+                                                        column.Header === 'Configuration')
+                                                ) {
+                                                    return (
+                                                        <Td key="name" dataLabel={column.Header}>
+                                                            <Link
+                                                                to={getPathToViewDetails(
+                                                                    source,
+                                                                    type,
+                                                                    id
+                                                                )}
+                                                            >
+                                                                <TableCellValue
+                                                                    row={integration}
+                                                                    column={column}
+                                                                />
+                                                            </Link>
+                                                        </Td>
+                                                    );
+                                                }
                                                 return (
-                                                    <Td key="name" dataLabel={column.Header}>
-                                                        <Link
-                                                            to={getPathToViewDetails(
-                                                                source,
-                                                                type,
-                                                                id
-                                                            )}
-                                                        >
-                                                            <TableCellValue
-                                                                row={integration}
-                                                                column={column}
-                                                            />
-                                                        </Link>
+                                                    <Td
+                                                        key={column.Header}
+                                                        dataLabel={column.Header}
+                                                    >
+                                                        <TableCellValue
+                                                            row={integration}
+                                                            column={column}
+                                                        />
                                                     </Td>
                                                 );
-                                            }
-                                            return (
-                                                <Td key={column.Header} dataLabel={column.Header}>
-                                                    <TableCellValue
-                                                        row={integration}
-                                                        column={column}
-                                                    />
-                                                </Td>
-                                            );
-                                        })}
-                                        <Td isActionCell>
-                                            <ActionsColumn
-                                                isDisabled={
-                                                    !permissions[source].write ||
-                                                    !isUserResource(integration.traits)
-                                                }
-                                                items={actionItems}
-                                            />
-                                        </Td>
-                                    </Tr>
+                                            })}
+                                            <Td isActionCell>
+                                                <ActionsColumn
+                                                    isDisabled={
+                                                        !hasWritePermission ||
+                                                        !isUserResource(integration.traits)
+                                                    }
+                                                    items={actionItems}
+                                                />
+                                            </Td>
+                                        </Tr>
+                                    </Tbody>
                                 );
-                            })}
-                        </Tbody>
-                    </Table>
-                ) : (
-                    <EmptyStateTemplate
-                        title="No integrations of this type are currently configured."
-                        headingLevel="h3"
+                            })
+                        }
                     />
-                )}
+                </Table>
             </PageSection>
         </>
     );

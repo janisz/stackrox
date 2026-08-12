@@ -1,22 +1,22 @@
-import React, { ReactElement } from 'react';
-import { Button, ModalBoxBody, ModalBoxFooter, Alert } from '@patternfly/react-core';
+import type { ReactElement } from 'react';
+import { Alert, Button, List, ListItem } from '@patternfly/react-core';
+import { ModalBoxBody, ModalBoxFooter } from '@patternfly/react-core/deprecated';
 import { Formik } from 'formik';
 import * as yup from 'yup';
 
-import { Policy } from 'types/policy.proto';
+import type { Policy } from 'types/policy.proto';
 import {
     MIN_POLICY_NAME_LENGTH,
+    checkForBlockedSubmit,
     hasDuplicateIdOnly,
     policyOverwriteAllowed,
-    checkForBlockedSubmit,
-    PolicyImportError,
-    PolicyResolution,
 } from './PolicyImport.utils';
+import type { PolicyImportError, PolicyResolution } from './PolicyImport.utils';
 import DuplicatePolicyForm from './DuplicatePolicyForm';
 
 const RESOLUTION = { resolution: '', newName: '' };
 
-type ImportPolicyJSONErrorProps = {
+type ImportPolicyJSONModalErrorProps = {
     handleCancelModal: () => void;
     startImportPolicies: () => void;
     policies: Policy[];
@@ -26,7 +26,7 @@ type ImportPolicyJSONErrorProps = {
     setDuplicateResolution: (duplicateResolution) => void;
 };
 
-function ImportPolicyJSONError({
+function ImportPolicyJSONModalError({
     handleCancelModal,
     startImportPolicies,
     policies,
@@ -34,7 +34,7 @@ function ImportPolicyJSONError({
     duplicateResolution,
     setDuplicateResolution,
     errorMessages,
-}: ImportPolicyJSONErrorProps): ReactElement {
+}: ImportPolicyJSONModalErrorProps): ReactElement {
     function updateResolution(key, value) {
         setDuplicateResolution({ ...duplicateResolution, [key]: value });
     }
@@ -79,16 +79,13 @@ function ImportPolicyJSONError({
                         }
                         component="p"
                         variant="danger"
-                        className="pf-v5-u-mt-md"
                         isInline
                     >
-                        <ul>
+                        <List isPlain>
                             {errorMessages.map((msg) => (
-                                <li key={msg} className="py-2">
-                                    {msg}
-                                </li>
+                                <ListItem key={msg}>{msg}</ListItem>
                             ))}
-                        </ul>
+                        </List>
                         {duplicateErrorsOnly && (
                             <DuplicatePolicyForm
                                 updateResolution={updateResolution}
@@ -118,4 +115,4 @@ function ImportPolicyJSONError({
     );
 }
 
-export default ImportPolicyJSONError;
+export default ImportPolicyJSONModalError;

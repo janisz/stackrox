@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 
+	"github.com/stackrox/rox/central/deployment/views"
 	v1 "github.com/stackrox/rox/generated/api/v1"
 	"github.com/stackrox/rox/generated/storage"
 	"github.com/stackrox/rox/pkg/search"
@@ -14,6 +15,7 @@ import (
 type Store interface {
 	GetListDeployment(ctx context.Context, id string) (*storage.ListDeployment, bool, error)
 	GetManyListDeployments(ctx context.Context, ids ...string) ([]*storage.ListDeployment, []int, error)
+	SearchListDeployments(ctx context.Context, q *v1.Query) ([]*storage.ListDeployment, error)
 
 	Get(ctx context.Context, id string) (*storage.Deployment, bool, error)
 	GetMany(ctx context.Context, ids []string) ([]*storage.Deployment, []int, error)
@@ -26,4 +28,6 @@ type Store interface {
 	Delete(ctx context.Context, id string) error
 
 	GetIDs(ctx context.Context) ([]string, error)
+
+	GetContainerImageViews(ctx context.Context, q *v1.Query) ([]*views.ContainerImageView, error)
 }

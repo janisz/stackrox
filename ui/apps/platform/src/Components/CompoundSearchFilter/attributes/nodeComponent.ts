@@ -1,17 +1,17 @@
 // If you're adding a new attribute, make sure to add it to "nodeComponentAttributes" as well
 
-import { CompoundSearchFilterAttribute } from '../types';
+import type { CompoundSearchFilterAttribute } from '../types';
 
 export const Name: CompoundSearchFilterAttribute = {
     displayName: 'Name',
-    filterChipLabel: 'Image component name',
+    filterChipLabel: 'Node component name',
     searchTerm: 'Component',
     inputType: 'autocomplete',
 };
 
 export const Version: CompoundSearchFilterAttribute = {
     displayName: 'Version',
-    filterChipLabel: 'Image component version',
+    filterChipLabel: 'Node component version',
     searchTerm: 'Component Version',
     inputType: 'text',
 };

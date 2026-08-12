@@ -1,22 +1,24 @@
-import { useHistory } from 'react-router-dom';
+import { useNavigate } from 'react-router-dom-v5-compat';
 import { integrationsPath } from 'routePaths';
 
 import {
-    IntegrationOptions,
     createIntegration,
     saveIntegration,
     saveIntegrationV2,
     testIntegration,
     testIntegrationV2,
 } from 'services/IntegrationsService';
-import { IntegrationSource, IntegrationType } from 'Containers/Integrations/utils/integrationUtils';
+import type {
+    IntegrationOptions,
+    IntegrationSource as CrudIntegrationSource,
+} from 'services/IntegrationsService';
 import { generateAPIToken } from 'services/APITokensService';
-import { generateClusterInitBundle } from 'services/ClustersService';
 import { getAxiosErrorMessage, isTimeoutError } from 'utils/responseErrorUtils';
 
-import { FormResponseMessage } from 'Components/PatternFly/FormMessage';
+import type { FormResponseMessage } from 'Components/PatternFly/FormMessage';
 import { createMachineAccessConfig } from 'services/MachineAccessService';
-import useFetchIntegrations from './useFetchIntegrations';
+
+import type { IntegrationSource, IntegrationType } from '../utils/integrationUtils';
 import usePageState from './usePageState';
 
 export type UseIntegrationActions = {
@@ -31,12 +33,15 @@ export type UseIntegrationActionsResult = {
 };
 
 function useIntegrationActions(): UseIntegrationActionsResult {
-    const history = useHistory();
+    const navigate = useNavigate();
     const {
         isEditing,
         params: { source, type },
     } = usePageState();
-    const fetchIntegrations = useFetchIntegrations(source);
+    // The routing IntegrationSource type includes 'apiClients', which has no backend
+    // endpoints. This hook only mounts on create/edit routes, so 'apiClients' never
+    // reaches here. Safe to narrow to the CRUD-capable source type.
+    const crudSource = source as CrudIntegrationSource;
     const integrationsListPath = `${integrationsPath}/${source}/${type}`;
 
     async function onSave(data, { updatePassword }: IntegrationOptions = {}) {
@@ -46,23 +51,20 @@ function useIntegrationActions(): UseIntegrationActionsResult {
             if (isEditing) {
                 responseData =
                     typeof updatePassword === 'boolean'
-                        ? await saveIntegration(source, data, { updatePassword })
-                        : await saveIntegrationV2(source, data);
-                history.push(integrationsListPath);
+                        ? await saveIntegration(crudSource, data, { updatePassword })
+                        : await saveIntegrationV2(crudSource, data);
+                navigate(integrationsListPath);
             } else if (type === 'apitoken') {
                 responseData = await generateAPIToken(data);
-            } else if (type === 'clusterInitBundle') {
-                responseData = await generateClusterInitBundle(data);
             } else if (type === 'machineAccess') {
                 responseData = await createMachineAccessConfig(data);
-                history.goBack();
+                navigate(-1);
             } else {
-                responseData = await createIntegration(source, data);
-                // we only want to redirect when creating a new (non-apitoken and non-clusterinitbundle) integration
-                history.goBack();
+                responseData = await createIntegration(crudSource, data);
+                // we only want to redirect when creating a new non-apitoken integration
+                navigate(-1);
             }
 
-            fetchIntegrations();
             return { message: 'Integration was saved successfully', isError: false, responseData };
         } catch (error) {
             return { message: getAxiosErrorMessage(error), isError: true };
@@ -72,9 +74,9 @@ function useIntegrationActions(): UseIntegrationActionsResult {
     async function onTest(data, { updatePassword }: IntegrationOptions = {}) {
         try {
             if (typeof updatePassword === 'boolean') {
-                await testIntegration(source, data, { updatePassword });
+                await testIntegration(crudSource, data, { updatePassword });
             } else {
-                await testIntegrationV2(source, data);
+                await testIntegrationV2(crudSource, data);
             }
             return { message: `The test was successful`, isError: false };
         } catch (error) {
@@ -86,7 +88,7 @@ function useIntegrationActions(): UseIntegrationActionsResult {
     }
 
     function onCancel() {
-        history.push(integrationsListPath);
+        navigate(integrationsListPath);
     }
 
     return { onSave, onTest, onCancel };

@@ -19,7 +19,7 @@ func visitChildrenRec(parentType, currentType reflect.Type, path FieldPath, visi
 	switch currentType.Kind() {
 	case reflect.Struct:
 		visitStructFields(currentType, path, visitField)
-	case reflect.Ptr:
+	case reflect.Pointer:
 		visitElemField(currentType, path, visitField)
 	case reflect.Interface:
 		visitInterfaceFields(parentType, currentType, path, visitField)
@@ -32,8 +32,7 @@ func visitChildrenRec(parentType, currentType reflect.Type, path FieldPath, visi
 
 func visitStructFields(currentType reflect.Type, path FieldPath, visitField func(fieldPath FieldPath) bool) {
 	// For each field of the input type.
-	for i := 0; i < currentType.NumField(); i++ {
-		field := currentType.Field(i)
+	for field := range currentType.Fields() {
 
 		// Create a new path through this field.
 		newPath := append(path, field)

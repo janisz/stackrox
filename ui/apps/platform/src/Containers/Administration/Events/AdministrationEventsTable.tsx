@@ -1,16 +1,17 @@
-import React, { ReactElement } from 'react';
-import { Link } from 'react-router-dom';
+import type { ReactElement } from 'react';
+import { Link } from 'react-router-dom-v5-compat';
 import { ExpandableRowContent, Table, Tbody, Td, Th, Thead, Tr } from '@patternfly/react-table';
 
 import IconText from 'Components/PatternFly/IconText/IconText';
-import { UseURLSortResult } from 'hooks/useURLSort';
+import type { UseURLSortResult } from 'hooks/useURLSort';
 import {
-    AdministrationEvent,
     hasAdministrationEventsFilter,
     lastOccurredAtField,
     numOccurrencesField,
 } from 'services/AdministrationEventsService';
-import { SearchFilter } from 'types/search';
+import type { AdministrationEvent } from 'services/AdministrationEventsService';
+import type { SearchFilter } from 'types/search';
+import { administrationEventsBasePath } from 'routePaths';
 
 import { getLevelIcon, getLevelText } from './AdministrationEvent';
 import AdministrationEventHintMessage from './AdministrationEventHintMessage';
@@ -31,7 +32,7 @@ function AdministrationEventsTable({
     searchFilter,
 }: AdministrationEventsTableProps): ReactElement {
     return (
-        <Table variant="compact" borders={false}>
+        <Table variant="compact">
             <Thead>
                 <Tr>
                     <Th>Domain</Th>
@@ -52,16 +53,12 @@ function AdministrationEventsTable({
                     const { type: resourceType } = resource;
 
                     return (
-                        <Tbody
-                            key={id}
-                            isExpanded
-                            style={{
-                                borderBottom: '1px solid var(--pf-v5-c-table--BorderColor)',
-                            }}
-                        >
-                            <Tr>
+                        <Tbody key={id} isExpanded>
+                            <Tr style={{ borderBottom: 'none' }}>
                                 <Td dataLabel="Domain" modifier="nowrap">
-                                    <Link to={`/main/administration-events/${id}`}>{domain}</Link>
+                                    <Link to={`${administrationEventsBasePath}/${id}`}>
+                                        {domain}
+                                    </Link>
                                 </Td>
                                 <Td dataLabel="Resource type" modifier="nowrap">
                                     {resourceType}

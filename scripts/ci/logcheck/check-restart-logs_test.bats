@@ -3,6 +3,12 @@
 CMD="${BATS_TEST_DIRNAME}/check-restart-logs.sh"
 TEST_FIXTURES="${BATS_TEST_DIRNAME}/test_fixtures"
 
+function setup() {
+    if [[ -z "${ARTIFACT_DIR:-}" ]]; then
+        export ARTIFACT_DIR="${BATS_FILE_TMPDIR}"
+    fi
+}
+
 @test "needs 2 args" {
     run "$CMD"
     [ "$status" -eq 1 ]
@@ -20,9 +26,6 @@ TEST_FIXTURES="${BATS_TEST_DIRNAME}/test_fixtures"
 }
 
 @test "a log with no exception is not OK" {
-    if [[ -n "${GITHUB_ACTION:-}" ]]; then
-        skip "not working on GHA"
-    fi
     run "$CMD" "openshift-crio-api-e2e-tests" "${TEST_FIXTURES}/no-exception-collector-previous.log"
     [ "$status" -eq 2 ]
     [ "${lines[0]}" = "Checking for a restart exception in: ${TEST_FIXTURES}/no-exception-collector-previous.log" ]
@@ -33,7 +36,7 @@ TEST_FIXTURES="${BATS_TEST_DIRNAME}/test_fixtures"
     run "$CMD" "openshift-crio-api-e2e-tests" "${TEST_FIXTURES}/exception-collector-previous.log"
     [ "$status" -eq 0 ]
     [ "${lines[0]}" = "Checking for a restart exception in: ${TEST_FIXTURES}/exception-collector-previous.log" ]
-    [ "${lines[1]}" = "Ignoring this restart due to: collector initialization restart with download failure" ]
+    [ "${lines[1]}" = "Ignoring this restart due to: collector restart due to sensor connection failure (likely slow start)" ]
 }
 
 @test "it can depend on process" {
@@ -72,21 +75,13 @@ TEST_FIXTURES="${BATS_TEST_DIRNAME}/test_fixtures"
 }
 
 @test "checks them all" {
-    if [[ -n "${GITHUB_ACTION:-}" ]]; then
-        skip "not working on GHA"
-    fi
     run "$CMD" "openshift-api-e2e-tests" "${TEST_FIXTURES}/exception-collector-previous.log" "${TEST_FIXTURES}/no-exception-collector-previous.log"
     [ "$status" -eq 2 ]
     [ "${#lines[@]}" -eq 5 ]
 }
 
-@test "this kernel flavor restart is OK" {
-    run "$CMD" "gke-kernel-api-e2e-tests" "${TEST_FIXTURES}/kernel-collector-previous.log"
-    [ "$status" -eq 0 ]
-}
-
-@test "this ebpf flavor restart is OK" {
-    run "$CMD" "gke-api-e2e-tests" "${TEST_FIXTURES}/ebpf-collector-previous.log"
+@test "collector sensor connection failure is OK for any job" {
+    run "$CMD" "gke-api-e2e-tests" "${TEST_FIXTURES}/exception-collector-previous.log"
     [ "$status" -eq 0 ]
 }
 

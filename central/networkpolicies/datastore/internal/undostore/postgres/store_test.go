@@ -41,10 +41,6 @@ func (s *NetworkpolicyapplicationundorecordsStoreSuite) SetupTest() {
 	s.NoError(err)
 }
 
-func (s *NetworkpolicyapplicationundorecordsStoreSuite) TearDownSuite() {
-	s.testDB.Teardown(s.T())
-}
-
 func (s *NetworkpolicyapplicationundorecordsStoreSuite) TestStore() {
 	ctx := sac.WithAllAccess(context.Background())
 
@@ -96,6 +92,11 @@ func (s *NetworkpolicyapplicationundorecordsStoreSuite) TestStore() {
 	}
 
 	s.NoError(store.UpsertMany(ctx, networkPolicyApplicationUndoRecords))
+
+	foundNetworkPolicyApplicationUndoRecords, missing, err := store.GetMany(ctx, networkPolicyApplicationUndoRecordIDs)
+	s.NoError(err)
+	s.Empty(missing)
+	protoassert.ElementsMatch(s.T(), networkPolicyApplicationUndoRecords, foundNetworkPolicyApplicationUndoRecords)
 
 	networkPolicyApplicationUndoRecordCount, err = store.Count(ctx, search.EmptyQuery())
 	s.NoError(err)

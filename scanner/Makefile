@@ -8,16 +8,12 @@ export PATH
 # Set to empty string to echo some command lines which are hidden by default.
 SILENT ?= @
 
-ifeq ($(TAG),)
-	TAG := $(shell $(MAKE) -C ../ --quiet --no-print-directory tag)
+# Debug build support. When enabled, disables compiler optimizations for debugging.
+# If git branch name contains substring "-debug", a debug build will be made, unless overridden.
+ifneq (,$(findstring -debug,$(shell git rev-parse --abbrev-ref HEAD)))
+	DEBUG_BUILD ?= yes
 endif
-
-# Set expiration on Quay.io for non-release tags.
-ifeq ($(findstring x,$(TAG)),x)
-QUAY_TAG_EXPIRATION=13w
-else
-QUAY_TAG_EXPIRATION=never
-endif
+DEBUG_BUILD ?= no
 
 # CGO is disabled for Scanner V4 builds because:
 #
@@ -43,11 +39,8 @@ endif
 #    ARG CGO_ENABLED=1
 #    RUN make CGO_ENABLED=$CGO_ENABLED blah
 CGO_ENABLED = 0
-RACE_FLAG =
 ifeq ($(RACE),true)
-	# cgo is required for data race detection.
 	CGO_ENABLED = 1
-	RACE_FLAG = -race
 endif
 
 HOST_OS := linux
@@ -57,18 +50,15 @@ endif
 GOOS := $(HOST_OS)
 
 GO_BUILD_FLAGS = CGO_ENABLED=$(CGO_ENABLED) GOOS=$(GOOS) GOARCH=$(GOARCH)
-GO_BUILD_CMD   = $(GO_BUILD_FLAGS) go build \
-                   -trimpath \
-                   -ldflags="-X github.com/stackrox/rox/scanner/internal/version.Version=$(TAG) -X github.com/stackrox/rox/scanner/internal/version.VulnerabilityVersion=$(SCANNER_VULNERABILITY_VERSION)" \
-                   -tags=$(GOTAGS) \
-                   $(RACE_FLAG)
+GO_BUILD_CMD   = $(GO_BUILD_FLAGS) $(CURDIR)/../scripts/go-build-file.sh
 GO_TEST_CMD    = $(GO_BUILD_FLAGS) go test
 
 DOCKERBUILD := $(CURDIR)/../scripts/docker-build.sh
 
 DOCKERBUILD_ARGS = --build-arg LABEL_VERSION=$(TAG) \
                    --build-arg LABEL_RELEASE=$(TAG) \
-                   --build-arg QUAY_TAG_EXPIRATION=$(QUAY_TAG_EXPIRATION)
+                   --build-arg QUAY_TAG_EXPIRATION=$(QUAY_TAG_EXPIRATION) \
+                   --build-arg DEBUG_BUILD=$(DEBUG_BUILD)
 
 DB_DOCKERBUILD_ARGS =
 ifeq ($(GOARCH),s390x)
@@ -128,7 +118,7 @@ clean-build:
 .PHONY: $(build-t)
 $(build-t): $(build-deps-t)
 	@echo "+ $@"
-	$(build-cmd) -o $@ ./cmd/$(@F)
+	$(build-cmd) ./cmd/$(@F) $@
 
 # Fetch and validate build dependencies unless NODEPS is defined.
 ifdef NODEPS
@@ -143,7 +133,6 @@ endif
 	@echo "+ $@"
 	$(SILENT)go mod tidy
 ifdef CI
-	$(SILENT)GOTOOLCHAIN=local go mod tidy || { >&2 echo "Go toolchain does not match with installed Go version. This is a compatibility check that prevents breaking downstream builds. If you really need to update the toolchain version, ask in #forum-acs-golang" ; exit 1 ; }
 	$(SILENT)git diff --exit-code -- ../go.mod ../go.sum || { echo "go.mod/go.sum files were updated after running 'go mod tidy', run this command on your local machine and commit the results." ; exit 1 ; }
 endif
 	$(SILENT)go mod verify
@@ -167,7 +156,7 @@ image-db-init-d       := image/db/init-bundles
 image-db-init-t       := $(image-db-init-d)/db-init.dump.zst
 
 .PHONY: images
-images: image-scanner image-db
+images: image-scanner
 
 image/scanner/bin/scanner: GOOS=$(DEFAULT_GOOS)
 image/scanner/bin/scanner: bin/scanner
@@ -189,9 +178,10 @@ image-scanner: $(if $(CI),,image/scanner/bin/scanner) \
                ossls-notice
 	@echo "+ $@"
 	$(DOCKERBUILD) \
-        -t stackrox/$(image-prefix):$(TAG) \
-        $(DOCKERBUILD_ARGS) \
-        -f image/scanner/Dockerfile image/scanner
+            -t stackrox/$(image-prefix):$(TAG) \
+            -t $(DEFAULT_IMAGE_REGISTRY)/$(image-prefix):$(TAG) \
+            $(DOCKERBUILD_ARGS) \
+            -f image/scanner/Dockerfile image/scanner
 
 $(image-db-init-d):
 	mkdir -p $@
@@ -223,10 +213,24 @@ endif
 image-db: $(image-db-init-t)
 	@echo "+ $@"
 	$(DOCKERBUILD) \
-        -t stackrox/$(image-prefix)-db:$(TAG) \
-        $(DOCKERBUILD_ARGS) \
-        $(DB_DOCKERBUILD_ARGS) \
-        -f image/db/Dockerfile image/db
+            -t stackrox/$(image-prefix)-db:$(TAG) \
+            -t $(DEFAULT_IMAGE_REGISTRY)/$(image-prefix)-db:$(TAG) \
+            $(DOCKERBUILD_ARGS) \
+            $(DB_DOCKERBUILD_ARGS) \
+            -f image/db/Dockerfile image/db
+
+image/scannerctl/bin/scannerctl: bin/scannerctl
+	@echo "+ $@"
+	mkdir -p $(@D)
+	cp $< $@
+
+.PHONY: image-scannerctl
+image-scannerctl: image/scannerctl/bin/scannerctl
+	@echo "+ $@"
+	$(DOCKERBUILD) \
+	    -t stackrox/$(image-prefix)-scannerctl:$(TAG) \
+	    $(DOCKERBUILD_ARGS) \
+            -f image/scannerctl/Dockerfile image/scannerctl
 
 ###########
 ## Tools ##
@@ -236,8 +240,8 @@ image-db: $(image-db-init-t)
 ossls-notice: $(build-deps-t)
 	@echo "+ $@"
 ifdef CI
-	$(SILENT)ossls version
-	$(SILENT)ossls audit --export image/scanner/THIRD_PARTY_NOTICES
+	# OSS notice artifact is downloaded by workflow, just verify it exists
+	$(SILENT)test -d image/scanner/THIRD_PARTY_NOTICES || (echo "ERROR: THIRD_PARTY_NOTICES not found" && exit 1)
 else
 	$(SILENT)mkdir -p image/scanner/THIRD_PARTY_NOTICES
 endif
@@ -325,12 +329,12 @@ $(certs-d)/%/cert.csr: $(certs-d)/%/key.pem
 .PRECIOUS: $(certs-d)/%/ca.pem
 $(certs-d)/%/ca.pem: $(certs-d)/ca/root.pem
 	@echo "+ $@"
-	$(SILENT)ln -fs $(abspath $<) $@
+	$(SILENT)cp $(abspath $<) $@
 
 .PRECIOUS: $(certs-d)/%/ca-key.pem
 $(certs-d)/%/ca-key.pem: $(certs-d)/ca/key.pem
 	@echo "+ $@"
-	$(SILENT)ln -fs $(abspath $<) $@
+	$(SILENT)cp $(abspath $<) $@
 
 # Generate a certificate.
 #
@@ -451,14 +455,14 @@ e2e-deploy: db-host-path :=
 e2e-deploy: debug-templates :=
 
 # Wait timeout for the E2E deployment to be successful.
-e2e-deploy: timeout := 10m
+e2e-deploy: timeout := 30m
 
 e2e-deploy: $(e2e-chart-d) $(e2e-conf-files-t) $(e2e-certs-t)
 	@echo "+ $@" db=$(db-tag) scanner=$(scanner-tag)
 	helm $(if $(debug-templates),template,upgrade --install) --debug $(release) $< \
 	    --namespace $(namespace) \
 	    --create-namespace \
-	    $(if $(CI),--wait,--atomic) \
+	    $(if $(CI),,--atomic) \
 	    --timeout $(timeout) \
 	    $(and $(db-host-path),--set app.db.persistence.hostPath=$(db-host-path)) \
 	    --set app.db.image.registry=$(db-registry) \

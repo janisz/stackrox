@@ -10,6 +10,7 @@ import (
 	"github.com/stackrox/rox/pkg/k8sutil"
 	"github.com/stackrox/rox/pkg/kubernetes"
 	"github.com/stackrox/rox/pkg/protoconv/networkpolicy"
+	"github.com/stackrox/rox/pkg/sliceutils"
 	networkingV1 "k8s.io/api/networking/v1"
 	k8sErrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -96,7 +97,11 @@ type deletePolicy struct {
 }
 
 func (a *deletePolicy) Execute(ctx context.Context, client networkingV1Client.NetworkingV1Interface) error {
-	return client.NetworkPolicies(a.namespace).Delete(ctx, a.name, kubernetes.DeleteBackgroundOption)
+	err := client.NetworkPolicies(a.namespace).Delete(ctx, a.name, kubernetes.DeleteBackgroundOption)
+	if err != nil {
+		return errors.Wrapf(err, "deleting network policy %s/%s", a.namespace, a.name)
+	}
+	return nil
 }
 
 func (a *deletePolicy) Record(mod *storage.NetworkPolicyModification) {
@@ -113,11 +118,14 @@ type restorePolicy struct {
 
 func (a *restorePolicy) Execute(ctx context.Context, client networkingV1Client.NetworkingV1Interface) error {
 	_, err := client.NetworkPolicies(a.oldPolicy.Namespace).Update(ctx, a.oldPolicy, metav1.UpdateOptions{})
-	return err
+	if err != nil {
+		return errors.Wrap(err, "restoring network policy")
+	}
+	return nil
 }
 
 func (a *restorePolicy) Record(mod *storage.NetworkPolicyModification) {
-	if mod.ApplyYaml != "" {
+	if mod.GetApplyYaml() != "" {
 		mod.ApplyYaml += yamlSep
 	}
 	yaml, err := networkpolicy.KubernetesNetworkPolicyWrap{NetworkPolicy: a.oldPolicy}.ToYaml()
@@ -138,10 +146,13 @@ func (a *restorePolicy) Record(mod *storage.NetworkPolicyModification) {
 
 func (t *applyTx) Rollback(ctx context.Context) error {
 	var errList errorhelpers.ErrorList
-	for i := len(t.rollbackActions) - 1; i >= 0; i-- {
-		errList.AddError(t.rollbackActions[i].Execute(ctx, t.networkingClient))
+	for _, action := range sliceutils.Backward(t.rollbackActions) {
+		errList.AddError(action.Execute(ctx, t.networkingClient))
 	}
-	return errList.ToError()
+	if err := errList.ToError(); err != nil {
+		return errors.Wrap(err, "reverting network policy modifications")
+	}
+	return nil
 }
 
 func (t *applyTx) createNetworkPolicy(ctx context.Context, policy *networkingV1.NetworkPolicy) error {
@@ -154,7 +165,7 @@ func (t *applyTx) createNetworkPolicy(ctx context.Context, policy *networkingV1.
 
 	_, err := nsClient.Create(ctx, policy, metav1.CreateOptions{})
 	if err != nil {
-		return err
+		return errors.Wrapf(err, "creating network policy %s/%s", policy.Namespace, policy.Name)
 	}
 	t.rollbackActions = append(t.rollbackActions, &deletePolicy{
 		namespace: policy.Namespace,
@@ -166,7 +177,7 @@ func (t *applyTx) createNetworkPolicy(ctx context.Context, policy *networkingV1.
 func (t *applyTx) replaceNetworkPolicy(ctx context.Context, policy *networkingV1.NetworkPolicy) error {
 	nsClient := t.networkingClient.NetworkPolicies(policy.Namespace)
 
-	for retryCount := 0; retryCount < maxConflictRetries; retryCount++ {
+	for retryCount := range maxConflictRetries {
 		old, err := nsClient.Get(ctx, policy.Name, metav1.GetOptions{})
 
 		if err != nil {
@@ -254,8 +265,8 @@ func (t *applyTx) deleteNetworkPolicy(ctx context.Context, namespace, name strin
 
 func (t *applyTx) UndoModification() *storage.NetworkPolicyModification {
 	mod := &storage.NetworkPolicyModification{}
-	for i := len(t.rollbackActions) - 1; i >= 0; i-- {
-		t.rollbackActions[i].Record(mod)
+	for _, action := range sliceutils.Backward(t.rollbackActions) {
+		action.Record(mod)
 	}
 	return mod
 }

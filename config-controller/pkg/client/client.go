@@ -10,19 +10,31 @@ import (
 
 	"github.com/pkg/errors"
 	v1 "github.com/stackrox/rox/generated/api/v1"
-	storage "github.com/stackrox/rox/generated/storage"
+	"github.com/stackrox/rox/generated/storage"
 	"github.com/stackrox/rox/pkg/clientconn"
 	"github.com/stackrox/rox/pkg/env"
 	"github.com/stackrox/rox/pkg/logging"
 	"github.com/stackrox/rox/pkg/mtls"
+	"github.com/stackrox/rox/pkg/mtls/verifier"
+	"github.com/stackrox/rox/pkg/netutil"
 	"github.com/stackrox/rox/pkg/size"
 	"google.golang.org/grpc"
 )
 
 var (
-	centralHostPort = fmt.Sprintf("central.%s.svc:443", env.Namespace.Setting())
-	log             = logging.LoggerForModule()
+	log = logging.LoggerForModule()
 )
+
+func centralEndpoint() string {
+	// Check if ROX_CENTRAL_ENDPOINT is explicitly set (not just the default value).
+	// This provides backwards compatibility for deployments that don't set ROX_CENTRAL_ENDPOINT.
+	endpoint, exists := os.LookupEnv("ROX_CENTRAL_ENDPOINT")
+	if exists && endpoint != "" {
+		return endpoint
+	}
+	// Fall back to namespace-based endpoint for backwards compatibility
+	return fmt.Sprintf("central.%s.svc:443", env.Namespace.Setting())
+}
 
 type perRPCCreds struct {
 	svc         v1.AuthServiceClient
@@ -40,7 +52,7 @@ func (c *perRPCCreds) RequireTransportSecurity() bool {
 
 func (c *perRPCCreds) refreshToken(ctx context.Context) error {
 	log.Debug("Refreshing Central API token")
-	token, err := os.ReadFile("/var/run/secrets/kubernetes.io/serviceaccount/token")
+	token, err := os.ReadFile("/var/run/secrets/stackrox.io/m2m/token")
 	if err != nil {
 		return errors.WithMessage(err, "error reading service account token file")
 	}
@@ -54,7 +66,7 @@ func (c *perRPCCreds) refreshToken(ctx context.Context) error {
 		return errors.Wrap(err, "Failed to exchange token")
 	}
 
-	authHeaderValue := fmt.Sprintf("Bearer %s", resp.AccessToken)
+	authHeaderValue := fmt.Sprintf("Bearer %s", resp.GetAccessToken())
 
 	c.metadata = map[string]string{
 		"authorization": authHeaderValue,
@@ -72,6 +84,7 @@ type CachedCentralClient interface {
 	UpdatePolicy(ctx context.Context, policy *storage.Policy) error
 	DeletePolicy(ctx context.Context, name string) error
 	GetNotifiers() map[string]string
+	GetClusters() map[string]string
 	FlushCache(ctx context.Context) error
 	EnsureFresh(ctx context.Context) error
 }
@@ -83,17 +96,32 @@ type CentralClient interface {
 	PutPolicy(context.Context, *storage.Policy) error
 	DeletePolicy(ctx context.Context, id string) error
 	ListNotifiers(ctx context.Context) ([]*storage.Notifier, error)
+	ListClusters(ctx context.Context) ([]*storage.Cluster, error)
 	TokenExchange(ctx context.Context) error
 }
 
 type grpcClient struct {
 	policySvc   v1.PolicyServiceClient
 	notifierSvc v1.NotifierServiceClient
+	clusterSvc  v1.ClustersServiceClient
 	perRPCCreds *perRPCCreds
 }
 
 func newGrpcClient(ctx context.Context) (CentralClient, error) {
 	clientconn.SetUserAgent(clientconn.ConfigController)
+
+	// Use system cert pool to include additional CAs from import-additional-cas
+	rootCAs, err := verifier.SystemCertPool()
+	if err != nil {
+		return nil, errors.Wrap(err, "failed to get system cert pool")
+	}
+
+	// Parse the endpoint to get the hostname for TLS ServerName verification
+	endpoint := centralEndpoint()
+	host, _, _, err := netutil.ParseEndpoint(endpoint)
+	if err != nil {
+		return nil, errors.Wrapf(err, "failed to parse central endpoint %q", endpoint)
+	}
 
 	dialOpts := []grpc.DialOption{
 		grpc.WithNoProxy(),
@@ -105,11 +133,15 @@ func newGrpcClient(ctx context.Context) (CentralClient, error) {
 		InsecureAllowCredsViaPlaintext: false,
 		DialOptions:                    dialOpts,
 		PerRPCCreds:                    perRPCCreds,
+		TLS: clientconn.TLSConfigOptions{
+			RootCAs:    rootCAs,
+			ServerName: host,
+		},
 	}
 
 	callOpts := []grpc.CallOption{grpc.MaxCallRecvMsgSize(12 * size.MB)}
 
-	conn, err := clientconn.GRPCConnection(ctx, mtls.CentralSubject, centralHostPort, opts, grpc.WithDefaultCallOptions(callOpts...))
+	conn, err := clientconn.GRPCConnection(ctx, mtls.CentralSubject, endpoint, opts, grpc.WithDefaultCallOptions(callOpts...))
 
 	if err != nil {
 		return nil, errors.Wrap(err, "Failed to create gRPC connection")
@@ -120,6 +152,7 @@ func newGrpcClient(ctx context.Context) (CentralClient, error) {
 		perRPCCreds: perRPCCreds,
 		policySvc:   v1.NewPolicyServiceClient(conn),
 		notifierSvc: v1.NewNotifierServiceClient(conn),
+		clusterSvc:  v1.NewClustersServiceClient(conn),
 	}, nil
 }
 
@@ -129,7 +162,16 @@ func (gc *grpcClient) ListNotifiers(ctx context.Context) ([]*storage.Notifier, e
 		return []*storage.Notifier{}, errors.Wrap(err, "Failed to list notifiers from grpc client")
 	}
 
-	return allNotifiers.Notifiers, err
+	return allNotifiers.GetNotifiers(), nil
+}
+
+func (gc *grpcClient) ListClusters(ctx context.Context) ([]*storage.Cluster, error) {
+	allClusters, err := gc.clusterSvc.GetClusters(ctx, &v1.GetClustersRequest{})
+	if err != nil {
+		return []*storage.Cluster{}, errors.Wrap(err, "Failed to list clusters from grpc client")
+	}
+
+	return allClusters.GetClusters(), nil
 }
 
 func (gc *grpcClient) ListPolicies(ctx context.Context) ([]*storage.ListPolicy, error) {
@@ -138,7 +180,7 @@ func (gc *grpcClient) ListPolicies(ctx context.Context) ([]*storage.ListPolicy, 
 		return []*storage.ListPolicy{}, errors.Wrap(err, "Failed to list policies from grpc client")
 	}
 
-	return allPolicies.Policies, err
+	return allPolicies.GetPolicies(), nil
 }
 
 func (gc *grpcClient) GetPolicy(ctx context.Context, id string) (*storage.Policy, error) {
@@ -197,6 +239,7 @@ type client struct {
 	policyObjectCache     map[string]*storage.Policy // policy ID to policy
 	policyNameToIDCache   map[string]string          // policy name to policy ID
 	notifierNameToIDCache map[string]string          // notifier name to notifier ID
+	clusterNameToIDCache  map[string]string          // cluster name to cluster ID
 	lastUpdated           time.Time
 }
 
@@ -230,6 +273,7 @@ func New(ctx context.Context, opts ...clientOptions) (CachedCentralClient, error
 
 	for {
 		if err := c.EnsureFresh(ctx); err != nil {
+			log.Warnf("Initialization Error: %s", err)
 			time.Sleep(time.Second * 5)
 			continue
 		}
@@ -241,6 +285,9 @@ func New(ctx context.Context, opts ...clientOptions) (CachedCentralClient, error
 
 func (c *client) GetNotifiers() map[string]string {
 	return c.notifierNameToIDCache
+}
+func (c *client) GetClusters() map[string]string {
+	return c.clusterNameToIDCache
 }
 
 func (c *client) ListPolicies(_ context.Context) ([]*storage.Policy, error) {
@@ -257,11 +304,11 @@ func (c *client) GetPolicy(_ context.Context, name string) (*storage.Policy, boo
 }
 
 func (c *client) CreatePolicy(ctx context.Context, policy *storage.Policy) (*storage.Policy, error) {
-	log.Infof("Creating policy %q", policy.Name)
+	log.Infof("Creating policy %q", policy.GetName())
 	createdPolicy, err := c.centralSvc.PostPolicy(ctx, policy)
 
 	if err != nil {
-		return nil, errors.Wrap(err, fmt.Sprintf("Failed to POST policy '%s'", policy.Name))
+		return nil, errors.Wrap(err, fmt.Sprintf("Failed to POST policy '%s'", policy.GetName()))
 	}
 
 	c.policyObjectCache[createdPolicy.GetId()] = createdPolicy
@@ -271,7 +318,7 @@ func (c *client) CreatePolicy(ctx context.Context, policy *storage.Policy) (*sto
 }
 
 func (c *client) UpdatePolicy(ctx context.Context, policy *storage.Policy) error {
-	log.Infof("Updating policy %q", policy.Name)
+	log.Infof("Updating policy %q", policy.GetName())
 
 	var existingPolicyName string
 	if id, ok := c.policyNameToIDCache[policy.GetName()]; ok {
@@ -292,19 +339,15 @@ func (c *client) UpdatePolicy(ctx context.Context, policy *storage.Policy) error
 	return nil
 }
 
-func (c *client) DeletePolicy(ctx context.Context, name string) error {
-	log.Infof("Deleting policy %q", name)
-	policyID, ok := c.policyNameToIDCache[name]
-	if !ok {
-		return nil
-	}
+func (c *client) DeletePolicy(ctx context.Context, policyID string) error {
+	log.Infof("Deleting policy %q", policyID)
 	policy := c.policyObjectCache[policyID]
 	if policy.GetSource() != storage.PolicySource_DECLARATIVE {
-		return errors.New(fmt.Sprintf("policy %q is not externally managed and can be deleted only from central", name))
+		return errors.New(fmt.Sprintf("policy %q is not externally managed and can be deleted only from central", policy.GetName()))
 	}
 
 	if err := c.centralSvc.DeletePolicy(ctx, policyID); err != nil {
-		return errors.Wrapf(err, "Failed to DELETE policy %q in central", name)
+		return errors.Wrapf(err, "Failed to DELETE policy %q in central", policy.GetName())
 	}
 	delete(c.policyObjectCache, policyID)
 	delete(c.policyNameToIDCache, policy.GetName())
@@ -330,15 +373,21 @@ func (c *client) FlushCache(ctx context.Context) error {
 		return errors.Wrap(err, "Failed to list notifiers")
 	}
 
+	allClusters, err := c.centralSvc.ListClusters(ctx)
+	if err != nil {
+		return errors.Wrap(err, "Faield to list clusters")
+	}
+
 	newPolicyObjectCache := make(map[string]*storage.Policy, len(allPolicies))
 	newPolicyNameToIDCache := make(map[string]string, len(allPolicies))
+	newClusterNameToIDCache := make(map[string]string, len(allClusters))
 	newNotifierNameToIDCache := make(map[string]string, len(allNotifiers))
 
 	for _, listPolicy := range allPolicies {
 		log.Debugf("Get policy: %s", listPolicy.GetName())
-		policy, err := c.centralSvc.GetPolicy(ctx, listPolicy.Id)
+		policy, err := c.centralSvc.GetPolicy(ctx, listPolicy.GetId())
 		if err != nil {
-			return errors.Wrapf(err, "Failed to fetch policy %s", listPolicy.Id)
+			return errors.Wrapf(err, "Failed to fetch policy %s", listPolicy.GetId())
 		}
 		newPolicyObjectCache[policy.GetId()] = policy
 		newPolicyNameToIDCache[policy.GetName()] = policy.GetId()
@@ -348,8 +397,13 @@ func (c *client) FlushCache(ctx context.Context) error {
 		newNotifierNameToIDCache[notifier.GetName()] = notifier.GetId()
 	}
 
+	for _, cluster := range allClusters {
+		newClusterNameToIDCache[cluster.GetName()] = cluster.GetId()
+	}
+
 	c.policyObjectCache = newPolicyObjectCache
 	c.policyNameToIDCache = newPolicyNameToIDCache
+	c.clusterNameToIDCache = newClusterNameToIDCache
 	c.notifierNameToIDCache = newNotifierNameToIDCache
 
 	c.lastUpdated = time.Now()
@@ -360,7 +414,7 @@ func (c *client) FlushCache(ctx context.Context) error {
 func (c *client) EnsureFresh(ctx context.Context) error {
 	// Make sure token isn't expired before flushing cache
 	if err := c.centralSvc.TokenExchange(ctx); err != nil {
-		return err
+		return errors.Wrap(err, "could not exchange token")
 	}
 
 	if time.Since(c.lastUpdated).Minutes() > 5.0 {

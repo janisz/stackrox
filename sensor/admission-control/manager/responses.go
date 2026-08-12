@@ -5,6 +5,7 @@ import (
 	"text/template"
 
 	"github.com/stackrox/rox/generated/storage"
+	"github.com/stackrox/rox/pkg/branding"
 	"github.com/stackrox/rox/pkg/enforcers"
 	"github.com/stackrox/rox/pkg/stringutils"
 	"github.com/stackrox/rox/pkg/templates"
@@ -28,6 +29,9 @@ Policy: {{.Policy.Name}}
     - {{.Message}}
     {{- end}}
 
+{{ end -}}
+{{- if gt .UnevaluatedPolicyCount 0}}
+{{.UnevaluatedPolicyCount}} additional {{if eq .UnevaluatedPolicyCount 1}}policy depends{{else}}policies depend{{end}} on image enrichment results and will be evaluated only after the above violations are addressed.
 {{ end -}}
 {{- if .BypassAnnotationKey}}
 In case of emergency, add the annotation {"{{.BypassAnnotationKey}}": "ticket-1234"} to your deployment with an updated ticket number
@@ -55,22 +59,18 @@ func fail(uid types.UID, message string) *admission.AdmissionResponse {
 		Allowed: false,
 		Result: &metav1.Status{
 			Status:  "Failure",
-			Reason:  metav1.StatusReason("Failed currently enforced policies from StackRox"),
+			Reason:  metav1.StatusReason(fmt.Sprintf("Failed currently enforced policies from %s", branding.GetProductNameShort())),
 			Message: message,
 		},
 	}
 }
 
-func message(alerts []*storage.Alert, addBypassMsg bool) string {
-	noun := "policies"
-	if len(alerts) == 1 {
-		noun = "policy"
-	}
-
+func message(alerts []*storage.Alert, addBypassMsg bool, unevaluatedPolicyCount int) string {
 	// We add a line break at the beginning to look nicer in kubectl
-	msgHeader := fmt.Sprintf("\nThe attempted operation violated %d enforced %s, described below:\n\n", len(alerts), noun)
+	msgHeader := "\nThe attempted operation violated one or more enforced policies, described below:\n\n"
 	data := map[string]interface{}{
-		"Alerts": alerts,
+		"Alerts":                 alerts,
+		"UnevaluatedPolicyCount": unevaluatedPolicyCount,
 	}
 
 	if addBypassMsg {

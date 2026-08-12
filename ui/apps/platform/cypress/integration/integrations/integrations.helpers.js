@@ -2,6 +2,7 @@ import { visitFromLeftNavExpandable } from '../../helpers/nav';
 import { interactAndWaitForResponses } from '../../helpers/request';
 import { getTableRowActionButtonByName } from '../../helpers/tableHelpers';
 import { visit, visitWithStaticResponseForCapabilities } from '../../helpers/visit';
+import pf6 from '../../selectors/pf6';
 
 import { selectors } from './integrations.selectors';
 
@@ -45,6 +46,8 @@ export function getIntegrationsPath(
     return path;
 }
 
+const basePathRedirect = getIntegrationsPath('imageIntegrations');
+
 // endpoint path
 
 function getIntegrationsEndpointAddress(integrationSource, integrationType) {
@@ -53,8 +56,6 @@ function getIntegrationsEndpointAddress(integrationSource, integrationType) {
             switch (integrationType) {
                 case 'apitoken': // singular in page address
                     return '/v1/apitokens'; // plural in endpoint address (and see next function)
-                case 'clusterInitBundle': // singular in page address
-                    return '/v1/cluster-init/init-bundles'; // plural in endpoint address
                 case 'machineAccess':
                     return '/v1/auth/m2m';
                 default:
@@ -81,8 +82,6 @@ export function getIntegrationsEndpointAlias(integrationSource, integrationType)
             switch (integrationType) {
                 case 'apitoken': // singular in page address
                     return 'apitokens'; // plural in endpoint alias
-                case 'clusterInitBundle': // singular in page address
-                    return 'cluster-init/init-bundles'; // plural in endpoint alias
                 case 'machineAccess':
                     return '/v1/auth/m2m';
                 default:
@@ -124,39 +123,66 @@ function getIntegrationEndpointAddress(integrationSource, integrationType, integ
 }
 
 // Please forgive such an abstract definition.
-const routeMatcherMapForIntegrationsDashboard = Object.fromEntries(
-    [
-        ['authProviders', 'apitoken'],
-        ['authProviders', 'machineAccess'],
-        ['imageIntegrations'],
-        ['signatureIntegrations'],
-        ['notifiers'],
-        ['backups'],
-    ].map((args) => [
-        getIntegrationsEndpointAlias(...args),
-        {
+
+const routeMatcherMapForIntegrationsTab = {
+    imageIntegrations: {
+        [getIntegrationsEndpointAlias('imageIntegrations')]: {
             method: 'GET',
-            url: getIntegrationsEndpointAddressForGET(...args),
+            url: getIntegrationsEndpointAddressForGET('imageIntegrations'),
         },
-    ])
-);
+    },
+    signatureIntegrations: {
+        [getIntegrationsEndpointAlias('signatureIntegrations')]: {
+            method: 'GET',
+            url: getIntegrationsEndpointAddressForGET('signatureIntegrations'),
+        },
+    },
+    notifiers: {
+        [getIntegrationsEndpointAlias('notifiers')]: {
+            method: 'GET',
+            url: getIntegrationsEndpointAddressForGET('notifiers'),
+        },
+    },
+    backups: {
+        [getIntegrationsEndpointAlias('backups')]: {
+            method: 'GET',
+            url: getIntegrationsEndpointAddressForGET('backups'),
+        },
+    },
+    cloudSources: {
+        [getIntegrationsEndpointAlias('cloudSources')]: {
+            method: 'GET',
+            url: getIntegrationsEndpointAddressForGET('cloudSources'),
+        },
+    },
+    authProviders: {
+        [getIntegrationsEndpointAlias('authProviders', 'apitoken')]: {
+            method: 'GET',
+            url: getIntegrationsEndpointAddressForGET('authProviders', 'apitoken'),
+        },
+        [getIntegrationsEndpointAlias('authProviders', 'machineAccess')]: {
+            method: 'GET',
+            url: getIntegrationsEndpointAddressForGET('authProviders', 'machineAccess'),
+        },
+    },
+};
 
 // page title
 
 const integrationsTitle = 'Integrations';
 
 const integrationSourceTitleMap = {
-    authProviders: 'Authentication Tokens',
-    backups: 'Backup Integrations',
-    imageIntegrations: 'Image Integrations',
-    notifiers: 'Notifier Integrations',
-    signatureIntegrations: '',
+    authProviders: 'Authentication',
+    backups: 'Backup',
+    cloudSources: 'Cloud source',
+    imageIntegrations: 'Image',
+    notifiers: 'Notifier',
+    signatureIntegrations: 'Signature',
 };
 
 const integrationTitleMap = {
     authProviders: {
         apitoken: 'API Token',
-        clusterInitBundle: 'Cluster Init Bundle',
         machineAccess: 'Machine access configuration',
     },
     backups: {
@@ -227,10 +253,10 @@ export function assertIntegrationsTable(integrationSource, integrationType) {
  * @param {Record<string, { body: unknown } | { fixture: string }>} [staticResponseMap]
  */
 export function visitIntegrationsDashboard(staticResponseMap) {
-    visit(basePath, routeMatcherMapForIntegrationsDashboard, staticResponseMap);
+    visit(basePath, routeMatcherMapForIntegrationsTab.imageIntegrations, staticResponseMap);
 
     cy.get(`h1:contains("${integrationsTitle}")`);
-    cy.get(`.pf-v5-c-nav__link.pf-m-current:contains("${integrationsTitle}")`);
+    cy.get(`.pf-v6-c-nav__link.pf-m-current:contains("${integrationsTitle}")`);
 }
 
 /**
@@ -240,12 +266,29 @@ export function visitIntegrationsDashboardFromLeftNav(staticResponseMap) {
     visitFromLeftNavExpandable(
         'Platform Configuration',
         integrationsTitle,
-        routeMatcherMapForIntegrationsDashboard,
+        routeMatcherMapForIntegrationsTab.imageIntegrations,
         staticResponseMap
     );
 
-    cy.location('pathname').should('eq', basePath);
+    cy.location('pathname').should('eq', basePathRedirect);
     cy.get(`h1:contains("${integrationsTitle}")`);
+}
+
+/**
+ * @param {string} integrationSource
+ * @param {Record<string, { body: unknown } | { fixture: string }>} [staticResponseMap]
+ */
+export function visitIntegrationsTab(integrationSource, staticResponseMap) {
+    visit(
+        getIntegrationsPath(integrationSource),
+        routeMatcherMapForIntegrationsTab[integrationSource],
+        staticResponseMap
+    );
+
+    cy.location('pathname').should('eq', getIntegrationsPath(integrationSource));
+    cy.get(
+        `${pf6.tabButton}[aria-selected="true"]:contains("${integrationSourceTitleMap[integrationSource]}")`
+    );
 }
 
 /**
@@ -254,9 +297,16 @@ export function visitIntegrationsDashboardFromLeftNav(staticResponseMap) {
  * @param {Record<string, { body: unknown } | { fixture: string }>} [staticResponseMap]
  */
 export function visitIntegrationsTable(integrationSource, integrationType, staticResponseMap) {
+    const routeMatcherMap = {
+        [getIntegrationsEndpointAlias(integrationSource, integrationType)]: {
+            method: 'GET',
+            url: getIntegrationsEndpointAddressForGET(integrationSource, integrationType),
+        },
+    };
+
     visit(
         getIntegrationsPath(integrationSource, integrationType),
-        routeMatcherMapForIntegrationsDashboard,
+        routeMatcherMap,
         staticResponseMap
     );
 
@@ -286,7 +336,7 @@ export function visitIntegrationsWithStaticResponseForCapabilities(
         staticResponseForCapabilities
     );
 }
-export function visitIntegrationsAndVerifyRedirectWithStaticResponseForCapabilities(
+export function visitIntegrationsAndVerifyNotFoundWithStaticResponseForCapabilities(
     staticResponseForCapabilities,
     integrationSource,
     integrationType,
@@ -297,17 +347,15 @@ export function visitIntegrationsAndVerifyRedirectWithStaticResponseForCapabilit
         getIntegrationsPath(integrationSource, integrationType, integrationId, integrationAction),
         staticResponseForCapabilities
     );
-    cy.location('pathname').should('eq', basePath);
+    cy.get(`h1:contains("We couldn't find that page")`);
 }
 
 // interact on dashboard
 
-export function clickIntegrationTileOnDashboard(integrationSource, integrationType) {
-    const integrationSourceTitle = integrationSourceTitleMap[integrationSource];
+export function clickIntegrationTileOnTab(integrationSource, integrationType) {
     const integrationTitle = integrationTitleMap[integrationSource][integrationType];
 
-    cy.get(`h2:contains("${integrationSourceTitle}")`);
-    cy.get(`a .pf-v5-c-card__title:contains("${integrationTitle}")`).click();
+    cy.get(`${pf6.card}:contains("${integrationTitle}") button`).click();
 }
 
 // interact in table
@@ -343,10 +391,8 @@ export function deleteIntegrationInTable(integrationSource, integrationType, int
 
     interactAndWaitForResponses(() => {
         cy.get(`tr:contains("${integrationName}") button[aria-label="Kebab toggle"]`).click();
-        cy.get(
-            `tr:contains("${integrationName}") button[role="menuitem"]:contains("Delete Integration")`
-        ).click(); // TODO Title Case
-        cy.get('.pf-v5-c-modal-box__footer button:contains("Delete")').click(); // confirmation modal
+        cy.get(`${pf6.dropdownItem}:contains("Delete integration")`).click();
+        cy.get('.pf-v6-c-modal-box__footer button:contains("Delete")').click(); // confirmation modal
     }, routeMatcherMap);
 }
 
@@ -355,7 +401,6 @@ export function revokeAuthProvidersIntegrationInTable(integrationType, integrati
 
     const urlRevokeMap = {
         apitoken: '/v1/apitokens/revoke/*',
-        clusterInitBundle: '/v1/cluster-init/init-bundles/revoke', // id is in payload
     };
 
     const routeMatcherMap = Object.fromEntries([
@@ -377,8 +422,8 @@ export function revokeAuthProvidersIntegrationInTable(integrationType, integrati
 
     getTableRowActionButtonByName(integrationName).click();
     interactAndWaitForResponses(() => {
-        cy.get('button:contains("Delete Integration")').click(); // row actions
-        cy.get('.pf-v5-c-modal-box__footer button:contains("Delete")').click(); // confirmation modal
+        cy.get('button:contains("Delete integration")').click(); // row actions
+        cy.get('.pf-v6-c-modal-box__footer button:contains("Delete")').click(); // confirmation modal
     }, routeMatcherMap);
 }
 
@@ -411,16 +456,10 @@ export function generateCreatedAuthProvidersIntegrationInForm(
             : integrationsEndpointAddress;
     const aliasForPOST = `POST_${urlForPOST.replace('/v1/', '')}`;
 
-    const aliasForGET = getIntegrationsEndpointAlias(integrationSource, integrationType);
-
     const routeMatcherMap = {
         [aliasForPOST]: {
             method: 'POST',
             url: urlForPOST,
-        },
-        [aliasForGET]: {
-            method: 'GET',
-            url: getIntegrationsEndpointAddressForGET(integrationSource, integrationType),
         },
     };
 
@@ -549,35 +588,4 @@ export function testIntegrationInFormWithoutStoredCredentials(
         hasStoredCredentials,
         staticResponseForTest
     );
-}
-
-/**
- * Attempts to delete an integration via the API given a source and name, if it exists.
- * @param {'notifiers'} integrationSource The type of integration
- * @param {string} integrationName The name of the integration
- */
-export function tryDeleteIntegration(integrationSource, integrationName) {
-    // This list is not complete - add other integration sources as needed
-    const integrationResponseKeys = {
-        notifiers: 'notifiers',
-    };
-    if (!integrationResponseKeys[integrationSource]) {
-        throw new Error(
-            `A JSON response key for ${integrationSource} was not defined in Cypress test helper.`
-        );
-    }
-    const baseUrl = `/v1/${integrationSource}`;
-    const auth = { bearer: Cypress.env('ROX_AUTH_TOKEN') };
-
-    cy.request({ url: baseUrl, auth }).as('listIntegrations');
-
-    cy.get('@listIntegrations').then((res) => {
-        const jsonKey = integrationResponseKeys[integrationSource];
-        res.body[jsonKey].forEach(({ id, name }) => {
-            if (name === integrationName) {
-                const url = `${baseUrl}/${id}`;
-                cy.request({ url, auth, method: 'DELETE' });
-            }
-        });
-    });
 }

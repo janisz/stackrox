@@ -1,4 +1,3 @@
-import React from 'react';
 import { useField } from 'formik';
 import { Button } from '@patternfly/react-core';
 
@@ -17,13 +16,12 @@ function AndOrOperatorField({ name, readOnly = false }: AndOrOperatorFieldProps)
 
     return (
         <Button
+            icon={<>— {field.value.booleanOperator.toLowerCase()} —</>}
             variant="plain"
             onClick={handleBooleanOperator}
             isDisabled={readOnly}
             data-testid="policy-criteria-boolean-operator"
-        >
-            — {field.value.booleanOperator.toLowerCase()} —
-        </Button>
+        />
     );
 }
 

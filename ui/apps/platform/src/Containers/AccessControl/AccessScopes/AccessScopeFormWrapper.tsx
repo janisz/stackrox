@@ -1,10 +1,12 @@
-import React, { ReactElement, useState } from 'react';
+import { useState } from 'react';
+import type { ReactElement } from 'react';
 import { useFormik } from 'formik';
 import * as yup from 'yup';
 import {
     Alert,
     Button,
     Label,
+    Stack,
     Title,
     Toolbar,
     ToolbarContent,
@@ -12,9 +14,12 @@ import {
     ToolbarItem,
 } from '@patternfly/react-core';
 
-import { AccessScope, getIsUnrestrictedAccessScopeId } from 'services/AccessScopesService';
+import TraitsOriginLabel from 'Components/TraitsOriginLabel';
+import usePermissions from 'hooks/usePermissions';
+import { getIsUnrestrictedAccessScopeId } from 'services/AccessScopesService';
+import type { AccessScope } from 'services/AccessScopesService';
 
-import { AccessControlQueryAction } from '../accessControlPaths';
+import type { AccessControlQueryAction } from '../accessControlPaths';
 
 import {
     // LabelSelectorsEditingState,
@@ -22,8 +27,6 @@ import {
     getIsValidRules,
 } from './accessScopes.utils';
 import AccessScopeForm from './AccessScopeForm';
-import usePermissions from '../../../hooks/usePermissions';
-import { TraitsOriginLabel } from '../TraitsOriginLabel';
 
 export type AccessScopeFormWrapperProps = {
     isActionable: boolean;
@@ -119,8 +122,8 @@ function AccessScopeFormWrapper({
     const hasAction = Boolean(action);
 
     return (
-        <>
-            <Toolbar inset={{ default: 'insetNone' }} className="pf-v5-u-pt-0">
+        <Stack hasGutter>
+            <Toolbar>
                 <ToolbarContent>
                     <ToolbarItem>
                         <Title headingLevel="h1">
@@ -133,7 +136,7 @@ function AccessScopeFormWrapper({
                         </ToolbarItem>
                     )}
                     {action !== 'create' && (
-                        <ToolbarGroup variant="button-group" align={{ default: 'alignRight' }}>
+                        <ToolbarGroup variant="action-group" align={{ default: 'alignEnd' }}>
                             <ToolbarItem>
                                 {isActionable ? (
                                     <Button
@@ -160,9 +163,9 @@ function AccessScopeFormWrapper({
                 // setLabelSelectorsEditingState={setLabelSelectorsEditingState}
             />
             {hasAction && (
-                <Toolbar inset={{ default: 'insetNone' }} className="pf-v5-u-pb-0">
+                <Toolbar>
                     <ToolbarContent>
-                        <ToolbarGroup variant="button-group">
+                        <ToolbarGroup variant="action-group">
                             <ToolbarItem>
                                 <Button
                                     variant="primary"
@@ -177,13 +180,12 @@ function AccessScopeFormWrapper({
                                         isSubmitting
                                     }
                                     isLoading={isSubmitting}
-                                    size="sm"
                                 >
                                     Save
                                 </Button>
                             </ToolbarItem>
                             <ToolbarItem>
-                                <Button variant="tertiary" onClick={onClickCancel} size="sm">
+                                <Button variant="tertiary" onClick={onClickCancel}>
                                     Cancel
                                 </Button>
                             </ToolbarItem>
@@ -191,7 +193,7 @@ function AccessScopeFormWrapper({
                     </ToolbarContent>
                 </Toolbar>
             )}
-        </>
+        </Stack>
     );
 }
 

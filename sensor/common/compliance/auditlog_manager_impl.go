@@ -1,6 +1,7 @@
 package compliance
 
 import (
+	"maps"
 	"time"
 
 	"github.com/stackrox/rox/generated/internalapi/central"
@@ -12,6 +13,7 @@ import (
 	"github.com/stackrox/rox/pkg/sync"
 	"github.com/stackrox/rox/sensor/common"
 	"github.com/stackrox/rox/sensor/common/message"
+	"github.com/stackrox/rox/sensor/common/unimplemented"
 )
 
 const (
@@ -19,8 +21,13 @@ const (
 )
 
 // auditLogCollectionManagerImpl manages the lifecycle of audit log collection within the cluster
+// This component doesn't actually process or handle any messages sent to Sensor. It uses the sensor component
+// so that the lifecycle (start, stop) can be handled when Sensor starts up. The actual messages from central to
+// enable/disable audit log collection is handled as part of the dynamic config in config.Handler which then calls
+// the specific APIs in this manager.
 type auditLogCollectionManagerImpl struct {
-	clusterIDGetter func() string
+	unimplemented.Receiver
+	clusterID clusterIDWaiter
 
 	enabled                         concurrency.Flag
 	receivedInitialStateFromCentral concurrency.Flag
@@ -39,13 +46,17 @@ type auditLogCollectionManagerImpl struct {
 	connectionLock sync.RWMutex
 }
 
+func (a *auditLogCollectionManagerImpl) Name() string {
+	return "compliance.auditLogCollectionManagerImpl"
+}
+
 func (a *auditLogCollectionManagerImpl) Start() error {
 	go a.runStateSaver()
 	go a.runUpdater(a.updaterTicker.C)
 	return nil
 }
 
-func (a *auditLogCollectionManagerImpl) Stop(_ error) {
+func (a *auditLogCollectionManagerImpl) Stop() {
 	if !a.stopper.Client().Stopped().IsDone() {
 		defer func() {
 			_ = a.stopper.Client().Stopped().Wait()
@@ -66,14 +77,6 @@ func (a *auditLogCollectionManagerImpl) Notify(e common.SensorComponentEvent) {
 
 func (a *auditLogCollectionManagerImpl) Capabilities() []centralsensor.SensorCapability {
 	return []centralsensor.SensorCapability{centralsensor.AuditLogEventsCap}
-}
-
-func (a *auditLogCollectionManagerImpl) ProcessMessage(_ *central.MsgToSensor) error {
-	// This component doesn't actually process or handle any messages sent to Sensor. It uses the sensor component
-	// so that the lifecycle (start, stop) can be handled when Sensor starts up. The actual messages from central to
-	// enable/disable audit log collection is handled as part of the dynamic config in config.Handler which then calls
-	// the specific APIs in this manager.
-	return nil
 }
 
 func (a *auditLogCollectionManagerImpl) ResponsesC() <-chan *message.ExpiringMessage {
@@ -160,16 +163,15 @@ func (a *auditLogCollectionManagerImpl) getLatestFileStates() map[string]*storag
 
 	// Clone the map before returning because it may get changed before the caller has a chance to use it.
 	nodeStates := make(map[string]*storage.AuditLogFileState, len(a.fileStates))
-	for k, v := range a.fileStates {
-		nodeStates[k] = v // no need to clone this because when the map is updated a new storage.AuditLogFileState is always created (see updateFileState)
-	}
+	// no need to clone this because when the map is updated a new storage.AuditLogFileState is always created (see updateFileState)
+	maps.Copy(nodeStates, a.fileStates)
 	return nodeStates
 }
 
 func (a *auditLogCollectionManagerImpl) getCentralUpdateMsg(fileStates map[string]*storage.AuditLogFileState) *message.ExpiringMessage {
 	return message.New(&central.MsgFromSensor{
-		HashKey:   a.clusterIDGetter(),
-		DedupeKey: a.clusterIDGetter(),
+		HashKey:   a.clusterID.Get(),
+		DedupeKey: a.clusterID.Get(),
 		Msg: &central.MsgFromSensor_AuditLogStatusInfo{
 			AuditLogStatusInfo: &central.AuditLogStatusInfo{
 				NodeAuditLogFileStates: fileStates,
@@ -235,7 +237,7 @@ func (a *auditLogCollectionManagerImpl) startCollectionOnNodeNoFileStateLock(nod
 			AuditLogCollectionRequest: &sensor.MsgToCompliance_AuditLogCollectionRequest{
 				Req: &sensor.MsgToCompliance_AuditLogCollectionRequest_StartReq{
 					StartReq: &sensor.MsgToCompliance_AuditLogCollectionRequest_StartRequest{
-						ClusterId: a.clusterIDGetter(),
+						ClusterId: a.clusterID.Get(),
 					},
 				},
 			},

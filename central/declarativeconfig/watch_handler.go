@@ -5,8 +5,10 @@ import (
 	"crypto/md5"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"path"
+	"slices"
 	"strings"
 
 	"github.com/pkg/errors"
@@ -15,8 +17,7 @@ import (
 	"github.com/stackrox/rox/pkg/set"
 	"github.com/stackrox/rox/pkg/sync"
 	"github.com/stackrox/rox/pkg/utils"
-	"golang.org/x/exp/maps"
-	"gopkg.in/yaml.v3"
+	"go.yaml.in/yaml/v3"
 )
 
 var (
@@ -105,7 +106,7 @@ func (w *watchHandler) OnStableUpdate(val interface{}, err error) {
 		return
 	}
 	log.Debug("Found changes in declarative configuration files, reconciliation will be triggered")
-	w.updater.UpdateDeclarativeConfigContents(w.id, maps.Values(fileContents))
+	w.updater.UpdateDeclarativeConfigContents(w.id, slices.Collect(maps.Values(fileContents)))
 }
 
 func (w *watchHandler) OnWatchError(err error) {
@@ -139,8 +140,8 @@ func (w *watchHandler) compareHashesForChanges(fileContents map[string][]byte) b
 // the list of updated files. Otherwise, returns false.
 // In the end, the cached values will be changed to reflect the passed file contents.
 func (w *watchHandler) checkForDeletedFiles(fileContents map[string][]byte) bool {
-	cachedFileNames := set.NewStringSet(maps.Keys(w.cachedFileHashes)...)
-	fileNames := set.NewStringSet(maps.Keys(fileContents)...)
+	cachedFileNames := set.NewStringSet(slices.Collect(maps.Keys(w.cachedFileHashes))...)
+	fileNames := set.NewStringSet(slices.Collect(maps.Keys(fileContents))...)
 
 	// Retrieve all files that are within the cache, but are not present anymore in the current file contents.
 	removedFiles := cachedFileNames.Difference(fileNames)
@@ -150,7 +151,7 @@ func (w *watchHandler) checkForDeletedFiles(fileContents map[string][]byte) bool
 	}
 
 	newCachedFileHashes := maputil.ShallowClone(w.cachedFileHashes)
-	for _, removedFile := range removedFiles.AsSlice() {
+	for removedFile := range removedFiles {
 		delete(newCachedFileHashes, removedFile)
 	}
 
@@ -159,12 +160,13 @@ func (w *watchHandler) checkForDeletedFiles(fileContents map[string][]byte) bool
 }
 
 func (w *watchHandler) logFileContents(contents map[string][]byte) {
-	logMessage := "Found declarative configuration file contents\n"
+	var logMessage strings.Builder
+	logMessage.WriteString("Found declarative configuration file contents\n")
 
 	for fileName, fileContents := range contents {
-		logMessage += fmt.Sprintf("File %s: %s\n", fileName, fileContents)
+		logMessage.WriteString(fmt.Sprintf("File %s: %s\n", fileName, fileContents))
 	}
-	log.Debug(logMessage)
+	log.Debug(logMessage.String())
 }
 
 // readDeclarativeConfigFile will read the file and additionally verify that the contents are valid YAML.

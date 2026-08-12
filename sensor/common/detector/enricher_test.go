@@ -49,9 +49,11 @@ func (s *enricherSuite) SetupTest() {
 	s.mockCache = expiringcache.NewExpiringCache[cache.Key, cache.Value](env.ReprocessInterval.DurationSetting())
 	s.mockServiceAccountStore = mockStore.NewMockServiceAccountStore(s.mockCtrl)
 	s.mockRegistryStore = registry.NewRegistryStore(nil)
-	s.enricher = newEnricher(s.mockCache,
+	s.enricher = newEnricher(
+		&fakeClusterIDPeekWaiter{},
+		s.mockCache,
 		s.mockServiceAccountStore,
-		s.mockRegistryStore, nil)
+		s.mockRegistryStore, nil, nil)
 }
 
 func (s *enricherSuite) TearDownTest() {
@@ -161,7 +163,7 @@ func (m *mockImageServiceServer) ScanImageInternal(_ context.Context, req *v1.Sc
 	}
 
 	return &v1.ScanImageInternalResponse{
-		Image: types.ToImage(req.Image),
+		Image: types.ToImage(req.GetImage()),
 	}, nil
 }
 
@@ -215,7 +217,7 @@ func (s *enricherSuite) TestScanAndSetWithLock() {
 
 func runAsyncScans(e *enricher, reqs []*scanImageRequest) *sync.WaitGroup {
 	waitGroup := &sync.WaitGroup{}
-	for i := 0; i < 100; i++ {
+	for range 100 {
 		for _, req := range reqs {
 			waitGroup.Add(1)
 			go func(req *scanImageRequest) {
@@ -265,9 +267,9 @@ func (s *enricherSuite) TestUpdateImageNoLock() {
 		}
 
 		cValue.updateImageNoLock(updatedImage)
-		assert.Len(t, cValue.image.Names, 2)
-		protoassert.SliceContains(t, cValue.image.Names, name1)
-		protoassert.SliceContains(t, cValue.image.Names, name2)
+		assert.Len(t, cValue.image.GetNames(), 2)
+		protoassert.SliceContains(t, cValue.image.GetNames(), name1)
+		protoassert.SliceContains(t, cValue.image.GetNames(), name2)
 	})
 
 	s.T().Run("append to names when new one added", func(t *testing.T) {
@@ -282,9 +284,9 @@ func (s *enricherSuite) TestUpdateImageNoLock() {
 		}
 
 		cValue.updateImageNoLock(updatedImage)
-		assert.Len(t, cValue.image.Names, 2)
-		protoassert.SliceContains(t, cValue.image.Names, name1)
-		protoassert.SliceContains(t, cValue.image.Names, name2)
+		assert.Len(t, cValue.image.GetNames(), 2)
+		protoassert.SliceContains(t, cValue.image.GetNames(), name1)
+		protoassert.SliceContains(t, cValue.image.GetNames(), name2)
 	})
 
 	s.T().Run("append to names when new one added and one removed", func(t *testing.T) {
@@ -299,10 +301,10 @@ func (s *enricherSuite) TestUpdateImageNoLock() {
 		}
 
 		cValue.updateImageNoLock(updatedImage)
-		assert.Len(t, cValue.image.Names, 3)
-		protoassert.SliceContains(t, cValue.image.Names, name1)
-		protoassert.SliceContains(t, cValue.image.Names, name2)
-		protoassert.SliceContains(t, cValue.image.Names, name3)
+		assert.Len(t, cValue.image.GetNames(), 3)
+		protoassert.SliceContains(t, cValue.image.GetNames(), name1)
+		protoassert.SliceContains(t, cValue.image.GetNames(), name2)
+		protoassert.SliceContains(t, cValue.image.GetNames(), name3)
 	})
 }
 

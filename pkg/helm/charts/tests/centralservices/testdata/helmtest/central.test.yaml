@@ -27,7 +27,7 @@ tests:
     .secrets["central-htpasswd"].stringData.htpasswd | assertThat(length > 0)
     .configmaps["central-config"].data.["central-config.yaml"] | assertThat(length > 0)
     .configmaps["central-external-db"].data.["central-external-db.yaml"] | assertThat(length > 0)
-    .deployments["central"].spec.template.spec.affinity.nodeAffinity | .preferredDuringSchedulingIgnoredDuringExecution | assertThat(length == 5)
+    .deployments["central"].spec.template.spec.affinity.nodeAffinity | .preferredDuringSchedulingIgnoredDuringExecution | assertThat(length == 4)
     verifyNodeAffinities(.deployments["central"])
     .networkpolicys["allow-ext-to-central"] | assertThat(. != null)
     .networkpolicys["central-db"] | assertThat(. != null)
@@ -79,16 +79,16 @@ tests:
 - name: "central with OpenShift 4 and stock SCCs"
   server:
     visibleSchemas:
-    - openshift-4.1.0
+    - openshift-4.12
     availableSchemas:
-    - openshift-4.1.0
+    - openshift-4.12
   values:
     env:
       openshift: 4
   expect: |
     .roles["use-central-scc"] | .rules[0].resourceNames[0] | assertThat(contains("nonroot-v2"))
     .rolebindings["central-use-scc"] | assertThat(. != null)
-    .deployments["central"].spec.template.spec.affinity.nodeAffinity | .preferredDuringSchedulingIgnoredDuringExecution | assertThat(length == 5)
+    .deployments["central"].spec.template.spec.affinity.nodeAffinity | .preferredDuringSchedulingIgnoredDuringExecution | assertThat(length == 4)
     verifyNodeAffinities(.deployments["central"])
     envVars(.deployments.central; "central") | assertThat(has("ROX_OPENSHIFT") == true)
 
@@ -111,16 +111,32 @@ tests:
   expect: |
     envVars(.deployments.central; "central") | assertThat(has("ROX_TENANT_ID") == false)
 
-- name: "override affinity"
+- name: ROX_LEGACY_SCANNER should be true by default
+  expect: |
+    envVars(.deployments.central; "central")["ROX_LEGACY_SCANNER"] | assertThat(. == "true")
+
+- name: ROX_LEGACY_SCANNER should be false when scanner is disabled
+  set:
+    scanner.disable: true
+  expect: |
+    envVars(.deployments.central; "central")["ROX_LEGACY_SCANNER"] | assertThat(. == "false")
+
+- name: ROX_LEGACY_SCANNER should be true when scanner is explicitly enabled
+  set:
+    scanner.disable: false
+  expect: |
+    envVars(.deployments.central; "central")["ROX_LEGACY_SCANNER"] | assertThat(. == "true")
+
+- name: Central deployment has secure container security context
+  expect: |
+    container(.deployments["central"]; "central") | .securityContext.allowPrivilegeEscalation | assertThat(. == false)
+    container(.deployments["central"]; "central") | .securityContext.readOnlyRootFilesystem | assertThat(. == true)
+    container(.deployments["central"]; "central") | .securityContext.capabilities.drop | assertThat(contains(["NET_RAW"]))
+
+- name: Central DB init container has secure container security context
   values:
     central:
-      affinity:
-        nodeAffinity:
-          preferredDuringSchedulingIgnoredDuringExecution:
-            - weight: 50
-              preference:
-                matchExpressions:
-                  - key: node-role.kubernetes.io/master
-                    operator: Exists
+      db:
+        enabled: true
   expect: |
-    .deployments["central"].spec.template.spec.affinity.nodeAffinity.preferredDuringSchedulingIgnoredDuringExecution | assertThat(length == 1)
+    .deployments["central-db"].spec.template.spec.initContainers[] | select(.name == "init-db") | .securityContext.allowPrivilegeEscalation | assertThat(. == false)

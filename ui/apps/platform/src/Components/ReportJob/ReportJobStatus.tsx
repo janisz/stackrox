@@ -1,4 +1,4 @@
-import React, { ReactElement } from 'react';
+import type { ReactElement } from 'react';
 import {
     CheckCircleIcon,
     DownloadIcon,
@@ -11,7 +11,7 @@ import {
 import { Button, Flex, FlexItem, Tooltip } from '@patternfly/react-core';
 import capitalize from 'lodash/capitalize';
 
-import { ReportStatus } from 'types/reportJob';
+import type { ReportStatus } from 'types/reportJob';
 import PartialReportModal from './PartialReportModal';
 
 export type ReportJobStatusProps = {
@@ -32,7 +32,8 @@ function ReportJobStatus({
 }: ReportJobStatusProps): ReactElement {
     const isDownload = reportStatus.reportNotificationMethod === 'DOWNLOAD';
 
-    let statusColorClass = '';
+    let statusIconColorClass = '';
+    let statusTextColorClass = '';
     let statusIcon: ReactElement;
     let statusText: ReactElement;
 
@@ -43,7 +44,8 @@ function ReportJobStatus({
         statusIcon = <PendingIcon title="Report run is waiting" />;
         statusText = <p>Waiting</p>;
     } else if (reportStatus.runState === 'FAILURE') {
-        statusColorClass = 'pf-v5-u-danger-color-100';
+        statusIconColorClass = 'pf-v6-u-icon-color-status-danger';
+        statusTextColorClass = 'pf-v6-u-text-color-status-danger';
         statusIcon = (
             <Tooltip
                 content={reportStatus?.errorMsg ? capitalize(reportStatus.errorMsg) : genericMsg}
@@ -51,9 +53,36 @@ function ReportJobStatus({
                 <ExclamationCircleIcon title="Report run was unsuccessful" />
             </Tooltip>
         );
-        statusText = <p>Error</p>;
+        statusText = <p>Report failed to generate</p>;
+    } else if (isDownload && !isDownloadAvailable) {
+        statusIconColorClass = 'pf-v6-u-icon-color-disabled';
+        statusTextColorClass = 'pf-v6-u-text-color-disabled';
+        statusIcon = <DownloadIcon title="Report download was deleted" />;
+        statusText = (
+            <Flex
+                direction={{ default: 'row' }}
+                spaceItems={{ default: 'spaceItemsSm' }}
+                alignItems={{ default: 'alignItemsCenter' }}
+            >
+                <FlexItem>
+                    <p>Report download deleted</p>
+                </FlexItem>
+                <FlexItem>
+                    <Tooltip
+                        content={
+                            <div>
+                                The download was deleted. Please generate a new download if needed.
+                            </div>
+                        }
+                    >
+                        <HelpIcon title="Download deletion explanation" />
+                    </Tooltip>
+                </FlexItem>
+            </Flex>
+        );
     } else if (isDownload && isDownloadAvailable && areDownloadActionsDisabled) {
-        statusColorClass = 'pf-v5-u-disabled-color-100';
+        statusIconColorClass = 'pf-v6-u-icon-color-disabled';
+        statusTextColorClass = 'pf-v6-u-text-color-disabled';
         statusIcon = <DownloadIcon title="Report download was successfully prepared" />;
         statusText = (
             <Flex
@@ -62,7 +91,7 @@ function ReportJobStatus({
                 alignItems={{ default: 'alignItemsCenter' }}
             >
                 <FlexItem>
-                    <p>Ready for download</p>
+                    <p>Report ready for download</p>
                 </FlexItem>
                 <FlexItem>
                     <Tooltip
@@ -82,59 +111,39 @@ function ReportJobStatus({
         isDownload &&
         isDownloadAvailable &&
         !areDownloadActionsDisabled &&
-        reportStatus.runState === 'PARTIAL_ERROR'
+        reportStatus.runState === 'PARTIAL_SCAN_ERROR_DOWNLOAD'
     ) {
-        statusIcon = (
-            <ExclamationTriangleIcon
-                title="Report download prepared with partial errors"
-                className="pf-v5-u-warning-color-100"
-            />
-        );
+        statusIconColorClass = 'pf-v6-u-icon-color-brand';
+        statusTextColorClass = 'pf-v6-u-text-color-brand';
+        statusIcon = <DownloadIcon title="Partial report download was successfully prepared" />;
         statusText = (
             <PartialReportModal
                 failedClusters={reportStatus.failedClusters}
-                onConfirm={onDownload}
+                onDownload={onDownload}
             />
         );
     } else if (isDownload && isDownloadAvailable && !areDownloadActionsDisabled) {
-        statusColorClass = 'pf-v5-u-primary-color-100';
+        statusIconColorClass = 'pf-v6-u-icon-color-brand';
+        statusTextColorClass = 'pf-v6-u-text-color-brand';
         statusIcon = <DownloadIcon title="Report download was successfully prepared" />;
         statusText = (
-            <Button variant="link" isInline className={statusColorClass} onClick={onDownload}>
-                Ready for download
+            <Button variant="link" isInline onClick={onDownload}>
+                Report ready for download
             </Button>
         );
-    } else if (isDownload && !isDownloadAvailable) {
-        statusColorClass = 'pf-v5-u-disabled-color-100';
-        statusIcon = <DownloadIcon title="Report download was deleted" />;
-        statusText = (
-            <Flex
-                direction={{ default: 'row' }}
-                spaceItems={{ default: 'spaceItemsSm' }}
-                alignItems={{ default: 'alignItemsCenter' }}
-            >
-                <FlexItem>
-                    <p>Download deleted</p>
-                </FlexItem>
-                <FlexItem>
-                    <Tooltip
-                        content={
-                            <div>
-                                The download was deleted. Please generate a new download if needed.
-                            </div>
-                        }
-                    >
-                        <HelpIcon title="Download deletion explanation" />
-                    </Tooltip>
-                </FlexItem>
-            </Flex>
-        );
     } else if (reportStatus.runState === 'DELIVERED') {
-        statusColorClass = 'pf-v5-u-success-color-100';
+        statusIconColorClass = 'pf-v6-u-icon-color-status-success';
+        statusTextColorClass = 'pf-v6-u-text-color-status-success';
         statusIcon = <CheckCircleIcon title="Report was successfully sent" />;
-        statusText = <p className="pf-v5-u-success-color-100">Successfully sent</p>;
+        statusText = <p className="pf-v6-u-text-color-status-success">Report successfully sent</p>;
+    } else if (reportStatus.runState === 'PARTIAL_SCAN_ERROR_EMAIL') {
+        statusIconColorClass = 'pf-v6-u-icon-color-status-success';
+        statusTextColorClass = 'pf-v6-u-text-color-status-success';
+        statusIcon = <CheckCircleIcon title="Partial report was successfully sent" />;
+        statusText = <PartialReportModal failedClusters={reportStatus.failedClusters} />;
     } else {
-        statusColorClass = 'pf-v5-u-warning-color-100';
+        statusIconColorClass = 'pf-v6-u-icon-color-status-warning';
+        statusTextColorClass = 'pf-v6-u-text-color-status-warning';
         statusIcon = (
             <Tooltip content="Please contact support for more help.">
                 <ExclamationTriangleIcon title="Report run status is unknown" />
@@ -144,9 +153,9 @@ function ReportJobStatus({
     }
 
     return (
-        <Flex alignItems={{ default: 'alignItemsCenter' }} className={statusColorClass}>
-            <FlexItem>{statusIcon}</FlexItem>
-            <FlexItem>{statusText}</FlexItem>
+        <Flex alignItems={{ default: 'alignItemsCenter' }}>
+            <FlexItem className={statusIconColorClass}>{statusIcon}</FlexItem>
+            <FlexItem className={statusTextColorClass}>{statusText}</FlexItem>
         </Flex>
     );
 }

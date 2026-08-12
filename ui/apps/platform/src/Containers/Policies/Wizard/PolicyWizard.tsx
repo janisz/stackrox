@@ -1,30 +1,32 @@
-import React, { ReactElement, useEffect, useState } from 'react';
-import { useHistory } from 'react-router-dom';
+import { useEffect, useState } from 'react';
+import type { ReactElement } from 'react';
+import { useNavigate } from 'react-router-dom-v5-compat';
 import { FormikProvider, useFormik } from 'formik';
 import {
     Alert,
     Breadcrumb,
-    Title,
     BreadcrumbItem,
-    Divider,
     PageSection,
+    Title,
     Wizard,
     WizardStep,
-    WizardStepType,
 } from '@patternfly/react-core';
+import type { WizardStepType } from '@patternfly/react-core';
 
 import { createPolicy, savePolicy } from 'services/PoliciesService';
 import { fetchAlertCount } from 'services/AlertsService';
-import { ClientPolicy } from 'types/policy.proto';
+import type { ClientPolicy } from 'types/policy.proto';
 import { getAxiosErrorMessage } from 'utils/responseErrorUtils';
 import { policiesBasePath } from 'routePaths';
 import BreadcrumbItemLink from 'Components/BreadcrumbItemLink';
-import { ExtendedPageAction } from 'utils/queryStringUtils';
+import type { ExtendedPageAction } from 'utils/queryStringUtils';
+import useFeatureFlags from 'hooks/useFeatureFlags';
 
 import {
     POLICY_BEHAVIOR_ACTIONS_ID,
+    POLICY_BEHAVIOR_FILTERS_ID,
     POLICY_BEHAVIOR_ID,
-    POLICY_BEHAVIOR_SCOPE_ID,
+    POLICY_BEHAVIOR_RESOURCES_ID,
     POLICY_DEFINITION_DETAILS_ID,
     POLICY_DEFINITION_ID,
     POLICY_DEFINITION_LIFECYCLE_ID,
@@ -37,6 +39,7 @@ import PolicyDetailsForm from './Step1/PolicyDetailsForm';
 import PolicyBehaviorForm from './Step2/PolicyBehaviorForm';
 import PolicyCriteriaForm from './Step3/PolicyCriteriaForm';
 import PolicyScopeForm from './Step4/PolicyScopeForm';
+import PolicyFiltersForm from './StepFilters/PolicyFiltersForm';
 import PolicyActionsForm from './Step5/PolicyActionsForm';
 import ReviewPolicyForm from './Step6/ReviewPolicyForm';
 
@@ -48,7 +51,8 @@ type PolicyWizardProps = {
 };
 
 function PolicyWizard({ pageAction, policy }: PolicyWizardProps): ReactElement {
-    const history = useHistory();
+    const navigate = useNavigate();
+    const { isFeatureFlagEnabled } = useFeatureFlags();
     const [stepId, setStepId] = useState<number | string>(POLICY_DEFINITION_DETAILS_ID);
     const [isValidOnServer, setIsValidOnServer] = useState(false);
     const [policyErrorMessage, setPolicyErrorMessage] = useState('');
@@ -66,7 +70,14 @@ function PolicyWizard({ pageAction, policy }: PolicyWizardProps): ReactElement {
                 pageAction === 'edit' ? savePolicy(serverPolicy) : createPolicy(serverPolicy);
             request
                 .then(() => {
-                    history.goBack();
+                    if (pageAction === 'edit') {
+                        // Either navigate back to the policies list or the policy detail page
+                        navigate(-1);
+                    } else {
+                        // Unconditionally navigate to the policies list, note that for "clone" it would
+                        // be more consistent to navigate to the policy detail page for the new policy
+                        navigate(policiesBasePath);
+                    }
                 })
                 .catch((error) => {
                     setPolicyErrorMessage(getAxiosErrorMessage(error));
@@ -92,12 +103,12 @@ function PolicyWizard({ pageAction, policy }: PolicyWizardProps): ReactElement {
     } = formik;
 
     function closeWizard(): void {
-        history.goBack();
+        navigate(-1);
     }
 
     function scrollToTop() {
         // wizard does not by default scroll to top of body when navigating to a step
-        document.getElementsByClassName('pf-v5-c-wizard__main')[0].scrollTop = 0;
+        document.getElementsByClassName('pf-v6-c-wizard__main')[0].scrollTop = 0;
     }
 
     useEffect(() => {
@@ -125,6 +136,19 @@ function PolicyWizard({ pageAction, policy }: PolicyWizardProps): ReactElement {
     }, [policy]);
 
     function onStepChange(_event, currentStep: WizardStepType): void {
+        if (currentStep.id === POLICY_BEHAVIOR_ACTIONS_ID) {
+            const hasStaleMarker = values.enforcementActions?.some(
+                (a) => a === 'UNSET_ENFORCEMENT'
+            );
+            if (hasStaleMarker) {
+                formik
+                    .setFieldValue(
+                        'enforcementActions',
+                        values.enforcementActions.filter((a) => a !== 'UNSET_ENFORCEMENT')
+                    )
+                    .catch(() => {});
+            }
+        }
         setStepId(currentStep.id);
         scrollToTop();
     }
@@ -139,27 +163,26 @@ function PolicyWizard({ pageAction, policy }: PolicyWizardProps): ReactElement {
                     policy will be automatically overwritten during the next resync.
                 </Alert>
             )}
-            <PageSection variant="light" isFilled id="policy-page" className="pf-v5-u-pb-0">
-                <Breadcrumb className="pf-v5-u-mb-md">
+            <PageSection type="breadcrumb">
+                <Breadcrumb>
                     <BreadcrumbItemLink to={policiesBasePath}>Policies</BreadcrumbItemLink>
                     <BreadcrumbItem isActive>{policy?.name || 'Create policy'}</BreadcrumbItem>
                 </Breadcrumb>
+            </PageSection>
+            <PageSection isFilled id="policy-page">
                 <Title headingLevel="h1">{policy?.name || 'Create policy'}</Title>
-                <div className="pf-v5-u-mb-md pf-v5-u-mt-sm">
-                    Design custom security policies for your environment
-                </div>
-                <Divider component="div" />
+                <div>Design custom security policies for your environment</div>
             </PageSection>
             <PageSection
-                variant="light"
+                hasBodyWrapper={false}
                 isFilled
                 hasOverflowScroll
                 padding={{ default: 'noPadding' }}
-                className="pf-v5-u-h-100"
+                className="pf-v6-u-h-100"
             >
                 <FormikProvider value={formik}>
                     <Wizard
-                        navAriaLabel={`${pageAction} policy steps`}
+                        navAriaLabel="Security policy configuration steps"
                         onClose={closeWizard}
                         onSave={submitForm}
                         isVisitRequired={!canJumpToAny}
@@ -173,7 +196,6 @@ function PolicyWizard({ pageAction, policy }: PolicyWizardProps): ReactElement {
                                 <WizardStep
                                     name="Details"
                                     id={POLICY_DEFINITION_DETAILS_ID}
-                                    key={POLICY_DEFINITION_DETAILS_ID}
                                     body={{ hasNoPadding: true }}
                                     footer={{ isNextDisabled: !isValidOnClient }}
                                 >
@@ -185,7 +207,6 @@ function PolicyWizard({ pageAction, policy }: PolicyWizardProps): ReactElement {
                                 <WizardStep
                                     name="Lifecycle"
                                     id={POLICY_DEFINITION_LIFECYCLE_ID}
-                                    key={POLICY_DEFINITION_LIFECYCLE_ID}
                                     body={{ hasNoPadding: true }}
                                     footer={{ isNextDisabled: !isValidOnClient }}
                                 >
@@ -194,7 +215,6 @@ function PolicyWizard({ pageAction, policy }: PolicyWizardProps): ReactElement {
                                 <WizardStep
                                     name="Rules"
                                     id={POLICY_DEFINITION_RULES_ID}
-                                    key={POLICY_DEFINITION_RULES_ID}
                                     body={{ hasNoPadding: true }}
                                     footer={{ isNextDisabled: !isValidOnClient }}
                                 >
@@ -208,14 +228,27 @@ function PolicyWizard({ pageAction, policy }: PolicyWizardProps): ReactElement {
                             isExpandable
                             steps={[
                                 <WizardStep
-                                    name="Scope"
-                                    id={POLICY_BEHAVIOR_SCOPE_ID}
-                                    key={POLICY_BEHAVIOR_SCOPE_ID}
+                                    name="Resources"
+                                    id={POLICY_BEHAVIOR_RESOURCES_ID}
+                                    key={POLICY_BEHAVIOR_RESOURCES_ID}
                                     body={{ hasNoPadding: true }}
                                     footer={{ isNextDisabled: !isValidOnClient }}
                                 >
                                     <PolicyScopeForm />
                                 </WizardStep>,
+                                ...(isFeatureFlagEnabled('ROX_EVALUATION_FILTER') &&
+                                isFeatureFlagEnabled('ROX_INIT_CONTAINER_SUPPORT')
+                                    ? [
+                                          <WizardStep
+                                              name="Filters"
+                                              id={POLICY_BEHAVIOR_FILTERS_ID}
+                                              key={POLICY_BEHAVIOR_FILTERS_ID}
+                                              body={{ hasNoPadding: true }}
+                                          >
+                                              <PolicyFiltersForm />
+                                          </WizardStep>,
+                                      ]
+                                    : []),
                                 <WizardStep
                                     name="Actions"
                                     id={POLICY_BEHAVIOR_ACTIONS_ID}

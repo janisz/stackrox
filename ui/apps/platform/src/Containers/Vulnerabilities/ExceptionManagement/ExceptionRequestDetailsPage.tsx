@@ -1,11 +1,10 @@
-import React, { useState, useCallback } from 'react';
+import { useCallback, useState } from 'react';
 import {
     Alert,
     AlertActionCloseButton,
     Breadcrumb,
     BreadcrumbItem,
     Bullseye,
-    Divider,
     Flex,
     FlexItem,
     PageSection,
@@ -17,7 +16,7 @@ import {
     Title,
     pluralize,
 } from '@patternfly/react-core';
-import { useParams } from 'react-router-dom';
+import { useParams } from 'react-router-dom-v5-compat';
 
 import { exceptionManagementPath } from 'routePaths';
 import useSet from 'hooks/useSet';
@@ -27,11 +26,11 @@ import useURLStringUnion from 'hooks/useURLStringUnion';
 import useAuthStatus from 'hooks/useAuthStatus';
 import { ensureExhaustive } from 'utils/type.utils';
 import {
-    VulnerabilityException,
     fetchVulnerabilityExceptionById,
     isDeferralException,
     isFalsePositiveException,
 } from 'services/VulnerabilityExceptionService';
+import type { VulnerabilityException } from 'services/VulnerabilityExceptionService';
 
 import PageTitle from 'Components/PageTitle';
 import NotFoundMessage from 'Components/NotFoundMessage';
@@ -79,7 +78,7 @@ export function getCVEsForUpdatedRequest(exception: VulnerabilityException): str
 const tabContentId = 'ExceptionRequestDetails';
 
 function ExceptionRequestDetailsPage() {
-    const { requestId } = useParams();
+    const { requestId } = useParams() as { requestId: string };
     const { hasReadWriteAccess } = usePermissions();
     const { currentUser } = useAuthStatus();
     const hasWriteAccessForApproving = hasReadWriteAccess('VulnerabilityManagementApprovals');
@@ -133,7 +132,7 @@ function ExceptionRequestDetailsPage() {
 
     if (error) {
         return (
-            <PageSection variant="light">
+            <PageSection>
                 <TableErrorComponent
                     error={error}
                     message="An error occurred. Try refreshing again"
@@ -146,7 +145,7 @@ function ExceptionRequestDetailsPage() {
         return (
             <NotFoundMessage
                 title="404: We couldn't find that page"
-                message={`A request with ID ${requestId as string} could not be found.`}
+                message={`A request with ID ${requestId} could not be found.`}
             />
         );
     }
@@ -188,7 +187,7 @@ function ExceptionRequestDetailsPage() {
                     please submit a new request
                 </Alert>
             )}
-            <PageSection variant="light" className="pf-v5-u-py-md">
+            <PageSection type="breadcrumb">
                 <Breadcrumb>
                     <BreadcrumbItemLink to={exceptionManagementPath}>
                         Exception management
@@ -196,8 +195,7 @@ function ExceptionRequestDetailsPage() {
                     <BreadcrumbItem isActive>{vulnerabilityException.name}</BreadcrumbItem>
                 </Breadcrumb>
             </PageSection>
-            <Divider component="div" />
-            <PageSection variant="light">
+            <PageSection>
                 <Flex>
                     <Flex direction={{ default: 'column' }} flex={{ default: 'flex_1' }}>
                         <Title headingLevel="h1">Request {vulnerabilityException.name}</Title>
@@ -229,13 +227,9 @@ function ExceptionRequestDetailsPage() {
                     )}
                 </Flex>
             </PageSection>
-            <PageSection className="pf-v5-u-p-0">
-                {isApprovedPendingUpdate && (
-                    <Tabs
-                        activeKey={selectedContext}
-                        onSelect={handleTabClick}
-                        className="pf-v5-u-pl-lg pf-v5-u-background-color-100"
-                    >
+            {isApprovedPendingUpdate && (
+                <PageSection type="tabs">
+                    <Tabs activeKey={selectedContext} onSelect={handleTabClick} usePageInsets>
                         <Tab
                             eventKey="PENDING_UPDATE"
                             tabContentId={tabContentId}
@@ -247,24 +241,17 @@ function ExceptionRequestDetailsPage() {
                             title={<TabTitleText>Latest approved</TabTitleText>}
                         />
                     </Tabs>
-                )}
-                <TabContent id={tabContentId}>
-                    <PageSection>
-                        <RequestOverview
-                            exception={vulnerabilityException}
-                            context={selectedContext}
-                        />
-                    </PageSection>
-                    <PageSection>
-                        <RequestCVEsTable
-                            cves={relevantCVEs}
-                            scope={scope}
-                            expandedRowSet={expandedRowSet}
-                            vulnerabilityState={vulnerabilityState}
-                        />
-                    </PageSection>
-                </TabContent>
-            </PageSection>
+                </PageSection>
+            )}
+            <TabContent id={tabContentId}>
+                <RequestOverview exception={vulnerabilityException} context={selectedContext} />
+                <RequestCVEsTable
+                    cves={relevantCVEs}
+                    scope={scope}
+                    expandedRowSet={expandedRowSet}
+                    vulnerabilityState={vulnerabilityState}
+                />
+            </TabContent>
         </>
     );
 }

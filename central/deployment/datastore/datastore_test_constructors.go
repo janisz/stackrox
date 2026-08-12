@@ -5,9 +5,9 @@ import (
 	"testing"
 
 	"github.com/stackrox/rox/central/deployment/cache"
-	"github.com/stackrox/rox/central/deployment/datastore/internal/search"
 	pgStore "github.com/stackrox/rox/central/deployment/datastore/internal/store/postgres"
 	imageDS "github.com/stackrox/rox/central/image/datastore"
+	imageV2DS "github.com/stackrox/rox/central/imagev2/datastore"
 	nfDS "github.com/stackrox/rox/central/networkgraph/flow/datastore"
 	platformmatcher "github.com/stackrox/rox/central/platform/matcher"
 	pbDS "github.com/stackrox/rox/central/processbaseline/datastore"
@@ -17,12 +17,14 @@ import (
 	"github.com/stackrox/rox/pkg/postgres"
 	"github.com/stackrox/rox/pkg/postgres/pgtest"
 	"github.com/stackrox/rox/pkg/process/filter"
+	"go.uber.org/mock/gomock"
 )
 
 // DeploymentTestStoreParams is a structure wrapping around the input
 // parameters used to initialize a test datastore for Deployment objects.
 type DeploymentTestStoreParams struct {
 	ImagesDataStore                   imageDS.DataStore
+	ImagesV2DataStore                 imageV2DS.DataStore
 	ProcessBaselinesDataStore         pbDS.DataStore
 	NetworkGraphFlowClustersDataStore nfDS.ClusterDataStore
 	RisksDataStore                    riskDS.DataStore
@@ -42,12 +44,12 @@ func NewTestDataStore(
 	if t == nil {
 		return nil, errors.New("NewTestDataStore called without testing")
 	}
-	deploymentStore := pgStore.FullStoreWrap(pgStore.New(testDB.DB))
-	searcher := search.NewV2(deploymentStore)
+	deploymentStore := pgStore.FullStoreWrap(pgStore.New(testDB.DB), testDB.DB)
+	mockCtrl := gomock.NewController(t)
 	ds := newDatastoreImpl(
 		deploymentStore,
-		searcher,
 		storeParams.ImagesDataStore,
+		storeParams.ImagesV2DataStore,
 		storeParams.ProcessBaselinesDataStore,
 		storeParams.NetworkGraphFlowClustersDataStore,
 		storeParams.RisksDataStore,
@@ -56,7 +58,7 @@ func NewTestDataStore(
 		storeParams.ClusterRanker,
 		storeParams.NamespaceRanker,
 		storeParams.DeploymentRanker,
-		platformmatcher.Singleton(),
+		platformmatcher.GetTestPlatformMatcherWithDefaultPlatformComponentConfig(mockCtrl),
 	)
 
 	ds.initializeRanker()
@@ -65,13 +67,10 @@ func NewTestDataStore(
 
 // GetTestPostgresDataStore provides a datastore connected to postgres for testing purposes.
 func GetTestPostgresDataStore(t testing.TB, pool postgres.DB) (DataStore, error) {
-	dbStore := pgStore.FullStoreWrap(pgStore.New(pool))
-	searcher := search.NewV2(dbStore)
+	dbStore := pgStore.FullStoreWrap(pgStore.New(pool), pool)
 	imageStore := imageDS.GetTestPostgresDataStore(t, pool)
-	processBaselineStore, err := pbDS.GetTestPostgresDataStore(t, pool)
-	if err != nil {
-		return nil, err
-	}
+	imageV2Store := imageV2DS.GetTestPostgresDataStore(t, pool)
+	processBaselineStore := pbDS.GetTestPostgresDataStore(t, pool)
 	networkFlowClusterStore, err := nfDS.GetTestPostgresClusterDataStore(t, pool)
 	if err != nil {
 		return nil, err
@@ -81,10 +80,11 @@ func GetTestPostgresDataStore(t testing.TB, pool postgres.DB) (DataStore, error)
 	clusterRanker := ranking.ClusterRanker()
 	namespaceRanker := ranking.NamespaceRanker()
 	deploymentRanker := ranking.DeploymentRanker()
+	mockCtrl := gomock.NewController(t)
 	return newDatastoreImpl(
 		dbStore,
-		searcher,
 		imageStore,
+		imageV2Store,
 		processBaselineStore,
 		networkFlowClusterStore,
 		riskStore,
@@ -93,6 +93,6 @@ func GetTestPostgresDataStore(t testing.TB, pool postgres.DB) (DataStore, error)
 		clusterRanker,
 		namespaceRanker,
 		deploymentRanker,
-		platformmatcher.Singleton(),
+		platformmatcher.GetTestPlatformMatcherWithDefaultPlatformComponentConfig(mockCtrl),
 	), nil
 }

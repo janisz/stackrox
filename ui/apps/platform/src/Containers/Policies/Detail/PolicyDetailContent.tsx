@@ -1,24 +1,23 @@
-import React, { useState, useEffect } from 'react';
+import { useEffect, useState } from 'react';
+import type { ReactElement } from 'react';
 import { Formik } from 'formik';
-import { Flex, Title, Divider, Grid } from '@patternfly/react-core';
+import { Flex, Grid, Stack, Title } from '@patternfly/react-core';
 
 import { fetchNotifierIntegrations } from 'services/NotifierIntegrationsService';
-import { NotifierIntegration } from 'types/notifier.proto';
-import { BasePolicy } from 'types/policy.proto';
+import type { NotifierIntegration } from 'types/notifier.proto';
+import type { Policy } from 'types/policy.proto';
 import PolicyOverview from './PolicyOverview';
 import BooleanPolicyLogicSection from '../Wizard/Step3/BooleanPolicyLogicSection';
 import PolicyScopeSection from './PolicyScopeSection';
 import PolicyBehaviorSection from './PolicyBehaviorSection';
+import PolicyFiltersSection from './PolicyFiltersSection';
 
 type PolicyDetailContentProps = {
-    policy: BasePolicy;
+    policy: Policy;
     isReview?: boolean;
 };
 
-function PolicyDetailContent({
-    policy,
-    isReview = false,
-}: PolicyDetailContentProps): React.ReactElement {
+function PolicyDetailContent({ policy, isReview = false }: PolicyDetailContentProps): ReactElement {
     const [notifiers, setNotifiers] = useState<NotifierIntegration[]>([]);
 
     useEffect(() => {
@@ -31,43 +30,50 @@ function PolicyDetailContent({
             });
     }, []);
 
-    const { enforcementActions, eventSource, exclusions, scope, lifecycleStages } = policy;
+    const {
+        enforcementActions,
+        evaluationFilter,
+        eventSource,
+        exclusions,
+        scope,
+        lifecycleStages,
+    } = policy;
     return (
         <div data-testid="policy-details">
-            <Flex direction={{ default: 'column' }}>
-                <PolicyOverview policy={policy} notifiers={notifiers} isReview={isReview} />
-                <Title headingLevel="h3" className="pf-v5-u-mb-md pf-v5-u-pt-lg">
-                    Policy behavior
-                </Title>
-                <Divider component="div" className="pf-v5-u-mb-md" />
-                <PolicyBehaviorSection
+            <Flex direction={{ default: 'column' }} spaceItems={{ default: 'spaceItemsLg' }}>
+                <Stack hasGutter>
+                    <Title headingLevel="h2">Policy overview</Title>
+                    <PolicyOverview policy={policy} notifiers={notifiers} isReview={isReview} />
+                </Stack>
+                <Stack hasGutter>
+                    <Title headingLevel="h2">Policy behavior</Title>
+                    <PolicyBehaviorSection
+                        lifecycleStages={lifecycleStages}
+                        eventSource={eventSource}
+                        enforcementActions={enforcementActions}
+                    />
+                </Stack>
+                <Stack hasGutter>
+                    <Formik initialValues={policy} onSubmit={() => {}}>
+                        {() => (
+                            <>
+                                <Title headingLevel="h2">Policy criteria</Title>
+                                {/* this grid component specifies a GridItem to span 5 columns by default for policy sections */}
+                                <Grid hasGutter lg={5}>
+                                    <BooleanPolicyLogicSection readOnly />
+                                </Grid>
+                            </>
+                        )}
+                    </Formik>
+                </Stack>
+                <PolicyFiltersSection
+                    evaluationFilter={evaluationFilter}
                     lifecycleStages={lifecycleStages}
-                    eventSource={eventSource}
-                    enforcementActions={enforcementActions}
                 />
-                <Formik initialValues={policy} onSubmit={() => {}}>
-                    {() => (
-                        <>
-                            <Title headingLevel="h3" className="pf-v5-u-mb-md pf-v5-u-pt-lg">
-                                Policy criteria
-                            </Title>
-                            <Divider component="div" />
-                            {/* this grid component specifies a GridItem to span 5 columns by default for policy sections */}
-                            <Grid hasGutter lg={5}>
-                                <BooleanPolicyLogicSection readOnly />
-                            </Grid>
-                        </>
-                    )}
-                </Formik>
-                {(scope?.length > 0 || exclusions?.length > 0) && (
-                    <>
-                        <Title headingLevel="h3" className="pf-v5-u-mb-md pf-v5-u-pt-lg">
-                            Policy scope
-                        </Title>
-                        <Divider component="div" />
-                        <PolicyScopeSection scope={scope} exclusions={exclusions} />
-                    </>
-                )}
+                <Stack hasGutter>
+                    <Title headingLevel="h2">Policy resources</Title>
+                    <PolicyScopeSection scope={scope} exclusions={exclusions} />
+                </Stack>
             </Flex>
         </div>
     );

@@ -1,6 +1,6 @@
 // If you're adding a new attribute, make sure to add it to "deploymentAttributes" as well
 
-import { CompoundSearchFilterAttribute } from '../types';
+import type { CompoundSearchFilterAttribute } from '../types';
 
 export const ID: CompoundSearchFilterAttribute = {
     displayName: 'ID',
@@ -30,6 +30,20 @@ export const Annotation: CompoundSearchFilterAttribute = {
     inputType: 'autocomplete',
 };
 
+export const ContainerType: CompoundSearchFilterAttribute = {
+    displayName: 'Container type',
+    filterChipLabel: 'Container type',
+    searchTerm: 'Container Type',
+    inputType: 'select',
+    inputProps: {
+        options: [
+            { value: 'REGULAR', label: 'Regular' },
+            { value: 'INIT', label: 'Init' },
+        ],
+    },
+    featureFlagDependency: ['ROX_INIT_CONTAINER_SUPPORT'],
+};
+
 export const Inactive: CompoundSearchFilterAttribute = {
     displayName: 'Status',
     filterChipLabel: 'Deployment status',
@@ -43,4 +57,4 @@ export const Inactive: CompoundSearchFilterAttribute = {
     },
 };
 
-export const deploymentAttributes = [ID, Name, Label, Annotation, Inactive];
+export const deploymentAttributes = [Annotation, ContainerType, ID, Label, Name, Inactive];

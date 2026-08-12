@@ -36,8 +36,8 @@ run-name: >-
     )
   }}
 
-# Ensure that only a single release automation workflow can run at a time.
-concurrency: Release automation
+# Ensure that only a single automation workflow can run at a time for each release.
+concurrency: Release automation ${{ inputs.version }}
 
 jobs:
   start-sha:
@@ -47,7 +47,7 @@ jobs:
       start-sha: ${{ fromJSON(format('["{0}","{1}"]', env.USER_REF, steps.find.outputs.merge_base))[env.USER_REF == ''] }}
     steps:
     - name: Check out code
-      uses: actions/checkout@v4
+      uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # ratchet:actions/checkout@v7.0.0
       with:
         ref: ${{ github.event.repository.default_branch }}
         fetch-depth: 0
@@ -109,7 +109,9 @@ jobs:
       - name: Check that Jira release ${{needs.variables.outputs.release}}.${{needs.variables.outputs.patch}} is not released
         id: check-jira-release
         env:
+          JIRA_USER: ${{ vars.RHACS_BOT_GITHUB_EMAIL }}
           JIRA_TOKEN: ${{ secrets.JIRA_TOKEN }}
+          JIRA_BASE_URL: ${{ vars.JIRA_BASE_URL }}
         run: |
           set -uo pipefail
           gh api -H "$ACCEPT_RAW" "${{env.script_url}}" | bash -s -- \
@@ -119,21 +121,23 @@ jobs:
 
   branch:
     name: Prepare release branch
-    needs: [variables, start-sha]
+    needs: [variables, start-sha, check-jira]
     runs-on: ubuntu-latest
     steps:
       - name: Check out code (normal release)
         if: needs.variables.outputs.patch == 0
-        uses: actions/checkout@v4
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # ratchet:actions/checkout@v7.0.0
         with:
           ref: ${{ needs.start-sha.outputs.start-sha }}
           fetch-depth: 0
+          token: ${{ secrets.RHACS_BOT_GITHUB_TOKEN }}
       - name: Check out code (patch release)
         if: needs.variables.outputs.patch != 0
-        uses: actions/checkout@v4
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # ratchet:actions/checkout@v7.0.0
         with:
           ref: ${{ needs.variables.outputs.branch }}
           submodules: true
+          token: ${{ secrets.RHACS_BOT_GITHUB_TOKEN }}
       - name: Check remote branch exists
         id: check-existing
         run: |
@@ -149,23 +153,22 @@ jobs:
         run: |
           git config user.name "${{github.event.sender.login}}"
           git config user.email noreply@github.com
-      - name: Create and annotate branch ${{needs.variables.outputs.branch}}
+      - name: Create release branch ${{needs.variables.outputs.branch}}
         if: steps.check-existing.outputs.branch-exists == 'false'
         run: |
           git switch --create "${{needs.variables.outputs.branch}}"
           git commit --allow-empty --message \
             "Empty commit to diverge ${{needs.variables.outputs.release}} from ${{env.main_branch}}"
-          git tag --annotate --message "Upstream automation" \
-            "${{needs.variables.outputs.release}}.0-rc.0" HEAD
-      - name: Update the changelog
-        if: steps.check-existing.outputs.branch-exists == 'false'
+      - name: Tag release branch with rc.0 ${{needs.variables.outputs.branch}}
         run: |
-          sed -i "s/## \[NEXT RELEASE\]/## [${{inputs.version}}]/" CHANGELOG.md
-          git add CHANGELOG.md
-          if ! git diff-index --quiet HEAD; then
-            git commit --message "Changelog for ${{inputs.version}}"
-            echo "\`CHANGELOG.md\` has been updated on the release branch." >> "$GITHUB_STEP_SUMMARY"
-          fi
+          git tag --annotate --message "Upstream automation" \
+            "${{needs.variables.outputs.release}}.${{needs.variables.outputs.patch}}-rc.0" HEAD
+      - name: Update the changelog on the release branch
+        run: |
+          set -uo pipefail
+          gh api -H "$ACCEPT_RAW" "${{env.script_url}}" | bash -s -- \
+            patch-release-changelog \
+            "${{inputs.version}}"
       - name: Tag ${{env.main_branch}} for next release
         if: steps.check-existing.outputs.branch-exists == 'false'
         run: |
@@ -178,7 +181,7 @@ jobs:
           git tag --annotate --message "Upstream automation" \
             "${{needs.variables.outputs.next-minor-release}}.x" HEAD
       - name: Push changes
-        if: env.DRY_RUN == 'false' && steps.check-existing.outputs.branch-exists == 'false'
+        if: env.DRY_RUN == 'false'
         env:
           GH_TOKEN: "${{ secrets.RHACS_BOT_GITHUB_TOKEN }}"
         run: |
@@ -211,7 +214,7 @@ jobs:
         run: |
           gh repo sync stackrox/openshift-release --source openshift/release
       - name: Check out stackrox/openshift-release
-        uses: actions/checkout@v4
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # ratchet:actions/checkout@v7.0.0
         with:
           repository: stackrox/openshift-release
           token: "${{ secrets.RHACS_BOT_GITHUB_TOKEN }}"
@@ -255,14 +258,14 @@ jobs:
 
           echo ":arrow_right: Review and merge the [PR]($PR_URL) that has been created for the \`openshift/release\` repository." >> "$GITHUB_STEP_SUMMARY"
 
-  patch-changelog:
-    name: Patch CHANGELOG.md
+  patch-main-changelog:
+    name: Patch CHANGELOG.md on the default branch
     needs: [variables, branch, start-sha]
     if: needs.variables.outputs.patch == 0
     runs-on: ubuntu-latest
     steps:
       - name: Check out code
-        uses: actions/checkout@v4
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # ratchet:actions/checkout@v7.0.0
         with:
           # Working on `start-sha` instead of `env.main_branch` may help
           # to spot changes happened to CHANGELOG.md after `start-sha`.
@@ -277,7 +280,7 @@ jobs:
         run: |
           set -uo pipefail
           gh api -H "$ACCEPT_RAW" "${{env.script_url}}" | bash -s -- \
-            patch-changelog \
+            patch-main-changelog \
             "${{needs.variables.outputs.release}}.${{needs.variables.outputs.patch}}" \
             "${{ needs.start-sha.outputs.start-sha }}" \
             "${{needs.variables.outputs.branch}}"
@@ -288,7 +291,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Check out code
-        uses: actions/checkout@v4
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # ratchet:actions/checkout@v7.0.0
         with:
           ref: ${{ env.main_branch }}
       - name: Initialize mandatory git config
@@ -337,7 +340,7 @@ jobs:
     steps:
       - name: Post to Slack (normal release)
         if: needs.variables.outputs.patch == 0
-        uses: slackapi/slack-github-action@v2.0.0
+        uses: slackapi/slack-github-action@45a88b9581bfab2566dc881e2cd66d334e621e2c # ratchet:slackapi/slack-github-action@v3.0.3
         with:
           method: chat.postMessage
           token: ${{ secrets.SLACK_BOT_TOKEN }}
@@ -369,7 +372,7 @@ jobs:
 
       - name: Post to Slack (patch release)
         if: needs.variables.outputs.patch != 0
-        uses: slackapi/slack-github-action@v2.0.0
+        uses: slackapi/slack-github-action@45a88b9581bfab2566dc881e2cd66d334e621e2c # ratchet:slackapi/slack-github-action@v3.0.3
         with:
           method: chat.postMessage
           token: ${{ secrets.SLACK_BOT_TOKEN }}

@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import { useState } from 'react';
 import {
     Card,
     CardBody,
@@ -7,18 +7,18 @@ import {
     Flex,
     Form,
     FormGroup,
+    FormHelperText,
     Grid,
     GridItem,
+    HelperText,
+    HelperTextItem,
     Radio,
     Switch,
     Title,
-    FormHelperText,
-    HelperText,
-    HelperTextItem,
 } from '@patternfly/react-core';
 import { useFormikContext } from 'formik';
 
-import { ClientPolicy, LifecycleStage } from 'types/policy.proto';
+import type { ClientPolicy, LifecycleStage } from 'types/policy.proto';
 
 import DownloadCLIDropdown from './DownloadCLIDropdown';
 import {
@@ -26,7 +26,6 @@ import {
     filterEnforcementActionsForRemovedLifecycleStage,
     hasEnforcementActionForLifecycleStage,
 } from '../../policies.utils';
-import './PolicyEnforcementForm.css';
 
 function PolicyEnforcementForm() {
     const { setFieldValue, values } = useFormikContext<ClientPolicy>();
@@ -38,25 +37,34 @@ function PolicyEnforcementForm() {
 
     function onChangeEnforcementActions(lifecycleStage: LifecycleStage, isChecked: boolean) {
         const { enforcementActions } = values;
+        const realActions = enforcementActions.filter((action) => action !== 'UNSET_ENFORCEMENT');
+        const updatedActions = isChecked
+            ? appendEnforcementActionsForAddedLifecycleStage(lifecycleStage, realActions)
+            : filterEnforcementActionsForRemovedLifecycleStage(lifecycleStage, realActions);
         setFieldValue(
             'enforcementActions',
-            isChecked
-                ? appendEnforcementActionsForAddedLifecycleStage(lifecycleStage, enforcementActions)
-                : filterEnforcementActionsForRemovedLifecycleStage(
-                      lifecycleStage,
-                      enforcementActions
-                  ),
-            false // do not validate, because code changes the value
+            updatedActions.length === 0 ? ['UNSET_ENFORCEMENT'] : updatedActions
         );
     }
-
-    const responseMethodHelperText = showEnforcement
-        ? 'Inform and enforce will execute enforcement behavior at the stages you select.'
-        : 'Inform will always include violations for this policy in the violations list.';
 
     const hasBuild = values.lifecycleStages.includes('BUILD');
     const hasDeploy = values.lifecycleStages.includes('DEPLOY');
     const hasRuntime = values.lifecycleStages.includes('RUNTIME');
+    const hasAuditLog = values.eventSource === 'AUDIT_LOG_EVENT';
+    const hasNodeEvent = values.eventSource === 'NODE_EVENT';
+
+    let responseMethodHelperText = showEnforcement
+        ? 'Inform and enforce will execute enforcement behavior at the stages you select.'
+        : 'Inform will always include violations for this policy in the violations list.';
+
+    if (hasAuditLog) {
+        responseMethodHelperText = 'Enforcement is not available for audit log event sources.';
+    }
+    if (hasNodeEvent) {
+        responseMethodHelperText = 'Enforcement is not available for node event sources.';
+    }
+
+    const isEnforcementDisabled = hasAuditLog || hasNodeEvent;
 
     return (
         <Form>
@@ -67,9 +75,10 @@ function PolicyEnforcementForm() {
                         isChecked={!showEnforcement}
                         id="policy-response-inform"
                         name="inform"
+                        isDisabled={isEnforcementDisabled}
                         onChange={() => {
                             setShowEnforcement(false);
-                            setFieldValue('enforcementActions', [], false); // do not validate, because code changes the value
+                            setFieldValue('enforcementActions', []);
                         }}
                     />
                     <Radio
@@ -77,7 +86,13 @@ function PolicyEnforcementForm() {
                         isChecked={showEnforcement}
                         id="policy-response-inform-enforce"
                         name="enforce"
-                        onChange={() => setShowEnforcement(true)}
+                        isDisabled={isEnforcementDisabled}
+                        onChange={() => {
+                            setShowEnforcement(true);
+                            if (!hasEnforcementActions) {
+                                setFieldValue('enforcementActions', ['UNSET_ENFORCEMENT']);
+                            }
+                        }}
                     />
                 </Flex>
                 <FormHelperText>
@@ -88,16 +103,23 @@ function PolicyEnforcementForm() {
             </FormGroup>
             {showEnforcement && (
                 <div>
-                    <Title headingLevel="h2" className="pf-v5-u-mt-md">
+                    <Title headingLevel="h2" className="pf-v6-u-mt-md">
                         Configure enforcement behavior
                     </Title>
-                    <div className="pf-v5-u-mb-lg pf-v5-u-mt-sm">
+                    <div className="pf-v6-u-mb-lg pf-v6-u-mt-sm">
                         Based on the fields selected in your policy configuration, you may choose to
                         apply enforcement at the following stages.
                     </div>
+                    {!hasEnforcementActions && (
+                        <HelperText className="pf-v6-u-mb-md">
+                            <HelperTextItem variant="error">
+                                At least one enforcement action must be selected
+                            </HelperTextItem>
+                        </HelperText>
+                    )}
                     <Grid hasGutter>
                         <GridItem span={4}>
-                            <Card className="pf-v5-u-h-100 policy-enforcement-card">
+                            <Card className="pf-v6-u-h-100 policy-enforcement-card">
                                 <CardHeader>
                                     <CardTitle component="h3">Build</CardTitle>
                                 </CardHeader>
@@ -113,7 +135,7 @@ function PolicyEnforcementForm() {
                                         }}
                                         label="Enforce on Build"
                                     />
-                                    <p className="pf-v5-u-pt-md pf-v5-u-pb-md">
+                                    <p className="pf-v6-u-pt-md pf-v6-u-pb-md">
                                         If enabled, your CI builds will be failed when images
                                         violate this policy. Download the CLI to get started.
                                     </p>
@@ -138,7 +160,7 @@ function PolicyEnforcementForm() {
                                         }}
                                         label="Enforce on Deploy"
                                     />
-                                    <p className="pf-v5-u-pt-md">
+                                    <p className="pf-v6-u-pt-md">
                                         If enabled, creation of deployments that violate this policy
                                         will be blocked. In clusters with the admission controller
                                         enabled, the Kubernetes API server will block deployments
@@ -159,13 +181,13 @@ function PolicyEnforcementForm() {
                                             'RUNTIME',
                                             values.enforcementActions
                                         )}
-                                        isDisabled={!hasRuntime}
+                                        isDisabled={!hasRuntime || isEnforcementDisabled}
                                         onChange={(_event, isChecked) => {
                                             onChangeEnforcementActions('RUNTIME', isChecked);
                                         }}
                                         label="Enforce on Runtime"
                                     />
-                                    <p className="pf-v5-u-pt-md">
+                                    <p className="pf-v6-u-pt-md">
                                         If enabled, executions within a pod that violate this policy
                                         will result in the pod being deleted. Actions taken through
                                         the API server that violate this policy will be blocked.

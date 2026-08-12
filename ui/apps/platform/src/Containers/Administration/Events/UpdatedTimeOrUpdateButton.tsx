@@ -1,4 +1,4 @@
-import React, { ReactElement } from 'react';
+import type { ReactElement } from 'react';
 import { Button } from '@patternfly/react-core';
 import pluralize from 'pluralize';
 
@@ -20,7 +20,7 @@ const UpdatedTimeOrUpdateButton = ({
     updateEvents,
 }: UpdatedTimeOrUpdateButtonProps): ReactElement => {
     return countAvailable === 0 ? (
-        <em className="pf-v5-u-font-size-sm pf-v5-u-text-nowrap">{`Last updated at ${getTimeHoursMinutes(
+        <em className="pf-v6-u-font-size-sm pf-v6-u-text-nowrap">{`Last updated at ${getTimeHoursMinutes(
             lastUpdatedTime
         )}`}</em>
     ) : (

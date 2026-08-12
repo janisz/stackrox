@@ -4,14 +4,19 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/pkg/errors"
 	"github.com/stackrox/rox/generated/internalapi/central"
 	"github.com/stackrox/rox/generated/storage"
+	"github.com/stackrox/rox/pkg/centralsensor"
 	"github.com/stackrox/rox/pkg/concurrency"
+	"github.com/stackrox/rox/pkg/containers"
 	"github.com/stackrox/rox/pkg/dedupingqueue"
 	"github.com/stackrox/rox/pkg/features"
 	"github.com/stackrox/rox/pkg/logging"
 	"github.com/stackrox/rox/pkg/set"
+	"github.com/stackrox/rox/sensor/common/centralcaps"
 	"github.com/stackrox/rox/sensor/common/metrics"
+	"github.com/stackrox/rox/sensor/common/pubsub"
 	"github.com/stackrox/rox/sensor/common/store"
 	"github.com/stackrox/rox/sensor/kubernetes/eventpipeline/component"
 )
@@ -31,22 +36,39 @@ type deploymentRef struct {
 
 // GetDedupeKey returns the key to index the deploymentRef in the queue
 func (d *deploymentRef) GetDedupeKey() string {
-	return fmt.Sprintf("%s-%s-%t-%t", d.id, d.action.String(), d.skipResolving, d.forceDetection)
+	return fmt.Sprintf("%s-%s", d.id, d.action.String())
+}
+
+// MergeFrom merges flags from an existing queued ref when a duplicate key is pushed.
+// forceDetection is sticky-true: if either ref needs forced detection, keep it.
+// skipResolving is sticky-false: if either ref needs full resolution, do it.
+func (d *deploymentRef) MergeFrom(old dedupingqueue.Item[string]) {
+	oldRef, ok := old.(*deploymentRef)
+	if !ok {
+		return
+	}
+	d.forceDetection = d.forceDetection || oldRef.forceDetection
+	d.skipResolving = d.skipResolving && oldRef.skipResolving
 }
 
 type resolverImpl struct {
 	outputQueue component.OutputQueue
 	innerQueue  chan *component.ResourceEvent
 
-	storeProvider store.Provider
-	stopper       concurrency.Stopper
+	storeProvider         store.Provider
+	stopper               concurrency.Stopper
+	pullAndResolveStopped concurrency.Signal
 
 	deploymentRefQueue *dedupingqueue.DedupingQueue[string]
+
+	pubsubDispatcher pubSubDispatcher
 }
 
 // Start the resolverImpl component
 func (r *resolverImpl) Start() error {
-	go r.runResolver()
+	if !features.SensorInternalPubSub.Enabled() {
+		go r.runResolver()
+	}
 	if features.SensorAggregateDeploymentReferenceOptimization.Enabled() && r.deploymentRefQueue != nil {
 		go r.runPullAndResolve()
 	}
@@ -54,19 +76,39 @@ func (r *resolverImpl) Start() error {
 }
 
 // Stop the resolverImpl component
-func (r *resolverImpl) Stop(_ error) {
-	if !r.stopper.Client().Stopped().IsDone() {
-		defer func() {
-			_ = r.stopper.Client().Stopped().Wait()
-		}()
+func (r *resolverImpl) Stop() {
+	if features.SensorAggregateDeploymentReferenceOptimization.Enabled() {
+		defer r.pullAndResolveStopped.Wait()
+	}
+	if !features.SensorInternalPubSub.Enabled() {
+		if !r.stopper.Client().Stopped().IsDone() {
+			defer func() {
+				_ = r.stopper.Client().Stopped().Wait()
+			}()
+		}
 	}
 	r.stopper.Client().Stop()
 }
 
 // Send a ResourceEvent message to the inner queue
 func (r *resolverImpl) Send(event *component.ResourceEvent) {
+	if features.SensorInternalPubSub.Enabled() {
+		panic(fmt.Sprintf("should not use Send if %q is enabled", features.SensorInternalPubSub.EnvVar()))
+	}
 	r.innerQueue <- event
 	metrics.IncResolverChannelSize()
+}
+
+func (r *resolverImpl) ProcessResourceEvent(event pubsub.Event) error {
+	if event.Topic() != pubsub.KubernetesDispatcherEventTopic && event.Topic() != pubsub.FromCentralResolverEventTopic {
+		return errors.Errorf("received an event of topic %q in the resolver", event.Topic().String())
+	}
+	msg, ok := event.(*component.ResourceEvent)
+	if !ok {
+		return errors.New("unable to convert the event to *component.ResourceEvent")
+	}
+	r.processMessage(msg)
+	return nil
 }
 
 // runResolver reads messages from the inner queue and process the message
@@ -150,8 +192,27 @@ func (r *resolverImpl) resolveDeployment(msg *component.ResourceEvent, ref *depl
 	return false
 }
 
+// resolveAndSend resolves a single deployment ref and sends the resulting event
+// to the output queue if the deployment was resolved or if reprocess data was added.
+func (r *resolverImpl) resolveAndSend(ref *deploymentRef) {
+	msg := component.NewEventWithTopicAndLane(pubsub.ResolvedResourceEventTopic, pubsub.ResolvedResourceEventLane)
+	msg.Context = ref.context
+	msg.DeploymentTiming = ref.deploymentTiming
+	resolved := r.resolveDeployment(msg, ref)
+	if resolved || len(msg.ReprocessDeployments) > 0 {
+		if features.SensorInternalPubSub.Enabled() {
+			if err := r.pubsubDispatcher.Publish(msg); err != nil {
+				log.Errorf("failed to publish resolved resource event to output queue: %v", err)
+			}
+			return
+		}
+		r.outputQueue.Send(msg)
+	}
+}
+
 // runPullAndResolve pull the next deployment reference to be resolved out of the queue
 func (r *resolverImpl) runPullAndResolve() {
+	defer r.pullAndResolveStopped.Signal()
 	for {
 		item := r.deploymentRefQueue.PullBlocking(r.stopper.LowLevel().GetStopRequestSignal())
 		select {
@@ -168,12 +229,7 @@ func (r *resolverImpl) runPullAndResolve() {
 		if ref == nil {
 			continue
 		}
-		msg := component.NewEvent()
-		msg.Context = ref.context
-		msg.DeploymentTiming = ref.deploymentTiming
-		if r.resolveDeployment(msg, ref) {
-			r.outputQueue.Send(msg)
-		}
+		r.resolveAndSend(ref)
 	}
 }
 
@@ -199,7 +255,7 @@ func (r *resolverImpl) processMessage(msg *component.ResourceEvent) {
 					skipResolving:    deploymentReference.SkipResolving,
 					forceDetection:   deploymentReference.ForceDetection,
 				}
-				if features.SensorAggregateDeploymentReferenceOptimization.Enabled() && r.deploymentRefQueue != nil {
+				if features.SensorAggregateDeploymentReferenceOptimization.Enabled() && r.deploymentRefQueue != nil && !deploymentReference.SkipDeduping {
 					r.deploymentRefQueue.Push(ref)
 				} else {
 					r.resolveDeployment(msg, ref)
@@ -209,16 +265,27 @@ func (r *resolverImpl) processMessage(msg *component.ResourceEvent) {
 
 	}
 
+	if features.SensorInternalPubSub.Enabled() {
+		msg.SetTopicAndLane(pubsub.ResolvedResourceEventTopic, pubsub.ResolvedResourceEventLane)
+		if err := r.pubsubDispatcher.Publish(msg); err != nil {
+			log.Errorf("failed to publish resolved resource event to output queue: %v", err)
+		}
+		return
+	}
 	r.outputQueue.Send(msg)
 }
 
 func toEvent(action central.ResourceAction, deployment *storage.Deployment, timing *central.Timing) *central.SensorEvent {
+	dep := deployment.CloneVT()
+	if !centralcaps.Has(centralsensor.InitContainerSupport) {
+		dep.Containers = containers.FilterRegularContainers(dep.GetContainers())
+	}
 	return &central.SensorEvent{
-		Id:     deployment.GetId(),
+		Id:     dep.GetId(),
 		Action: action,
 		Timing: timing,
 		Resource: &central.SensorEvent_Deployment{
-			Deployment: deployment.CloneVT(),
+			Deployment: dep,
 		},
 	}
 }

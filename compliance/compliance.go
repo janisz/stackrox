@@ -2,18 +2,21 @@ package compliance
 
 import (
 	"context"
-	"math/rand"
 	"os"
 	"os/signal"
+	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
-	"github.com/cenkalti/backoff/v3"
+	"github.com/cenkalti/backoff/v4"
 	"github.com/pkg/errors"
 	"github.com/stackrox/rox/compliance/collection/auditlog"
 	"github.com/stackrox/rox/compliance/collection/compliance_checks"
 	cmetrics "github.com/stackrox/rox/compliance/collection/metrics"
 	"github.com/stackrox/rox/compliance/node"
+	"github.com/stackrox/rox/compliance/virtualmachines/relay"
+	vmmetrics "github.com/stackrox/rox/compliance/virtualmachines/relay/metrics"
 	v4 "github.com/stackrox/rox/generated/internalapi/scanner/v4"
 	"github.com/stackrox/rox/generated/internalapi/sensor"
 	"github.com/stackrox/rox/generated/storage"
@@ -26,6 +29,7 @@ import (
 	"github.com/stackrox/rox/pkg/metrics"
 	"github.com/stackrox/rox/pkg/mtls"
 	"github.com/stackrox/rox/pkg/protoutils"
+	"github.com/stackrox/rox/pkg/retry/handler"
 	"github.com/stackrox/rox/pkg/utils"
 	"github.com/stackrox/rox/pkg/version"
 	"google.golang.org/grpc/metadata"
@@ -33,26 +37,38 @@ import (
 
 var log = logging.LoggerForModule()
 
+const (
+	// nodeResourceID is the resource ID used for node scanning UMH.
+	// Compliance handles exactly one node, so a single constant suffices.
+	nodeResourceID           = "this-node"
+	vmACKResourceIDSeparator = ":"
+)
+
 // Compliance represents the Compliance app
 type Compliance struct {
-	nodeNameProvider node.NodeNameProvider
-	nodeScanner      node.NodeScanner
-	nodeIndexer      node.NodeIndexer
-	umhNodeInventory node.UnconfirmedMessageHandler
-	umhNodeIndex     node.UnconfirmedMessageHandler
-	cache            *sensor.MsgFromCompliance
+	nodeNameProvider   node.NodeNameProvider
+	nodeScanner        node.NodeScanner
+	nodeIndexer        node.NodeIndexer
+	umhNodeInventory   handler.UnconfirmedMessageHandler
+	umhNodeIndex       handler.UnconfirmedMessageHandler
+	umhVMIndex         handler.UnconfirmedMessageHandler
+	nodeInventoryCache atomic.Pointer[sensor.MsgFromCompliance]
+	nodeIndexCache     atomic.Pointer[sensor.MsgFromCompliance]
+	scrapeConfig       atomic.Pointer[sensor.MsgToCompliance_ScrapeConfig]
+	scrapeConfigReady  concurrency.Signal
 }
 
 // NewComplianceApp constructs the Compliance app object
 func NewComplianceApp(nnp node.NodeNameProvider, scanner node.NodeScanner, nodeIndexer node.NodeIndexer,
-	umhNodeInv, umhNodeIndex node.UnconfirmedMessageHandler) *Compliance {
+	umhNodeInv, umhNodeIndex, umhVMIndex handler.UnconfirmedMessageHandler) *Compliance {
 	return &Compliance{
-		nodeNameProvider: nnp,
-		nodeScanner:      scanner,
-		nodeIndexer:      nodeIndexer,
-		umhNodeInventory: umhNodeInv,
-		umhNodeIndex:     umhNodeIndex,
-		cache:            nil,
+		nodeNameProvider:  nnp,
+		nodeScanner:       scanner,
+		nodeIndexer:       nodeIndexer,
+		umhNodeInventory:  umhNodeInv,
+		umhNodeIndex:      umhNodeIndex,
+		umhVMIndex:        umhVMIndex,
+		scrapeConfigReady: concurrency.NewSignal(),
 	}
 }
 
@@ -61,15 +77,12 @@ func (c *Compliance) Start() {
 	log.Infof("Running StackRox Version: %s", version.GetMainVersion())
 	clientconn.SetUserAgent(clientconn.Compliance)
 
-	// Set the random seed based on the current time.
-	rand.Seed(time.Now().UnixNano())
-
 	// Start the prometheus metrics server
 	metrics.NewServer(metrics.ComplianceSubsystem, metrics.NewTLSConfigurerFromEnv()).RunForever()
 	metrics.GatherThrottleMetricsForever(metrics.ComplianceSubsystem.String())
 
 	// Set up Compliance <-> Sensor connection
-	conn, err := clientconn.AuthenticatedGRPCConnection(context.Background(), env.AdvertisedEndpoint.Setting(), mtls.SensorSubject)
+	conn, err := clientconn.AuthenticatedGRPCConnection(context.Background(), env.SensorEndpointSetting(), mtls.SensorSubject)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -97,7 +110,7 @@ func (c *Compliance) Start() {
 	}()
 
 	var wg concurrency.WaitGroup
-	wg.Add(2)
+	wg.Add(3)
 
 	go func(ctx context.Context) {
 		defer wg.Add(-1)
@@ -120,6 +133,35 @@ func (c *Compliance) Start() {
 			for n := range nodeIndexesC {
 				toSensorC <- n
 			}
+		}
+	}(ctx)
+
+	// The virtual machine relay (ROX-30476), which reads VM index reports from vsock connections and forwards them to
+	// sensor, is currently started and run in the compliance container. This enables reusing the existing connection to
+	// sensor and accelerates initial development.
+	go func(ctx context.Context) {
+		defer wg.Add(-1)
+		if !features.VirtualMachines.Enabled() {
+			return
+		}
+		// VM relay startup is gated by the first scrape config.
+		// We must not start relay until that config is available.
+		config := c.waitForInitialScrapeConfig(ctx)
+		if config == nil { // nil means ctx was cancelled
+			log.Info("Virtual machine relay start aborted: context cancelled")
+			return
+		}
+		if !shouldStartVMRelay(config) {
+			log.Infof("Virtual machine relay not started on master node; set %s=true to enable",
+				env.VirtualMachinesRelayEnabledOnMasterNodes.EnvVar())
+			return
+		}
+		log.Infof("Virtual machine relay enabled")
+
+		sensorClient := sensor.NewVirtualMachineIndexReportServiceClient(conn)
+		err := relay.RunWithRetry(ctx, sensorClient, c.umhVMIndex)
+		if err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+			log.Errorf("Error running virtual machine relay: %v", err)
 		}
 	}(ctx)
 
@@ -156,13 +198,18 @@ func (c *Compliance) manageNodeInventoryScanLoop(ctx context.Context) <-chan *se
 			select {
 			case <-ctx.Done():
 				return
-			case _, ok := <-c.umhNodeInventory.RetryCommand():
-				if c.cache == nil {
-					log.Debug("Requested to retry but cache is empty. Resetting scan timer.")
+			case resourceID, ok := <-c.umhNodeInventory.RetryCommand():
+				if !ok {
+					log.Info("UMH retry channel for node inventory closed; stopping scan loop")
+					return
+				}
+				cachedMsg := c.nodeInventoryCache.Load()
+				if cachedMsg == nil {
+					log.Debugf("Requested to retry %s but cache is empty. Resetting scan timer.", resourceID)
 					cmetrics.ObserveNodePackageReportTransmissions(nodeName, cmetrics.InventoryTransmissionResendingCacheMiss, cmetrics.ScannerVersionV2)
 					t.Reset(time.Second)
-				} else if ok {
-					nodeInventoriesC <- c.cache
+				} else {
+					nodeInventoriesC <- cachedMsg
 					cmetrics.ObserveNodePackageReportTransmissions(nodeName, cmetrics.InventoryTransmissionResendingCacheHit, cmetrics.ScannerVersionV2)
 				}
 			case <-t.C:
@@ -192,13 +239,18 @@ func (c *Compliance) manageNodeIndexScanLoop(ctx context.Context) <-chan *sensor
 			select {
 			case <-ctx.Done():
 				return
-			case _, ok := <-c.umhNodeIndex.RetryCommand():
-				if c.cache == nil {
-					log.Debug("Requested to retry but cache is empty. Resetting scan timer.")
+			case resourceID, ok := <-c.umhNodeIndex.RetryCommand():
+				if !ok {
+					log.Info("UMH retry channel for node index closed; stopping scan loop")
+					return
+				}
+				cachedMsg := c.nodeIndexCache.Load()
+				if cachedMsg == nil {
+					log.Debugf("Requested to retry %s but cache is empty. Resetting scan timer.", resourceID)
 					cmetrics.ObserveNodePackageReportTransmissions(nodeName, cmetrics.InventoryTransmissionResendingCacheMiss, cmetrics.ScannerVersionV4)
 					t.Reset(time.Second)
-				} else if ok {
-					nodeIndexesC <- c.cache
+				} else {
+					nodeIndexesC <- cachedMsg
 					cmetrics.ObserveNodePackageReportTransmissions(nodeName, cmetrics.InventoryTransmissionResendingCacheHit, cmetrics.ScannerVersionV4)
 				}
 			case <-t.C:
@@ -226,8 +278,8 @@ func (c *Compliance) runNodeInventoryScan(ctx context.Context) *sensor.MsgFromCo
 	}
 	cmetrics.ObserveNodeInventoryScan(msg.GetNodeInventory())
 	cmetrics.ObserveNodePackageReportTransmissions(nodeName, cmetrics.InventoryTransmissionScan, cmetrics.ScannerVersionV2)
-	c.umhNodeInventory.ObserveSending()
-	c.cache = msg.CloneVT()
+	c.umhNodeInventory.ObserveSending(nodeResourceID)
+	c.nodeInventoryCache.Store(msg.CloneVT())
 	return msg
 }
 
@@ -243,11 +295,12 @@ func (c *Compliance) runNodeIndex(ctx context.Context) *sensor.MsgFromCompliance
 		log.Errorf("Error creating node index: %v", err)
 		return nil
 	}
-	c.umhNodeIndex.ObserveSending()
+	c.umhNodeIndex.ObserveSending(nodeResourceID)
 	cmetrics.ObserveNodeIndexReport(report, nodeName)
 	msg := c.createIndexMsg(report, nodeName)
 	cmetrics.ObserveReportProtobufMessage(msg, cmetrics.ScannerVersionV4)
 	cmetrics.ObserveNodePackageReportTransmissions(nodeName, cmetrics.InventoryTransmissionScan, cmetrics.ScannerVersionV4)
+	c.nodeIndexCache.Store(msg.CloneVT())
 	return msg
 }
 
@@ -268,6 +321,11 @@ func (c *Compliance) manageStream(ctx context.Context, cli sensor.ComplianceServ
 				}
 				log.Fatalf("Error initializing stream to sensor: %v", err)
 			}
+			// Record and signal the first valid scrape config for VM relay startup.
+			if !c.scrapeConfigReady.IsDone() {
+				c.scrapeConfig.Store(config)
+				c.scrapeConfigReady.Signal()
+			}
 			// A second Context is introduced for cancelling the goroutine if runRecv returns.
 			// runRecv only returns on errors, upon which the client will get reinitialized,
 			// orphaning manageSendToSensor in the process.
@@ -281,6 +339,27 @@ func (c *Compliance) manageStream(ctx context.Context, cli sensor.ComplianceServ
 			cancelFn() // runRecv is blocking, so the context is safely cancelled before the next call to initializeStream
 		}
 	}
+}
+
+// waitForInitialScrapeConfig waits for the first scrape config observed by the
+// stream manager and returns it. Returns nil only when ctx is cancelled.
+//
+// manageStream stores the scrape config before signaling readiness, and
+// initializeStream guarantees a non-nil config on success, so the returned
+// config is always valid when the context is not cancelled.
+func (c *Compliance) waitForInitialScrapeConfig(ctx context.Context) *sensor.MsgToCompliance_ScrapeConfig {
+	select {
+	case <-ctx.Done():
+		return nil
+	case <-c.scrapeConfigReady.Done():
+		return c.scrapeConfig.Load()
+	}
+}
+
+// shouldStartVMRelay reports whether the VM relay should start based on
+// the scrape config and the master-node override env var.
+func shouldStartVMRelay(config *sensor.MsgToCompliance_ScrapeConfig) bool {
+	return !config.GetIsMasterNode() || env.VirtualMachinesRelayEnabledOnMasterNodes.BooleanSetting()
 }
 
 func (c *Compliance) runRecv(ctx context.Context, client sensor.ComplianceService_CommunicateClient, config *sensor.MsgToCompliance_ScrapeConfig) error {
@@ -297,7 +376,7 @@ func (c *Compliance) runRecv(ctx context.Context, client sensor.ComplianceServic
 		if err != nil {
 			return errors.Wrap(err, "receiving msg from sensor")
 		}
-		switch t := msg.Msg.(type) {
+		switch t := msg.GetMsg().(type) {
 		case *sensor.MsgToCompliance_Trigger:
 			if err := compliance_checks.RunChecks(client, config, t.Trigger, c.nodeNameProvider); err != nil {
 				return errors.Wrap(err, "running compliance checks")
@@ -319,33 +398,86 @@ func (c *Compliance) runRecv(ctx context.Context, client sensor.ComplianceServic
 					log.Warn("Attempting to stop an un-started audit log reader - this is a no-op")
 				}
 			}
-		case *sensor.MsgToCompliance_Ack:
-			switch t.Ack.GetAction() {
-			case sensor.MsgToCompliance_NodeInventoryACK_ACK:
-				switch t.Ack.GetMessageType() {
-				case sensor.MsgToCompliance_NodeInventoryACK_NodeInventory:
-					c.umhNodeInventory.HandleACK()
-				case sensor.MsgToCompliance_NodeInventoryACK_NodeIndexer:
-					c.umhNodeIndex.HandleACK()
-				default:
-					log.Errorf("Unknown ACK Type: %s", t.Ack.GetMessageType())
-				}
-			case sensor.MsgToCompliance_NodeInventoryACK_NACK:
-				switch t.Ack.GetMessageType() {
-				case sensor.MsgToCompliance_NodeInventoryACK_NodeInventory:
-					c.umhNodeInventory.HandleNACK()
-				case sensor.MsgToCompliance_NodeInventoryACK_NodeIndexer:
-					c.umhNodeIndex.HandleNACK()
-				default:
-					log.Errorf("Unknown ACK Type: %s", t.Ack.GetMessageType())
-				}
-			default:
-				log.Errorf("Unknown ACK Action: %s", t.Ack.GetAction())
-			}
+		case *sensor.MsgToCompliance_ComplianceAck:
+			// New ComplianceACK from Sensor 4.10+
+			c.handleComplianceACK(t.ComplianceAck)
 		default:
 			utils.Should(errors.Errorf("Unhandled msg type: %T", t))
 		}
 	}
+}
+
+// handleComplianceACK handles the new ComplianceACK message from Sensor 4.10+.
+// This is the generic ACK/NACK message that replaces the legacy NodeInventoryACK.
+func (c *Compliance) handleComplianceACK(ack *sensor.MsgToCompliance_ComplianceACK) {
+	if ack == nil {
+		log.Error("Received nil ComplianceACK")
+		return
+	}
+
+	log.Debugf("Received ComplianceACK: type=%s, action=%s, resource_id=%s, reason=%s",
+		ack.GetMessageType(), ack.GetAction(), ack.GetResourceId(), ack.GetReason())
+
+	switch ack.GetMessageType() {
+	case sensor.MsgToCompliance_ComplianceACK_NODE_INVENTORY:
+		dispatchACK(c.umhNodeInventory, "node inventory", ack.GetAction(), ack.GetReason())
+	case sensor.MsgToCompliance_ComplianceACK_NODE_INDEX_REPORT:
+		dispatchACK(c.umhNodeIndex, "node index", ack.GetAction(), ack.GetReason())
+	case sensor.MsgToCompliance_ComplianceACK_VM_INDEX_REPORT:
+		c.handleVMIndexACK(ack.GetResourceId(), ack.GetAction(), ack.GetReason())
+	default:
+		log.Errorf("Unknown ComplianceACK message type: %s", ack.GetMessageType())
+	}
+}
+
+// dispatchACK routes a ComplianceACK action to the appropriate UMH method.
+func dispatchACK(umh handler.UnconfirmedMessageHandler, label string, action sensor.MsgToCompliance_ComplianceACK_Action, reason string) {
+	switch action {
+	case sensor.MsgToCompliance_ComplianceACK_ACK:
+		umh.HandleACK(nodeResourceID)
+	case sensor.MsgToCompliance_ComplianceACK_NACK:
+		if reason != "" {
+			log.Infof("%s NACK received: %s", label, reason)
+		}
+		umh.HandleNACK(nodeResourceID)
+	default:
+		log.Errorf("Unknown ComplianceACK action for %s: %s", label, action)
+	}
+}
+
+// handleVMIndexACK handles ACK/NACK for VM index report messages.
+func (c *Compliance) handleVMIndexACK(resourceID string, action sensor.MsgToCompliance_ComplianceACK_Action, reason string) {
+	relayResourceID := resolveVMRelayResourceID(resourceID)
+	switch action {
+	case sensor.MsgToCompliance_ComplianceACK_ACK:
+		vmmetrics.VMIndexACKsFromSensor.WithLabelValues("ACK").Inc()
+		c.umhVMIndex.HandleACK(relayResourceID)
+	case sensor.MsgToCompliance_ComplianceACK_NACK:
+		vmmetrics.VMIndexACKsFromSensor.WithLabelValues("NACK").Inc()
+		if reason != "" {
+			log.Infof("VM index NACK received for %s: %s", relayResourceID, reason)
+		}
+		c.umhVMIndex.HandleNACK(relayResourceID)
+	default:
+		log.Errorf("Unknown ComplianceACK action for VM index: %s", action)
+	}
+}
+
+// resolveVMRelayResourceID returns the CID key expected by relay/UMH.
+// Sensor can send VM index ACK/NACK as VMID:CID correlation pairs; relay state
+// remains CID-keyed, so we extract the CID portion when present.
+//
+// Limitation: VMID:CID does not distinguish multiple reports for the same VM
+// when the CID is unchanged, so a stale ACK can still match the latest entry.
+func resolveVMRelayResourceID(resourceID string) string {
+	vmID, cid, found := strings.Cut(resourceID, vmACKResourceIDSeparator)
+	if !found {
+		return resourceID
+	}
+	if vmID == "" || cid == "" || strings.Contains(cid, vmACKResourceIDSeparator) {
+		return resourceID
+	}
+	return cid
 }
 
 func (c *Compliance) startAuditLogCollection(ctx context.Context, client sensor.ComplianceService_CommunicateClient, request *sensor.MsgToCompliance_AuditLogCollectionRequest_StartRequest) auditlog.Reader {
@@ -403,7 +535,7 @@ func (c *Compliance) initializeStream(ctx context.Context, cli sensor.Compliance
 	if err != nil {
 		return nil, nil, errors.Wrap(err, "Failed to initialize sensor connection")
 	}
-	log.Infof("Successfully connected to Sensor at %s", env.AdvertisedEndpoint.Setting())
+	log.Infof("Successfully connected to Sensor at %s", env.SensorEndpointSetting())
 
 	return client, config, nil
 }
@@ -423,13 +555,13 @@ func (c *Compliance) initialClientAndConfig(ctx context.Context, cli sensor.Comp
 		return nil, nil, errors.New("initial msg has a nil config")
 	}
 	config := initialMsg.GetConfig()
-	if config.ContainerRuntime == storage.ContainerRuntime_UNKNOWN_CONTAINER_RUNTIME {
+	if config.GetContainerRuntime() == storage.ContainerRuntime_UNKNOWN_CONTAINER_RUNTIME {
 		log.Error("Didn't receive container runtime from sensor. Trying to infer container runtime from cgroups...")
 		config.ContainerRuntime, err = k8sutil.InferContainerRuntime()
 		if err != nil {
 			log.Errorf("Could not infer container runtime from cgroups: %v", err)
 		} else {
-			log.Infof("Inferred container runtime as %s", config.ContainerRuntime.String())
+			log.Infof("Inferred container runtime as %s", config.GetContainerRuntime().String())
 		}
 	}
 	return client, config, nil

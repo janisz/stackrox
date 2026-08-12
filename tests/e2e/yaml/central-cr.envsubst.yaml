@@ -39,6 +39,27 @@ $centralAdditionalCAIndented
       scaling:
         autoScaling: Disabled
         replicas: 1
+  scannerV4:
+    scannerComponent: "$scannerV4ScannerComponent"
+    indexer:
+      scaling:
+        autoScaling: Disabled
+        replicas: 1
+      resources:
+        requests:
+          cpu: "400m"
+    matcher:
+      scaling:
+        autoScaling: Disabled
+        replicas: 1
+      resources:
+        requests:
+          cpu: "400m"
+    db:
+$scannerV4DbPersistenceYaml
+      resources:
+        requests:
+          cpu: "500m"
 ---
 apiVersion: v1
 kind: Secret

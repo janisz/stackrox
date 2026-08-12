@@ -99,7 +99,8 @@ func stateToString(s storage.ComplianceState) string {
 
 func (c *csvResults) addRow(row complianceRow) {
 	// standard, cluster, type, namespace, object, control, state, evidence
-	value := []string{
+	value := make([]string, 0, 10)
+	value = append(value,
 		row.standardID,
 		row.clusterName,
 		row.objectNamespace,
@@ -107,8 +108,8 @@ func (c *csvResults) addRow(row complianceRow) {
 		row.objectName,
 		row.controlName,
 		row.controlDescription,
-		stateToString(row.result.OverallState),
-	}
+		stateToString(row.result.GetOverallState()),
+	)
 
 	lines := make([]string, 0, len(row.result.GetEvidence()))
 	for i, ev := range row.result.GetEvidence() {

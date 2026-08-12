@@ -74,7 +74,7 @@ func GetProfileV1SensorMsg(_ *testing.T) *storage.ComplianceOperatorProfile {
 	return &storage.ComplianceOperatorProfile{
 		Id:          ProfileUID,
 		ProfileId:   profileID,
-		Name:        "ocp-cis",
+		Name:        "ocp4-cis",
 		ClusterId:   fixtureconsts.Cluster1,
 		Description: "this is a test",
 		Labels:      nil,
@@ -88,7 +88,7 @@ func GetProfileV2SensorMsg(_ *testing.T) *central.ComplianceOperatorProfileV2 {
 	return &central.ComplianceOperatorProfileV2{
 		Id:             ProfileUID,
 		ProfileId:      profileID,
-		Name:           "ocp-cis",
+		Name:           "ocp4-cis",
 		ProfileVersion: "4.2",
 		Description:    "this is a test",
 		Labels:         nil,
@@ -104,7 +104,7 @@ func GetProfileV2Storage(_ *testing.T) *storage.ComplianceOperatorProfileV2 {
 	return &storage.ComplianceOperatorProfileV2{
 		Id:             ProfileUID,
 		ProfileId:      profileID,
-		Name:           "ocp-cis",
+		Name:           "ocp4-cis",
 		ProfileVersion: "4.2",
 		Description:    "this is a test",
 		Labels:         nil,
@@ -117,6 +117,7 @@ func GetProfileV2Storage(_ *testing.T) *storage.ComplianceOperatorProfileV2 {
 		Values:         values,
 		ClusterId:      fixtureconsts.Cluster1,
 		ProfileRefId:   internaltov2storage.BuildProfileRefID(fixtureconsts.Cluster1, profileID, ""),
+		OperatorKind:   storage.ComplianceOperatorProfileV2_PROFILE,
 	}
 }
 
@@ -126,7 +127,7 @@ func GetProfilesV2Storage(_ *testing.T) []*storage.ComplianceOperatorProfileV2 {
 		{
 			Id:             ProfileUID,
 			ProfileId:      profileID,
-			Name:           "ocp-cis",
+			Name:           "ocp4-cis",
 			ProfileVersion: "4.2",
 			Description:    "this is a test",
 			Labels:         nil,
@@ -139,23 +140,25 @@ func GetProfilesV2Storage(_ *testing.T) []*storage.ComplianceOperatorProfileV2 {
 			Values:         values,
 			ClusterId:      fixtureconsts.Cluster1,
 			ProfileRefId:   internaltov2storage.BuildProfileRefID(fixtureconsts.Cluster1, profileID, ""),
+			OperatorKind:   storage.ComplianceOperatorProfileV2_PROFILE,
 		},
 		{
 			Id:             profileUID2,
 			ProfileId:      profileID,
-			Name:           "rhcos-moderate",
+			Name:           "rhcos4-moderate",
 			ProfileVersion: "4.1.2",
 			Description:    "this is a test",
 			Labels:         nil,
 			Annotations:    nil,
 			Rules:          v2StorageRules,
-			Title:          "Openshift CIS testing",
+			Title:          "Openshift NIST testing",
 			ProductType:    "",
 			Standard:       "",
 			Product:        "",
 			Values:         values,
 			ClusterId:      fixtureconsts.Cluster1,
 			ProfileRefId:   internaltov2storage.BuildProfileRefID(fixtureconsts.Cluster1, profileID, ""),
+			OperatorKind:   storage.ComplianceOperatorProfileV2_PROFILE,
 		},
 	}
 }
@@ -164,19 +167,21 @@ func GetProfilesV2Storage(_ *testing.T) []*storage.ComplianceOperatorProfileV2 {
 func GetProfileV2Api(_ *testing.T) *v2.ComplianceProfile {
 	return &v2.ComplianceProfile{
 		Id:             ProfileUID,
-		Name:           "ocp-cis",
+		Name:           "ocp4-cis",
 		ProfileVersion: "4.2",
 		Description:    "this is a test",
 		Rules:          v2ApiRules,
 		Title:          "Openshift CIS testing",
 		ProductType:    "",
 		Standards: []*v2.ComplianceBenchmark{{
-			Name:      "CIS",
-			ShortName: "OCP_CIS",
-			Version:   "1-5",
+			Name:      "Openshift CIS testing",
+			Provider:  "CIS",
+			ShortName: "CIS-OCP",
+			Version:   "4.2",
 		}},
-		Product: "",
-		Values:  values,
+		Product:      "",
+		Values:       values,
+		OperatorKind: v2.ComplianceProfile_PROFILE,
 	}
 }
 
@@ -185,35 +190,39 @@ func GetProfilesV2Api(_ *testing.T) []*v2.ComplianceProfile {
 	return []*v2.ComplianceProfile{
 		{
 			Id:             ProfileUID,
-			Name:           "ocp-cis",
+			Name:           "ocp4-cis",
 			ProfileVersion: "4.2",
 			Description:    "this is a test",
 			Rules:          v2ApiRules,
 			Title:          "Openshift CIS testing",
 			ProductType:    "",
 			Standards: []*v2.ComplianceBenchmark{{
-				Name:      "CIS",
-				ShortName: "OCP_CIS",
-				Version:   "1-5",
+				Name:      "Openshift CIS testing",
+				Provider:  "CIS",
+				ShortName: "CIS-OCP",
+				Version:   "4.2",
 			}},
-			Product: "",
-			Values:  values,
+			Product:      "",
+			Values:       values,
+			OperatorKind: v2.ComplianceProfile_PROFILE,
 		},
 		{
 			Id:             profileUID2,
-			Name:           "rhcos-moderate",
+			Name:           "rhcos4-moderate",
 			ProfileVersion: "4.1.2",
 			Description:    "this is a test",
 			Rules:          v2ApiRules,
-			Title:          "Openshift CIS testing",
+			Title:          "Openshift NIST testing",
 			ProductType:    "",
 			Standards: []*v2.ComplianceBenchmark{{
-				Name:      "CIS",
-				ShortName: "OCP_CIS",
-				Version:   "1-5",
+				Name:      "Openshift NIST testing",
+				Provider:  "NIST",
+				ShortName: "NIST-800-53",
+				Version:   "4.1.2",
 			}},
-			Product: "",
-			Values:  values,
+			Product:      "",
+			Values:       values,
+			OperatorKind: v2.ComplianceProfile_PROFILE,
 		},
 	}
 }

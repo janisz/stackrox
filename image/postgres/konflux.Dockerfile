@@ -1,4 +1,5 @@
-FROM registry.redhat.io/rhel8/postgresql-13:latest AS final
+ARG PG_VERSION=15
+FROM registry.redhat.io/rhel9/postgresql-${PG_VERSION}:latest@sha256:1ce97000d1619e734f659d3b106aecd8454be4ff479ed979d921d876c44059ba AS final
 
 USER root
 
@@ -13,7 +14,7 @@ LABEL \
     io.k8s.display-name="central-db" \
     io.openshift.tags="rhacs,central-db,stackrox" \
     maintainer="Red Hat, Inc." \
-    name="rhacs-central-db-rhel8" \
+    name="advanced-cluster-security/rhacs-central-db-rhel9" \
     # Custom Snapshot creation in `operator-bundle-pipeline` depends on source-location label to be set correctly.
     source-location="https://github.com/stackrox/stackrox" \
     summary="Central DB for Red Hat Advanced Cluster Security for Kubernetes" \
@@ -24,8 +25,7 @@ LABEL \
     # We also set it to not inherit one from a base stage in case it's RHEL or UBI.
     release="1"
 
-RUN dnf upgrade -y --nobest && \
-    localedef -f UTF-8 -i en_US en_US.UTF-8 && \
+RUN localedef -f UTF-8 -i en_US en_US.UTF-8 && \
     mkdir -p /var/lib/postgresql && \
     groupmod -g 70 postgres && \
     usermod -u 70 postgres -d /var/lib/postgresql && \

@@ -1,0 +1,9 @@
+{
+  "name": "Australian Cyber Security Centre (ACSC) Essential Eight",
+  "provider": "ACSC",
+  "shortName": "E8",
+  "profiles": [
+    { "profileName": "ocp4-e8" },
+    { "profileName": "rhcos4-e8" }
+  ]
+}

@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"math/rand"
 	"testing"
-	"time"
 
 	"github.com/stackrox/rox/generated/storage"
 	"github.com/stackrox/rox/sensor/common/selector"
@@ -20,29 +19,25 @@ var (
 )
 
 const charset = "abcdef0123456789"
+const benchmarkFixtureSeed int64 = 0x5eed1234
 
 type namespaceAndSelector struct {
 	namespace string
 	selector  selector.Selector
 }
 
-func init() {
-	rand.Seed(time.Now().UnixNano())
-
-}
-
 // BenchmarkBuildDeployments_NoChange uses one deployment and generates
 // 10k updates without meaningful change. This is to test that
 // we don't do useless clones if the object is the same.
 func BenchmarkBuildDeployments_NoChange(b *testing.B) {
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		b.StopTimer()
 		benchStore = newDeploymentStore()
 		deployment1 := createDeploymentWrap()
 		benchStore.addOrUpdateDeployment(deployment1)
 		exposureInfo := generateExposureInfos(5, 5)
 		b.StartTimer()
-		for i := 0; i < 100; i++ {
+		for range 100 {
 			d, _, err := benchStore.BuildDeploymentWithDependencies(deployment1.GetId(), store.Dependencies{
 				PermissionLevel: storage.PermissionLevel_NONE,
 				Exposures:       exposureInfo,
@@ -57,7 +52,7 @@ func BenchmarkBuildDeployments_NoChange(b *testing.B) {
 // 10k meaningful updates, which should result in a new deployment
 // object.
 func BenchmarkBuildDeployments_Change(b *testing.B) {
-	for n := 0; n < b.N; n++ {
+	for b.Loop() {
 		b.StopTimer()
 		benchStore = newDeploymentStore()
 		deployment1 := createDeploymentWrap()
@@ -67,7 +62,7 @@ func BenchmarkBuildDeployments_Change(b *testing.B) {
 			storage.PermissionLevel_NONE, storage.PermissionLevel_ELEVATED_IN_NAMESPACE,
 		}
 		b.StartTimer()
-		for i := 0; i < 100; i++ {
+		for i := range 100 {
 
 			d, _, err := benchStore.BuildDeploymentWithDependencies(deployment1.GetId(), store.Dependencies{
 				PermissionLevel: permLevles[i%2],
@@ -82,10 +77,10 @@ func BenchmarkBuildDeployments_Change(b *testing.B) {
 func BenchmarkDeleteAllDeployments(b *testing.B) {
 	for _, numDeployments := range []int{1000, 5000, 10_000, 25_000} {
 		b.Run(fmt.Sprintf("num_deployments: %d", numDeployments), func(b *testing.B) {
-			for i := 0; i < b.N; i++ {
+			for b.Loop() {
 				b.StopTimer()
 				benchStore = newDeploymentStore()
-				for i := 0; i < 1000; i++ {
+				for range 1000 {
 					benchStore.addOrUpdateDeployment(createDeploymentWrap())
 				}
 				b.StartTimer()
@@ -96,22 +91,22 @@ func BenchmarkDeleteAllDeployments(b *testing.B) {
 }
 
 func BenchmarkFindDeploymentIDsByLabels(b *testing.B) {
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		b.StopTimer()
 		benchStore = newDeploymentStore()
-		for i := 0; i < 1000; i++ {
+		for range 1000 {
 			benchStore.addOrUpdateDeployment(createDeploymentWrap())
 		}
 
 		b.StartTimer()
 		// These should match
-		for j := 0; j < 1000; j++ {
+		for range 1000 {
 			nsAndSel := namespaceSelectorPoll[rand.Intn(len(namespaceSelectorPoll))]
 			benchStore.FindDeploymentIDsByLabels(nsAndSel.namespace, nsAndSel.selector)
 		}
 
 		// These should not match
-		for j := 0; j < 1000; j++ {
+		for range 1000 {
 			benchStore.FindDeploymentIDsByLabels("no-match-ns", selector.CreateSelector(map[string]string{"no": "match"}))
 		}
 	}
@@ -121,6 +116,14 @@ func randStringWithLength(n int) string {
 	b := make([]byte, n)
 	for i := range b {
 		b[i] = charset[rand.Intn(len(charset))]
+	}
+	return string(b)
+}
+
+func randStringWithRand(r *rand.Rand, n int) string {
+	b := make([]byte, n)
+	for i := range b {
+		b[i] = charset[r.Intn(len(charset))]
 	}
 	return string(b)
 }
@@ -147,12 +150,49 @@ func createDeploymentWrap() *deploymentWrap {
 	}
 }
 
+// createSeededDeploymentWrap keeps BenchmarkGetAll reproducible across runs and
+// branches while still exercising deployment-shaped data similar to the random
+// fixture above. Using createDeploymentWrap here would change the benchmark input
+// on every run and make benchstat results harder to trust.
+func createSeededDeploymentWrap(i int) *deploymentWrap {
+	r := rand.New(rand.NewSource(benchmarkFixtureSeed + int64(i)))
+	labels := make(map[string]string)
+	for range r.Intn(10) {
+		labels[randStringWithRand(r, 16)] = randStringWithRand(r, 16)
+	}
+	return &deploymentWrap{
+		portConfigs: map[service.PortRef]*storage.PortConfig{},
+		Deployment: &storage.Deployment{
+			Labels:    labels,
+			PodLabels: labels,
+			Namespace: randStringWithRand(r, 16),
+			Id:        fmt.Sprintf("deployment-%04d-%s", i, randStringWithRand(r, 8)),
+			Name:      fmt.Sprintf("deployment-%04d-%s", i, randStringWithRand(r, 8)),
+		},
+	}
+}
+
+func BenchmarkGetAll(b *testing.B) {
+	for _, numDeployments := range []int{1, 10, 50, 100, 500, 1000} {
+		b.Run(fmt.Sprintf("deployments=%d", numDeployments), func(b *testing.B) {
+			b.ReportAllocs()
+			ds := newDeploymentStore()
+			for i := range numDeployments {
+				ds.addOrUpdateDeployment(createSeededDeploymentWrap(i))
+			}
+			for b.Loop() {
+				_ = ds.GetAll()
+			}
+		})
+	}
+}
+
 func generateExposureInfos(numMaps, numExposureInfos int) []map[service.PortRef][]*storage.PortConfig_ExposureInfo {
 	result := make([]map[service.PortRef][]*storage.PortConfig_ExposureInfo, numMaps)
 
-	for m := 0; m < numMaps; m++ {
+	for m := range numMaps {
 		result[m] = map[service.PortRef][]*storage.PortConfig_ExposureInfo{}
-		for i := 0; i < numExposureInfos; i++ {
+		for i := range numExposureInfos {
 			result[m][service.PortRef{
 				Port:     intstr.FromInt32(8080 + int32(i)),
 				Protocol: "TCP",

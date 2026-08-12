@@ -1,4 +1,4 @@
-import React from 'react';
+import { useState } from 'react';
 import {
     Alert,
     Bullseye,
@@ -16,9 +16,10 @@ import {
 } from '@patternfly/react-core';
 import pluralize from 'pluralize';
 
+import usePermissions from 'hooks/usePermissions';
 import useSelectToggle from 'hooks/patternfly/useSelectToggle';
 import useModifyBaselineStatuses from '../api/useModifyBaselineStatuses';
-import { AdvancedFlowsFilterType } from '../common/AdvancedFlowsFilter/types';
+import type { AdvancedFlowsFilterType } from '../common/AdvancedFlowsFilter/types';
 import {
     filterNetworkFlows,
     getAllUniquePorts,
@@ -26,9 +27,9 @@ import {
     getNumExtraneousIngressFlows,
     getNumFlows,
 } from '../utils/flowUtils';
-import { CustomNodeModel } from '../types/topology.type';
-import { EdgeState } from '../components/EdgeStateSelect';
-import { Flow } from '../types/flow.type';
+import type { CustomNodeModel } from '../types/topology.type';
+import type { EdgeState } from '../components/EdgeStateSelect';
+import type { Flow } from '../types/flow.type';
 
 import AdvancedFlowsFilter, {
     defaultAdvancedFlowsFilters,
@@ -61,9 +62,12 @@ function InternalFlows({
     networkFlows,
     refetchFlows,
 }: InternalFlowsProps) {
+    const { hasReadWriteAccess } = usePermissions();
+    const hasWriteAccessForActions = hasReadWriteAccess('DeploymentExtension');
+
     // component state
-    const [entityNameFilter, setEntityNameFilter] = React.useState<string>('');
-    const [advancedFilters, setAdvancedFilters] = React.useState<AdvancedFlowsFilterType>(
+    const [entityNameFilter, setEntityNameFilter] = useState<string>('');
+    const [advancedFilters, setAdvancedFilters] = useState<AdvancedFlowsFilterType>(
         defaultAdvancedFlowsFilters
     );
     const { isOpen: isAnomalousFlowsExpanded, onToggle: toggleAnomalousFlowsExpandable } =
@@ -81,10 +85,10 @@ function InternalFlows({
     const initialExpandedRows = filteredFlows
         .filter((row) => row.children && !!row.children.length)
         .map((row) => row.id); // Default to all expanded
-    const [expandedRows, setExpandedRows] = React.useState<string[]>(initialExpandedRows);
+    const [expandedRows, setExpandedRows] = useState<string[]>(initialExpandedRows);
 
-    const [selectedAnomalousRows, setSelectedAnomalousRows] = React.useState<string[]>([]);
-    const [selectedBaselineRows, setSelectedBaselineRows] = React.useState<string[]>([]);
+    const [selectedAnomalousRows, setSelectedAnomalousRows] = useState<string[]>([]);
+    const [selectedBaselineRows, setSelectedBaselineRows] = useState<string[]>([]);
 
     // derived data
     const anomalousFlows = filteredFlows.filter((flow) => flow.isAnomalous);
@@ -150,7 +154,7 @@ function InternalFlows({
                         variant="danger"
                         title={networkFlowsError || modifyError}
                         component="p"
-                        className="pf-v5-u-mb-sm"
+                        className="pf-v6-u-mb-sm"
                     />
                 </StackItem>
             )}
@@ -171,25 +175,27 @@ function InternalFlows({
                     </FlexItem>
                 </Flex>
             </StackItem>
-            <Divider component="hr" className="pf-v5-u-py-md" />
+            <Divider component="hr" className="pf-v6-u-py-md" />
             <StackItem>
-                <Toolbar className="pf-v5-u-p-0">
-                    <ToolbarContent className="pf-v5-u-px-0">
+                <Toolbar className="pf-v6-u-p-0">
+                    <ToolbarContent className="pf-v6-u-px-0">
                         <ToolbarItem>
                             <FlowsTableHeaderText type={edgeState} numFlows={totalFlows} />
                         </ToolbarItem>
-                        <ToolbarItem align={{ default: 'alignRight' }}>
-                            <FlowsBulkActions
-                                type="active"
-                                selectedRows={selectedRows}
-                                onClearSelectedRows={() => {
-                                    setSelectedAnomalousRows([]);
-                                    setSelectedBaselineRows([]);
-                                }}
-                                markSelectedAsAnomalous={markSelectedAsAnomalous}
-                                addSelectedToBaseline={addSelectedToBaseline}
-                            />
-                        </ToolbarItem>
+                        {hasWriteAccessForActions && (
+                            <ToolbarItem align={{ default: 'alignEnd' }}>
+                                <FlowsBulkActions
+                                    type="active"
+                                    selectedRows={selectedRows}
+                                    onClearSelectedRows={() => {
+                                        setSelectedAnomalousRows([]);
+                                        setSelectedBaselineRows([]);
+                                    }}
+                                    markSelectedAsAnomalous={markSelectedAsAnomalous}
+                                    addSelectedToBaseline={addSelectedToBaseline}
+                                />
+                            </ToolbarItem>
+                        )}
                     </ToolbarContent>
                 </Toolbar>
             </StackItem>
@@ -217,7 +223,7 @@ function InternalFlows({
                                     markAsAnomalous={markAsAnomalous}
                                     numExtraneousEgressFlows={numExtraneousEgressFlows}
                                     numExtraneousIngressFlows={numExtraneousIngressFlows}
-                                    isEditable
+                                    isEditable={hasWriteAccessForActions}
                                     onSelectFlow={onSelectFlow}
                                 />
                             ) : (
@@ -247,7 +253,7 @@ function InternalFlows({
                                     markAsAnomalous={markAsAnomalous}
                                     numExtraneousEgressFlows={numExtraneousEgressFlows}
                                     numExtraneousIngressFlows={numExtraneousIngressFlows}
-                                    isEditable
+                                    isEditable={hasWriteAccessForActions}
                                     onSelectFlow={onSelectFlow}
                                 />
                             ) : (

@@ -1,11 +1,12 @@
-import React, { ReactElement } from 'react';
+import type { ReactElement } from 'react';
 import pluralize from 'pluralize';
-import { Alert, Button, Flex, Modal, Text } from '@patternfly/react-core';
+import { Alert, Button, Content, Flex } from '@patternfly/react-core';
+import { Modal } from '@patternfly/react-core/deprecated';
 
 import { excludeDeployments } from 'services/PoliciesService';
-import { DeploymentListAlert, ListAlert } from 'types/alert.proto';
+import type { DeploymentListAlert, ListAlert } from 'types/alert.proto';
 import useRestMutation from 'hooks/useRestMutation';
-import { Empty } from 'services/types';
+import type { Empty } from 'services/types';
 import { getAxiosErrorMessage } from 'utils/responseErrorUtils';
 
 // Filter the excludableAlerts displayed down to the ones checked, and group them into a map from policy ID to a list of
@@ -86,12 +87,12 @@ function ExcludeConfirmation({
             aria-label="Confirm excluding violations"
         >
             <Flex direction={{ default: 'column' }}>
-                <Text>
+                <Content component="p">
                     {`Are you sure you want to exclude deployments from ${numSelectedRows} policy ${pluralize(
                         'violation',
                         numSelectedRows
                     )}?`}
-                </Text>
+                </Content>
                 {!!error && (
                     <Alert
                         variant="danger"

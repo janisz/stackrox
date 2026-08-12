@@ -3,7 +3,9 @@ package sensor
 import (
 	"context"
 	"io"
+	"time"
 
+	"github.com/stackrox/rox/generated/storage"
 	"github.com/stackrox/rox/pkg/env"
 	"github.com/stackrox/rox/pkg/sensor/queue"
 	"github.com/stackrox/rox/sensor/common/centralclient"
@@ -14,17 +16,33 @@ import (
 // CreateOptions represents the custom configuration that can be provided when creating sensor
 // using CreateSensor.
 type CreateOptions struct {
+	clusterIDHandler                   clusterIDHandler
 	workloadManager                    *fake.WorkloadManager
 	centralConnFactory                 centralclient.CentralConnectionFactory
 	certLoader                         centralclient.CertLoader
 	localSensor                        bool
 	k8sClient                          client.Interface
+	introspectionK8sClient             client.Interface
 	traceWriter                        io.Writer
 	eventPipelineQueueSize             int
 	networkFlowServiceAuthFuncOverride func(context.Context, string) (context.Context, error)
 	signalServiceAuthFuncOverride      func(context.Context, string) (context.Context, error)
 	networkFlowWriter                  io.Writer
 	processIndicatorWriter             io.Writer
+	networkFlowTicker                  <-chan time.Time
+	deploymentIdentification           *storage.SensorDeploymentIdentification
+	processPipelineObserver            func(ProcessPipelineHandle)
+}
+
+// ProcessPipelineHandle exposes the subset of process pipeline functionality external callers need.
+type ProcessPipelineHandle interface {
+	WaitForShutdown() error
+}
+
+type clusterIDHandler interface {
+	Set(string)
+	Get() string
+	GetNoWait() string
 }
 
 // ConfigWithDefaults creates a new config object with default properties.
@@ -39,6 +57,7 @@ func ConfigWithDefaults() *CreateOptions {
 		centralConnFactory:                 nil,
 		certLoader:                         centralclient.EmptyCertLoader(),
 		k8sClient:                          nil,
+		introspectionK8sClient:             nil,
 		localSensor:                        false,
 		traceWriter:                        nil,
 		eventPipelineQueueSize:             queue.ScaleSizeOnNonDefault(env.EventPipelineQueueSize),
@@ -46,13 +65,30 @@ func ConfigWithDefaults() *CreateOptions {
 		signalServiceAuthFuncOverride:      nil,
 		networkFlowWriter:                  nil,
 		processIndicatorWriter:             nil,
+		networkFlowTicker:                  nil,
+		clusterIDHandler:                   nil,
 	}
+}
+
+// WithClusterIDHandler sets the Handler.
+// Default: nil
+func (cfg *CreateOptions) WithClusterIDHandler(handler clusterIDHandler) *CreateOptions {
+	cfg.clusterIDHandler = handler
+	return cfg
 }
 
 // WithK8sClient sets the k8s client.
 // Default: nil
 func (cfg *CreateOptions) WithK8sClient(k8s client.Interface) *CreateOptions {
 	cfg.k8sClient = k8s
+	return cfg
+}
+
+// WithIntrospectionK8sClient sets the introspection k8s client.
+// This is necessary if we want to use the fake-workloads with a CRS installation.
+// Default: nil
+func (cfg *CreateOptions) WithIntrospectionK8sClient(k8s client.Interface) *CreateOptions {
+	cfg.introspectionK8sClient = k8s
 	return cfg
 }
 
@@ -122,5 +158,28 @@ func (cfg *CreateOptions) WithNetworkFlowTraceWriter(writer io.Writer) *CreateOp
 // Default: nil
 func (cfg *CreateOptions) WithProcessIndicatorTraceWriter(writer io.Writer) *CreateOptions {
 	cfg.processIndicatorWriter = writer
+	return cfg
+}
+
+// WithProcessPipelineObserver exposes the created process pipeline (used by local-sensor).
+// Without this hook, local-sensor cannot await pipeline shutdown and would continue to log
+// errors or panic on late-arriving process signals after Ctrl-C.
+func (cfg *CreateOptions) WithProcessPipelineObserver(observer func(ProcessPipelineHandle)) *CreateOptions {
+	cfg.processPipelineObserver = observer
+	return cfg
+}
+
+// WithNetworkFlowTicker sets the ticker for network flow enrichment.
+// Default: nil
+func (cfg *CreateOptions) WithNetworkFlowTicker(ticker <-chan time.Time) *CreateOptions {
+	cfg.networkFlowTicker = ticker
+	return cfg
+}
+
+// WithDeploymentIdentification overrides the deployment identification.
+// This is primarily used by local-sensor to provide explicit namespace when running outside a pod.
+// Default: nil (will call FetchDeploymentIdentification)
+func (cfg *CreateOptions) WithDeploymentIdentification(deploymentID *storage.SensorDeploymentIdentification) *CreateOptions {
+	cfg.deploymentIdentification = deploymentID
 	return cfg
 }

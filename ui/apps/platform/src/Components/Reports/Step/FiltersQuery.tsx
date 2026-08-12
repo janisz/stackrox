@@ -1,0 +1,100 @@
+import type { ReactElement } from 'react';
+import {
+    Flex,
+    FormGroup,
+    FormHelperText,
+    HelperText,
+    HelperTextItem,
+} from '@patternfly/react-core';
+import { getIn } from 'formik';
+import type { FormikProps } from 'formik';
+
+import CompoundSearchFilter from 'Components/CompoundSearchFilter/components/CompoundSearchFilter';
+import CompoundSearchFilterLabels from 'Components/CompoundSearchFilter/components/CompoundSearchFilterLabels';
+import SearchFilterSelectInclusive from 'Components/CompoundSearchFilter/components/SearchFilterSelectInclusive';
+import type {
+    CompoundSearchFilterConfig,
+    OnSearchPayload,
+    SelectSearchFilterAttribute,
+} from 'Components/CompoundSearchFilter/types';
+import { updateSearchFilter } from 'Components/CompoundSearchFilter/utils/utils';
+import type { SearchFilter } from 'types/search';
+import {
+    applyRegexSearchModifiers,
+    getRequestQueryStringForSearchFilter,
+    getSearchFilterFromSearchString,
+} from 'utils/searchUtils';
+
+export type FiltersQueryConfiguration = {
+    vulnReportFilters: {
+        query: string;
+    };
+};
+
+export type FiltersQueryProps<T extends FiltersQueryConfiguration = FiltersQueryConfiguration> = {
+    attributesSeparateFromConfig: SelectSearchFilterAttribute[];
+    formik: FormikProps<T>;
+    searchFilterConfig: CompoundSearchFilterConfig;
+};
+
+function FiltersQuery<T extends FiltersQueryConfiguration = FiltersQueryConfiguration>({
+    attributesSeparateFromConfig,
+    formik,
+    searchFilterConfig,
+}: FiltersQueryProps<T>): ReactElement {
+    const searchFilter = getSearchFilterFromSearchString(formik.values.vulnReportFilters.query);
+
+    function onFilterChange(searchFilterChanged: SearchFilter) {
+        formik.setFieldValue(
+            'vulnReportFilters.query',
+            getRequestQueryStringForSearchFilter(applyRegexSearchModifiers(searchFilterChanged))
+        );
+    }
+
+    function onSearch(payload: OnSearchPayload) {
+        onFilterChange(updateSearchFilter(searchFilter, payload));
+    }
+
+    return (
+        <>
+            {attributesSeparateFromConfig.map((attribute) => (
+                <FormGroup key={attribute.searchTerm} label={attribute.displayName} fieldId="TODO">
+                    <SearchFilterSelectInclusive
+                        attribute={attribute}
+                        onSearch={onSearch}
+                        searchFilter={searchFilter}
+                    />
+                </FormGroup>
+            ))}
+            <Flex direction={{ default: 'column' }} spaceItems={{ default: 'spaceItemsSm' }}>
+                <CompoundSearchFilter
+                    config={searchFilterConfig}
+                    onSearch={onSearch}
+                    searchFilter={searchFilter}
+                />
+                {Object.keys(searchFilter).length !== 0 ? (
+                    <CompoundSearchFilterLabels
+                        attributesSeparateFromConfig={attributesSeparateFromConfig}
+                        config={searchFilterConfig}
+                        hasClearFilters={false}
+                        onFilterChange={onFilterChange}
+                        searchFilter={searchFilter}
+                    />
+                ) : (
+                    getIn(formik.touched, 'vulnReportFilters.query') &&
+                    getIn(formik.errors, 'vulnReportFilters.query') && (
+                        <FormHelperText>
+                            <HelperText>
+                                <HelperTextItem variant="error">
+                                    {getIn(formik.errors, 'vulnReportFilters.query')}
+                                </HelperTextItem>
+                            </HelperText>
+                        </FormHelperText>
+                    )
+                )}
+            </Flex>
+        </>
+    );
+}
+
+export default FiltersQuery;

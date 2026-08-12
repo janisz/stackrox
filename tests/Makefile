@@ -25,12 +25,19 @@ destructive-tests:
 .PHONY: external-backup-tests
 external-backup-tests:
 	@echo "+ $@"
-	@GOTAGS=$(GOTAGS),test,externalbackups ../scripts/go-test.sh -cover -v -run TestGCSExternalBackup 2>&1 | tee test.log
+	@GOTAGS=$(GOTAGS),test,externalbackups ../scripts/go-test.sh -cover -v -run TestExternalBackup 2>&1 | tee test.log
 	@$(MAKE) report JUNIT_OUT=external-backup-tests-results
 
 .PHONY: compliance-v2-tests
 compliance-v2-tests:
-	@GOTAGS=$(GOTAGS),test,compliance ../scripts/go-test.sh -cover -v -run TestComplianceV2 2>&1 | tee test.log
+	@GOTAGS=$(GOTAGS),test,compliance ../scripts/go-test.sh -timeout 30m -cover -v -run TestComplianceV2 2>&1 | tee test.log
 	@$(MAKE) report JUNIT_OUT=compliance-v2-tests-results
+
+.PHONY: vm-scanning-tests
+vm-scanning-tests:
+	@echo "+ $@"
+	@bash -o pipefail -c 'GOTAGS=$(GOTAGS),test,test_e2e_vm $(TOPLEVEL)/scripts/go-test.sh -cover $(TESTFLAGS) -v . 2>&1 | tee test.log'; rc=$$?; \
+	$(MAKE) report JUNIT_OUT=vm-scanning-tests-results; \
+	exit $$rc
 
 include ../make/stackrox.mk

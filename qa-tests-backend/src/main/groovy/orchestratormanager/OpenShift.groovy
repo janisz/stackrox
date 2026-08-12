@@ -3,6 +3,7 @@ package orchestratormanager
 import static util.Helpers.withRetry
 
 import groovy.transform.CompileStatic
+import io.stackrox.annotations.Retry
 import groovy.util.logging.Slf4j
 import io.fabric8.kubernetes.client.KubernetesClientException
 import io.fabric8.openshift.api.model.ProjectRequest
@@ -29,7 +30,8 @@ class OpenShift extends Kubernetes {
     }
 
     @Override
-    def ensureNamespaceExists(String ns) {
+    @Retry()
+    void ensureNamespaceExists(String ns) {
         ProjectRequest projectRequest = new ProjectRequestBuilder()
                 .withNewMetadata()
                 .withName(ns)
@@ -40,13 +42,14 @@ class OpenShift extends Kubernetes {
         try {
             oClient.projectrequests().create(projectRequest)
             log.info "Created namespace ${ns}"
-            provisionDefaultServiceAccount(ns)
         } catch (KubernetesClientException kce) {
             if (kce.code != 409) {
                 throw kce
             }
             log.debug("Namespace ${ns} already exists")
         }
+
+        provisionDefaultServiceAccount(ns)
 
         try {
             String sccName = "anyuid"
@@ -95,7 +98,8 @@ class OpenShift extends Kubernetes {
     */
 
     @Override
-    def createRoute(String routeName, String namespace) {
+    @SuppressWarnings('BuilderMethodWithSideEffects')
+    void createRoute(String routeName, String namespace) {
         log.debug "Creating a route: " + routeName
         withRetry(2, 3) {
             Route route = new RouteBuilder().withNewMetadata().withName(routeName).endMetadata()
@@ -105,7 +109,7 @@ class OpenShift extends Kubernetes {
     }
 
     @Override
-    def deleteRoute(String routeName, String namespace) {
+    void deleteRoute(String routeName, String namespace) {
         log.debug "Deleting a route: " + routeName
         withRetry(2, 3) {
             Route route = new RouteBuilder().withNewMetadata().withName(routeName).endMetadata().build()

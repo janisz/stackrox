@@ -12,14 +12,20 @@ import (
 	"github.com/stackrox/rox/generated/storage"
 	"github.com/stackrox/rox/pkg/centralsensor"
 	"github.com/stackrox/rox/pkg/crs"
+	"github.com/stackrox/rox/pkg/errox"
 	"github.com/stackrox/rox/pkg/grpc/authn"
 	"github.com/stackrox/rox/pkg/mtls"
 	"github.com/stackrox/rox/pkg/protocompat"
 	"github.com/stackrox/rox/pkg/sac"
+	"github.com/stackrox/rox/pkg/sac/resources"
 )
 
 const (
 	currentCrsVersion = 1
+
+	// We enforce an upper bound for this setting because for this feature it is required to maintain a list of cluster names
+	// per CRS in the storage and therefore we need to keep the storage requirements under control.
+	maxRegistrationsUpperLimit = 100
 )
 
 var _ authn.ValidateCertChain = (*backendImpl)(nil)
@@ -33,8 +39,9 @@ func (b *backendImpl) GetAll(ctx context.Context) ([]*storage.InitBundleMeta, er
 	if err := access.CheckAccess(ctx, storage.Access_READ_ACCESS); err != nil {
 		return nil, err
 	}
+	storeCtx := getStoreReadContext(ctx)
 
-	allBundleMetas, err := b.store.GetAll(ctx)
+	allBundleMetas, err := b.store.GetAll(storeCtx)
 	if err != nil {
 		return nil, errors.Wrap(err, "retrieving all init bundles")
 	}
@@ -45,8 +52,9 @@ func (b *backendImpl) GetAllCRS(ctx context.Context) ([]*storage.InitBundleMeta,
 	if err := access.CheckAccess(ctx, storage.Access_READ_ACCESS); err != nil {
 		return nil, err
 	}
+	storeCtx := getStoreReadContext(ctx)
 
-	allBundleMetas, err := b.store.GetAllCRS(ctx)
+	allBundleMetas, err := b.store.GetAllCRS(storeCtx)
 	if err != nil {
 		return nil, errors.Wrap(err, "retrieving all CRSs")
 	}
@@ -105,6 +113,7 @@ func (b *backendImpl) Issue(ctx context.Context, name string) (*InitBundleWithMe
 	if err := access.CheckAccess(ctx, storage.Access_READ_WRITE_ACCESS); err != nil {
 		return nil, err
 	}
+	storeCtx := getStoreReadWriteContext(ctx)
 
 	if err := validateName(name); err != nil {
 		return nil, err
@@ -139,7 +148,7 @@ func (b *backendImpl) Issue(ctx context.Context, name string) (*InitBundleWithMe
 		ExpiresAt: expiryTimestamp,
 	}
 
-	if err := b.store.Add(ctx, meta); err != nil {
+	if err := b.store.Add(storeCtx, meta); err != nil {
 		return nil, errors.Wrap(err, "adding new init bundle to data store")
 	}
 
@@ -152,13 +161,18 @@ func (b *backendImpl) Issue(ctx context.Context, name string) (*InitBundleWithMe
 	}, nil
 }
 
-func (b *backendImpl) IssueCRS(ctx context.Context, name string) (*CRSWithMeta, error) {
+func (b *backendImpl) IssueCRS(ctx context.Context, name string, validUntil time.Time, maxRegistrations uint64) (*CRSWithMeta, error) {
 	if err := access.CheckAccess(ctx, storage.Access_READ_WRITE_ACCESS); err != nil {
 		return nil, err
 	}
+	storeCtx := getStoreReadWriteContext(ctx)
 
 	if err := validateName(name); err != nil {
 		return nil, err
+	}
+
+	if maxRegistrations > maxRegistrationsUpperLimit {
+		return nil, errox.InvalidArgs.Newf("cluster registration limit must be in the range 0...%d", maxRegistrationsUpperLimit)
 	}
 
 	caCert, err := b.certProvider.GetCA()
@@ -167,7 +181,7 @@ func (b *backendImpl) IssueCRS(ctx context.Context, name string) (*CRSWithMeta, 
 	}
 
 	user := extractUserIdentity(ctx)
-	cert, id, err := b.certProvider.GetCRSCert()
+	cert, id, err := b.certProvider.GetCRSCert(validUntil)
 	if err != nil {
 		return nil, errors.Wrap(err, "generating CRS certificates")
 	}
@@ -184,15 +198,16 @@ func (b *backendImpl) IssueCRS(ctx context.Context, name string) (*CRSWithMeta, 
 
 	// On the storage side we are reusing the InitBundleMeta.
 	meta := &storage.InitBundleMeta{
-		Id:        id.String(),
-		Name:      name,
-		CreatedAt: protocompat.TimestampNow(),
-		CreatedBy: user,
-		ExpiresAt: expiryTimestamp,
-		Version:   storage.InitBundleMeta_CRS,
+		Id:               id.String(),
+		Name:             name,
+		CreatedAt:        protocompat.TimestampNow(),
+		CreatedBy:        user,
+		ExpiresAt:        expiryTimestamp,
+		Version:          storage.InitBundleMeta_CRS,
+		MaxRegistrations: maxRegistrations,
 	}
 
-	if err := b.store.Add(ctx, meta); err != nil {
+	if err := b.store.Add(storeCtx, meta); err != nil {
 		return nil, errors.Wrap(err, "adding new CRS metadata to data store")
 	}
 
@@ -226,8 +241,9 @@ func (b *backendImpl) Revoke(ctx context.Context, id string) error {
 	if err := access.CheckAccess(ctx, storage.Access_READ_WRITE_ACCESS); err != nil {
 		return err
 	}
+	storeCtx := getStoreReadWriteContext(ctx)
 
-	if err := b.store.Revoke(ctx, id); err != nil {
+	if err := b.store.Revoke(storeCtx, id); err != nil {
 		return errors.Wrapf(err, "revoking init bundle %q", id)
 	}
 
@@ -238,8 +254,9 @@ func (b *backendImpl) CheckRevoked(ctx context.Context, id string) error {
 	if err := access.CheckAccess(ctx, storage.Access_READ_ACCESS); err != nil {
 		return err
 	}
+	storeCtx := getStoreReadContext(ctx)
 
-	bundleMeta, err := b.store.Get(ctx, id)
+	bundleMeta, err := b.store.Get(storeCtx, id)
 	if err != nil {
 		return errors.Wrapf(err, "retrieving init bundle %q", id)
 	}
@@ -260,7 +277,6 @@ func (b *backendImpl) ValidateClientCertificate(ctx context.Context, chain []mtl
 	bundleID := leaf.Subject.Organization
 	// check if leaf cert is part of an init bundle
 	if len(bundleID) == 0 {
-		log.Debugf("Init bundle ID was not found in certificate %q", leaf.Subject.OrganizationalUnit)
 		return nil
 	}
 
@@ -279,4 +295,26 @@ func (b *backendImpl) ValidateClientCertificate(ctx context.Context, chain []mtl
 	}
 
 	return nil
+}
+
+func getStoreContext(ctx context.Context, accessMode storage.Access) context.Context {
+	accessLevels := []storage.Access{accessMode}
+	if accessMode == storage.Access_READ_WRITE_ACCESS {
+		accessLevels = append(accessLevels, storage.Access_READ_ACCESS)
+	}
+	return sac.WithGlobalAccessScopeChecker(
+		ctx,
+		sac.AllowFixedScopes(
+			sac.AccessModeScopeKeys(accessLevels...),
+			sac.ResourceScopeKeys(resources.InitBundleMeta),
+		),
+	)
+}
+
+func getStoreReadContext(ctx context.Context) context.Context {
+	return getStoreContext(ctx, storage.Access_READ_ACCESS)
+}
+
+func getStoreReadWriteContext(ctx context.Context) context.Context {
+	return getStoreContext(ctx, storage.Access_READ_WRITE_ACCESS)
 }

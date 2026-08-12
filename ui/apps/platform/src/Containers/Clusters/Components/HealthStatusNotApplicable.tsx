@@ -1,4 +1,4 @@
-import React, { ReactElement } from 'react';
+import type { ReactElement } from 'react';
 
 type HealthStatusNotApplicableProps = { testId: string; isList?: boolean };
 
@@ -8,7 +8,7 @@ function HealthStatusNotApplicable({
 }: HealthStatusNotApplicableProps): ReactElement {
     return (
         <div className={`${isList ? 'inline' : ''} leading-normal`} data-testid={testId}>
-            <span className="pf-v5-u-text-nowrap">Not applicable</span>
+            <span className="pf-v6-u-text-nowrap">Not applicable</span>
         </div>
     );
 }
